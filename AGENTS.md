@@ -1,4 +1,4 @@
-# Argos — CLAUDE.md
+# Argos — AGENTS.md
 
 ## Project Overview
 
