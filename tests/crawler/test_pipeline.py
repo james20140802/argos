@@ -53,6 +53,28 @@ async def test_run_full_crawl_without_dynamic_urls_equals_static(patched_static)
     assert full_result == static_result
 
 
+async def test_run_static_pipeline_isolates_source_failures(mocker) -> None:
+    hn = [
+        {"title": "hn-1", "source_url": "https://hn.com/1", "raw_content": "p"},
+    ]
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_github_trending",
+        new=AsyncMock(side_effect=RuntimeError("github is down")),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_hackernews_top",
+        new=AsyncMock(return_value=hn),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.filter_duplicate_urls",
+        new=AsyncMock(side_effect=lambda _session, items: items),
+    )
+
+    result = await pipeline.run_static_pipeline(AsyncMock())
+
+    assert result == hn
+
+
 async def test_run_full_crawl_appends_dynamic_results(patched_static, mocker) -> None:
     dynamic_item = {
         "title": "dyn",
