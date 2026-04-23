@@ -82,6 +82,47 @@ async def test_fetch_hackernews_top_returns_items() -> None:
         assert item["source_url"].startswith("https://")
 
 
+async def test_fetch_hackernews_top_handles_malformed_payloads() -> None:
+    top_ids = [10, 20, 30]
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        # 10 → non-JSON body
+        respx.get("https://hacker-news.firebaseio.com/v0/item/10.json").mock(
+            return_value=httpx.Response(200, text="<html>oops</html>")
+        )
+        # 20 → JSON but not a dict
+        respx.get("https://hacker-news.firebaseio.com/v0/item/20.json").mock(
+            return_value=httpx.Response(200, text=json.dumps([1, 2, 3]))
+        )
+        # 30 → unsafe scheme in url → fall back to canonical HN URL
+        respx.get("https://hacker-news.firebaseio.com/v0/item/30.json").mock(
+            return_value=httpx.Response(
+                200,
+                text=json.dumps(
+                    {"id": 30, "title": "Hi", "url": "javascript:alert(1)", "text": ""}
+                ),
+            )
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=3)
+
+    assert len(result) == 1
+    assert result[0]["source_url"] == "https://news.ycombinator.com/item?id=30"
+
+
+async def test_fetch_hackernews_top_returns_empty_on_invalid_topstories_json() -> None:
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text="<html>error</html>")
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=5)
+
+    assert result == []
+
+
 async def test_filter_duplicate_urls_removes_existing() -> None:
     existing_url = "https://existing.com/x"
     new_url = "https://new.com/y"

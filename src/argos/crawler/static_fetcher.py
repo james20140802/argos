@@ -50,7 +50,13 @@ async def fetch_hackernews_top(
         headers={"User-Agent": random_user_agent()},
     )
     response.raise_for_status()
-    top_ids: list[int] = response.json()[:limit]
+    try:
+        payload = response.json()
+    except ValueError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    top_ids: list[int] = [i for i in payload[:limit] if isinstance(i, int)]
 
     semaphore = asyncio.Semaphore(_HN_CONCURRENCY)
 
@@ -64,10 +70,26 @@ async def fetch_hackernews_top(
                 r.raise_for_status()
             except httpx.HTTPError:
                 return None
-            data = r.json() or {}
-            url = data.get("url") or f"https://news.ycombinator.com/item?id={item_id}"
-            title = data.get("title", "")
-            text = data.get("text", "")
+            try:
+                data = r.json()
+            except ValueError:
+                return None
+            if not isinstance(data, dict):
+                return None
+            fallback_url = f"https://news.ycombinator.com/item?id={item_id}"
+            candidate = data.get("url")
+            if isinstance(candidate, str) and candidate.lower().startswith(
+                ("http://", "https://")
+            ):
+                url = candidate
+            else:
+                url = fallback_url
+            title = data.get("title") or ""
+            text = data.get("text") or ""
+            if not isinstance(title, str):
+                title = ""
+            if not isinstance(text, str):
+                text = ""
             raw_content = f"{title} {text}".strip() if text else title
             return {"title": title, "source_url": url, "raw_content": raw_content}
 
