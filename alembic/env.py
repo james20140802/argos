@@ -19,7 +19,8 @@ from argos.models import Base  # noqa: E402
 config = context.config
 
 # .env에서 읽은 DATABASE_URL로 alembic.ini의 sqlalchemy.url을 오버라이드
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# ConfigParser 보간(%)과 충돌하지 않도록 '%'를 '%%'로 이스케이프
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 # 로깅 설정
 if config.config_file_name is not None:
