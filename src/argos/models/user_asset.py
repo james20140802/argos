@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Enum, ForeignKey, func
+from sqlalchemy import DateTime, Enum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,9 +31,14 @@ class UserAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
     )
     status: Mapped[AssetStatus] = mapped_column(
-        Enum(AssetStatus, name="asset_status"),
+        Enum(
+            AssetStatus,
+            name="asset_status",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
         default=AssetStatus.KEEP,
+        server_default=AssetStatus.KEEP.value,
     )
     last_monitored_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
@@ -46,6 +51,7 @@ class UserAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         "TrackHistory",
         back_populates="user_asset",
         lazy="selectin",
+        passive_deletes=True,
     )
 
     def __repr__(self) -> str:

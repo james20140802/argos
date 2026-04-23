@@ -22,12 +22,16 @@ class TechItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False, unique=True)
     raw_content: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
     category: Mapped[CategoryType] = mapped_column(
-        Enum(CategoryType, name="category_type"),
+        Enum(
+            CategoryType,
+            name="category_type",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=True,
     )
-    trust_score: Mapped[float] = mapped_column(Float, nullable=True, default=0.0)
+    trust_score: Mapped[float] = mapped_column(Float, nullable=True)
 
     # Relationships
     predecessors = relationship(
@@ -35,18 +39,22 @@ class TechItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         foreign_keys="TechSuccession.successor_id",
         back_populates="successor",
         lazy="selectin",
+        passive_deletes=True,
     )
     successors = relationship(
         "TechSuccession",
         foreign_keys="TechSuccession.predecessor_id",
         back_populates="predecessor",
         lazy="selectin",
+        passive_deletes=True,
     )
     user_assets = relationship(
         "UserAsset",
         back_populates="tech_item",
         lazy="selectin",
+        passive_deletes=True,
     )
 
     def __repr__(self) -> str:
-        return f"<TechItem(id={self.id}, title='{self.title[:30]}...')>"
+        display_title = self.title[:30] + "..." if len(self.title) > 30 else self.title
+        return f"<TechItem(id={self.id}, title='{display_title}')>"

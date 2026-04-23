@@ -32,7 +32,11 @@ class TechSuccession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
     )
     relation_type: Mapped[RelationType] = mapped_column(
-        Enum(RelationType, name="relation_type"),
+        Enum(
+            RelationType,
+            name="relation_type",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
     )
     reasoning: Mapped[str] = mapped_column(Text, nullable=True)
