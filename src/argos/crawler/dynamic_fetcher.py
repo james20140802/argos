@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 from urllib.parse import urlsplit
 
 from lxml import etree
@@ -11,24 +12,57 @@ from readability import Document
 
 BLOCKED_RESOURCE_TYPES = {"image", "stylesheet", "font", "media"}
 _ALLOWED_SCHEMES = {"http", "https"}
+_BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
 
 
 def _is_safe_url(url: str) -> bool:
     parts = urlsplit(url)
     if parts.scheme not in _ALLOWED_SCHEMES:
         return False
-    if not parts.hostname:
+    host = parts.hostname
+    if not host:
         return False
-    return True
+    if host.lower() in _BLOCKED_HOSTNAMES:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return not (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
 
 
 def extract_main_content(html: str) -> tuple[str, str]:
-    doc = Document(html)
-    title = doc.title()
-    summary_html = doc.summary()
-    root = etree.fromstring(summary_html.encode(), parser=etree.HTMLParser())
-    text = " ".join(root.itertext())
-    return title, text.strip()
+    title = ""
+    summary_html = html
+
+    try:
+        doc = Document(html)
+        title = doc.title() or ""
+        extracted = doc.summary()
+        if extracted and extracted.strip():
+            summary_html = extracted
+    except Exception:
+        summary_html = html
+
+    for candidate in (summary_html, html):
+        if not candidate or not candidate.strip():
+            continue
+        try:
+            root = etree.fromstring(candidate.encode(), parser=etree.HTMLParser())
+        except (etree.XMLSyntaxError, ValueError, TypeError):
+            continue
+        if root is None:
+            continue
+        return title, " ".join(root.itertext()).strip()
+
+    return title, ""
 
 
 async def fetch_dynamic_page(

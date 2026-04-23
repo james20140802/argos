@@ -7,6 +7,7 @@ import pytest
 
 from argos.crawler.dynamic_fetcher import (
     BLOCKED_RESOURCE_TYPES,
+    _is_safe_url,
     extract_main_content,
     fetch_dynamic_page,
 )
@@ -60,6 +61,48 @@ def test_blocked_resource_types_contains_image():
 # ---------------------------------------------------------------------------
 # Test 2: extract_main_content strips scripts and keeps article body
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1/",
+        "http://localhost:8080/",
+        "http://10.0.0.1/",
+        "http://192.168.1.1/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::1]/",
+        "ftp://example.com/file",
+        "file:///etc/passwd",
+        "http:///no-host",
+    ],
+)
+def test_is_safe_url_blocks_unsafe_targets(url):
+    assert _is_safe_url(url) is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/path",
+        "http://news.ycombinator.com/item?id=1",
+        "https://8.8.8.8/",
+    ],
+)
+def test_is_safe_url_allows_public_targets(url):
+    assert _is_safe_url(url) is True
+
+
+def test_extract_main_content_handles_empty_html():
+    title, body = extract_main_content("")
+    assert title == ""
+    assert body == ""
+
+
+def test_extract_main_content_handles_garbage_html():
+    title, body = extract_main_content("<<not really html<<<")
+    assert isinstance(title, str)
+    assert isinstance(body, str)
+
 
 def test_extract_main_content_returns_title_and_body():
     html = (
