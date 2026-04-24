@@ -378,6 +378,103 @@ async def test_fetch_dynamic_page_returns_none_after_max_retries(_public_dns):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_route_handler_aborts_unsafe_intermediate_redirect(_public_dns):
+    """Intermediate redirect hops must be aborted by the route handler,
+    even if the terminal URL is safe."""
+    from argos.crawler import dynamic_fetcher as df
+
+    sample_html = (FIXTURES_DIR / "sample_article.html").read_text()
+    mock_pw_cm, mock_page = _make_playwright_mock(sample_html)
+
+    captured = {"handler": None}
+
+    async def _capture_route(_pattern, handler):
+        captured["handler"] = handler
+
+    mock_page.route.side_effect = _capture_route
+
+    aborts: list[str] = []
+    continues: list[str] = []
+
+    async def _goto(*_args, **_kwargs):
+        # Simulate Playwright invoking the route handler for a redirect to
+        # a link-local SSRF target (AWS metadata service).
+        unsafe_request = MagicMock()
+        unsafe_request.resource_type = "document"
+        unsafe_request.url = "http://169.254.169.254/latest/meta-data/"
+        unsafe_request.is_navigation_request = MagicMock(return_value=True)
+
+        unsafe_route = MagicMock()
+        unsafe_route.request = unsafe_request
+
+        async def _abort():
+            aborts.append(unsafe_request.url)
+
+        async def _continue():
+            continues.append(unsafe_request.url)
+
+        unsafe_route.abort = _abort
+        unsafe_route.continue_ = _continue
+
+        await captured["handler"](unsafe_route)
+
+    mock_page.goto.side_effect = _goto
+
+    with patch("argos.crawler.dynamic_fetcher.async_playwright", return_value=mock_pw_cm):
+        await df.fetch_dynamic_page("https://example.com/article")
+
+    assert aborts == ["http://169.254.169.254/latest/meta-data/"]
+    assert continues == []
+
+
+@pytest.mark.asyncio
+async def test_route_handler_continues_safe_navigation(_public_dns):
+    """Safe navigation requests must pass through the route handler unblocked."""
+    from argos.crawler import dynamic_fetcher as df
+
+    sample_html = (FIXTURES_DIR / "sample_article.html").read_text()
+    mock_pw_cm, mock_page = _make_playwright_mock(sample_html)
+
+    captured = {"handler": None}
+
+    async def _capture_route(_pattern, handler):
+        captured["handler"] = handler
+
+    mock_page.route.side_effect = _capture_route
+
+    aborts: list[str] = []
+    continues: list[str] = []
+
+    async def _goto(*_args, **_kwargs):
+        safe_request = MagicMock()
+        safe_request.resource_type = "document"
+        safe_request.url = "https://example.com/article"
+        safe_request.is_navigation_request = MagicMock(return_value=True)
+
+        safe_route = MagicMock()
+        safe_route.request = safe_request
+
+        async def _abort():
+            aborts.append(safe_request.url)
+
+        async def _continue():
+            continues.append(safe_request.url)
+
+        safe_route.abort = _abort
+        safe_route.continue_ = _continue
+
+        await captured["handler"](safe_route)
+
+    mock_page.goto.side_effect = _goto
+
+    with patch("argos.crawler.dynamic_fetcher.async_playwright", return_value=mock_pw_cm):
+        await df.fetch_dynamic_page("https://example.com/article")
+
+    assert continues == ["https://example.com/article"]
+    assert aborts == []
+
+
+@pytest.mark.asyncio
 async def test_fetch_dynamic_page_blocks_unsafe_redirect(_public_dns):
     """If page.goto redirects to an unsafe host, fetch must return None."""
     from argos.crawler import dynamic_fetcher as df
