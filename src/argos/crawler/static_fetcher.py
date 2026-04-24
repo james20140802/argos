@@ -11,6 +11,36 @@ from argos.crawler.user_agents import random_user_agent
 from argos.models.tech_item import TechItem
 
 _HN_CONCURRENCY = 8
+_RETRY_MAX_ATTEMPTS = 3
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+async def _get_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    max_attempts: int = _RETRY_MAX_ATTEMPTS,
+) -> httpx.Response:
+    for attempt in range(max_attempts):
+        try:
+            response = await client.get(
+                url,
+                headers={"User-Agent": random_user_agent()},
+            )
+        except httpx.HTTPError:
+            if attempt + 1 >= max_attempts:
+                raise
+            await asyncio.sleep(2**attempt)
+            continue
+        if (
+            response.status_code in _RETRYABLE_STATUS_CODES
+            and attempt + 1 < max_attempts
+        ):
+            await asyncio.sleep(2**attempt)
+            continue
+        response.raise_for_status()
+        return response
+    raise httpx.HTTPError(f"exhausted retries for {url}")
 
 
 async def fetch_github_trending(
@@ -18,8 +48,7 @@ async def fetch_github_trending(
     language: str | None = None,
 ) -> list[dict]:
     url = f"https://github.com/trending/{language}" if language else "https://github.com/trending"
-    response = await client.get(url, headers={"User-Agent": random_user_agent()})
-    response.raise_for_status()
+    response = await _get_with_retry(client, url)
 
     soup = BeautifulSoup(response.text, "html.parser")
     items: list[dict] = []
@@ -45,11 +74,10 @@ async def fetch_hackernews_top(
     client: httpx.AsyncClient,
     limit: int = 30,
 ) -> list[dict]:
-    response = await client.get(
+    response = await _get_with_retry(
+        client,
         "https://hacker-news.firebaseio.com/v0/topstories.json",
-        headers={"User-Agent": random_user_agent()},
     )
-    response.raise_for_status()
     try:
         payload = response.json()
     except ValueError:

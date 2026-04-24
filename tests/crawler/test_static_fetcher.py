@@ -123,6 +123,56 @@ async def test_fetch_hackernews_top_returns_empty_on_invalid_topstories_json() -
     assert result == []
 
 
+async def test_fetch_github_trending_retries_on_transient_5xx(monkeypatch) -> None:
+    """Static fetcher must retry on 503 before giving up."""
+    from unittest.mock import AsyncMock
+
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr("argos.crawler.static_fetcher.asyncio.sleep", sleep_mock)
+
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            return httpx.Response(503, text="unavailable")
+        return httpx.Response(200, text=_github_trending_html())
+
+    with respx.mock:
+        respx.get("https://github.com/trending").mock(side_effect=handler)
+        async with httpx.AsyncClient() as client:
+            items = await fetch_github_trending(client)
+
+    assert call_count["n"] == 3
+    assert len(items) == 2
+    assert sleep_mock.await_count >= 1
+
+
+async def test_fetch_github_trending_gives_up_after_max_attempts(monkeypatch) -> None:
+    """After exhausting retries, a 503 must raise rather than silently succeed."""
+    from unittest.mock import AsyncMock
+
+    import pytest
+
+    monkeypatch.setattr(
+        "argos.crawler.static_fetcher.asyncio.sleep", AsyncMock()
+    )
+
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(503, text="unavailable")
+
+    with respx.mock:
+        respx.get("https://github.com/trending").mock(side_effect=handler)
+        async with httpx.AsyncClient() as client:
+            with pytest.raises(httpx.HTTPStatusError):
+                await fetch_github_trending(client)
+
+    assert call_count["n"] == 3
+
+
 async def test_filter_duplicate_urls_removes_existing() -> None:
     existing_url = "https://existing.com/x"
     new_url = "https://new.com/y"
