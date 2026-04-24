@@ -21,6 +21,7 @@ _ROBOTS_USER_AGENT = "argos-crawler"
 _ROBOTS_FETCH_TIMEOUT = 10.0
 
 _robots_cache: dict[str, urllib.robotparser.RobotFileParser] = {}
+_robots_origin_locks: dict[str, asyncio.Lock] = {}
 _robots_lock = asyncio.Lock()
 
 
@@ -106,11 +107,18 @@ async def _is_robots_allowed(url: str) -> bool:
         return False
     origin = f"{parts.scheme}://{parts.netloc}"
 
-    async with _robots_lock:
-        parser = _robots_cache.get(origin)
-        if parser is None:
-            parser = await _fetch_robots_parser(origin)
-            _robots_cache[origin] = parser
+    parser = _robots_cache.get(origin)
+    if parser is None:
+        async with _robots_lock:
+            origin_lock = _robots_origin_locks.get(origin)
+            if origin_lock is None:
+                origin_lock = asyncio.Lock()
+                _robots_origin_locks[origin] = origin_lock
+        async with origin_lock:
+            parser = _robots_cache.get(origin)
+            if parser is None:
+                parser = await _fetch_robots_parser(origin)
+                _robots_cache[origin] = parser
 
     try:
         return parser.can_fetch(_ROBOTS_USER_AGENT, url)
