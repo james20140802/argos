@@ -204,14 +204,14 @@ async def _load_page_html(url: str, timeout_ms: int) -> tuple[str, str]:
                         if request.resource_type in BLOCKED_RESOURCE_TYPES:
                             await route.abort()
                             return
-                        if request.is_navigation_request():
-                            if not await _is_safe_url(request.url):
-                                logger.warning(
-                                    "SSRF redirect blocked mid-flight: %s",
-                                    request.url,
-                                )
-                                await route.abort()
-                                return
+                        if not await _is_safe_url(request.url):
+                            logger.warning(
+                                "SSRF request blocked mid-flight: %s (resource_type=%s)",
+                                request.url,
+                                request.resource_type,
+                            )
+                            await route.abort()
+                            return
                         await route.continue_()
 
                     await page.route("**/*", _route_handler)

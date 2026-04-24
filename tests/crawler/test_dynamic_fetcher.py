@@ -432,6 +432,55 @@ async def test_route_handler_aborts_unsafe_intermediate_redirect(_public_dns):
 
 
 @pytest.mark.asyncio
+async def test_route_handler_aborts_unsafe_non_navigation_request(_public_dns):
+    """Non-navigation subresources (xhr/fetch/script) targeting SSRF hosts
+    must be aborted too — not only navigation requests."""
+    from argos.crawler import dynamic_fetcher as df
+
+    sample_html = (FIXTURES_DIR / "sample_article.html").read_text()
+    mock_pw_cm, mock_page = _make_playwright_mock(sample_html)
+
+    captured = {"handler": None}
+
+    async def _capture_route(_pattern, handler):
+        captured["handler"] = handler
+
+    mock_page.route.side_effect = _capture_route
+
+    aborts: list[str] = []
+    continues: list[str] = []
+
+    async def _goto(*_args, **_kwargs):
+        # A cloud metadata endpoint fetched via xhr, NOT navigation.
+        xhr_request = MagicMock()
+        xhr_request.resource_type = "xhr"
+        xhr_request.url = "http://169.254.169.254/latest/meta-data/"
+        xhr_request.is_navigation_request = MagicMock(return_value=False)
+
+        xhr_route = MagicMock()
+        xhr_route.request = xhr_request
+
+        async def _abort():
+            aborts.append(xhr_request.url)
+
+        async def _continue():
+            continues.append(xhr_request.url)
+
+        xhr_route.abort = _abort
+        xhr_route.continue_ = _continue
+
+        await captured["handler"](xhr_route)
+
+    mock_page.goto.side_effect = _goto
+
+    with patch("argos.crawler.dynamic_fetcher.async_playwright", return_value=mock_pw_cm):
+        await df.fetch_dynamic_page("https://example.com/article")
+
+    assert aborts == ["http://169.254.169.254/latest/meta-data/"]
+    assert continues == []
+
+
+@pytest.mark.asyncio
 async def test_route_handler_continues_safe_navigation(_public_dns):
     """Safe navigation requests must pass through the route handler unblocked."""
     from argos.crawler import dynamic_fetcher as df
