@@ -31,14 +31,7 @@ _robots_lock = asyncio.Lock()
 
 
 def _is_unsafe_ip(ip: ipaddress._BaseAddress) -> bool:
-    return (
-        ip.is_loopback
-        or ip.is_private
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    )
+    return not ip.is_global
 
 
 async def _resolve_hostname(host: str) -> list[ipaddress._BaseAddress]:

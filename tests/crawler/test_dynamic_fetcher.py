@@ -99,6 +99,10 @@ def test_blocked_resource_types_contains_image():
         "ftp://example.com/file",
         "file:///etc/passwd",
         "http:///no-host",
+        # RFC 6598 CGNAT range (100.64.0.0/10): neither private nor reserved in
+        # Python's ipaddress module, but still non-global — must be blocked as SSRF.
+        "http://100.64.0.1/",
+        "http://100.127.255.254/",
     ],
 )
 @pytest.mark.asyncio
