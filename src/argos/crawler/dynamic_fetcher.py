@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import socket
 import urllib.robotparser
 from urllib.parse import urlsplit
@@ -14,6 +15,8 @@ from playwright.async_api import async_playwright
 from readability import Document
 
 from argos.crawler.user_agents import random_user_agent
+
+logger = logging.getLogger(__name__)
 
 BLOCKED_RESOURCE_TYPES = {"image", "stylesheet", "font", "media"}
 _ALLOWED_SCHEMES = {"http", "https"}
@@ -169,7 +172,14 @@ async def fetch_dynamic_page(
     attempt = 0
     while attempt <= max_retries:
         try:
-            html = await _load_page_html(url, timeout_ms)
+            html, final_url = await _load_page_html(url, timeout_ms)
+            if final_url != url:
+                if not await _is_safe_url(final_url):
+                    logger.warning("SSRF redirect blocked: %s -> %s (failed _is_safe_url)", url, final_url)
+                    return None
+                if not await _is_robots_allowed(final_url):
+                    logger.warning("SSRF redirect blocked: %s -> %s (failed _is_robots_allowed)", url, final_url)
+                    return None
             title, raw_content = extract_main_content(html)
             return {"title": title, "source_url": url, "raw_content": raw_content}
         except (PlaywrightTimeoutError, PlaywrightError):
@@ -179,7 +189,7 @@ async def fetch_dynamic_page(
             await asyncio.sleep(2**attempt)
 
 
-async def _load_page_html(url: str, timeout_ms: int) -> str:
+async def _load_page_html(url: str, timeout_ms: int) -> tuple[str, str]:
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         try:
@@ -195,7 +205,9 @@ async def _load_page_html(url: str, timeout_ms: int) -> str:
 
                     await page.route("**/*", _block_resources)
                     await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                    return await page.content()
+                    final_url = page.url
+                    html = await page.content()
+                    return html, final_url
                 finally:
                     await page.close()
             finally:

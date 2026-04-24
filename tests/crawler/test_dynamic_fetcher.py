@@ -39,13 +39,14 @@ def _public_dns(monkeypatch):
     )
 
 
-def _make_playwright_mock(page_html: str):
+def _make_playwright_mock(page_html: str, page_url: str = "https://example.com/article"):
     """Build a nested AsyncMock chain mimicking async_playwright context manager."""
     mock_route = MagicMock()
     mock_route.request.resource_type = "image"
 
     mock_page = AsyncMock()
     mock_page.content.return_value = page_html
+    mock_page.url = page_url
     mock_page.route = AsyncMock()
     mock_page.goto = AsyncMock()
     mock_page.close = AsyncMock()
@@ -370,3 +371,35 @@ async def test_fetch_dynamic_page_returns_none_after_max_retries(_public_dns):
 
     assert result is None
     assert call_count == 4  # initial attempt + 3 retries
+
+
+# ---------------------------------------------------------------------------
+# Test 6: SSRF redirect bypass — final URL re-validation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fetch_dynamic_page_blocks_unsafe_redirect(_public_dns):
+    """If page.goto redirects to an unsafe host, fetch must return None."""
+    from argos.crawler import dynamic_fetcher as df
+
+    original_url = "https://example.com/article"
+    # Simulate a redirect to an internal IP (SSRF target)
+    redirected_url = "http://169.254.169.254/latest/meta-data/"
+
+    sample_html = (FIXTURES_DIR / "sample_article.html").read_text()
+    mock_pw_cm, mock_page = _make_playwright_mock(sample_html, page_url=redirected_url)
+
+    post_redirect_checked = {"fired": False}
+    original_is_safe_url = df._is_safe_url
+
+    async def _tracking_is_safe_url(url: str) -> bool:
+        if url == redirected_url:
+            post_redirect_checked["fired"] = True
+        return await original_is_safe_url(url)
+
+    with patch("argos.crawler.dynamic_fetcher.async_playwright", return_value=mock_pw_cm):
+        with patch("argos.crawler.dynamic_fetcher._is_safe_url", side_effect=_tracking_is_safe_url):
+            result = await df.fetch_dynamic_page(original_url)
+
+    assert result is None
+    assert post_redirect_checked["fired"], "Post-redirect _is_safe_url check was not called"
