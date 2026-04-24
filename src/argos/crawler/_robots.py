@@ -32,6 +32,8 @@ async def _fetch_robots_parser(origin: str) -> urllib.robotparser.RobotFileParse
 
     if 200 <= response.status_code < 300:
         parser.parse(response.text.splitlines())
+    elif response.status_code in (401, 403):
+        parser.disallow_all = True
     else:
         parser.parse([])
     return parser
