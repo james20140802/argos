@@ -126,7 +126,7 @@ async def fetch_dynamic_page(
                     logger.warning("SSRF redirect blocked: %s -> %s (failed _is_robots_allowed)", url, final_url)
                     return None
             title, raw_content = extract_main_content(html)
-            return {"title": title, "source_url": url, "raw_content": raw_content}
+            return {"title": title, "source_url": final_url, "raw_content": raw_content}
         except PlaywrightTimeoutError as exc:
             attempt += 1
             if attempt > max_retries:

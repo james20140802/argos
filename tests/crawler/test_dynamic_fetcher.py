@@ -528,6 +528,25 @@ async def test_route_handler_continues_safe_navigation(_public_dns):
 
 
 @pytest.mark.asyncio
+async def test_fetch_dynamic_page_uses_redirected_final_url_as_source(_public_dns):
+    """When a wrapper URL redirects to a canonical URL, source_url must be the
+    final URL so dedup collapses wrapper duplicates against static sources."""
+    from argos.crawler import dynamic_fetcher as df
+
+    wrapper_url = "https://t.co/abcd"
+    canonical_url = "https://example.com/article"
+
+    sample_html = (FIXTURES_DIR / "sample_article.html").read_text()
+    mock_pw_cm, _ = _make_playwright_mock(sample_html, page_url=canonical_url)
+
+    with patch("argos.crawler.dynamic_fetcher.async_playwright", return_value=mock_pw_cm):
+        result = await df.fetch_dynamic_page(wrapper_url)
+
+    assert result is not None
+    assert result["source_url"] == canonical_url
+
+
+@pytest.mark.asyncio
 async def test_fetch_dynamic_page_blocks_unsafe_redirect(_public_dns):
     """If page.goto redirects to an unsafe host, fetch must return None."""
     from argos.crawler import dynamic_fetcher as df
