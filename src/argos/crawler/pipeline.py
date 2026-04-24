@@ -28,7 +28,9 @@ async def run_static_pipeline(session: AsyncSession) -> list[dict]:
 
     combined: list[dict] = []
     for source, result in zip(("github_trending", "hackernews"), results, strict=True):
-        if isinstance(result, BaseException):
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, Exception):
             logger.warning("static source %s failed: %r", source, result)
             continue
         combined.extend(result)
@@ -57,9 +59,11 @@ async def run_full_crawl(
     )
     dynamic_items: list[dict] = []
     for url, result in zip(dynamic_urls, dynamic_results, strict=True):
+        if isinstance(result, asyncio.CancelledError):
+            raise result
         if isinstance(result, dict):
             dynamic_items.append(result)
-        elif isinstance(result, BaseException):
+        elif isinstance(result, Exception):
             logger.warning("dynamic fetch failed for %s: %r", url, result)
 
     return [*static_items, *dynamic_items]

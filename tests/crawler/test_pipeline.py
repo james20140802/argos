@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -94,3 +95,33 @@ async def test_run_full_crawl_appends_dynamic_results(patched_static, mocker) ->
     gh, hn = patched_static
     assert len(result) == len(gh) + len(hn) + 1
     assert result[-1] == dynamic_item
+
+
+async def test_run_static_pipeline_reraises_cancelled_error(mocker) -> None:
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_github_trending",
+        new=AsyncMock(side_effect=asyncio.CancelledError()),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_hackernews_top",
+        new=AsyncMock(return_value=[]),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.filter_duplicate_urls",
+        new=AsyncMock(side_effect=lambda _session, items: items),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await pipeline.run_static_pipeline(AsyncMock())
+
+
+async def test_run_full_crawl_reraises_cancelled_error_from_dynamic(patched_static, mocker) -> None:
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_dynamic_page",
+        new=AsyncMock(side_effect=asyncio.CancelledError()),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await pipeline.run_full_crawl(
+            AsyncMock(), dynamic_urls=["https://example.com/x"]
+        )
