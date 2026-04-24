@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,7 +20,7 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 def _public_dns(monkeypatch):
     """Force hostname resolution to a fixed public IP so SSRF checks stay hermetic."""
 
-    def _fake_resolve(host: str):
+    async def _fake_resolve(host: str):
         import ipaddress as _ipaddress
 
         return [_ipaddress.ip_address("93.184.216.34")]
@@ -99,8 +100,9 @@ def test_blocked_resource_types_contains_image():
         "http:///no-host",
     ],
 )
-def test_is_safe_url_blocks_unsafe_targets(url):
-    assert _is_safe_url(url) is False
+@pytest.mark.asyncio
+async def test_is_safe_url_blocks_unsafe_targets(url):
+    assert await _is_safe_url(url) is False
 
 
 @pytest.mark.parametrize(
@@ -110,12 +112,14 @@ def test_is_safe_url_blocks_unsafe_targets(url):
         "http://news.ycombinator.com/item?id=1",
     ],
 )
-def test_is_safe_url_allows_public_targets(url, _public_dns):
-    assert _is_safe_url(url) is True
+@pytest.mark.asyncio
+async def test_is_safe_url_allows_public_targets(url, _public_dns):
+    assert await _is_safe_url(url) is True
 
 
-def test_is_safe_url_allows_public_literal_ip():
-    assert _is_safe_url("https://8.8.8.8/") is True
+@pytest.mark.asyncio
+async def test_is_safe_url_allows_public_literal_ip():
+    assert await _is_safe_url("https://8.8.8.8/") is True
 
 
 @pytest.mark.parametrize(
@@ -126,30 +130,36 @@ def test_is_safe_url_allows_public_literal_ip():
         "http://metadata.internal/",
     ],
 )
-def test_is_safe_url_blocks_special_use_suffixes(url):
-    assert _is_safe_url(url) is False
+@pytest.mark.asyncio
+async def test_is_safe_url_blocks_special_use_suffixes(url):
+    assert await _is_safe_url(url) is False
 
 
-def test_is_safe_url_blocks_dns_rebinding(monkeypatch):
+@pytest.mark.asyncio
+async def test_is_safe_url_blocks_dns_rebinding(monkeypatch):
     """Hostnames that resolve to private IPs must be rejected."""
     import ipaddress as _ipaddress
 
-    def _rebind(host: str):
+    async def _rebind(host: str):
         return [_ipaddress.ip_address("127.0.0.1")]
 
     monkeypatch.setattr(
         "argos.crawler.dynamic_fetcher._resolve_hostname",
         _rebind,
     )
-    assert _is_safe_url("http://attacker.example.com/") is False
+    assert await _is_safe_url("http://attacker.example.com/") is False
 
 
-def test_is_safe_url_blocks_unresolvable_host(monkeypatch):
+@pytest.mark.asyncio
+async def test_is_safe_url_blocks_unresolvable_host(monkeypatch):
+    async def _empty(host: str):
+        return []
+
     monkeypatch.setattr(
         "argos.crawler.dynamic_fetcher._resolve_hostname",
-        lambda host: [],
+        _empty,
     )
-    assert _is_safe_url("http://nonexistent.example.invalid/") is False
+    assert await _is_safe_url("http://nonexistent.example.invalid/") is False
 
 
 @pytest.mark.parametrize(
@@ -159,8 +169,9 @@ def test_is_safe_url_blocks_unresolvable_host(monkeypatch):
         "http://[bad:addr/",
     ],
 )
-def test_is_safe_url_rejects_malformed_urls(url):
-    assert _is_safe_url(url) is False
+@pytest.mark.asyncio
+async def test_is_safe_url_rejects_malformed_urls(url):
+    assert await _is_safe_url(url) is False
 
 
 def test_extract_main_content_handles_empty_html():
@@ -238,25 +249,29 @@ async def test_fetch_dynamic_page_retries_on_timeout(_public_dns):
 # Test 5: returns None after exhausting max_retries
 # ---------------------------------------------------------------------------
 
-def test_resolve_hostname_handles_unicode_error(monkeypatch):
+@pytest.mark.asyncio
+async def test_resolve_hostname_handles_unicode_error(monkeypatch):
     """Malformed IDNA hostnames must not leak UnicodeError."""
     from argos.crawler.dynamic_fetcher import _resolve_hostname
 
-    def _raise_unicode(*args, **kwargs):
+    async def _raise_unicode(*args, **kwargs):
         raise UnicodeError("IDNA label too long")
 
-    monkeypatch.setattr("socket.getaddrinfo", _raise_unicode)
-    assert _resolve_hostname("a" * 1000 + ".example.com") == []
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "getaddrinfo", _raise_unicode)
+    assert await _resolve_hostname("a" * 1000 + ".example.com") == []
 
 
-def test_is_safe_url_handles_idna_unicode_error(monkeypatch):
+@pytest.mark.asyncio
+async def test_is_safe_url_handles_idna_unicode_error(monkeypatch):
     """_is_safe_url must fail closed when resolution raises UnicodeError."""
 
-    def _raise_unicode(*args, **kwargs):
+    async def _raise_unicode(*args, **kwargs):
         raise UnicodeError("IDNA label too long")
 
-    monkeypatch.setattr("socket.getaddrinfo", _raise_unicode)
-    assert _is_safe_url("http://" + "x" * 512 + ".example.com/") is False
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "getaddrinfo", _raise_unicode)
+    assert await _is_safe_url("http://" + "x" * 512 + ".example.com/") is False
 
 
 @pytest.mark.asyncio
@@ -302,7 +317,7 @@ async def test_fetch_dynamic_page_skips_when_robots_disallows(monkeypatch):
     """fetch_dynamic_page must return None without loading when robots.txt blocks."""
     from argos.crawler import dynamic_fetcher as df
 
-    def _fake_resolve(host: str):
+    async def _fake_resolve(host: str):
         import ipaddress as _ipaddress
 
         return [_ipaddress.ip_address("93.184.216.34")]

@@ -35,9 +35,10 @@ def _is_unsafe_ip(ip: ipaddress._BaseAddress) -> bool:
     )
 
 
-def _resolve_hostname(host: str) -> list[ipaddress._BaseAddress]:
+async def _resolve_hostname(host: str) -> list[ipaddress._BaseAddress]:
+    loop = asyncio.get_running_loop()
     try:
-        infos = socket.getaddrinfo(host, None)
+        infos = await loop.getaddrinfo(host, None)
     except (socket.gaierror, UnicodeError):
         return []
     addresses: list[ipaddress._BaseAddress] = []
@@ -52,7 +53,7 @@ def _resolve_hostname(host: str) -> list[ipaddress._BaseAddress]:
     return addresses
 
 
-def _is_safe_url(url: str) -> bool:
+async def _is_safe_url(url: str) -> bool:
     try:
         parts = urlsplit(url)
     except ValueError:
@@ -73,7 +74,7 @@ def _is_safe_url(url: str) -> bool:
         literal_ip = None
     if literal_ip is not None:
         return not _is_unsafe_ip(literal_ip)
-    resolved = _resolve_hostname(host_lower)
+    resolved = await _resolve_hostname(host_lower)
     if not resolved:
         return False
     return not any(_is_unsafe_ip(ip) for ip in resolved)
@@ -150,7 +151,7 @@ async def fetch_dynamic_page(
     max_retries: int = 3,
     timeout_ms: int = 15000,
 ) -> dict | None:
-    if not _is_safe_url(url):
+    if not await _is_safe_url(url):
         return None
     if not await _is_robots_allowed(url):
         return None
