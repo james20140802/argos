@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
 from argos.crawler.user_agents import random_user_agent
 from argos.models.tech_item import TechItem
 
@@ -21,11 +22,14 @@ async def _get_with_retry(
     *,
     max_attempts: int = _RETRY_MAX_ATTEMPTS,
 ) -> httpx.Response:
+    ua = random_user_agent()
+    if not await is_robots_allowed(url, ua):
+        raise RobotsDisallowed(url)
     for attempt in range(max_attempts):
         try:
             response = await client.get(
                 url,
-                headers={"User-Agent": random_user_agent()},
+                headers={"User-Agent": ua},
             )
         except httpx.HTTPError:
             if attempt + 1 >= max_attempts:

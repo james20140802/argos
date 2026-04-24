@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 import respx
 
+from argos.crawler._robots import RobotsDisallowed
 from argos.crawler.user_agents import USER_AGENTS, random_user_agent
 from argos.crawler.static_fetcher import (
     fetch_github_trending,
@@ -192,3 +194,20 @@ async def test_filter_duplicate_urls_removes_existing() -> None:
 
     assert len(result) == 1
     assert result[0]["source_url"] == new_url
+
+
+async def test_get_with_retry_raises_when_robots_disallows(monkeypatch) -> None:
+    """No content GET is issued when robots.txt disallows the URL."""
+    disallowed_url = "https://github.com/trending"
+
+    monkeypatch.setattr(
+        "argos.crawler.static_fetcher.is_robots_allowed",
+        AsyncMock(return_value=False),
+    )
+
+    with respx.mock:
+        # If a GET were made, respx would raise an error — so the absence of
+        # any route registration proves no content request was issued.
+        async with httpx.AsyncClient() as client:
+            with pytest.raises(RobotsDisallowed):
+                await fetch_github_trending(client)
