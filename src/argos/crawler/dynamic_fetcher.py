@@ -182,10 +182,19 @@ async def fetch_dynamic_page(
                     return None
             title, raw_content = extract_main_content(html)
             return {"title": title, "source_url": url, "raw_content": raw_content}
-        except (PlaywrightTimeoutError, PlaywrightError):
+        except PlaywrightTimeoutError as exc:
             attempt += 1
             if attempt > max_retries:
+                logger.error("fetch_dynamic_page timed out after %d attempts for %s", max_retries + 1, url, exc_info=True)
                 return None
+            logger.warning("fetch_dynamic_page timeout (attempt %d/%d) for %s: %r", attempt, max_retries + 1, url, exc)
+            await asyncio.sleep(2**attempt)
+        except PlaywrightError as exc:
+            attempt += 1
+            if attempt > max_retries:
+                logger.error("fetch_dynamic_page browser error after %d attempts for %s", max_retries + 1, url, exc_info=True)
+                return None
+            logger.warning("fetch_dynamic_page browser error (attempt %d/%d) for %s: %r", attempt, max_retries + 1, url, exc)
             await asyncio.sleep(2**attempt)
 
 
