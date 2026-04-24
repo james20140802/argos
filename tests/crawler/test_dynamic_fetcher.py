@@ -15,6 +15,21 @@ from argos.crawler.dynamic_fetcher import (
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture
+def _public_dns(monkeypatch):
+    """Force hostname resolution to a fixed public IP so SSRF checks stay hermetic."""
+
+    def _fake_resolve(host: str):
+        import ipaddress as _ipaddress
+
+        return [_ipaddress.ip_address("93.184.216.34")]
+
+    monkeypatch.setattr(
+        "argos.crawler.dynamic_fetcher._resolve_hostname",
+        _fake_resolve,
+    )
+
+
 def _make_playwright_mock(page_html: str):
     """Build a nested AsyncMock chain mimicking async_playwright context manager."""
     mock_route = MagicMock()
@@ -85,11 +100,59 @@ def test_is_safe_url_blocks_unsafe_targets(url):
     [
         "https://example.com/path",
         "http://news.ycombinator.com/item?id=1",
-        "https://8.8.8.8/",
     ],
 )
-def test_is_safe_url_allows_public_targets(url):
+def test_is_safe_url_allows_public_targets(url, _public_dns):
     assert _is_safe_url(url) is True
+
+
+def test_is_safe_url_allows_public_literal_ip():
+    assert _is_safe_url("https://8.8.8.8/") is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://foo.localhost/",
+        "http://service.local/",
+        "http://metadata.internal/",
+    ],
+)
+def test_is_safe_url_blocks_special_use_suffixes(url):
+    assert _is_safe_url(url) is False
+
+
+def test_is_safe_url_blocks_dns_rebinding(monkeypatch):
+    """Hostnames that resolve to private IPs must be rejected."""
+    import ipaddress as _ipaddress
+
+    def _rebind(host: str):
+        return [_ipaddress.ip_address("127.0.0.1")]
+
+    monkeypatch.setattr(
+        "argos.crawler.dynamic_fetcher._resolve_hostname",
+        _rebind,
+    )
+    assert _is_safe_url("http://attacker.example.com/") is False
+
+
+def test_is_safe_url_blocks_unresolvable_host(monkeypatch):
+    monkeypatch.setattr(
+        "argos.crawler.dynamic_fetcher._resolve_hostname",
+        lambda host: [],
+    )
+    assert _is_safe_url("http://nonexistent.example.invalid/") is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[::1/broken",  # malformed IPv6 bracket syntax
+        "http://[bad:addr/",
+    ],
+)
+def test_is_safe_url_rejects_malformed_urls(url):
+    assert _is_safe_url(url) is False
 
 
 def test_extract_main_content_handles_empty_html():
@@ -121,7 +184,7 @@ def test_extract_main_content_returns_title_and_body():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_fetch_dynamic_page_returns_dict_on_success():
+async def test_fetch_dynamic_page_returns_dict_on_success(_public_dns):
     sample_html = (FIXTURES_DIR / "sample_article.html").read_text()
     mock_pw_cm, _ = _make_playwright_mock(sample_html)
 
@@ -139,7 +202,7 @@ async def test_fetch_dynamic_page_returns_dict_on_success():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_fetch_dynamic_page_retries_on_timeout():
+async def test_fetch_dynamic_page_retries_on_timeout(_public_dns):
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
     sample_html = (FIXTURES_DIR / "sample_article.html").read_text()
@@ -168,7 +231,7 @@ async def test_fetch_dynamic_page_retries_on_timeout():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_fetch_dynamic_page_returns_none_after_max_retries():
+async def test_fetch_dynamic_page_returns_none_after_max_retries(_public_dns):
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
     sample_html = (FIXTURES_DIR / "sample_article.html").read_text()

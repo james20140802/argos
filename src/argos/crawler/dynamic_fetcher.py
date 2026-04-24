@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import socket
 from urllib.parse import urlsplit
 
 from lxml import etree
@@ -13,22 +14,11 @@ from readability import Document
 BLOCKED_RESOURCE_TYPES = {"image", "stylesheet", "font", "media"}
 _ALLOWED_SCHEMES = {"http", "https"}
 _BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
+_BLOCKED_SUFFIXES = (".localhost", ".local", ".internal")
 
 
-def _is_safe_url(url: str) -> bool:
-    parts = urlsplit(url)
-    if parts.scheme not in _ALLOWED_SCHEMES:
-        return False
-    host = parts.hostname
-    if not host:
-        return False
-    if host.lower() in _BLOCKED_HOSTNAMES:
-        return False
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return True
-    return not (
+def _is_unsafe_ip(ip: ipaddress._BaseAddress) -> bool:
+    return (
         ip.is_loopback
         or ip.is_private
         or ip.is_link_local
@@ -36,6 +26,50 @@ def _is_safe_url(url: str) -> bool:
         or ip.is_reserved
         or ip.is_unspecified
     )
+
+
+def _resolve_hostname(host: str) -> list[ipaddress._BaseAddress]:
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return []
+    addresses: list[ipaddress._BaseAddress] = []
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        try:
+            addresses.append(ipaddress.ip_address(sockaddr[0]))
+        except ValueError:
+            continue
+    return addresses
+
+
+def _is_safe_url(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme not in _ALLOWED_SCHEMES:
+        return False
+    host = parts.hostname
+    if not host:
+        return False
+    host_lower = host.lower().rstrip(".")
+    if host_lower in _BLOCKED_HOSTNAMES:
+        return False
+    if any(host_lower.endswith(suffix) for suffix in _BLOCKED_SUFFIXES):
+        return False
+    try:
+        literal_ip = ipaddress.ip_address(host_lower)
+    except ValueError:
+        literal_ip = None
+    if literal_ip is not None:
+        return not _is_unsafe_ip(literal_ip)
+    resolved = _resolve_hostname(host_lower)
+    if not resolved:
+        return False
+    return not any(_is_unsafe_ip(ip) for ip in resolved)
 
 
 def extract_main_content(html: str) -> tuple[str, str]:
