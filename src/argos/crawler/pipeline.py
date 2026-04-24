@@ -66,4 +66,4 @@ async def run_full_crawl(
         elif isinstance(result, Exception):
             logger.warning("dynamic fetch failed for %s: %r", url, result)
 
-    return [*static_items, *dynamic_items]
+    return await filter_duplicate_urls(session, [*static_items, *dynamic_items])

@@ -97,6 +97,37 @@ async def test_run_full_crawl_appends_dynamic_results(patched_static, mocker) ->
     assert result[-1] == dynamic_item
 
 
+async def test_run_full_crawl_deduplicates_dynamic_against_static(patched_static, mocker) -> None:
+    gh, hn = patched_static
+    # dynamic URL overlaps an already-returned static URL
+    duplicate_url = gh[0]["source_url"]
+    duplicate_item = {"title": "dup", "source_url": duplicate_url, "raw_content": "z"}
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_dynamic_page",
+        new=AsyncMock(return_value=duplicate_item),
+    )
+    # Override filter_duplicate_urls to use real dedup logic (in-memory)
+    async def real_dedup(_session, items):
+        seen: set[str] = set()
+        out = []
+        for item in items:
+            if item["source_url"] not in seen:
+                seen.add(item["source_url"])
+                out.append(item)
+        return out
+
+    mocker.patch(
+        "argos.crawler.pipeline.filter_duplicate_urls",
+        new=AsyncMock(side_effect=real_dedup),
+    )
+    session = AsyncMock()
+
+    result = await pipeline.run_full_crawl(session, dynamic_urls=[duplicate_url])
+
+    urls = [item["source_url"] for item in result]
+    assert urls.count(duplicate_url) == 1
+
+
 async def test_run_static_pipeline_reraises_cancelled_error(mocker) -> None:
     mocker.patch(
         "argos.crawler.pipeline.fetch_github_trending",
