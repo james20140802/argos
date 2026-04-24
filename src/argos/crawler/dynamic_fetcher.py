@@ -13,6 +13,8 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from readability import Document
 
+from argos.crawler.user_agents import random_user_agent
+
 BLOCKED_RESOURCE_TYPES = {"image", "stylesheet", "font", "media"}
 _ALLOWED_SCHEMES = {"http", "https"}
 _BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
@@ -181,7 +183,7 @@ async def _load_page_html(url: str, timeout_ms: int) -> str:
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         try:
-            context = await browser.new_context()
+            context = await browser.new_context(user_agent=random_user_agent())
             try:
                 page = await context.new_page()
                 try:
