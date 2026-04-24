@@ -91,11 +91,10 @@ async def fetch_hackernews_top(
     async def _fetch_item(item_id: int) -> dict | None:
         async with semaphore:
             try:
-                r = await client.get(
+                r = await _get_with_retry(
+                    client,
                     f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json",
-                    headers={"User-Agent": random_user_agent()},
                 )
-                r.raise_for_status()
             except httpx.HTTPError:
                 return None
             try:
