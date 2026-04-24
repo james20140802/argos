@@ -27,7 +27,7 @@ async def _fetch_robots_parser(origin: str) -> urllib.robotparser.RobotFileParse
         async with httpx.AsyncClient(timeout=_ROBOTS_FETCH_TIMEOUT) as client:
             response = await client.get(robots_url)
     except httpx.HTTPError:
-        parser.parse([])
+        parser.disallow_all = True
         return parser
 
     if 200 <= response.status_code < 300:
