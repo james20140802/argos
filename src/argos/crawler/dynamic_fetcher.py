@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+import urllib.robotparser
 from urllib.parse import urlsplit
 
+import httpx
 from lxml import etree
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -15,6 +17,11 @@ BLOCKED_RESOURCE_TYPES = {"image", "stylesheet", "font", "media"}
 _ALLOWED_SCHEMES = {"http", "https"}
 _BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
 _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal")
+_ROBOTS_USER_AGENT = "argos-crawler"
+_ROBOTS_FETCH_TIMEOUT = 10.0
+
+_robots_cache: dict[str, urllib.robotparser.RobotFileParser] = {}
+_robots_lock = asyncio.Lock()
 
 
 def _is_unsafe_ip(ip: ipaddress._BaseAddress) -> bool:
@@ -31,7 +38,7 @@ def _is_unsafe_ip(ip: ipaddress._BaseAddress) -> bool:
 def _resolve_hostname(host: str) -> list[ipaddress._BaseAddress]:
     try:
         infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
+    except (socket.gaierror, UnicodeError):
         return []
     addresses: list[ipaddress._BaseAddress] = []
     for info in infos:
@@ -72,6 +79,44 @@ def _is_safe_url(url: str) -> bool:
     return not any(_is_unsafe_ip(ip) for ip in resolved)
 
 
+async def _fetch_robots_parser(origin: str) -> urllib.robotparser.RobotFileParser:
+    parser = urllib.robotparser.RobotFileParser()
+    robots_url = f"{origin}/robots.txt"
+    try:
+        async with httpx.AsyncClient(timeout=_ROBOTS_FETCH_TIMEOUT) as client:
+            response = await client.get(robots_url)
+    except httpx.HTTPError:
+        parser.parse([])
+        return parser
+
+    if 200 <= response.status_code < 300:
+        parser.parse(response.text.splitlines())
+    else:
+        parser.parse([])
+    return parser
+
+
+async def _is_robots_allowed(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if not parts.scheme or not parts.netloc:
+        return False
+    origin = f"{parts.scheme}://{parts.netloc}"
+
+    async with _robots_lock:
+        parser = _robots_cache.get(origin)
+        if parser is None:
+            parser = await _fetch_robots_parser(origin)
+            _robots_cache[origin] = parser
+
+    try:
+        return parser.can_fetch(_ROBOTS_USER_AGENT, url)
+    except Exception:
+        return True
+
+
 def extract_main_content(html: str) -> tuple[str, str]:
     title = ""
     summary_html = html
@@ -106,6 +151,8 @@ async def fetch_dynamic_page(
     timeout_ms: int = 15000,
 ) -> dict | None:
     if not _is_safe_url(url):
+        return None
+    if not await _is_robots_allowed(url):
         return None
 
     attempt = 0

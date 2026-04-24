@@ -29,6 +29,14 @@ def _public_dns(monkeypatch):
         _fake_resolve,
     )
 
+    async def _always_allow(_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "argos.crawler.dynamic_fetcher._is_robots_allowed",
+        _always_allow,
+    )
+
 
 def _make_playwright_mock(page_html: str):
     """Build a nested AsyncMock chain mimicking async_playwright context manager."""
@@ -229,6 +237,101 @@ async def test_fetch_dynamic_page_retries_on_timeout(_public_dns):
 # ---------------------------------------------------------------------------
 # Test 5: returns None after exhausting max_retries
 # ---------------------------------------------------------------------------
+
+def test_resolve_hostname_handles_unicode_error(monkeypatch):
+    """Malformed IDNA hostnames must not leak UnicodeError."""
+    from argos.crawler.dynamic_fetcher import _resolve_hostname
+
+    def _raise_unicode(*args, **kwargs):
+        raise UnicodeError("IDNA label too long")
+
+    monkeypatch.setattr("socket.getaddrinfo", _raise_unicode)
+    assert _resolve_hostname("a" * 1000 + ".example.com") == []
+
+
+def test_is_safe_url_handles_idna_unicode_error(monkeypatch):
+    """_is_safe_url must fail closed when resolution raises UnicodeError."""
+
+    def _raise_unicode(*args, **kwargs):
+        raise UnicodeError("IDNA label too long")
+
+    monkeypatch.setattr("socket.getaddrinfo", _raise_unicode)
+    assert _is_safe_url("http://" + "x" * 512 + ".example.com/") is False
+
+
+@pytest.mark.asyncio
+async def test_is_robots_allowed_blocks_disallowed_path(monkeypatch):
+    import httpx
+    import respx
+
+    from argos.crawler import dynamic_fetcher as df
+
+    df._robots_cache.clear()
+    with respx.mock:
+        respx.get("https://example.com/robots.txt").mock(
+            return_value=httpx.Response(
+                200, text="User-agent: *\nDisallow: /private/\n"
+            )
+        )
+        allowed = await df._is_robots_allowed("https://example.com/private/secret")
+    assert allowed is False
+    df._robots_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_is_robots_allowed_permits_allowed_path():
+    import httpx
+    import respx
+
+    from argos.crawler import dynamic_fetcher as df
+
+    df._robots_cache.clear()
+    with respx.mock:
+        respx.get("https://example.com/robots.txt").mock(
+            return_value=httpx.Response(
+                200, text="User-agent: *\nDisallow: /private/\n"
+            )
+        )
+        allowed = await df._is_robots_allowed("https://example.com/public/page")
+    assert allowed is True
+    df._robots_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_fetch_dynamic_page_skips_when_robots_disallows(monkeypatch):
+    """fetch_dynamic_page must return None without loading when robots.txt blocks."""
+    from argos.crawler import dynamic_fetcher as df
+
+    def _fake_resolve(host: str):
+        import ipaddress as _ipaddress
+
+        return [_ipaddress.ip_address("93.184.216.34")]
+
+    monkeypatch.setattr(
+        "argos.crawler.dynamic_fetcher._resolve_hostname", _fake_resolve
+    )
+
+    async def _deny(_url: str) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "argos.crawler.dynamic_fetcher._is_robots_allowed", _deny
+    )
+
+    called = {"goto": 0}
+
+    def _fail_if_called(*args, **kwargs):
+        called["goto"] += 1
+        raise AssertionError("playwright should not run when robots disallows")
+
+    monkeypatch.setattr(
+        "argos.crawler.dynamic_fetcher.async_playwright", _fail_if_called
+    )
+
+    result = await df.fetch_dynamic_page("https://example.com/page")
+    assert result is None
+    assert called["goto"] == 0
+
 
 @pytest.mark.asyncio
 async def test_fetch_dynamic_page_returns_none_after_max_retries(_public_dns):
