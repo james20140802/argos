@@ -139,6 +139,56 @@ async def test_robots_follows_redirect_before_evaluating(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_robots_cache_expires_after_ttl(monkeypatch):
+    """Cached robots parsers must expire so a long-running crawler picks up
+    new Disallow rules instead of reusing a stale parser indefinitely."""
+    fake_now = [1000.0]
+
+    def _fake_monotonic() -> float:
+        return fake_now[0]
+
+    monkeypatch.setattr(_robots.time, "monotonic", _fake_monotonic)
+
+    fetches: list[str] = []
+
+    class _ChangingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url):
+            fetches.append(url)
+            if len(fetches) == 1:
+                return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+            return httpx.Response(
+                200, text="User-agent: *\nDisallow: /private/\n"
+            )
+
+    monkeypatch.setattr(_robots.httpx, "AsyncClient", _ChangingClient)
+
+    first = await _robots.is_robots_allowed("https://example.com/private/page")
+    assert first is True
+    assert len(fetches) == 1
+
+    fake_now[0] += 60.0
+    cached = await _robots.is_robots_allowed("https://example.com/private/page")
+    assert cached is True
+    assert len(fetches) == 1
+
+    fake_now[0] += _robots._ROBOTS_CACHE_TTL_SECONDS
+    refreshed = await _robots.is_robots_allowed(
+        "https://example.com/private/page"
+    )
+    assert refreshed is False
+    assert len(fetches) == 2
+
+
+@pytest.mark.asyncio
 async def test_robots_can_fetch_exception_fails_closed(monkeypatch):
     """If parser.can_fetch raises (e.g. UnicodeEncodeError on malformed paths),
     enforcement must fail closed rather than silently allowing the request."""

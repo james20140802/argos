@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import urllib.robotparser
 from urllib.parse import urlsplit
 
@@ -9,8 +10,9 @@ import httpx
 _ROBOTS_USER_AGENT = "argos-crawler"
 _ROBOTS_FETCH_TIMEOUT = 10.0
 _ROBOTS_MAX_REDIRECTS = 5
+_ROBOTS_CACHE_TTL_SECONDS = 86400.0
 
-_robots_cache: dict[str, urllib.robotparser.RobotFileParser] = {}
+_robots_cache: dict[str, tuple[urllib.robotparser.RobotFileParser, float]] = {}
 _robots_origin_locks: dict[str, asyncio.Lock] = {}
 _robots_lock = asyncio.Lock()
 
@@ -49,6 +51,19 @@ async def _fetch_robots_parser(
     return parser, True
 
 
+def _live_cached_parser(
+    origin: str,
+) -> urllib.robotparser.RobotFileParser | None:
+    """Return the cached parser only if its TTL has not expired."""
+    cached = _robots_cache.get(origin)
+    if cached is None:
+        return None
+    parser, cached_at = cached
+    if time.monotonic() - cached_at >= _ROBOTS_CACHE_TTL_SECONDS:
+        return None
+    return parser
+
+
 async def is_robots_allowed(url: str, user_agent: str = _ROBOTS_USER_AGENT) -> bool:
     try:
         parts = urlsplit(url)
@@ -58,7 +73,7 @@ async def is_robots_allowed(url: str, user_agent: str = _ROBOTS_USER_AGENT) -> b
         return False
     origin = f"{parts.scheme}://{parts.netloc}"
 
-    parser = _robots_cache.get(origin)
+    parser = _live_cached_parser(origin)
     if parser is None:
         async with _robots_lock:
             origin_lock = _robots_origin_locks.get(origin)
@@ -66,11 +81,11 @@ async def is_robots_allowed(url: str, user_agent: str = _ROBOTS_USER_AGENT) -> b
                 origin_lock = asyncio.Lock()
                 _robots_origin_locks[origin] = origin_lock
         async with origin_lock:
-            parser = _robots_cache.get(origin)
+            parser = _live_cached_parser(origin)
             if parser is None:
                 parser, cacheable = await _fetch_robots_parser(origin)
                 if cacheable:
-                    _robots_cache[origin] = parser
+                    _robots_cache[origin] = (parser, time.monotonic())
 
     try:
         return parser.can_fetch(user_agent, url)
