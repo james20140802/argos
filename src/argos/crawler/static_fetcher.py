@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+import asyncio
+
+import httpx
+from bs4 import BeautifulSoup
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
+from argos.crawler.user_agents import random_user_agent
+from argos.models.tech_item import TechItem
+
+_HN_CONCURRENCY = 8
+_RETRY_MAX_ATTEMPTS = 3
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+async def _get_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    max_attempts: int = _RETRY_MAX_ATTEMPTS,
+) -> httpx.Response:
+    ua = random_user_agent()
+    if not await is_robots_allowed(url, ua):
+        raise RobotsDisallowed(url)
+    for attempt in range(max_attempts):
+        try:
+            response = await client.get(
+                url,
+                headers={"User-Agent": ua},
+            )
+        except httpx.HTTPError:
+            if attempt + 1 >= max_attempts:
+                raise
+            await asyncio.sleep(2**attempt)
+            continue
+        if (
+            response.status_code in _RETRYABLE_STATUS_CODES
+            and attempt + 1 < max_attempts
+        ):
+            await asyncio.sleep(2**attempt)
+            continue
+        response.raise_for_status()
+        return response
+    raise httpx.HTTPError(f"exhausted retries for {url}")
+
+
+async def fetch_github_trending(
+    client: httpx.AsyncClient,
+    language: str | None = None,
+) -> list[dict]:
+    url = f"https://github.com/trending/{language}" if language else "https://github.com/trending"
+    response = await _get_with_retry(client, url)
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    items: list[dict] = []
+
+    for article in soup.select("article.Box-row"):
+        anchor = article.select_one("h2.h3.lh-condensed a")
+        if not anchor:
+            continue
+        href = (anchor.get("href") or "").strip()
+        if not href.startswith("/"):
+            continue
+
+        source_url = f"https://github.com{href}"
+        title = anchor.get_text(strip=True)
+        description_tag = article.select_one("p.col-9.color-fg-muted") or article.find("p")
+        raw_content = description_tag.get_text(strip=True) if description_tag else title
+        items.append({"title": title, "source_url": source_url, "raw_content": raw_content})
+
+    return items
+
+
+async def fetch_hackernews_top(
+    client: httpx.AsyncClient,
+    limit: int = 30,
+) -> list[dict]:
+    response = await _get_with_retry(
+        client,
+        "https://hacker-news.firebaseio.com/v0/topstories.json",
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    top_ids: list[int] = [i for i in payload[:limit] if isinstance(i, int)]
+
+    semaphore = asyncio.Semaphore(_HN_CONCURRENCY)
+
+    async def _fetch_item(item_id: int) -> dict | None:
+        async with semaphore:
+            try:
+                r = await _get_with_retry(
+                    client,
+                    f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json",
+                )
+            except httpx.HTTPError:
+                return None
+            try:
+                data = r.json()
+            except ValueError:
+                return None
+            if not isinstance(data, dict):
+                return None
+            fallback_url = f"https://news.ycombinator.com/item?id={item_id}"
+            candidate = data.get("url")
+            if isinstance(candidate, str) and candidate.lower().startswith(
+                ("http://", "https://")
+            ):
+                url = candidate
+            else:
+                url = fallback_url
+            title = data.get("title") or ""
+            text = data.get("text") or ""
+            if not isinstance(title, str):
+                title = ""
+            if not isinstance(text, str):
+                text = ""
+            raw_content = f"{title} {text}".strip() if text else title
+            return {"title": title, "source_url": url, "raw_content": raw_content}
+
+    results = await asyncio.gather(*(_fetch_item(i) for i in top_ids))
+    return [item for item in results if item is not None]
+
+
+async def filter_duplicate_urls(
+    session: AsyncSession,
+    items: list[dict],
+) -> list[dict]:
+    if not items:
+        return []
+
+    candidate_urls = [item["source_url"] for item in items]
+    stmt = select(TechItem.source_url).where(TechItem.source_url.in_(candidate_urls))
+    result = await session.execute(stmt)
+    existing_urls: set[str] = set(result.scalars().all())
+
+    deduped: list[dict] = []
+    seen: set[str] = set(existing_urls)
+    for item in items:
+        url = item["source_url"]
+        if url in seen:
+            continue
+        seen.add(url)
+        deduped.append(item)
+    return deduped
