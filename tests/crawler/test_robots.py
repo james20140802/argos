@@ -61,3 +61,38 @@ async def test_robots_transport_error_fails_closed(monkeypatch):
 
     allowed = await _robots.is_robots_allowed("https://example.com/anything")
     assert allowed is False
+
+
+@pytest.mark.asyncio
+async def test_robots_transient_transport_error_is_not_cached(monkeypatch):
+    """A one-off transport error must disallow that request but must NOT
+    permanently poison the cache — recovery on the next call should allow."""
+    call_log: list[str] = []
+
+    class _FlakyClient:
+        _calls = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url):
+            _FlakyClient._calls += 1
+            call_log.append(url)
+            if _FlakyClient._calls == 1:
+                raise httpx.ConnectError("transient DNS blip")
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+
+    monkeypatch.setattr(_robots.httpx, "AsyncClient", _FlakyClient)
+
+    first = await _robots.is_robots_allowed("https://example.com/page")
+    assert first is False  # fail-closed on transport error
+
+    second = await _robots.is_robots_allowed("https://example.com/page")
+    assert second is True  # cache was not poisoned — re-fetch succeeded
+    assert len(call_log) == 2

@@ -36,3 +36,4 @@ htmlcov/
 # Claude Code (local-only)
 .claude/settings.local.json
 .claude/worktrees/
+.claude/scheduled_tasks.lock

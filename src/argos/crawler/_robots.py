@@ -20,7 +20,12 @@ class RobotsDisallowed(Exception):
         self.url = url
 
 
-async def _fetch_robots_parser(origin: str) -> urllib.robotparser.RobotFileParser:
+async def _fetch_robots_parser(
+    origin: str,
+) -> tuple[urllib.robotparser.RobotFileParser, bool]:
+    """Return (parser, cacheable). Transient transport failures disallow-all
+    but are marked non-cacheable so a single blip does not permanently block
+    the origin — the next request re-attempts the fetch."""
     parser = urllib.robotparser.RobotFileParser()
     robots_url = f"{origin}/robots.txt"
     try:
@@ -28,7 +33,7 @@ async def _fetch_robots_parser(origin: str) -> urllib.robotparser.RobotFileParse
             response = await client.get(robots_url)
     except httpx.HTTPError:
         parser.disallow_all = True
-        return parser
+        return parser, False
 
     if 200 <= response.status_code < 300:
         parser.parse(response.text.splitlines())
@@ -36,7 +41,7 @@ async def _fetch_robots_parser(origin: str) -> urllib.robotparser.RobotFileParse
         parser.disallow_all = True
     else:
         parser.parse([])
-    return parser
+    return parser, True
 
 
 async def is_robots_allowed(url: str, user_agent: str = _ROBOTS_USER_AGENT) -> bool:
@@ -58,8 +63,9 @@ async def is_robots_allowed(url: str, user_agent: str = _ROBOTS_USER_AGENT) -> b
         async with origin_lock:
             parser = _robots_cache.get(origin)
             if parser is None:
-                parser = await _fetch_robots_parser(origin)
-                _robots_cache[origin] = parser
+                parser, cacheable = await _fetch_robots_parser(origin)
+                if cacheable:
+                    _robots_cache[origin] = parser
 
     try:
         return parser.can_fetch(user_agent, url)
