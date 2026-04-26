@@ -99,6 +99,46 @@ async def test_robots_transient_transport_error_is_not_cached(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_robots_follows_redirect_before_evaluating(monkeypatch):
+    """A 301/302 redirect on /robots.txt must be followed so the terminal
+    response — not the redirect — drives the crawl policy."""
+    with respx.mock:
+        respx.get("https://example.com/robots.txt").mock(
+            return_value=httpx.Response(
+                301, headers={"Location": "https://example.com/static/robots.txt"}
+            )
+        )
+        respx.get("https://example.com/static/robots.txt").mock(
+            return_value=httpx.Response(
+                200, text="User-agent: *\nDisallow: /private/\n"
+            )
+        )
+        allowed_private = await _robots.is_robots_allowed(
+            "https://example.com/private/secret"
+        )
+    assert allowed_private is False
+
+    _robots._robots_cache.clear()
+    _robots._robots_origin_locks.clear()
+
+    with respx.mock:
+        respx.get("https://example.com/robots.txt").mock(
+            return_value=httpx.Response(
+                301, headers={"Location": "https://example.com/static/robots.txt"}
+            )
+        )
+        respx.get("https://example.com/static/robots.txt").mock(
+            return_value=httpx.Response(
+                200, text="User-agent: *\nDisallow: /private/\n"
+            )
+        )
+        allowed_public = await _robots.is_robots_allowed(
+            "https://example.com/public/page"
+        )
+    assert allowed_public is True
+
+
+@pytest.mark.asyncio
 async def test_robots_can_fetch_exception_fails_closed(monkeypatch):
     """If parser.can_fetch raises (e.g. UnicodeEncodeError on malformed paths),
     enforcement must fail closed rather than silently allowing the request."""

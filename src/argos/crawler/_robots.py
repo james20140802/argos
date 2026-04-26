@@ -8,6 +8,7 @@ import httpx
 
 _ROBOTS_USER_AGENT = "argos-crawler"
 _ROBOTS_FETCH_TIMEOUT = 10.0
+_ROBOTS_MAX_REDIRECTS = 5
 
 _robots_cache: dict[str, urllib.robotparser.RobotFileParser] = {}
 _robots_origin_locks: dict[str, asyncio.Lock] = {}
@@ -29,7 +30,11 @@ async def _fetch_robots_parser(
     parser = urllib.robotparser.RobotFileParser()
     robots_url = f"{origin}/robots.txt"
     try:
-        async with httpx.AsyncClient(timeout=_ROBOTS_FETCH_TIMEOUT) as client:
+        async with httpx.AsyncClient(
+            timeout=_ROBOTS_FETCH_TIMEOUT,
+            follow_redirects=True,
+            max_redirects=_ROBOTS_MAX_REDIRECTS,
+        ) as client:
             response = await client.get(robots_url)
     except httpx.HTTPError:
         parser.disallow_all = True
