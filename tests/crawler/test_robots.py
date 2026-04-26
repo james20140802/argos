@@ -96,3 +96,35 @@ async def test_robots_transient_transport_error_is_not_cached(monkeypatch):
     second = await _robots.is_robots_allowed("https://example.com/page")
     assert second is True  # cache was not poisoned — re-fetch succeeded
     assert len(call_log) == 2
+
+
+@pytest.mark.asyncio
+async def test_robots_can_fetch_exception_fails_closed(monkeypatch):
+    """If parser.can_fetch raises (e.g. UnicodeEncodeError on malformed paths),
+    enforcement must fail closed rather than silently allowing the request."""
+    with respx.mock:
+        respx.get("https://example.com/robots.txt").mock(
+            return_value=httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        )
+
+        original_can_fetch = (
+            _robots.urllib.robotparser.RobotFileParser.can_fetch
+        )
+
+        def _boom(self, useragent, url):
+            raise UnicodeEncodeError("ascii", url, 0, 1, "boom")
+
+        monkeypatch.setattr(
+            _robots.urllib.robotparser.RobotFileParser, "can_fetch", _boom
+        )
+
+        try:
+            allowed = await _robots.is_robots_allowed("https://example.com/anything")
+        finally:
+            monkeypatch.setattr(
+                _robots.urllib.robotparser.RobotFileParser,
+                "can_fetch",
+                original_can_fetch,
+            )
+
+    assert allowed is False

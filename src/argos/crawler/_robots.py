@@ -70,4 +70,4 @@ async def is_robots_allowed(url: str, user_agent: str = _ROBOTS_USER_AGENT) -> b
     try:
         return parser.can_fetch(user_agent, url)
     except Exception:
-        return True
+        return False
