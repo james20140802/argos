@@ -211,3 +211,59 @@ async def test_get_with_retry_raises_when_robots_disallows(monkeypatch) -> None:
         async with httpx.AsyncClient() as client:
             with pytest.raises(RobotsDisallowed):
                 await fetch_github_trending(client)
+
+
+async def test_get_with_retry_retries_on_429(monkeypatch) -> None:
+    """429 is in _RETRYABLE_STATUS_CODES and must trigger a retry."""
+    monkeypatch.setattr("argos.crawler.static_fetcher.asyncio.sleep", AsyncMock())
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] < 2:
+            return httpx.Response(429, text="rate limited")
+        return httpx.Response(200, text=_github_trending_html())
+
+    with respx.mock:
+        respx.get("https://github.com/trending").mock(side_effect=handler)
+        async with httpx.AsyncClient() as client:
+            items = await fetch_github_trending(client)
+
+    assert call_count["n"] == 2
+    assert len(items) == 2
+
+
+async def test_filter_duplicate_urls_returns_empty_on_empty_input() -> None:
+    session = AsyncMock()
+    result = await filter_duplicate_urls(session, [])
+    assert result == []
+    session.execute.assert_not_called()
+
+
+async def test_filter_duplicate_urls_removes_all_when_all_duplicates() -> None:
+    url = "https://existing.com/x"
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [url]
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    items = [{"title": "Existing", "source_url": url, "raw_content": "c"}]
+    result = await filter_duplicate_urls(mock_session, items)
+    assert result == []
+
+
+async def test_filter_duplicate_urls_deduplicates_within_batch() -> None:
+    """Two items with the same URL in one batch — only the first survives."""
+    url = "https://new.com/y"
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    items = [
+        {"title": "first", "source_url": url, "raw_content": "a"},
+        {"title": "second", "source_url": url, "raw_content": "b"},
+    ]
+    result = await filter_duplicate_urls(mock_session, items)
+    assert len(result) == 1
+    assert result[0]["title"] == "first"

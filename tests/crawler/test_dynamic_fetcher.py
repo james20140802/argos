@@ -572,3 +572,47 @@ async def test_fetch_dynamic_page_blocks_unsafe_redirect(_public_dns):
 
     assert result is None
     assert post_redirect_checked["fired"], "Post-redirect _is_safe_url check was not called"
+
+
+@pytest.mark.asyncio
+async def test_fetch_dynamic_page_returns_none_for_unsafe_initial_url(monkeypatch):
+    """Playwright must never launch when the initial URL is itself unsafe."""
+    from argos.crawler import dynamic_fetcher as df
+
+    launched = {"count": 0}
+
+    def _fail_if_called(*args, **kwargs):
+        launched["count"] += 1
+        raise AssertionError("playwright must not launch for an unsafe URL")
+
+    monkeypatch.setattr("argos.crawler.dynamic_fetcher.async_playwright", _fail_if_called)
+
+    result = await df.fetch_dynamic_page("http://169.254.169.254/latest/meta-data/")
+    assert result is None
+    assert launched["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_dynamic_page_retries_on_playwright_error(_public_dns):
+    """A generic PlaywrightError (non-timeout) must be retried like a TimeoutError."""
+    from playwright.async_api import Error as PlaywrightError
+
+    sample_html = (FIXTURES_DIR / "sample_article.html").read_text()
+    mock_pw_cm, mock_page = _make_playwright_mock(sample_html)
+
+    call_count = 0
+
+    async def fail_once_then_succeed(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise PlaywrightError("browser crashed")
+
+    mock_page.goto.side_effect = fail_once_then_succeed
+
+    with patch("argos.crawler.dynamic_fetcher.async_playwright", return_value=mock_pw_cm):
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await fetch_dynamic_page("https://example.com/article", max_retries=3)
+
+    assert result is not None
+    assert call_count == 2

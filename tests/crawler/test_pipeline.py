@@ -156,3 +156,41 @@ async def test_run_full_crawl_reraises_cancelled_error_from_dynamic(patched_stat
         await pipeline.run_full_crawl(
             AsyncMock(), dynamic_urls=["https://example.com/x"]
         )
+
+
+async def test_run_full_crawl_skips_none_dynamic_result(patched_static, mocker) -> None:
+    """fetch_dynamic_page returning None (SSRF/robots blocked) must be silently dropped."""
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_dynamic_page",
+        new=AsyncMock(return_value=None),
+    )
+    gh, hn = patched_static
+    result = await pipeline.run_full_crawl(
+        AsyncMock(), dynamic_urls=["https://example.com/blocked"]
+    )
+    assert len(result) == len(gh) + len(hn)
+
+
+async def test_run_full_crawl_empty_list_equals_static(patched_static) -> None:
+    """dynamic_urls=[] must short-circuit identically to dynamic_urls=None."""
+    session = AsyncMock()
+    result_none = await pipeline.run_full_crawl(session, dynamic_urls=None)
+    result_empty = await pipeline.run_full_crawl(session, dynamic_urls=[])
+    assert result_empty == result_none
+
+
+async def test_run_static_pipeline_returns_empty_when_both_sources_fail(mocker) -> None:
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_github_trending",
+        new=AsyncMock(side_effect=RuntimeError("github down")),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_hackernews_top",
+        new=AsyncMock(side_effect=RuntimeError("hn down")),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.filter_duplicate_urls",
+        new=AsyncMock(side_effect=lambda _session, items: items),
+    )
+    result = await pipeline.run_static_pipeline(AsyncMock())
+    assert result == []
