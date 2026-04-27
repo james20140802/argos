@@ -3,8 +3,8 @@ import asyncio
 import httpx
 
 OLLAMA_BASE_URL = "http://localhost:11434"
-SMALL_MODEL = "llama3:8b"
-LARGE_MODEL = "llama3:70b"
+SMALL_MODEL = "qwen3:8b"
+LARGE_MODEL = "qwen3:32b"
 
 _MODEL_LOCK = asyncio.Lock()
 

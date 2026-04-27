@@ -13,7 +13,7 @@ Argos is a local-first Slack bot that automatically tracks AI technology trends,
 | -------------------- | -------------------------------------------------- | --------------------------------------------------------- |
 | 1 - Local Infra      | Docker PostgreSQL + pgvector, ORM, migrations      | pgvector/pgvector:pg16, SQLAlchemy 2.0 async, Alembic     |
 | 2 - Crawler          | Static (GitHub/HN) + Dynamic (Playwright) fetchers | httpx, Playwright, readability-lxml                       |
-| 3 - Processing Brain | Triage → Embed → Genealogist → Save pipeline       | Ollama (Llama-3-8B / 70B-Q4), LangGraph, nomic-embed-text |
+| 3 - Processing Brain | Triage → Embed → Genealogist → Save pipeline       | Ollama (Qwen3-8B / 32B), LangGraph, nomic-embed-text      |
 | 4 - Slack Interface  | Daily briefing, Keep/Pass/Deep Dive actions        | slack_bolt AsyncApp, Socket Mode, Block Kit               |
 
 ## Project Structure
@@ -87,5 +87,5 @@ cp .env.example .env                              # Create local env file
 ## Constraints
 
 - **Zero cloud cost.** Everything runs locally on M1 Max 32GB. No paid APIs, no cloud DB.
-- **VRAM budget:** Only one LLM loaded at a time. 8B model must be unloaded (keep_alive: 0) before loading 70B.
+- **VRAM budget:** Only one LLM loaded at a time. 8B model must be unloaded (keep_alive: 0) before loading 32B.
 - **Rate limiting:** Crawlers must use User-Agent rotation, exponential backoff, and respect robots.txt.

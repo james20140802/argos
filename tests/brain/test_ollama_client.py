@@ -11,7 +11,7 @@ async def test_query_ollama_returns_response():
         respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
             return_value=httpx.Response(200, json={"response": "hello"})
         )
-        result = await query_ollama("llama3:8b", "test prompt")
+        result = await query_ollama("qwen3:8b", "test prompt")
         assert result == "hello"
 
 @pytest.mark.asyncio
@@ -20,7 +20,7 @@ async def test_unload_model_sends_keep_alive_zero():
         route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
             return_value=httpx.Response(200, json={"response": ""})
         )
-        await unload_model("llama3:8b")
+        await unload_model("qwen3:8b")
         assert route.called
         sent_payload = route.calls[0].request
         import json
@@ -55,7 +55,7 @@ async def test_query_ollama_raises_on_http_error():
         )
         with pytest.raises(httpx.HTTPStatusError):
             from argos.brain.ollama_client import query_ollama
-            await query_ollama("llama3:8b", "test prompt")
+            await query_ollama("qwen3:8b", "test prompt")
 
 
 @pytest.mark.asyncio
@@ -63,7 +63,7 @@ async def test_query_with_swap_calls_both_models():
     import json
     from argos.brain.ollama_client import query_with_swap
 
-    responses = {"llama3:8b": "small-answer", "llama3:70b": "large-answer"}
+    responses = {"qwen3:8b": "small-answer", "qwen3:32b": "large-answer"}
 
     def _handler(request):
         body = json.loads(request.content)
@@ -71,7 +71,7 @@ async def test_query_with_swap_calls_both_models():
 
     with respx.mock:
         respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(side_effect=_handler)
-        small, large = await query_with_swap("llama3:8b", "llama3:70b", "small-prompt", "large-prompt")
+        small, large = await query_with_swap("qwen3:8b", "qwen3:32b", "small-prompt", "large-prompt")
 
     assert small == "small-answer"
     assert large == "large-answer"
