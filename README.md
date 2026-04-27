@@ -54,11 +54,11 @@ Python에서 실행:
 
 ```python
 import asyncio
-from argos.database import async_sessionmaker
+from argos.database import AsyncSessionLocal
 from argos.crawler.pipeline import run_full_pipeline
 
 async def main():
-    async with async_sessionmaker() as session:
+    async with AsyncSessionLocal() as session:
         results = await run_full_pipeline(session)
         print(f"처리 완료: {len(results)}개 항목")
 
@@ -74,11 +74,11 @@ results = await run_full_pipeline(session, dynamic_urls=["https://example.com/ar
 ### Brain 파이프라인만 단독 실행
 
 ```python
-from argos.database import async_sessionmaker
+from argos.database import AsyncSessionLocal
 from argos.brain.pipeline import run_brain_pipeline
 
 async def main():
-    async with async_sessionmaker() as session:
+    async with AsyncSessionLocal() as session:
         state = await run_brain_pipeline(
             raw_text="...",
             source_url="https://example.com",
