@@ -317,3 +317,83 @@ async def test_genealogist_node_parse_error():
         result = await genealogist_node(_genealogist_state())
 
     assert result["succession_result"] is None
+
+
+# ---------------------------------------------------------------------------
+# save_node — edge cases from security review
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_save_node_skips_succession_on_invalid_uuid():
+    session = _mock_session_no_existing()
+    await save_node(
+        _state(
+            is_valid=True,
+            succession_result={
+                "replace_target_id": "not-a-uuid",
+                "relation_type": "Replace",
+                "reason": "llm hallucinated an id",
+            },
+        ),
+        session=session,
+    )
+    assert session.add.call_count == 1  # TechItem only, TechSuccession skipped
+    session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_save_node_skips_on_empty_source_url():
+    session = _mock_session_no_existing()
+    await save_node(_state(is_valid=True, source_url=""), session=session)
+    session.add.assert_not_called()
+    session.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_save_node_uses_untitled_when_raw_text_is_whitespace_only():
+    session = _mock_session_no_existing()
+    await save_node(_state(is_valid=True, raw_text="   \n\t\n  "), session=session)
+    added_item = session.add.call_args[0][0]
+    assert added_item.title == "Untitled"
+
+
+# ---------------------------------------------------------------------------
+# triage_node / genealogist_node — Pydantic validation failure (valid JSON, wrong schema)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_triage_node_valid_json_fails_pydantic_schema():
+    with respx.mock:
+        respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": '{"is_valid": "yes", "reason": 42}'})
+        )
+        result = await triage_node(_state())
+    assert result["is_valid"] is False
+
+
+@pytest.mark.asyncio
+async def test_genealogist_node_valid_json_fails_pydantic_schema():
+    with respx.mock:
+        respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": '{"replace_target_id": 999, "relation_type": null}'})
+        )
+        result = await genealogist_node(_genealogist_state())
+    assert result["succession_result"] is None
+
+
+# ---------------------------------------------------------------------------
+# embed_and_search_node — DB error after successful embedding
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_embed_node_handles_db_error_after_successful_embedding():
+    embedding = [0.1, 0.2, 0.3]
+    session = AsyncMock()
+    session.execute.side_effect = Exception("pgvector not available")
+    with respx.mock:
+        respx.post(f"{OLLAMA_BASE_URL}/api/embeddings").mock(
+            return_value=httpx.Response(200, json={"embedding": embedding})
+        )
+        result = await embed_and_search_node(_state(is_valid=True), session=session)
+    assert result["related_tech_ids"] == []
+    assert result["extracted_info"] is None

@@ -40,8 +40,11 @@ async def test_model_lock_serializes_calls():
                 await asyncio.sleep(0.01)
                 call_order.append(f"end-{tag}")
         await asyncio.gather(_call("a"), _call("b"))
-    assert call_order.index("end-a") < call_order.index("start-b") or \
-           call_order.index("end-b") < call_order.index("start-a")
+    valid_sequences = [
+        ["start-a", "end-a", "start-b", "end-b"],
+        ["start-b", "end-b", "start-a", "end-a"],
+    ]
+    assert call_order in valid_sequences, f"Lock did not serialize calls, got: {call_order}"
 
 
 @pytest.mark.asyncio
