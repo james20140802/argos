@@ -74,6 +74,7 @@ results = await run_full_pipeline(session, dynamic_urls=["https://example.com/ar
 ### Brain 파이프라인만 단독 실행
 
 ```python
+import asyncio
 from argos.database import AsyncSessionLocal
 from argos.brain.pipeline import run_brain_pipeline
 
