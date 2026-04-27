@@ -97,4 +97,5 @@ async def run_full_pipeline(
             logger.warning(
                 "run_full_pipeline: brain pipeline failed for %s: %r", source_url, exc
             )
+    await session.commit()
     return results
