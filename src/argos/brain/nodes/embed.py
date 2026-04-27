@@ -23,6 +23,7 @@ async def embed_and_search_node(state: BrainState, session: AsyncSession) -> Bra
         embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
         stmt = text(
             "SELECT id, title, raw_content FROM tech_items "
+            "WHERE embedding IS NOT NULL "
             "ORDER BY embedding <=> CAST(:emb AS vector) LIMIT 5"
         )
         result = await session.execute(stmt, {"emb": embedding_str})
