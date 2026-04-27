@@ -45,8 +45,8 @@ alembic upgrade head
 Ollama 실행 및 모델 준비가 필요합니다:
 
 ```bash
-ollama pull llama3:8b
-ollama pull llama3:70b
+ollama pull qwen3:8b
+ollama pull qwen3:32b
 ollama pull nomic-embed-text
 ```
 
