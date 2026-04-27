@@ -85,6 +85,7 @@ async def main():
             source_url="https://example.com",
             session=session,
         )
+        await session.commit()
         print(state)
 
 asyncio.run(main())
