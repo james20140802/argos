@@ -120,7 +120,15 @@ async def test_save_node_attaches_embedding():
 
 @pytest.mark.asyncio
 async def test_save_node_creates_succession():
-    session = _mock_session_no_existing()
+    # execute is called twice: source_url duplicate check (None) then predecessor existence check (found)
+    no_existing = MagicMock()
+    no_existing.scalar_one_or_none.return_value = None
+    predecessor_found = MagicMock()
+    predecessor_found.scalar_one_or_none.return_value = uuid.uuid4()
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[no_existing, predecessor_found])
+    session.flush = AsyncMock()
+
     predecessor_id = str(uuid.uuid4())
     await save_node(
         _state(

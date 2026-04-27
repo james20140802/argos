@@ -66,13 +66,23 @@ async def save_node(state: BrainState, session: AsyncSession) -> BrainState:
                     "save_node: invalid replace_target_id UUID %r, skipping succession",
                     succession_result["replace_target_id"],
                 )
-                return state
-            succession = TechSuccession(
-                predecessor_id=predecessor_uuid,
-                successor_id=item.id,
-                relation_type=mapped_enum,
-                reasoning=succession_result.get("reason", ""),
-            )
-            session.add(succession)
+                predecessor_uuid = None
+            if predecessor_uuid is not None:
+                predecessor_exists = await session.execute(
+                    select(TechItem.id).where(TechItem.id == predecessor_uuid)
+                )
+                if predecessor_exists.scalar_one_or_none() is None:
+                    logger.warning(
+                        "save_node: predecessor %s not found in DB, skipping succession",
+                        predecessor_uuid,
+                    )
+                else:
+                    succession = TechSuccession(
+                        predecessor_id=predecessor_uuid,
+                        successor_id=item.id,
+                        relation_type=mapped_enum,
+                        reasoning=succession_result.get("reason", ""),
+                    )
+                    session.add(succession)
 
     return state
