@@ -78,10 +78,23 @@ async def run_full_pipeline(
     crawl_items = await run_full_crawl(session, dynamic_urls)
     results: list[BrainState] = []
     for item in crawl_items:
-        state = await run_brain_pipeline(
-            raw_text=item.get("raw_content", ""),
-            source_url=item.get("source_url", ""),
-            session=session,
-        )
-        results.append(state)
+        source_url = item.get("source_url", "").strip()
+        if not source_url:
+            logger.warning(
+                "run_full_pipeline: crawled item missing source_url, skipping: %r",
+                item.get("title", "unknown"),
+            )
+            continue
+        try:
+            async with session.begin_nested():
+                state = await run_brain_pipeline(
+                    raw_text=item.get("raw_content") or "",
+                    source_url=source_url,
+                    session=session,
+                )
+            results.append(state)
+        except Exception as exc:
+            logger.warning(
+                "run_full_pipeline: brain pipeline failed for %s: %r", source_url, exc
+            )
     return results
