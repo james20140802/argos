@@ -28,6 +28,9 @@ dev = [
     "ruff>=0.4",
 ]
 
+[project.scripts]
+argos = "argos.cli:main"
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
