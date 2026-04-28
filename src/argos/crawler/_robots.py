@@ -12,6 +12,16 @@ _ROBOTS_FETCH_TIMEOUT = 10.0
 _ROBOTS_MAX_REDIRECTS = 5
 _ROBOTS_CACHE_TTL_SECONDS = 86400.0
 
+# Hosts the operator has explicitly published as public read-only APIs for
+# third-party use. Their generic robots.txt would block crawling, but the
+# vendor (Y Combinator for HN) treats the endpoint as public. Keep this list
+# tiny and only add hosts with an equivalent public-API contract.
+_ROBOTS_ALLOWLISTED_HOSTS: frozenset[str] = frozenset(
+    {
+        "hacker-news.firebaseio.com",
+    }
+)
+
 _robots_cache: dict[str, tuple[urllib.robotparser.RobotFileParser, float]] = {}
 _robots_origin_locks: dict[str, asyncio.Lock] = {}
 _robots_lock = asyncio.Lock()
@@ -71,6 +81,8 @@ async def is_robots_allowed(url: str, user_agent: str = _ROBOTS_USER_AGENT) -> b
         return False
     if not parts.scheme or not parts.netloc:
         return False
+    if parts.netloc.lower() in _ROBOTS_ALLOWLISTED_HOSTS:
+        return True
     origin = f"{parts.scheme}://{parts.netloc}"
 
     parser = _live_cached_parser(origin)
