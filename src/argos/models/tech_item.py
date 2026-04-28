@@ -22,7 +22,7 @@ class TechItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False, unique=True)
     raw_content: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
     category: Mapped[CategoryType] = mapped_column(
         Enum(
             CategoryType,

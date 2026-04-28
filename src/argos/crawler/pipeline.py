@@ -6,6 +6,8 @@ import logging
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from argos.brain import run_brain_pipeline
+from argos.brain.graph_state import BrainState
 from argos.crawler.dynamic_fetcher import fetch_dynamic_page
 from argos.crawler.static_fetcher import (
     fetch_github_trending,
@@ -67,3 +69,33 @@ async def run_full_crawl(
             logger.warning("dynamic fetch failed for %s: %r", url, result)
 
     return await filter_duplicate_urls(session, [*static_items, *dynamic_items])
+
+
+async def run_full_pipeline(
+    session: AsyncSession,
+    dynamic_urls: list[str] | None = None,
+) -> list[BrainState]:
+    crawl_items = await run_full_crawl(session, dynamic_urls)
+    results: list[BrainState] = []
+    for item in crawl_items:
+        source_url = item.get("source_url", "").strip()
+        if not source_url:
+            logger.warning(
+                "run_full_pipeline: crawled item missing source_url, skipping: %r",
+                item.get("title", "unknown"),
+            )
+            continue
+        try:
+            async with session.begin_nested():
+                state = await run_brain_pipeline(
+                    raw_text=item.get("raw_content") or "",
+                    source_url=source_url,
+                    session=session,
+                )
+            results.append(state)
+        except Exception as exc:
+            logger.warning(
+                "run_full_pipeline: brain pipeline failed for %s: %r", source_url, exc
+            )
+    await session.commit()
+    return results
