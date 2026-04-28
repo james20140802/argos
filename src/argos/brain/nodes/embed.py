@@ -9,7 +9,7 @@ from argos.brain.ollama_client import OLLAMA_BASE_URL
 logger = logging.getLogger(__name__)
 
 async def get_embedding(text_input: str) -> list[float]:
-    payload = {"model": "nomic-embed-text", "prompt": text_input}
+    payload = {"model": "nomic-embed-text", "prompt": text_input, "keep_alive": 0}
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(f"{OLLAMA_BASE_URL}/api/embeddings", json=payload)
         resp.raise_for_status()
