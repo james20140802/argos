@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 import logging
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 from argos.brain.graph_state import BrainState
 from argos.brain.ollama_client import SMALL_MODEL, query_ollama, unload_model
 
@@ -15,7 +15,7 @@ Text:
 
 
 class _TriageResult(BaseModel):
-    is_valid: bool
+    is_valid: StrictBool
     reason: str
 
 
