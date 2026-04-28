@@ -32,7 +32,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 
 # 3. PostgreSQL + pgvector 시작
-docker-compose up -d
+docker compose up -d
 
 # 4. DB 마이그레이션 적용
 alembic upgrade head
@@ -111,5 +111,5 @@ alembic upgrade head
 alembic downgrade -1
 
 # DB 종료
-docker-compose down
+docker compose down
 ```

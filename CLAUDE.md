@@ -55,8 +55,8 @@ All FK deletions use CASCADE. All tables have UUID primary keys.
 
 ```bash
 # Docker DB
-docker-compose up -d                              # Start PostgreSQL + pgvector
-docker-compose down                               # Stop
+docker compose up -d                              # Start PostgreSQL + pgvector
+docker compose down                               # Stop
 
 # Alembic migrations
 alembic revision --autogenerate -m "description"  # Generate migration
