@@ -50,25 +50,22 @@ ollama pull qwen3:32b
 ollama pull nomic-embed-text
 ```
 
-Python에서 실행:
+CLI로 실행:
 
-```python
-import asyncio
-from argos.database import AsyncSessionLocal
-from argos.crawler.pipeline import run_full_pipeline
-
-async def main():
-    async with AsyncSessionLocal() as session:
-        results = await run_full_pipeline(session)
-        print(f"처리 완료: {len(results)}개 항목")
-
-asyncio.run(main())
+```bash
+argos run
 ```
 
-동적 URL을 추가로 처리하려면:
+동적 URL을 추가로 처리하려면 `--url`을 반복해서 전달:
 
-```python
-results = await run_full_pipeline(session, dynamic_urls=["https://example.com/article"])
+```bash
+argos run --url https://example.com/article --url https://example.com/another
+```
+
+상세 로그를 보려면 `-v` / `--verbose`:
+
+```bash
+argos run -v
 ```
 
 ### Brain 파이프라인만 단독 실행
