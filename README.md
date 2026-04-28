@@ -20,13 +20,14 @@ Slack Interface (Daily briefing + Keep/Pass/Deep Dive)
 
 - Docker
 - Python ≥ 3.10
+- [uv](https://docs.astral.sh/uv/) (Python 패키지 매니저)
 - [Ollama](https://ollama.com) (Processing Brain 실행 시 필요)
 
 ## Setup
 
 ```bash
-# 1. 의존성 설치
-pip install -e ".[dev]"
+# 1. 의존성 설치 (.venv 자동 생성)
+uv sync --all-extras
 
 # 2. 환경 변수 설정
 cp .env.example .env
@@ -35,7 +36,7 @@ cp .env.example .env
 docker compose up -d
 
 # 4. DB 마이그레이션 적용
-alembic upgrade head
+uv run alembic upgrade head
 ```
 
 ## Running
@@ -53,19 +54,19 @@ ollama pull nomic-embed-text
 CLI로 실행:
 
 ```bash
-argos run
+uv run argos run
 ```
 
 동적 URL을 추가로 처리하려면 `--url`을 반복해서 전달:
 
 ```bash
-argos run --url https://example.com/article --url https://example.com/another
+uv run argos run --url https://example.com/article --url https://example.com/another
 ```
 
 상세 로그를 보려면 `-v` / `--verbose`:
 
 ```bash
-argos run -v
+uv run argos run -v
 ```
 
 ### Brain 파이프라인만 단독 실행
@@ -92,23 +93,23 @@ asyncio.run(main())
 
 ```bash
 # 전체 테스트 (Ollama 불필요, 모두 mocked)
-pytest tests/ -v
+uv run pytest tests/ -v
 
 # Brain 노드만
-pytest tests/brain/ -v
+uv run pytest tests/brain/ -v
 ```
 
 ## Database
 
 ```bash
 # 마이그레이션 생성
-alembic revision --autogenerate -m "description"
+uv run alembic revision --autogenerate -m "description"
 
 # 마이그레이션 적용
-alembic upgrade head
+uv run alembic upgrade head
 
 # 롤백
-alembic downgrade -1
+uv run alembic downgrade -1
 
 # DB 종료
 docker compose down
