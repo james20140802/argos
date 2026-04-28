@@ -44,7 +44,7 @@ argos/
 
 ## Database Schema (ERD)
 
-- **tech_items** — id(UUID PK), title, source_url(unique), raw_content, embedding(Vector 1536), category(Mainstream|Alpha), trust_score, created_at, updated_at
+- **tech_items** — id(UUID PK), title, source_url(unique), raw_content, embedding(Vector 768), category(Mainstream|Alpha), trust_score, created_at, updated_at
 - **tech_succession** — id(UUID PK), predecessor_id(FK→tech_items), successor_id(FK→tech_items), relation_type(Replace|Enhance|Fork), reasoning
 - **user_assets** — id(UUID PK), tech_id(FK→tech_items), status(Keep|Tracking|Archived), last_monitored_at
 - **track_history** — id(UUID PK), user_asset_id(FK→user_assets), changed_from, changed_to, changed_at
@@ -75,7 +75,7 @@ cp .env.example .env                              # Create local env file
 
 - **Async-first:** The entire stack uses async (asyncpg, async_sessionmaker, AsyncApp). Never introduce sync DB calls.
 - **SQLAlchemy 2.0 style:** Use `Mapped`, `mapped_column`, `DeclarativeBase`. No legacy 1.x patterns.
-- **Embedding dimension:** Vector(1536) — matches nomic-embed-text. If switching models, update `tech_item.py` and create a new Alembic migration.
+- **Embedding dimension:** Vector(768) — matches nomic-embed-text. If switching models, update `tech_item.py` and create a new Alembic migration.
 - **Enum values:** Use PascalCase for all enum values (Mainstream, Alpha, Replace, Enhance, Fork, Keep, Tracking, Archived).
 - **Python version:** Target >=3.10. Use `from __future__ import annotations` where needed for newer type syntax.
 
