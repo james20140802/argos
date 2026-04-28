@@ -84,6 +84,41 @@ async def test_fetch_hackernews_top_returns_items() -> None:
         assert item["source_url"].startswith("https://")
 
 
+async def test_fetch_hackernews_top_passes_real_robots_check(monkeypatch) -> None:
+    """Regression for issue #5: HN's host has a generic Disallow-all
+    robots.txt, but it's a vendor-published public API. With the real
+    is_robots_allowed wired in, fetch_hackernews_top must still return items
+    *without* any /robots.txt route registered (the allowlist short-circuits
+    the fetch)."""
+    from argos.crawler import _robots
+    from argos.crawler import static_fetcher
+
+    monkeypatch.setattr(static_fetcher, "is_robots_allowed", _robots.is_robots_allowed)
+    _robots._robots_cache.clear()
+    _robots._robots_origin_locks.clear()
+
+    top_ids = [1, 2]
+    items_data = {
+        1: {"id": 1, "title": "S1", "url": "https://example.com/1", "text": ""},
+        2: {"id": 2, "title": "S2", "url": "https://example.com/2", "text": ""},
+    }
+
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        for item_id, data in items_data.items():
+            respx.get(
+                f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json"
+            ).mock(return_value=httpx.Response(200, text=json.dumps(data)))
+
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=2)
+
+    assert len(result) == 2
+    assert {r["title"] for r in result} == {"S1", "S2"}
+
+
 async def test_fetch_hackernews_top_handles_malformed_payloads() -> None:
     top_ids = [10, 20, 30]
     with respx.mock:

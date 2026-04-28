@@ -189,6 +189,42 @@ async def test_robots_cache_expires_after_ttl(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_robots_allowlisted_host_bypasses_fetch_and_allows(monkeypatch):
+    """Allowlisted hosts (vendor-published public APIs) must short-circuit
+    before any robots.txt fetch — even a generic Disallow on the host must
+    not block the request."""
+    instantiated = {"n": 0}
+
+    class _ExplodingClient:
+        def __init__(self, *args, **kwargs):
+            instantiated["n"] += 1
+            raise AssertionError(
+                "robots.txt must not be fetched for allowlisted hosts"
+            )
+
+    monkeypatch.setattr(_robots.httpx, "AsyncClient", _ExplodingClient)
+
+    allowed = await _robots.is_robots_allowed(
+        "https://hacker-news.firebaseio.com/v0/topstories.json"
+    )
+    assert allowed is True
+    assert instantiated["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_robots_non_allowlisted_host_still_blocked():
+    """The allowlist is host-scoped: a Disallow-all robots.txt on a
+    non-allowlisted host must still block, proving the carve-out has not
+    silently widened."""
+    with respx.mock:
+        respx.get("https://example.com/robots.txt").mock(
+            return_value=httpx.Response(200, text="User-agent: *\nDisallow: /\n")
+        )
+        allowed = await _robots.is_robots_allowed("https://example.com/anything")
+    assert allowed is False
+
+
+@pytest.mark.asyncio
 async def test_robots_can_fetch_exception_fails_closed(monkeypatch):
     """If parser.can_fetch raises (e.g. UnicodeEncodeError on malformed paths),
     enforcement must fail closed rather than silently allowing the request."""
