@@ -90,3 +90,4 @@ uv run ruff check src tests                       # Lint
 - **Zero cloud cost.** Everything runs locally on M1 Max 32GB. No paid APIs, no cloud DB.
 - **VRAM budget:** Only one LLM loaded at a time. 8B model must be unloaded (keep_alive: 0) before loading 32B.
 - **Rate limiting:** Crawlers must use User-Agent rotation, exponential backoff, and respect robots.txt.
+- **Robots allowlist:** `_robots.py` carves out a tiny set of vendor-published public-API hosts (currently `hacker-news.firebaseio.com`) whose generic robots.txt would falsely block documented public endpoints. Do not expand without a documented public-API contract.
