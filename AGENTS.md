@@ -58,17 +58,18 @@ All FK deletions use CASCADE. All tables have UUID primary keys.
 docker-compose up -d                              # Start PostgreSQL + pgvector
 docker-compose down                               # Stop
 
+# Environment (uv manages .venv automatically)
+uv sync --all-extras                              # Create .venv and install runtime + dev deps
+cp .env.example .env                              # Create local env file
+
 # Alembic migrations
-alembic revision --autogenerate -m "description"  # Generate migration
-alembic upgrade head                              # Apply migrations
-alembic downgrade -1                              # Rollback one step
+uv run alembic revision --autogenerate -m "description"  # Generate migration
+uv run alembic upgrade head                              # Apply migrations
+uv run alembic downgrade -1                              # Rollback one step
 
 # Tests
-pip install -e ".[dev]"                           # Install with dev deps
-pytest tests/ -v                                  # Run all tests
-
-# Environment
-cp .env.example .env                              # Create local env file
+uv run pytest tests/ -v                           # Run all tests
+uv run ruff check src tests                       # Lint
 ```
 
 ## Key Conventions
