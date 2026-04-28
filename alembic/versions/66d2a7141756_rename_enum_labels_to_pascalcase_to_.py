@@ -30,13 +30,36 @@ _RENAMES: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _rename_if_exists(enum_name: str, src: str, dst: str) -> None:
+    # Fresh DBs created from the initial schema already have PascalCase
+    # labels, so a blind RENAME VALUE would fail at the first statement.
+    # Gate on the source label's existence in pg_enum so the migration is
+    # a no-op on fresh installs and only repairs DBs created with the
+    # uppercase labels.
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM pg_enum e
+                JOIN pg_type t ON t.oid = e.enumtypid
+                WHERE t.typname = '{enum_name}' AND e.enumlabel = '{src}'
+            ) THEN
+                EXECUTE 'ALTER TYPE {enum_name} RENAME VALUE ''{src}'' TO ''{dst}''';
+            END IF;
+        END$$;
+        """
+    )
+
+
 def upgrade() -> None:
     """Upgrade schema."""
     for enum_name, old, new in _RENAMES:
-        op.execute(f"ALTER TYPE {enum_name} RENAME VALUE '{old}' TO '{new}'")
+        _rename_if_exists(enum_name, old, new)
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     for enum_name, old, new in _RENAMES:
-        op.execute(f"ALTER TYPE {enum_name} RENAME VALUE '{new}' TO '{old}'")
+        _rename_if_exists(enum_name, new, old)
