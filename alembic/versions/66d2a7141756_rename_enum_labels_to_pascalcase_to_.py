@@ -61,5 +61,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    for enum_name, old, new in _RENAMES:
-        _rename_if_exists(enum_name, new, old)
+    # The prior revision's migration history already defines these enums as
+    # PascalCase (see de47078f87d5_initial_schema.py). Renaming back to
+    # uppercase would make a fresh DB diverge from revision 997853887d46 and
+    # reintroduce the enum/value mismatch this migration repairs, so leave
+    # the labels in their PascalCase canonical form.
+    pass
