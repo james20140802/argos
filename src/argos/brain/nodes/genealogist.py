@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 
 from pydantic import BaseModel
 
 from argos.brain.graph_state import BrainState
-from argos.brain.ollama_client import LARGE_MODEL, query_ollama
+from argos.brain.ollama_client import LARGE_MODEL, LARGE_MODEL_TIMEOUT, query_ollama
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,9 @@ class _SuccessionResult(BaseModel):
     reason: str
 
 
-async def genealogist_node(state: BrainState) -> BrainState:
+async def genealogist_node(
+    state: BrainState, *, prewarm_task: asyncio.Task | None = None
+) -> BrainState:
     if not state["is_valid"] or not state["related_tech_ids"]:
         return state
     similar_items = (state.get("extracted_info") or {}).get("similar_items", [])
@@ -42,7 +46,16 @@ async def genealogist_node(state: BrainState) -> BrainState:
         existing_techs=existing_techs,
     )
     try:
-        raw = await query_ollama(LARGE_MODEL, prompt, keep_alive="5m")
+        if prewarm_task is not None:
+            with contextlib.suppress(Exception):
+                await prewarm_task
+        raw = await query_ollama(
+            LARGE_MODEL,
+            prompt,
+            keep_alive="5m",
+            timeout=LARGE_MODEL_TIMEOUT,
+            think=False,
+        )
         start = raw.find("{")
         end = raw.rfind("}") + 1
         if start == -1 or end == 0:

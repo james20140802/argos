@@ -3,16 +3,29 @@ import asyncio
 import pytest
 import respx
 import httpx
-from argos.brain.ollama_client import query_ollama, unload_model, _MODEL_LOCK, OLLAMA_BASE_URL
+from argos.brain.ollama_client import (
+    LARGE_MODEL_TIMEOUT,
+    OLLAMA_BASE_URL,
+    _MODEL_LOCK,
+    prewarm_model,
+    query_ollama,
+    unload_model,
+)
 
 @pytest.mark.asyncio
 async def test_query_ollama_returns_response():
+    import json
+
     with respx.mock:
-        respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+        route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
             return_value=httpx.Response(200, json={"response": "hello"})
         )
         result = await query_ollama("qwen3:8b", "test prompt")
         assert result == "hello"
+        body = json.loads(route.calls[0].request.content)
+        # The default num_ctx must be sent so Ollama does not auto-allocate a 32K KV cache
+        # that spills layers to CPU on a 32GB Mac (see fix/genealogist-ollama-timeout-and-prewarm).
+        assert body["options"]["num_ctx"] == 4096
 
 @pytest.mark.asyncio
 async def test_unload_model_sends_keep_alive_zero():
@@ -56,6 +69,92 @@ async def test_query_ollama_raises_on_http_error():
         with pytest.raises(httpx.HTTPStatusError):
             from argos.brain.ollama_client import query_ollama
             await query_ollama("qwen3:8b", "test prompt")
+
+
+@pytest.mark.asyncio
+async def test_query_ollama_accepts_explicit_timeout():
+    import json
+
+    with respx.mock:
+        route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "ok"})
+        )
+        result = await query_ollama("qwen3:32b", "p", keep_alive="5m", timeout=600)
+
+    assert result == "ok"
+    assert route.called
+    body = json.loads(route.calls[0].request.content)
+    assert body["model"] == "qwen3:32b"
+    assert body["keep_alive"] == "5m"
+
+
+@pytest.mark.asyncio
+async def test_query_ollama_propagates_num_ctx():
+    import json
+
+    with respx.mock:
+        route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "ok"})
+        )
+        await query_ollama("qwen3:32b", "p", num_ctx=8192)
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["options"]["num_ctx"] == 8192
+
+
+@pytest.mark.asyncio
+async def test_query_ollama_propagates_think_when_set():
+    import json
+
+    with respx.mock:
+        route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "ok"})
+        )
+        await query_ollama("qwen3:32b", "p", think=False)
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["think"] is False
+
+
+@pytest.mark.asyncio
+async def test_query_ollama_omits_think_by_default():
+    import json
+
+    with respx.mock:
+        route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "ok"})
+        )
+        await query_ollama("qwen3:8b", "p")
+
+    body = json.loads(route.calls[0].request.content)
+    assert "think" not in body
+
+
+@pytest.mark.asyncio
+async def test_prewarm_model_sends_empty_prompt_with_keep_alive():
+    import json
+
+    with respx.mock:
+        route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": ""})
+        )
+        await prewarm_model("qwen3:32b")
+
+    assert route.called
+    body = json.loads(route.calls[0].request.content)
+    assert body["model"] == "qwen3:32b"
+    assert body["prompt"] == ""
+    assert body["keep_alive"] == "5m"
+    # Prewarm must allocate the same KV cache the real call will use, otherwise Ollama
+    # reloads with a different context size and the prewarm is wasted.
+    assert body["options"]["num_ctx"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_large_model_timeout_constant_is_generous():
+    # Sanity: the qwen3:32b cold-load + generate budget needs to clearly exceed
+    # the 120s default that was triggering ReadTimeout warnings.
+    assert LARGE_MODEL_TIMEOUT >= 300
 
 
 @pytest.mark.asyncio
