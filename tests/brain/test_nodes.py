@@ -317,6 +317,88 @@ async def test_genealogist_node_null_replace_target():
 
 
 @pytest.mark.asyncio
+async def test_genealogist_disables_qwen_thinking_via_api(monkeypatch):
+    # qwen3 emits a long `<think>...</think>` trace by default which eats the output
+    # budget and slows generation by ~14x. The genealogist MUST disable thinking via the
+    # Ollama API `think` field — the textual `/no_think` marker is not honored by the
+    # qwen3:32b chat template in Ollama 0.21.
+    from argos.brain.nodes import genealogist as gen_module
+
+    captured: dict = {}
+
+    async def _fake_query(model, prompt, **kwargs):
+        captured.update(kwargs)
+        return '{"replace_target_id": null, "relation_type": null, "reason": "x"}'
+
+    monkeypatch.setattr(gen_module, "query_ollama", _fake_query)
+    await genealogist_node(_genealogist_state())
+
+    assert captured.get("think") is False
+
+
+@pytest.mark.asyncio
+async def test_genealogist_node_awaits_prewarm_task():
+    import asyncio
+
+    awaited = asyncio.Event()
+
+    async def _prewarm():
+        awaited.set()
+
+    task = asyncio.create_task(_prewarm())
+    payload = '{"replace_target_id": null, "relation_type": null, "reason": "x"}'
+    with respx.mock:
+        respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": payload})
+        )
+        await genealogist_node(_genealogist_state(), prewarm_task=task)
+
+    assert awaited.is_set()
+    assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_genealogist_node_uses_large_model_timeout(monkeypatch):
+    from argos.brain.nodes import genealogist as gen_module
+    from argos.brain.ollama_client import LARGE_MODEL, LARGE_MODEL_TIMEOUT
+
+    captured: dict = {}
+
+    async def _fake_query(model, prompt, keep_alive="5m", timeout=120, **_kwargs):
+        captured["model"] = model
+        captured["timeout"] = timeout
+        captured["keep_alive"] = keep_alive
+        return '{"replace_target_id": null, "relation_type": null, "reason": "x"}'
+
+    monkeypatch.setattr(gen_module, "query_ollama", _fake_query)
+    await genealogist_node(_genealogist_state())
+
+    assert captured["model"] == LARGE_MODEL
+    assert captured["timeout"] == LARGE_MODEL_TIMEOUT
+    assert captured["keep_alive"] == "5m"
+
+
+@pytest.mark.asyncio
+async def test_genealogist_node_swallows_prewarm_failure():
+    import asyncio
+
+    async def _broken_prewarm():
+        raise RuntimeError("ollama unreachable")
+
+    task = asyncio.create_task(_broken_prewarm())
+    payload = '{"replace_target_id": null, "relation_type": null, "reason": "x"}'
+    with respx.mock:
+        respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": payload})
+        )
+        result = await genealogist_node(_genealogist_state(), prewarm_task=task)
+
+    # Prewarm errors must not stop the genealogist from running its own query.
+    assert result["succession_result"] is not None
+    assert result["succession_result"]["reason"] == "x"
+
+
+@pytest.mark.asyncio
 async def test_genealogist_node_parse_error():
     with respx.mock:
         respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
