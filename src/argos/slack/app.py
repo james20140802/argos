@@ -3,6 +3,8 @@ from __future__ import annotations
 from slack_bolt.async_app import AsyncApp
 
 from argos.config import settings
+from argos.slack.handlers.keep import handle_keep
+from argos.slack.handlers.pass_ import handle_pass
 
 
 def build_app() -> AsyncApp:
@@ -14,4 +16,5 @@ def build_app() -> AsyncApp:
 
 
 def register_handlers(app: AsyncApp) -> None:
-    pass
+    app.action("keep_tech")(handle_keep)
+    app.action("pass_tech")(handle_pass)
