@@ -31,6 +31,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("slack", help="Start the Slack bot (Socket Mode)")
 
+    brief_p = sub.add_parser("brief", help="Dispatch today's briefing to Slack")
+    brief_p.add_argument("--channel", default=None, help="Override target Slack channel ID")
+
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -44,6 +47,15 @@ def main(argv: list[str] | None = None) -> int:
         from argos.main import main as slack_main
 
         asyncio.run(slack_main())
+        return 0
+    if args.command == "brief":
+        from argos.slack.briefing import dispatch_daily_briefing
+
+        ts = asyncio.run(dispatch_daily_briefing(channel=args.channel))
+        if ts:
+            print(f"Briefing sent: ts={ts}")
+        else:
+            print("No items today — briefing skipped")
         return 0
     return 1
 
