@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
 
+    SLACK_BOT_TOKEN: str = ""
+    SLACK_APP_TOKEN: str = ""
+    SLACK_CHANNEL_ID: str = ""
+
     @property
     def database_url(self) -> str:
         user = quote(self.POSTGRES_USER, safe="")

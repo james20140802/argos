@@ -17,6 +17,8 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "langgraph>=0.2",
     "langchain-core>=0.3",
+    "slack-bolt>=1.18",
+    "aiohttp>=3.9",
 ]
 
 [project.optional-dependencies]
