@@ -29,15 +29,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     run_p.add_argument("-v", "--verbose", action="store_true")
 
+    sub.add_parser("slack", help="Start the Slack bot (Socket Mode)")
+
     args = parser.parse_args(argv)
 
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
     if args.command == "run":
         return asyncio.run(_run(args.url))
+    if args.command == "slack":
+        from argos.main import main as slack_main
+
+        asyncio.run(slack_main())
+        return 0
     return 1
 
 
