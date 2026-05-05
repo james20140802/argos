@@ -5,11 +5,18 @@ from datetime import date, datetime, timezone
 
 from argos.config import settings
 from argos.database import AsyncSessionLocal
+from argos.models.tech_item import CategoryType
 from argos.slack.app import build_app
-from argos.slack.blocks import build_briefing_blocks
+from argos.slack.blocks import (
+    build_category_header_blocks,
+    build_header_blocks,
+    build_item_blocks,
+)
 from argos.slack.services.briefing_query import fetch_today_briefing
 
 logger = logging.getLogger(__name__)
+
+_ORDERED_CATEGORIES = (CategoryType.MAINSTREAM, CategoryType.ALPHA)
 
 
 async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
@@ -22,12 +29,35 @@ async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
         return None
 
     app = build_app()
-    blocks = build_briefing_blocks(items_by_category, today=date.today())
     target_channel = channel or settings.SLACK_CHANNEL_ID
-    response = await app.client.chat_postMessage(
+
+    header_response = await app.client.chat_postMessage(
         channel=target_channel,
-        blocks=blocks,
+        blocks=build_header_blocks(date.today(), has_items=True),
         text="Argos Daily Briefing",
     )
-    ts: str = response["ts"]
-    return ts
+    header_ts: str = header_response["ts"]
+
+    for category in _ORDERED_CATEGORIES:
+        items = items_by_category.get(category) or []
+        if not items:
+            continue
+        await app.client.chat_postMessage(
+            channel=target_channel,
+            thread_ts=header_ts,
+            reply_broadcast=True,
+            blocks=build_category_header_blocks(category),
+            text=category.value,
+        )
+        for item in items:
+            await app.client.chat_postMessage(
+                channel=target_channel,
+                thread_ts=header_ts,
+                reply_broadcast=True,
+                blocks=build_item_blocks(item),
+                text=item.title,
+                unfurl_links=True,
+                unfurl_media=True,
+            )
+
+    return header_ts

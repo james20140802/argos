@@ -5,7 +5,12 @@ from datetime import date
 from types import SimpleNamespace
 
 from argos.models.tech_item import CategoryType
-from argos.slack.blocks import build_briefing_blocks
+from argos.slack.blocks import (
+    build_briefing_blocks,
+    build_category_header_blocks,
+    build_header_blocks,
+    build_item_blocks,
+)
 
 
 def _make_item(title: str, trust_score: float | None, tech_id: uuid.UUID | None = None):
@@ -134,3 +139,39 @@ def test_deep_dive_button_has_primary_style(tech_id):
     actions = [b for b in blocks if b["type"] == "actions"][0]
     dd_btn = next(e for e in actions["elements"] if e["action_id"] == "action_deep_dive")
     assert dd_btn.get("style") == "primary"
+
+
+def test_header_blocks_includes_empty_state_when_no_items():
+    blocks = build_header_blocks(TODAY, has_items=False)
+    assert blocks[0]["type"] == "header"
+    assert "오늘 새로 수집된 기술 신호가 없습니다." in str(blocks)
+
+
+def test_header_blocks_omits_empty_state_when_items_exist():
+    blocks = build_header_blocks(TODAY, has_items=True)
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "header"
+
+
+def test_category_header_blocks_basic():
+    blocks = build_category_header_blocks(CategoryType.MAINSTREAM)
+    assert blocks[0]["type"] == "header"
+    assert "Mainstream" in blocks[0]["text"]["text"]
+
+
+def test_category_header_blocks_no_items_appends_context():
+    blocks = build_category_header_blocks(CategoryType.ALPHA, has_items=False)
+    assert any(b["type"] == "context" for b in blocks)
+
+
+def test_item_blocks_returns_section_and_actions(tech_id):
+    item = _make_item("ItemX", 0.7, tech_id)
+    blocks = build_item_blocks(item)
+    assert [b["type"] for b in blocks] == ["section", "actions"]
+    assert str(tech_id) in str(blocks)
+
+
+def test_item_blocks_renders_url_for_unfurl(tech_id):
+    item = _make_item("LinkItem", 0.5, tech_id)
+    blocks = build_item_blocks(item)
+    assert item.source_url in blocks[0]["text"]["text"]
