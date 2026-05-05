@@ -17,7 +17,11 @@ async def handle_pass(ack, body, respond):
     try:
         tech_id = uuid.UUID(tech_id_str)
     except ValueError:
-        await respond("잘못된 tech_id입니다.")
+        await respond(
+            "잘못된 tech_id입니다.",
+            response_type="ephemeral",
+            replace_original=False,
+        )
         return
 
     async with AsyncSessionLocal() as session:
@@ -32,4 +36,8 @@ async def handle_pass(ack, body, respond):
             asset.status = AssetStatus.ARCHIVED
         await session.commit()
 
-    await respond("⏭️ 패스했습니다. (Archived)")
+    await respond(
+        "⏭️ 패스했습니다. (Archived)",
+        response_type="ephemeral",
+        replace_original=False,
+    )

@@ -17,7 +17,11 @@ async def handle_keep(ack, body, respond):
     try:
         tech_id = uuid.UUID(tech_id_str)
     except ValueError:
-        await respond("잘못된 tech_id입니다.")
+        await respond(
+            "잘못된 tech_id입니다.",
+            response_type="ephemeral",
+            replace_original=False,
+        )
         return
 
     async with AsyncSessionLocal() as session:
@@ -32,4 +36,8 @@ async def handle_keep(ack, body, respond):
             asset.status = AssetStatus.KEEP
         await session.commit()
 
-    await respond("✅ 포트폴리오에 추가했습니다. (Keep)")
+    await respond(
+        "✅ 포트폴리오에 추가했습니다. (Keep)",
+        response_type="ephemeral",
+        replace_original=False,
+    )

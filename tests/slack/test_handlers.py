@@ -140,3 +140,98 @@ async def test_pass_invalid_uuid_responds_with_error(mock_ack, mock_respond):
     mock_ack.assert_awaited_once()
     mock_respond.assert_awaited_once()
     assert "잘못된" in mock_respond.call_args[0][0]
+
+
+def _assert_ephemeral_no_replace(mock_call):
+    kwargs = mock_call.kwargs
+    assert kwargs.get("response_type") == "ephemeral"
+    assert kwargs.get("replace_original") is False
+
+
+@pytest.mark.asyncio
+async def test_keep_respond_is_ephemeral_and_preserves_original(
+    tech_id, mock_ack, mock_respond
+):
+    body = _make_body(tech_id)
+
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("argos.slack.handlers.keep.AsyncSessionLocal", return_value=mock_ctx):
+        await handle_keep(mock_ack, body, mock_respond)
+
+    mock_respond.assert_awaited_once()
+    _assert_ephemeral_no_replace(mock_respond.call_args)
+
+
+@pytest.mark.asyncio
+async def test_pass_respond_is_ephemeral_and_preserves_original(
+    tech_id, mock_ack, mock_respond
+):
+    body = _make_body(tech_id)
+
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("argos.slack.handlers.pass_.AsyncSessionLocal", return_value=mock_ctx):
+        await handle_pass(mock_ack, body, mock_respond)
+
+    mock_respond.assert_awaited_once()
+    _assert_ephemeral_no_replace(mock_respond.call_args)
+
+
+@pytest.mark.asyncio
+async def test_deep_dive_respond_is_ephemeral_and_preserves_original(
+    tech_id, mock_ack, mock_respond
+):
+    body = _make_body(tech_id)
+
+    with patch("asyncio.create_task"):
+        await handle_deep_dive(mock_ack, body, mock_respond)
+
+    mock_respond.assert_awaited_once()
+    _assert_ephemeral_no_replace(mock_respond.call_args)
+
+
+@pytest.mark.asyncio
+async def test_deep_dive_passes_thread_metadata_to_background_task(
+    tech_id, mock_ack, mock_respond
+):
+    import inspect
+
+    body = {
+        "actions": [{"value": str(tech_id)}],
+        "channel": {"id": "C123"},
+        "message": {"ts": "1700000000.001"},
+    }
+    captured = {}
+
+    def capture(coro):
+        captured["locals"] = inspect.getcoroutinelocals(coro)
+        coro.close()
+        return MagicMock()
+
+    mock_client = AsyncMock()
+    with patch("asyncio.create_task", side_effect=capture):
+        await handle_deep_dive(mock_ack, body, mock_respond, client=mock_client)
+
+    locals_ = captured["locals"]
+    assert locals_["channel_id"] == "C123"
+    assert locals_["thread_ts"] == "1700000000.001"
+    assert locals_["client"] is mock_client

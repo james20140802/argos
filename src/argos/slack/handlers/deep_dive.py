@@ -29,7 +29,13 @@ Analyze:
 Be concise but substantive."""
 
 
-async def _run_and_reply(body: dict, respond, tech_id: uuid.UUID) -> None:
+async def _run_and_reply(
+    client,
+    channel_id: str | None,
+    thread_ts: str | None,
+    respond,
+    tech_id: uuid.UUID,
+) -> None:
     try:
         async with AsyncSessionLocal() as session:
             result = await session.execute(
@@ -38,7 +44,11 @@ async def _run_and_reply(body: dict, respond, tech_id: uuid.UUID) -> None:
             item = result.scalar_one_or_none()
 
         if item is None:
-            await respond("해당 tech_id를 찾을 수 없습니다.")
+            await respond(
+                "해당 tech_id를 찾을 수 없습니다.",
+                response_type="ephemeral",
+                replace_original=False,
+            )
             return
 
         prompt = _DEEP_DIVE_PROMPT.format(
@@ -56,19 +66,47 @@ async def _run_and_reply(body: dict, respond, tech_id: uuid.UUID) -> None:
             think=False,
         )
 
-        await respond(f"*Deep Dive: {item.title}*\n\n{analysis}")
+        text = f"*Deep Dive: {item.title}*\n\n{analysis}"
+        if client is not None and channel_id and thread_ts:
+            await client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                text=text,
+            )
+        else:
+            await respond(
+                text,
+                response_type="ephemeral",
+                replace_original=False,
+            )
     except Exception as exc:
         logger.exception("deep_dive background task failed: %r", exc)
-        await respond("심층 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
+        await respond(
+            "심층 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+            response_type="ephemeral",
+            replace_original=False,
+        )
 
 
-async def handle_deep_dive(ack, body, respond):
+async def handle_deep_dive(ack, body, respond, client=None):
     await ack()
-    await respond("🧠 70B 모델을 깨워 심층 분석 중입니다. 약 1분 정도 소요됩니다...")
+    await respond(
+        "🧠 70B 모델을 깨워 심층 분석 중입니다. 약 1분 정도 소요됩니다...",
+        response_type="ephemeral",
+        replace_original=False,
+    )
     tech_id_str: str = body["actions"][0]["value"]
     try:
         tech_id = uuid.UUID(tech_id_str)
     except ValueError:
-        await respond("잘못된 tech_id입니다.")
+        await respond(
+            "잘못된 tech_id입니다.",
+            response_type="ephemeral",
+            replace_original=False,
+        )
         return
-    asyncio.create_task(_run_and_reply(body, respond, tech_id))
+    channel_id = (body.get("channel") or {}).get("id")
+    message_ts = (body.get("message") or {}).get("ts")
+    asyncio.create_task(
+        _run_and_reply(client, channel_id, message_ts, respond, tech_id)
+    )
