@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.models.track_history import TrackHistory
@@ -24,25 +25,36 @@ async def transition_asset(
 ) -> TransitionOutcome:
     """tech_id의 UserAsset을 target_status로 전이하고 이력을 기록한다.
 
+    동시 클릭으로 인한 중복 row 생성을 막기 위해 ``INSERT ... ON CONFLICT DO
+    NOTHING`` 으로 자산을 atomic하게 만들고, 이미 존재하는 경우 ``SELECT ...
+    FOR UPDATE`` 로 행을 잠가 상태 전이를 직렬화한다.
+
     - 자산이 없으면 target_status로 생성한다 (CREATED).
     - 같은 상태면 아무 것도 하지 않는다 (NOOP).
     - 다른 상태면 TrackHistory 행을 추가하고 상태/last_monitored_at을 갱신한다 (TRANSITIONED).
     """
-    result = await session.execute(
-        select(UserAsset).where(UserAsset.tech_id == tech_id)
-    )
-    asset = result.scalar_one_or_none()
     now = datetime.now(timezone.utc)
 
-    if asset is None:
-        session.add(
-            UserAsset(
-                tech_id=tech_id,
-                status=target_status,
-                last_monitored_at=now,
-            )
+    insert_stmt = (
+        pg_insert(UserAsset)
+        .values(
+            tech_id=tech_id,
+            status=target_status,
+            last_monitored_at=now,
         )
+        .on_conflict_do_nothing(index_elements=["tech_id"])
+        .returning(UserAsset.id)
+    )
+    insert_result = await session.execute(insert_stmt)
+    if insert_result.scalar_one_or_none() is not None:
         return TransitionOutcome.CREATED
+
+    locked = await session.execute(
+        select(UserAsset)
+        .where(UserAsset.tech_id == tech_id)
+        .with_for_update()
+    )
+    asset = locked.scalar_one()
 
     if asset.status == target_status:
         return TransitionOutcome.NOOP

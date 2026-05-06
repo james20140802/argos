@@ -14,6 +14,28 @@ def _make_body(tech_id: uuid.UUID) -> dict:
     return {"actions": [{"value": str(tech_id)}]}
 
 
+def _make_insert_session(inserted_id: uuid.UUID | None = None) -> tuple[AsyncMock, MagicMock]:
+    """Build a session whose INSERT ... ON CONFLICT returns `inserted_id`.
+
+    When `inserted_id` is a UUID, the upsert took the CREATED branch and the
+    follow-up SELECT is never executed; passing None here would force the
+    handler into the lock-and-read path which these tests don't exercise.
+    """
+    if inserted_id is None:
+        inserted_id = uuid.uuid4()
+    mock_session = AsyncMock()
+    insert_result = MagicMock()
+    insert_result.scalar_one_or_none.return_value = inserted_id
+    mock_session.execute = AsyncMock(return_value=insert_result)
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    return mock_session, mock_ctx
+
+
 @pytest.mark.asyncio
 async def test_keep_ack_called_first(tech_id, mock_ack, mock_respond):
     body = _make_body(tech_id)
@@ -21,16 +43,7 @@ async def test_keep_ack_called_first(tech_id, mock_ack, mock_respond):
     mock_ack.side_effect = lambda: call_order.append("ack")
     mock_respond.side_effect = lambda *a, **kw: call_order.append("respond")
 
-    mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = None
-    mock_session.execute = AsyncMock(return_value=mock_result)
-    mock_session.add = MagicMock()
-    mock_session.commit = AsyncMock()
-
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    _, mock_ctx = _make_insert_session()
 
     with patch("argos.slack.handlers.keep.AsyncSessionLocal", return_value=mock_ctx):
         await handle_keep(mock_ack, body, mock_respond)
@@ -40,28 +53,24 @@ async def test_keep_ack_called_first(tech_id, mock_ack, mock_respond):
 
 
 @pytest.mark.asyncio
-async def test_keep_persists_user_asset_with_keep_status(tech_id, mock_ack, mock_respond):
+async def test_keep_inserts_user_asset_with_keep_status(tech_id, mock_ack, mock_respond):
     body = _make_body(tech_id)
-    added_assets = []
 
-    mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = None
-    mock_session.execute = AsyncMock(return_value=mock_result)
-    mock_session.add = lambda asset: added_assets.append(asset)
-    mock_session.commit = AsyncMock()
-
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    mock_session, mock_ctx = _make_insert_session()
 
     with patch("argos.slack.handlers.keep.AsyncSessionLocal", return_value=mock_ctx):
         await handle_keep(mock_ack, body, mock_respond)
 
-    assert len(added_assets) == 1
-    from argos.models.user_asset import AssetStatus
-    assert added_assets[0].status == AssetStatus.KEEP
-    assert added_assets[0].tech_id == tech_id
+    # Upsert path: one execute (INSERT ON CONFLICT), no follow-up select.
+    assert mock_session.execute.await_count == 1
+    insert_stmt = mock_session.execute.await_args.args[0]
+    compiled = str(
+        insert_stmt.compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "INSERT INTO user_assets" in compiled
+    assert "ON CONFLICT" in compiled
+    assert str(tech_id) in compiled
+    assert "Keep" in compiled
 
 
 @pytest.mark.asyncio
@@ -71,16 +80,7 @@ async def test_pass_ack_called_first(tech_id, mock_ack, mock_respond):
     mock_ack.side_effect = lambda: call_order.append("ack")
     mock_respond.side_effect = lambda *a, **kw: call_order.append("respond")
 
-    mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = None
-    mock_session.execute = AsyncMock(return_value=mock_result)
-    mock_session.add = MagicMock()
-    mock_session.commit = AsyncMock()
-
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    _, mock_ctx = _make_insert_session()
 
     with patch("argos.slack.handlers.pass_.AsyncSessionLocal", return_value=mock_ctx):
         await handle_pass(mock_ack, body, mock_respond)
@@ -153,17 +153,7 @@ async def test_keep_respond_is_ephemeral_and_preserves_original(
     tech_id, mock_ack, mock_respond
 ):
     body = _make_body(tech_id)
-
-    mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = None
-    mock_session.execute = AsyncMock(return_value=mock_result)
-    mock_session.add = MagicMock()
-    mock_session.commit = AsyncMock()
-
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    _, mock_ctx = _make_insert_session()
 
     with patch("argos.slack.handlers.keep.AsyncSessionLocal", return_value=mock_ctx):
         await handle_keep(mock_ack, body, mock_respond)
@@ -177,17 +167,7 @@ async def test_pass_respond_is_ephemeral_and_preserves_original(
     tech_id, mock_ack, mock_respond
 ):
     body = _make_body(tech_id)
-
-    mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = None
-    mock_session.execute = AsyncMock(return_value=mock_result)
-    mock_session.add = MagicMock()
-    mock_session.commit = AsyncMock()
-
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    _, mock_ctx = _make_insert_session()
 
     with patch("argos.slack.handlers.pass_.AsyncSessionLocal", return_value=mock_ctx):
         await handle_pass(mock_ack, body, mock_respond)
