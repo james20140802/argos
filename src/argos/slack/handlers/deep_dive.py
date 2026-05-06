@@ -6,7 +6,12 @@ import uuid
 
 from sqlalchemy import select
 
-from argos.brain.ollama_client import LARGE_MODEL, LARGE_MODEL_TIMEOUT, SMALL_MODEL, query_ollama, unload_model
+from argos.brain.ollama_client import (
+    LARGE_MODEL,
+    LARGE_MODEL_TIMEOUT,
+    SMALL_MODEL,
+    unload_then_query,
+)
 from argos.database import AsyncSessionLocal
 from argos.models.tech_item import TechItem
 
@@ -57,8 +62,8 @@ async def _run_and_reply(
             raw_content=item.raw_content[:3000],
         )
 
-        await unload_model(SMALL_MODEL)
-        analysis = await query_ollama(
+        analysis = await unload_then_query(
+            SMALL_MODEL,
             LARGE_MODEL,
             prompt,
             keep_alive="5m",
