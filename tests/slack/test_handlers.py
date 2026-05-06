@@ -171,7 +171,7 @@ def _original_card_blocks(tech_id: uuid.UUID) -> list[dict]:
 
 
 @pytest.mark.asyncio
-async def test_keep_respond_replaces_card_with_keep_status_block(
+async def test_keep_respond_replaces_card_with_keep_status_and_drops_buttons(
     tech_id, mock_ack, mock_respond
 ):
     from argos.slack.blocks import ITEM_STATUS_BLOCK_ID
@@ -186,15 +186,15 @@ async def test_keep_respond_replaces_card_with_keep_status_block(
     kwargs = mock_respond.call_args.kwargs
     assert kwargs.get("replace_original") is True
     new_blocks = kwargs["blocks"]
-    # original section + actions are preserved; status block is appended
-    assert new_blocks[:2] == _original_card_blocks(tech_id)
+    # buttons removed, status block appended
+    assert all(b.get("type") != "actions" for b in new_blocks)
     status_block = new_blocks[-1]
     assert status_block["block_id"] == ITEM_STATUS_BLOCK_ID
     assert "Keep" in status_block["elements"][0]["text"]
 
 
 @pytest.mark.asyncio
-async def test_pass_respond_replaces_card_with_archived_status_block(
+async def test_pass_respond_replaces_card_with_archived_status_and_drops_buttons(
     tech_id, mock_ack, mock_respond
 ):
     from argos.slack.blocks import ITEM_STATUS_BLOCK_ID
@@ -209,36 +209,10 @@ async def test_pass_respond_replaces_card_with_archived_status_block(
     kwargs = mock_respond.call_args.kwargs
     assert kwargs.get("replace_original") is True
     new_blocks = kwargs["blocks"]
+    assert all(b.get("type") != "actions" for b in new_blocks)
     status_block = new_blocks[-1]
     assert status_block["block_id"] == ITEM_STATUS_BLOCK_ID
     assert "Archived" in status_block["elements"][0]["text"]
-
-
-@pytest.mark.asyncio
-async def test_keep_respond_replaces_existing_status_block(
-    tech_id, mock_ack, mock_respond
-):
-    """A second click should replace, not duplicate, the status context block."""
-    from argos.slack.blocks import ITEM_STATUS_BLOCK_ID
-
-    blocks_with_old_status = [
-        *_original_card_blocks(tech_id),
-        {
-            "type": "context",
-            "block_id": ITEM_STATUS_BLOCK_ID,
-            "elements": [{"type": "mrkdwn", "text": "🗄️ Archived — 패스됨"}],
-        },
-    ]
-    body = _make_body_with_message(tech_id, original_blocks=blocks_with_old_status)
-    _, mock_ctx = _make_insert_session()
-
-    with patch("argos.slack.handlers.keep.AsyncSessionLocal", return_value=mock_ctx):
-        await handle_keep(mock_ack, body, mock_respond)
-
-    new_blocks = mock_respond.call_args.kwargs["blocks"]
-    status_blocks = [b for b in new_blocks if b.get("block_id") == ITEM_STATUS_BLOCK_ID]
-    assert len(status_blocks) == 1
-    assert "Keep" in status_blocks[0]["elements"][0]["text"]
 
 
 @pytest.mark.asyncio

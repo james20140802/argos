@@ -29,10 +29,16 @@ def build_item_status_block(status: AssetStatus) -> dict:
     }
 
 
-def upsert_item_status_block(
+def finalize_item_card_blocks(
     blocks: list[dict], status: AssetStatus
 ) -> list[dict]:
-    filtered = [b for b in blocks if b.get("block_id") != ITEM_STATUS_BLOCK_ID]
+    """Drop interactive buttons and stamp the resolved status onto the card."""
+    filtered = [
+        b
+        for b in blocks
+        if b.get("type") != "actions"
+        and b.get("block_id") != ITEM_STATUS_BLOCK_ID
+    ]
     return [*filtered, build_item_status_block(status)]
 
 
