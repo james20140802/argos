@@ -45,7 +45,6 @@ async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
         await app.client.chat_postMessage(
             channel=target_channel,
             thread_ts=header_ts,
-            reply_broadcast=True,
             blocks=build_category_header_blocks(category),
             text=category.value,
         )
@@ -53,7 +52,6 @@ async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
             await app.client.chat_postMessage(
                 channel=target_channel,
                 thread_ts=header_ts,
-                reply_broadcast=True,
                 blocks=build_item_blocks(item),
                 text=item.title,
                 unfurl_links=True,

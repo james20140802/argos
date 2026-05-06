@@ -77,7 +77,7 @@ async def test_dispatch_posts_header_then_threaded_items():
 
     for follow_up in calls[1:]:
         assert follow_up.kwargs["thread_ts"] == "1700000000.001"
-        assert follow_up.kwargs["reply_broadcast"] is True
+        assert "reply_broadcast" not in follow_up.kwargs
         assert follow_up.kwargs["channel"] == "C999"
 
 
