@@ -3,12 +3,17 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import select
-
 from argos.database import AsyncSessionLocal
-from argos.models.user_asset import AssetStatus, UserAsset
+from argos.models.user_asset import AssetStatus
+from argos.slack.services.asset_transition import TransitionOutcome, transition_asset
 
 logger = logging.getLogger(__name__)
+
+_MESSAGES = {
+    TransitionOutcome.CREATED: "⏭️ 패스했습니다. (Archived)",
+    TransitionOutcome.TRANSITIONED: "⏭️ 상태를 Archived로 변경했습니다.",
+    TransitionOutcome.NOOP: "ℹ️ 이미 Archived 상태입니다.",
+}
 
 
 async def handle_pass(ack, body, respond):
@@ -25,19 +30,11 @@ async def handle_pass(ack, body, respond):
         return
 
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(UserAsset).where(UserAsset.tech_id == tech_id)
-        )
-        asset = result.scalar_one_or_none()
-        if asset is None:
-            asset = UserAsset(tech_id=tech_id, status=AssetStatus.ARCHIVED)
-            session.add(asset)
-        else:
-            asset.status = AssetStatus.ARCHIVED
+        outcome = await transition_asset(session, tech_id, AssetStatus.ARCHIVED)
         await session.commit()
 
     await respond(
-        "⏭️ 패스했습니다. (Archived)",
+        _MESSAGES[outcome],
         response_type="ephemeral",
         replace_original=False,
     )

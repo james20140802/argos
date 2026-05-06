@@ -3,12 +3,17 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import select
-
 from argos.database import AsyncSessionLocal
-from argos.models.user_asset import AssetStatus, UserAsset
+from argos.models.user_asset import AssetStatus
+from argos.slack.services.asset_transition import TransitionOutcome, transition_asset
 
 logger = logging.getLogger(__name__)
+
+_MESSAGES = {
+    TransitionOutcome.CREATED: "✅ 포트폴리오에 추가했습니다. (Keep)",
+    TransitionOutcome.TRANSITIONED: "✅ 상태를 Keep으로 변경했습니다.",
+    TransitionOutcome.NOOP: "ℹ️ 이미 Keep 상태입니다.",
+}
 
 
 async def handle_keep(ack, body, respond):
@@ -25,19 +30,11 @@ async def handle_keep(ack, body, respond):
         return
 
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(UserAsset).where(UserAsset.tech_id == tech_id)
-        )
-        asset = result.scalar_one_or_none()
-        if asset is None:
-            asset = UserAsset(tech_id=tech_id, status=AssetStatus.KEEP)
-            session.add(asset)
-        else:
-            asset.status = AssetStatus.KEEP
+        outcome = await transition_asset(session, tech_id, AssetStatus.KEEP)
         await session.commit()
 
     await respond(
-        "✅ 포트폴리오에 추가했습니다. (Keep)",
+        _MESSAGES[outcome],
         response_type="ephemeral",
         replace_original=False,
     )
