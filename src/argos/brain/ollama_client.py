@@ -84,3 +84,23 @@ async def query_with_swap(
         await _unload(small_model)
         large_result = await _generate(large_model, prompt_large, keep_alive="5m")
         return small_result, large_result
+
+
+async def unload_then_query(
+    unload: str,
+    model: str,
+    prompt: str,
+    keep_alive: str | int = "5m",
+    timeout: float = DEFAULT_TIMEOUT,
+    num_ctx: int = DEFAULT_NUM_CTX,
+    think: bool | None = None,
+) -> str:
+    """Unload `unload` and run a query on `model` atomically under a single lock.
+
+    Holds `_MODEL_LOCK` across both calls so a concurrent small-model query
+    cannot slip in between unload and load — preserving the one-model-at-a-time
+    VRAM invariant.
+    """
+    async with _MODEL_LOCK:
+        await _unload(unload)
+        return await _generate(model, prompt, keep_alive, timeout, num_ctx, think)

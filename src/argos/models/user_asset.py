@@ -29,6 +29,7 @@ class UserAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         UUID(as_uuid=True),
         ForeignKey("tech_items.id", ondelete="CASCADE"),
         nullable=False,
+        unique=True,
     )
     status: Mapped[AssetStatus] = mapped_column(
         Enum(
