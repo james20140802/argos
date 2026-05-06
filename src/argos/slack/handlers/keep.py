@@ -5,6 +5,7 @@ import uuid
 
 from argos.database import AsyncSessionLocal
 from argos.models.user_asset import AssetStatus
+from argos.slack.blocks import upsert_item_status_block
 from argos.slack.services.asset_transition import TransitionOutcome, transition_asset
 
 logger = logging.getLogger(__name__)
@@ -33,8 +34,10 @@ async def handle_keep(ack, body, respond):
         outcome = await transition_asset(session, tech_id, AssetStatus.KEEP)
         await session.commit()
 
+    original_blocks = (body.get("message") or {}).get("blocks") or []
+    new_blocks = upsert_item_status_block(original_blocks, AssetStatus.KEEP)
     await respond(
-        _MESSAGES[outcome],
-        response_type="ephemeral",
-        replace_original=False,
+        blocks=new_blocks,
+        text=_MESSAGES[outcome],
+        replace_original=True,
     )
