@@ -148,32 +148,71 @@ def _assert_ephemeral_no_replace(mock_call):
     assert kwargs.get("replace_original") is False
 
 
+def _make_body_with_message(tech_id: uuid.UUID, *, original_blocks: list[dict]) -> dict:
+    return {
+        "actions": [{"value": str(tech_id)}],
+        "message": {"blocks": original_blocks},
+    }
+
+
+def _original_card_blocks(tech_id: uuid.UUID) -> list[dict]:
+    return [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*Sample item* (trust=0.50)\nhttps://x"},
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {"type": "button", "action_id": "action_keep", "value": str(tech_id)},
+            ],
+        },
+    ]
+
+
 @pytest.mark.asyncio
-async def test_keep_respond_is_ephemeral_and_preserves_original(
+async def test_keep_respond_replaces_card_with_keep_status_and_drops_buttons(
     tech_id, mock_ack, mock_respond
 ):
-    body = _make_body(tech_id)
+    from argos.slack.blocks import ITEM_STATUS_BLOCK_ID
+
+    body = _make_body_with_message(tech_id, original_blocks=_original_card_blocks(tech_id))
     _, mock_ctx = _make_insert_session()
 
     with patch("argos.slack.handlers.keep.AsyncSessionLocal", return_value=mock_ctx):
         await handle_keep(mock_ack, body, mock_respond)
 
     mock_respond.assert_awaited_once()
-    _assert_ephemeral_no_replace(mock_respond.call_args)
+    kwargs = mock_respond.call_args.kwargs
+    assert kwargs.get("replace_original") is True
+    new_blocks = kwargs["blocks"]
+    # buttons removed, status block appended
+    assert all(b.get("type") != "actions" for b in new_blocks)
+    status_block = new_blocks[-1]
+    assert status_block["block_id"] == ITEM_STATUS_BLOCK_ID
+    assert "Keep" in status_block["elements"][0]["text"]
 
 
 @pytest.mark.asyncio
-async def test_pass_respond_is_ephemeral_and_preserves_original(
+async def test_pass_respond_replaces_card_with_archived_status_and_drops_buttons(
     tech_id, mock_ack, mock_respond
 ):
-    body = _make_body(tech_id)
+    from argos.slack.blocks import ITEM_STATUS_BLOCK_ID
+
+    body = _make_body_with_message(tech_id, original_blocks=_original_card_blocks(tech_id))
     _, mock_ctx = _make_insert_session()
 
     with patch("argos.slack.handlers.pass_.AsyncSessionLocal", return_value=mock_ctx):
         await handle_pass(mock_ack, body, mock_respond)
 
     mock_respond.assert_awaited_once()
-    _assert_ephemeral_no_replace(mock_respond.call_args)
+    kwargs = mock_respond.call_args.kwargs
+    assert kwargs.get("replace_original") is True
+    new_blocks = kwargs["blocks"]
+    assert all(b.get("type") != "actions" for b in new_blocks)
+    status_block = new_blocks[-1]
+    assert status_block["block_id"] == ITEM_STATUS_BLOCK_ID
+    assert "Archived" in status_block["elements"][0]["text"]
 
 
 @pytest.mark.asyncio

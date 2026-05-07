@@ -5,6 +5,7 @@ import uuid
 
 from argos.database import AsyncSessionLocal
 from argos.models.user_asset import AssetStatus
+from argos.slack.blocks import finalize_item_card_blocks
 from argos.slack.services.asset_transition import TransitionOutcome, transition_asset
 
 logger = logging.getLogger(__name__)
@@ -33,8 +34,10 @@ async def handle_pass(ack, body, respond):
         outcome = await transition_asset(session, tech_id, AssetStatus.ARCHIVED)
         await session.commit()
 
+    original_blocks = (body.get("message") or {}).get("blocks") or []
+    new_blocks = finalize_item_card_blocks(original_blocks, AssetStatus.ARCHIVED)
     await respond(
-        _MESSAGES[outcome],
-        response_type="ephemeral",
-        replace_original=False,
+        blocks=new_blocks,
+        text=_MESSAGES[outcome],
+        replace_original=True,
     )

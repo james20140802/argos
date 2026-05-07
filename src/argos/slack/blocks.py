@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from argos.models.tech_item import CategoryType, TechItem
+from argos.models.user_asset import AssetStatus
 
 _CATEGORY_LABELS: dict[CategoryType, str] = {
     CategoryType.MAINSTREAM: "Mainstream",
@@ -10,6 +11,35 @@ _CATEGORY_LABELS: dict[CategoryType, str] = {
 }
 
 _ORDERED_CATEGORIES = (CategoryType.MAINSTREAM, CategoryType.ALPHA)
+
+ITEM_STATUS_BLOCK_ID = "argos_item_status"
+
+_STATUS_LABELS: dict[AssetStatus, str] = {
+    AssetStatus.KEEP: "✅ Keep — 포트폴리오에 추가됨",
+    AssetStatus.TRACKING: "🔭 Tracking",
+    AssetStatus.ARCHIVED: "🗄️ Archived — 패스됨",
+}
+
+
+def build_item_status_block(status: AssetStatus) -> dict:
+    return {
+        "type": "context",
+        "block_id": ITEM_STATUS_BLOCK_ID,
+        "elements": [{"type": "mrkdwn", "text": _STATUS_LABELS[status]}],
+    }
+
+
+def finalize_item_card_blocks(
+    blocks: list[dict], status: AssetStatus
+) -> list[dict]:
+    """Drop interactive buttons and stamp the resolved status onto the card."""
+    filtered = [
+        b
+        for b in blocks
+        if b.get("type") != "actions"
+        and b.get("block_id") != ITEM_STATUS_BLOCK_ID
+    ]
+    return [*filtered, build_item_status_block(status)]
 
 
 def build_header_blocks(today: date, *, has_items: bool) -> list[dict]:
