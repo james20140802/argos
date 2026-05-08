@@ -316,6 +316,18 @@ async def test_genealogist_node_null_replace_target():
     assert result["succession_result"]["relation_type"] is None
 
 
+def test_succession_result_normalizes_string_null():
+    from argos.brain.nodes.genealogist import _SuccessionResult
+
+    for raw in ['"null"', '"NULL"', '" None "', '""']:
+        payload = (
+            '{"replace_target_id": ' + raw + ', '
+            '"relation_type": null, "reason": "no relation"}'
+        )
+        result = _SuccessionResult.model_validate_json(payload)
+        assert result.replace_target_id is None
+
+
 @pytest.mark.asyncio
 async def test_genealogist_disables_qwen_thinking_via_api(monkeypatch):
     # qwen3 emits a long `<think>...</think>` trace by default which eats the output

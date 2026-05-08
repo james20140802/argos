@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from argos.brain.graph_state import BrainState
 from argos.brain.ollama_client import LARGE_MODEL, LARGE_MODEL_TIMEOUT, query_ollama
@@ -27,6 +27,15 @@ class _SuccessionResult(BaseModel):
     replace_target_id: str | None
     relation_type: str | None
     reason: str
+
+    @field_validator("replace_target_id", mode="before")
+    @classmethod
+    def _normalize_null(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip().lower() in {"", "null", "none"}:
+            return None
+        return v
 
 
 async def genealogist_node(
