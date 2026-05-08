@@ -63,6 +63,8 @@ async def test_triage_node_parse_error():
         ("-0.2", 0.0),
         ('"high"', None),
         ("null", None),
+        ("true", None),
+        ("false", None),
     ],
 )
 def test_triage_result_clamps_out_of_range_trust_score(raw, expected):

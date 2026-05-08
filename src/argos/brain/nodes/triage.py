@@ -23,7 +23,7 @@ class _TriageResult(BaseModel):
     @field_validator("trust_score", mode="before")
     @classmethod
     def _normalize_trust(cls, v):
-        if v is None:
+        if v is None or isinstance(v, bool):
             return None
         if isinstance(v, str):
             s = v.strip().lower()
