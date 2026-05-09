@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
+from argos.crawler.dynamic_fetcher import extract_main_content
 from argos.crawler.user_agents import random_user_agent
 from argos.models.tech_item import TechItem
 
@@ -131,6 +132,18 @@ async def fetch_github_trending(
     return items
 
 
+async def _fetch_article_body(client: httpx.AsyncClient, url: str) -> str:
+    try:
+        response = await _get_with_retry(client, url)
+    except (httpx.HTTPError, RobotsDisallowed):
+        return ""
+    content_type = response.headers.get("content-type", "").lower()
+    if content_type and "html" not in content_type:
+        return ""
+    _title, body = extract_main_content(response.text)
+    return body.strip()
+
+
 async def fetch_hackernews_top(
     client: httpx.AsyncClient,
     limit: int = 30,
@@ -166,10 +179,12 @@ async def fetch_hackernews_top(
                 return None
             fallback_url = f"https://news.ycombinator.com/item?id={item_id}"
             candidate = data.get("url")
+            is_external = False
             if isinstance(candidate, str) and candidate.lower().startswith(
                 ("http://", "https://")
             ):
                 url = candidate
+                is_external = True
             else:
                 url = fallback_url
             title = data.get("title") or ""
@@ -178,8 +193,18 @@ async def fetch_hackernews_top(
                 title = ""
             if not isinstance(text, str):
                 text = ""
-            raw_content = f"{title} {text}".strip() if text else title
-            return {"title": title, "source_url": url, "raw_content": raw_content}
+            if text:
+                raw_content = f"{title} {text}".strip()
+            elif is_external:
+                body = await _fetch_article_body(client, url)
+                raw_content = f"{title}\n\n{body}".strip() if body else title
+            else:
+                raw_content = title
+            return {
+                "title": title,
+                "source_url": url,
+                "raw_content": _truncate_raw_content(raw_content),
+            }
 
     results = await asyncio.gather(*(_fetch_item(i) for i in top_ids))
     return [item for item in results if item is not None]
