@@ -17,6 +17,7 @@ def _state(**kwargs) -> BrainState:
         "source_url": "https://example.com",
         "is_valid": False,
         "trust_score": None,
+        "summary": None,
         "extracted_info": None,
         "related_tech_ids": [],
         "succession_result": None,
@@ -75,6 +76,95 @@ def test_triage_result_clamps_out_of_range_trust_score(raw, expected):
     )
     result = _TriageResult.model_validate_json(payload)
     assert result.trust_score == expected
+
+
+@pytest.mark.asyncio
+async def test_triage_node_extracts_summary():
+    payload = (
+        '{"is_valid": true, "reason": "real", "trust_score": 0.7,'
+        ' "summary": "A short factual blurb."}'
+    )
+    with respx.mock:
+        respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": payload})
+        )
+        result = await triage_node(_state())
+    assert result["summary"] == "A short factual blurb."
+
+
+@pytest.mark.asyncio
+async def test_triage_node_drops_summary_when_invalid():
+    payload = (
+        '{"is_valid": false, "reason": "marketing", "trust_score": 0.1,'
+        ' "summary": "ignored when invalid"}'
+    )
+    with respx.mock:
+        respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": payload})
+        )
+        result = await triage_node(_state())
+    assert result["is_valid"] is False
+    assert result["summary"] is None
+
+
+@pytest.mark.asyncio
+async def test_triage_prompt_uses_configured_summary_language(monkeypatch):
+    from argos.brain.nodes import triage as triage_module
+
+    monkeypatch.setattr(triage_module.settings, "SUMMARY_LANGUAGE", "English")
+    captured: dict = {}
+
+    async def _fake_query(model, prompt, **kwargs):
+        captured["prompt"] = prompt
+        return (
+            '{"is_valid": true, "reason": "x", "trust_score": 0.5,'
+            ' "summary": "An English blurb."}'
+        )
+
+    async def _fake_unload(_model):
+        return None
+
+    monkeypatch.setattr(triage_module, "query_ollama", _fake_query)
+    monkeypatch.setattr(triage_module, "unload_model", _fake_unload)
+
+    result = await triage_node(_state())
+    assert "English" in captured["prompt"]
+    assert result["summary"] == "An English blurb."
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ('"a normal summary"', "a normal summary"),
+        ('"  padded  "', "padded"),
+        ("null", None),
+        ('"   "', None),
+        ('"null"', None),
+        ("false", None),
+        ("42", None),
+    ],
+)
+def test_triage_result_normalizes_summary(raw, expected):
+    from argos.brain.nodes.triage import _TriageResult
+
+    payload = (
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "summary": ' + raw + "}"
+    )
+    result = _TriageResult.model_validate_json(payload)
+    assert result.summary == expected
+
+
+def test_triage_result_truncates_long_summary():
+    from argos.brain.nodes.triage import _SUMMARY_MAX_CHARS, _TriageResult
+
+    long_text = "x" * (_SUMMARY_MAX_CHARS + 200)
+    payload = (
+        '{"is_valid": true, "reason": "y", "trust_score": 0.5, "summary": "'
+        + long_text
+        + '"}'
+    )
+    result = _TriageResult.model_validate_json(payload)
+    assert len(result.summary) == _SUMMARY_MAX_CHARS
 
 @pytest.mark.asyncio
 async def test_embed_node_skips_if_invalid():
@@ -151,6 +241,24 @@ async def test_save_node_persists_trust_score():
     await save_node(_state(is_valid=True, trust_score=0.73), session=session)
     added_item = session.add.call_args[0][0]
     assert added_item.trust_score == 0.73
+
+
+@pytest.mark.asyncio
+async def test_save_node_persists_summary():
+    session = _mock_session_no_existing()
+    await save_node(
+        _state(is_valid=True, summary="A short blurb."), session=session
+    )
+    added_item = session.add.call_args[0][0]
+    assert added_item.summary == "A short blurb."
+
+
+@pytest.mark.asyncio
+async def test_save_node_persists_null_summary_by_default():
+    session = _mock_session_no_existing()
+    await save_node(_state(is_valid=True), session=session)
+    added_item = session.add.call_args[0][0]
+    assert added_item.summary is None
 
 
 @pytest.mark.asyncio

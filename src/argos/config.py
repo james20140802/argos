@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     SLACK_APP_TOKEN: str = ""
     SLACK_CHANNEL_ID: str = ""
 
+    SUMMARY_LANGUAGE: str = "Korean"
+
     @property
     def database_url(self) -> str:
         user = quote(self.POSTGRES_USER, safe="")

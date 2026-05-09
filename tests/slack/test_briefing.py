@@ -16,6 +16,7 @@ def _make_item(title: str, trust_score: float | None = 0.5):
         title=title,
         source_url=f"https://example.com/{title}",
         trust_score=trust_score,
+        summary=None,
     )
 
 

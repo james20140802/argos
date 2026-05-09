@@ -3,12 +3,16 @@ import logging
 from pydantic import BaseModel, StrictBool, field_validator
 from argos.brain.graph_state import BrainState
 from argos.brain.ollama_client import SMALL_MODEL, query_ollama, unload_model
+from argos.config import settings
 
 logger = logging.getLogger(__name__)
 
+_SUMMARY_MAX_CHARS = 500
+
 _TRIAGE_PROMPT = """Analyze the following text and determine if it describes a real technology (tool, library, framework, model, protocol, or platform).
 trust_score reflects substance over hype: 0.0=pure marketing, 0.5=neutral, 1.0=well-evidenced technical detail.
-Respond ONLY with valid JSON: {{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0}}
+summary is a 1-2 sentence factual blurb (max 500 chars) describing what the technology is and why it matters; written in {language}. Use null if is_valid is false.
+Respond ONLY with valid JSON: {{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "..."}}
 
 Text:
 {text}"""
@@ -18,6 +22,7 @@ class _TriageResult(BaseModel):
     is_valid: StrictBool
     reason: str
     trust_score: float | None = None
+    summary: str | None = None
 
     @field_validator("trust_score", mode="before")
     @classmethod
@@ -36,9 +41,24 @@ class _TriageResult(BaseModel):
             return max(0.0, min(1.0, float(v)))
         return None
 
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _normalize_summary(cls, v):
+        if v is None or isinstance(v, bool):
+            return None
+        if not isinstance(v, str):
+            return None
+        s = v.strip()
+        if not s or s.lower() in {"null", "none"}:
+            return None
+        return s[:_SUMMARY_MAX_CHARS]
+
 
 async def triage_node(state: BrainState) -> BrainState:
-    prompt = _TRIAGE_PROMPT.format(text=state["raw_text"][:2000])
+    prompt = _TRIAGE_PROMPT.format(
+        text=state["raw_text"][:2000],
+        language=settings.SUMMARY_LANGUAGE,
+    )
     try:
         raw = await query_ollama(SMALL_MODEL, prompt, keep_alive=0)
         start = raw.find("{")
@@ -46,10 +66,16 @@ async def triage_node(state: BrainState) -> BrainState:
         if start == -1 or end == 0:
             raise ValueError("No JSON found in response")
         result = _TriageResult.model_validate_json(raw[start:end])
-        return {**state, "is_valid": result.is_valid, "trust_score": result.trust_score}
+        summary = result.summary if result.is_valid else None
+        return {
+            **state,
+            "is_valid": result.is_valid,
+            "trust_score": result.trust_score,
+            "summary": summary,
+        }
     except Exception as exc:
         logger.warning("triage_node failed: %r", exc)
-        return {**state, "is_valid": False, "trust_score": None}
+        return {**state, "is_valid": False, "trust_score": None, "summary": None}
     finally:
         try:
             await unload_model(SMALL_MODEL)
