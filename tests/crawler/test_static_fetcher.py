@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -233,8 +233,6 @@ async def test_filter_duplicate_urls_removes_existing() -> None:
 
 async def test_get_with_retry_raises_when_robots_disallows(monkeypatch) -> None:
     """No content GET is issued when robots.txt disallows the URL."""
-    disallowed_url = "https://github.com/trending"
-
     monkeypatch.setattr(
         "argos.crawler.static_fetcher.is_robots_allowed",
         AsyncMock(return_value=False),

@@ -1,5 +1,4 @@
 from __future__ import annotations
-import json
 import logging
 from pydantic import BaseModel, StrictBool, field_validator
 from argos.brain.graph_state import BrainState

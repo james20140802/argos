@@ -86,7 +86,7 @@ async def test_embed_node_skips_if_invalid():
 @pytest.mark.asyncio
 async def test_save_node_skips_if_invalid():
     session = AsyncMock()
-    result = await save_node(_state(is_valid=False), session=session)
+    await save_node(_state(is_valid=False), session=session)
     session.add.assert_not_called()
 
 
