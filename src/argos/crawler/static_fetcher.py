@@ -73,7 +73,7 @@ async def _fetch_github_readme(
         url = f"https://raw.githubusercontent.com/{owner}/{repo}/HEAD/{path}"
         try:
             response = await _get_with_retry(client, url)
-        except httpx.HTTPError:
+        except (httpx.HTTPError, RobotsDisallowed):
             continue
         text = response.text.strip()
         if text:
