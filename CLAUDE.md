@@ -29,17 +29,20 @@ argos/
 │   ├── env.py               # async engine, auto-imports Base.metadata
 │   └── versions/
 ├── src/argos/
+│   ├── cli.py               # `argos` entry point — run / slack / brief subcommands
+│   ├── main.py              # Slack AsyncApp bootstrap (Socket Mode)
 │   ├── config.py            # pydantic-settings, loads .env
 │   ├── database.py          # async engine + async_sessionmaker
-│   └── models/
-│       ├── base.py          # DeclarativeBase, UUID PK mixin, Timestamp mixin
-│       ├── tech_item.py     # Core table — pgvector embedding, category enum
-│       ├── tech_succession.py  # Self-referential FK (predecessor/successor)
-│       ├── user_asset.py    # Keep/Tracking/Archived status
-│       └── track_history.py # Status change audit log
+│   ├── models/              # SQLAlchemy 2.0 models (tech_item, tech_succession, user_asset, track_history)
+│   ├── crawler/             # static_fetcher, dynamic_fetcher (Playwright), pipeline, _robots, user_agents
+│   ├── brain/               # LangGraph pipeline: triage → embed → genealogist → save (+ ollama_client)
+│   └── slack/               # app, blocks, briefing, handlers/, services/
 └── tests/
     ├── conftest.py
-    └── test_models.py       # 35 unit tests (no DB required)
+    ├── test_models.py       # Model unit tests (no DB required)
+    ├── brain/               # triage / genealogist / ollama client coverage
+    ├── crawler/             # fetchers, robots, pipeline (with fixtures)
+    └── slack/               # handlers, blocks, briefing, asset transitions
 ```
 
 ## Database Schema (ERD)
@@ -67,6 +70,11 @@ uv run alembic revision --autogenerate -m "description"  # Generate migration
 uv run alembic upgrade head                              # Apply migrations
 uv run alembic downgrade -1                              # Rollback one step
 
+# Argos CLI (operator entry points)
+uv run argos run [--url URL]...                   # Crawl → brain → save pipeline
+uv run argos slack                                # Start Slack bot in Socket Mode
+uv run argos brief [--channel CID]                # Dispatch today's briefing
+
 # Tests
 uv run pytest tests/ -v                           # Run all tests
 uv run ruff check src tests                       # Lint
@@ -79,6 +87,7 @@ uv run ruff check src tests                       # Lint
 - **Embedding dimension:** Vector(768) — matches nomic-embed-text. If switching models, update `tech_item.py` and create a new Alembic migration.
 - **Enum values:** Use PascalCase for all enum values (Mainstream, Alpha, Replace, Enhance, Fork, Keep, Tracking, Archived).
 - **Python version:** Target >=3.10. Use `from __future__ import annotations` where needed for newer type syntax.
+- **Slack handlers:** Ack within 3s, then do real work in the background. Hold the Ollama model lock across unload→query for Deep Dive so the 8B/32B swap is atomic. Asset status changes use upsert to stay concurrency-safe; every transition is logged to `track_history`. Briefings post one threaded message per item, replies stay in-thread.
 
 ## Git Workflow
 
