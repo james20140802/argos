@@ -89,12 +89,15 @@ def build_category_header_blocks(
 def build_item_blocks(item: TechItem) -> list[dict]:
     score = f"{item.trust_score:.2f}" if item.trust_score is not None else "N/A"
     tech_id = str(item.id)
+    summary = (item.summary or "").strip()
+    header = f"*{item.title}* (trust={score})"
+    body = f"{header}\n{summary}\n{item.source_url}" if summary else f"{header}\n{item.source_url}"
     return [
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*{item.title}* (trust={score})\n{item.source_url}",
+                "text": body,
             },
         },
         {

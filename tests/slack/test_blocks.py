@@ -13,12 +13,19 @@ from argos.slack.blocks import (
 )
 
 
-def _make_item(title: str, trust_score: float | None, tech_id: uuid.UUID | None = None):
+def _make_item(
+    title: str,
+    trust_score: float | None,
+    tech_id: uuid.UUID | None = None,
+    *,
+    summary: str | None = None,
+):
     item = SimpleNamespace(
         id=tech_id or uuid.uuid4(),
         title=title,
         source_url=f"https://example.com/{title}",
         trust_score=trust_score,
+        summary=summary,
     )
     return item
 
@@ -175,3 +182,30 @@ def test_item_blocks_renders_url_for_unfurl(tech_id):
     item = _make_item("LinkItem", 0.5, tech_id)
     blocks = build_item_blocks(item)
     assert item.source_url in blocks[0]["text"]["text"]
+
+
+def test_item_blocks_renders_summary_when_present(tech_id):
+    item = _make_item("SumItem", 0.7, tech_id, summary="짧은 요약 한 줄.")
+    blocks = build_item_blocks(item)
+    text = blocks[0]["text"]["text"]
+    assert "짧은 요약 한 줄." in text
+    # Layout: title line, summary line, URL line — summary lives between them.
+    title_idx = text.index("*SumItem*")
+    summary_idx = text.index("짧은 요약 한 줄.")
+    url_idx = text.index(item.source_url)
+    assert title_idx < summary_idx < url_idx
+
+
+def test_item_blocks_omits_summary_line_when_none(tech_id):
+    item = _make_item("NoSumItem", 0.4, tech_id, summary=None)
+    blocks = build_item_blocks(item)
+    text = blocks[0]["text"]["text"]
+    # Title and URL should be on adjacent lines with no extra blank line.
+    assert text == f"*NoSumItem* (trust=0.40)\n{item.source_url}"
+
+
+def test_item_blocks_treats_blank_summary_as_absent(tech_id):
+    item = _make_item("BlankSum", 0.4, tech_id, summary="   \n  ")
+    blocks = build_item_blocks(item)
+    text = blocks[0]["text"]["text"]
+    assert text == f"*BlankSum* (trust=0.40)\n{item.source_url}"
