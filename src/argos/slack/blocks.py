@@ -12,6 +12,9 @@ _CATEGORY_LABELS: dict[CategoryType, str] = {
 
 _ORDERED_CATEGORIES = (CategoryType.MAINSTREAM, CategoryType.ALPHA)
 
+# Slack section blocks reject text longer than 3000 chars with `invalid_blocks`.
+SLACK_SECTION_TEXT_LIMIT = 3000
+
 ITEM_STATUS_BLOCK_ID = "argos_item_status"
 
 _STATUS_LABELS: dict[AssetStatus, str] = {
@@ -91,7 +94,22 @@ def build_item_blocks(item: TechItem) -> list[dict]:
     tech_id = str(item.id)
     summary = (item.summary or "").strip()
     header = f"*{item.title}* (trust={score})"
+
+    # Title (up to 500), summary (up to 500), and URL (up to 2048) can together
+    # exceed Slack's 3000-char section limit. Header and URL must stay intact
+    # (URL drives link unfurl), so trim the summary to fit. If header+URL alone
+    # already overflow — extremely rare but possible at column maxima — clamp
+    # the entire body as a final guard.
+    if summary:
+        budget = SLACK_SECTION_TEXT_LIMIT - len(header) - len(item.source_url) - 2
+        if budget <= 1:
+            summary = ""
+        elif budget < len(summary):
+            summary = summary[: budget - 1].rstrip() + "…"
+
     body = f"{header}\n{summary}\n{item.source_url}" if summary else f"{header}\n{item.source_url}"
+    if len(body) > SLACK_SECTION_TEXT_LIMIT:
+        body = body[: SLACK_SECTION_TEXT_LIMIT - 1] + "…"
     return [
         {
             "type": "section",

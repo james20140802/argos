@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from argos.models.tech_item import CategoryType
 from argos.slack.blocks import (
+    SLACK_SECTION_TEXT_LIMIT,
     build_briefing_blocks,
     build_category_header_blocks,
     build_header_blocks,
@@ -209,3 +210,43 @@ def test_item_blocks_treats_blank_summary_as_absent(tech_id):
     blocks = build_item_blocks(item)
     text = blocks[0]["text"]["text"]
     assert text == f"*BlankSum* (trust=0.40)\n{item.source_url}"
+
+
+def test_item_blocks_caps_text_at_slack_section_limit(tech_id):
+    # Worst case from column maxima: title=500, summary=500, source_url=2048.
+    # Combined with formatting this exceeds Slack's 3000-char section limit.
+    long_title = "T" * 500
+    long_url = "https://example.com/" + ("p" * (2048 - len("https://example.com/")))
+    long_summary = "S" * 500
+    item = SimpleNamespace(
+        id=tech_id,
+        title=long_title,
+        source_url=long_url,
+        trust_score=0.5,
+        summary=long_summary,
+    )
+    blocks = build_item_blocks(item)
+    text = blocks[0]["text"]["text"]
+    assert len(text) <= SLACK_SECTION_TEXT_LIMIT
+    # URL must stay intact for unfurl.
+    assert long_url in text
+    # Title must stay intact too.
+    assert f"*{long_title}*" in text
+
+
+def test_item_blocks_drops_summary_when_header_and_url_already_overflow(tech_id):
+    long_title = "T" * 500
+    # URL that, with header and newlines, leaves no room for any summary.
+    long_url = "https://example.com/" + ("p" * (SLACK_SECTION_TEXT_LIMIT - 540))
+    item = SimpleNamespace(
+        id=tech_id,
+        title=long_title,
+        source_url=long_url,
+        trust_score=0.5,
+        summary="some summary that should be dropped",
+    )
+    blocks = build_item_blocks(item)
+    text = blocks[0]["text"]["text"]
+    assert len(text) <= SLACK_SECTION_TEXT_LIMIT
+    assert "some summary" not in text
+    assert long_url in text
