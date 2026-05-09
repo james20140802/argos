@@ -43,6 +43,7 @@ async def save_node(state: BrainState, session: AsyncSession) -> BrainState:
         source_url=state["source_url"],
         raw_content=state["raw_text"],
         category=CategoryType.ALPHA,
+        trust_score=state.get("trust_score"),
     )
 
     extracted_info = state.get("extracted_info") or {}

@@ -16,6 +16,7 @@ def _state(**kwargs) -> BrainState:
         "raw_text": "sample text",
         "source_url": "https://example.com",
         "is_valid": False,
+        "trust_score": None,
         "extracted_info": None,
         "related_tech_ids": [],
         "succession_result": None,
@@ -24,21 +25,25 @@ def _state(**kwargs) -> BrainState:
 
 @pytest.mark.asyncio
 async def test_triage_node_valid():
+    payload = '{"is_valid": true, "reason": "real tool", "trust_score": 0.82}'
     with respx.mock:
         respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
-            return_value=httpx.Response(200, json={"response": '{"is_valid": true, "reason": "real tool"}'})
+            return_value=httpx.Response(200, json={"response": payload})
         )
         result = await triage_node(_state())
     assert result["is_valid"] is True
+    assert result["trust_score"] == 0.82
 
 @pytest.mark.asyncio
 async def test_triage_node_invalid():
+    payload = '{"is_valid": false, "reason": "marketing", "trust_score": 0.1}'
     with respx.mock:
         respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
-            return_value=httpx.Response(200, json={"response": '{"is_valid": false, "reason": "marketing"}'})
+            return_value=httpx.Response(200, json={"response": payload})
         )
         result = await triage_node(_state())
     assert result["is_valid"] is False
+    assert result["trust_score"] == 0.1
 
 @pytest.mark.asyncio
 async def test_triage_node_parse_error():
@@ -48,6 +53,28 @@ async def test_triage_node_parse_error():
         )
         result = await triage_node(_state())
     assert result["is_valid"] is False
+    assert result["trust_score"] is None
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("1.5", 1.0),
+        ("-0.2", 0.0),
+        ('"high"', None),
+        ("null", None),
+        ("true", None),
+        ("false", None),
+    ],
+)
+def test_triage_result_clamps_out_of_range_trust_score(raw, expected):
+    from argos.brain.nodes.triage import _TriageResult
+
+    payload = (
+        '{"is_valid": true, "reason": "x", "trust_score": ' + raw + '}'
+    )
+    result = _TriageResult.model_validate_json(payload)
+    assert result.trust_score == expected
 
 @pytest.mark.asyncio
 async def test_embed_node_skips_if_invalid():
@@ -116,6 +143,14 @@ async def test_save_node_attaches_embedding():
     )
     added_item = session.add.call_args[0][0]
     assert added_item.embedding == embedding
+
+
+@pytest.mark.asyncio
+async def test_save_node_persists_trust_score():
+    session = _mock_session_no_existing()
+    await save_node(_state(is_valid=True, trust_score=0.73), session=session)
+    added_item = session.add.call_args[0][0]
+    assert added_item.trust_score == 0.73
 
 
 @pytest.mark.asyncio
