@@ -4,13 +4,13 @@ import logging
 import uuid
 
 from sqlalchemy import select
-
-logger = logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.graph_state import BrainState
 from argos.models.tech_item import CategoryType, TechItem
 from argos.models.tech_succession import RelationType, TechSuccession
+
+logger = logging.getLogger(__name__)
 
 _RELATION_MAP: dict[str, RelationType] = {
     "Replace": RelationType.REPLACE,
