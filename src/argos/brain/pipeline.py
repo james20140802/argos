@@ -35,6 +35,8 @@ async def run_brain_pipeline(
         "raw_text": raw_text,
         "source_url": source_url,
         "is_valid": False,
+        "trust_score": None,
+        "summary": None,
         "extracted_info": None,
         "related_tech_ids": [],
         "succession_result": None,
