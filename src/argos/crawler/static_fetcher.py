@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
-from argos.crawler.dynamic_fetcher import extract_main_content
+from argos.crawler.dynamic_fetcher import _is_safe_url, extract_main_content
 from argos.crawler.user_agents import random_user_agent
 from argos.models.tech_item import TechItem
 
@@ -133,6 +133,8 @@ async def fetch_github_trending(
 
 
 async def _fetch_article_body(client: httpx.AsyncClient, url: str) -> str:
+    if not await _is_safe_url(url):
+        return ""
     try:
         response = await _get_with_retry(client, url)
     except (httpx.HTTPError, RobotsDisallowed):

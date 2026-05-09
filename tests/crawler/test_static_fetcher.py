@@ -457,6 +457,38 @@ async def test_fetch_hackernews_top_falls_back_to_title_when_body_fetch_fails(
     assert result[0]["raw_content"] == "Title only"
 
 
+async def test_fetch_hackernews_top_skips_body_fetch_for_unsafe_url(monkeypatch) -> None:
+    """SSRF guard: an HN story whose `url` resolves to a private/internal
+    host must not be fetched for body enrichment — fall back to title."""
+    from argos.crawler import static_fetcher
+
+    monkeypatch.setattr(
+        static_fetcher, "_is_safe_url", AsyncMock(return_value=False)
+    )
+
+    top_ids = [1]
+    item_payload = {
+        "id": 1,
+        "title": "Suspicious",
+        "url": "http://internal.host/secret",
+        "text": "",
+    }
+
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/1.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        # No mock for internal.host — if a fetch happens, respx raises.
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert result[0]["raw_content"] == "Suspicious"
+
+
 async def test_fetch_hackernews_top_keeps_text_field_for_ask_hn() -> None:
     """Ask HN-style stories with a `text` field skip the body fetch entirely."""
     top_ids = [7]
