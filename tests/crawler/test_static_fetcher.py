@@ -28,11 +28,31 @@ def test_random_user_agent_returns_from_list() -> None:
     assert ua in USER_AGENTS
 
 
+def _stub_github_readmes_missing() -> None:
+    """Register catch-all 404s so README enrichment fetches don't blow up
+    tests that don't care about README content."""
+    respx.get(url__regex=r"https://raw\.githubusercontent\.com/.*").mock(
+        return_value=httpx.Response(404, text="not found")
+    )
+
+
+def _stub_external_article_bodies_missing() -> None:
+    """Register catch-all 404s for arbitrary external HN-link hosts so body
+    enrichment falls back to title in tests that don't care about it."""
+    respx.get(url__regex=r"https?://example\.com/.*").mock(
+        return_value=httpx.Response(404, text="not found")
+    )
+    respx.get(url__regex=r"https?://example\.com/robots\.txt").mock(
+        return_value=httpx.Response(404, text="not found")
+    )
+
+
 async def test_fetch_github_trending_parses_repos() -> None:
     with respx.mock:
         respx.get("https://github.com/trending").mock(
             return_value=httpx.Response(200, text=_github_trending_html())
         )
+        _stub_github_readmes_missing()
         async with httpx.AsyncClient() as client:
             items = await fetch_github_trending(client)
 
@@ -53,6 +73,7 @@ async def test_fetch_github_trending_sends_user_agent_header() -> None:
 
     with respx.mock:
         respx.get("https://github.com/trending").mock(side_effect=capture)
+        _stub_github_readmes_missing()
         async with httpx.AsyncClient() as client:
             await fetch_github_trending(client)
 
@@ -75,6 +96,7 @@ async def test_fetch_hackernews_top_returns_items() -> None:
             respx.get(
                 f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json"
             ).mock(return_value=httpx.Response(200, text=json.dumps(data)))
+        _stub_external_article_bodies_missing()
 
         async with httpx.AsyncClient() as client:
             result = await fetch_hackernews_top(client, limit=3)
@@ -111,6 +133,7 @@ async def test_fetch_hackernews_top_passes_real_robots_check(monkeypatch) -> Non
             respx.get(
                 f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json"
             ).mock(return_value=httpx.Response(200, text=json.dumps(data)))
+        _stub_external_article_bodies_missing()
 
         async with httpx.AsyncClient() as client:
             result = await fetch_hackernews_top(client, limit=2)
@@ -177,6 +200,7 @@ async def test_fetch_github_trending_retries_on_transient_5xx(monkeypatch) -> No
 
     with respx.mock:
         respx.get("https://github.com/trending").mock(side_effect=handler)
+        _stub_github_readmes_missing()
         async with httpx.AsyncClient() as client:
             items = await fetch_github_trending(client)
 
@@ -259,6 +283,7 @@ async def test_get_with_retry_retries_on_429(monkeypatch) -> None:
 
     with respx.mock:
         respx.get("https://github.com/trending").mock(side_effect=handler)
+        _stub_github_readmes_missing()
         async with httpx.AsyncClient() as client:
             items = await fetch_github_trending(client)
 
@@ -300,3 +325,190 @@ async def test_filter_duplicate_urls_deduplicates_within_batch() -> None:
     result = await filter_duplicate_urls(mock_session, items)
     assert len(result) == 1
     assert result[0]["title"] == "first"
+
+
+async def test_fetch_github_trending_merges_readme_into_raw_content() -> None:
+    readme_body = "# repo1\n\nA full README with code examples and benchmarks."
+    with respx.mock:
+        respx.get("https://github.com/trending").mock(
+            return_value=httpx.Response(200, text=_github_trending_html())
+        )
+        respx.get(
+            "https://raw.githubusercontent.com/owner1/repo1/HEAD/README.md"
+        ).mock(return_value=httpx.Response(200, text=readme_body))
+        respx.get(
+            "https://raw.githubusercontent.com/owner2/repo2/HEAD/README.md"
+        ).mock(return_value=httpx.Response(404, text="not found"))
+        respx.get(
+            "https://raw.githubusercontent.com/owner2/repo2/HEAD/README.rst"
+        ).mock(return_value=httpx.Response(404, text="not found"))
+        async with httpx.AsyncClient() as client:
+            items = await fetch_github_trending(client)
+
+    by_url = {i["source_url"]: i for i in items}
+    enriched = by_url["https://github.com/owner1/repo1"]
+    plain = by_url["https://github.com/owner2/repo2"]
+    assert "code examples and benchmarks" in enriched["raw_content"]
+    assert enriched["raw_content"].startswith("A cool repository")
+    assert plain["raw_content"] == "Another awesome repository."
+
+
+async def test_fetch_github_trending_falls_back_to_rst_readme() -> None:
+    rst_body = "repo1 README written in reStructuredText."
+    with respx.mock:
+        respx.get("https://github.com/trending").mock(
+            return_value=httpx.Response(200, text=_github_trending_html())
+        )
+        respx.get(
+            "https://raw.githubusercontent.com/owner1/repo1/HEAD/README.md"
+        ).mock(return_value=httpx.Response(404, text="not found"))
+        respx.get(
+            "https://raw.githubusercontent.com/owner1/repo1/HEAD/README.rst"
+        ).mock(return_value=httpx.Response(200, text=rst_body))
+        respx.get(
+            url__regex=r"https://raw\.githubusercontent\.com/owner2/.*"
+        ).mock(return_value=httpx.Response(404, text="not found"))
+        async with httpx.AsyncClient() as client:
+            items = await fetch_github_trending(client)
+
+    enriched = next(i for i in items if i["source_url"].endswith("/owner1/repo1"))
+    assert "reStructuredText" in enriched["raw_content"]
+
+
+async def test_fetch_github_trending_truncates_oversized_readme() -> None:
+    huge_readme = "x" * 20_000
+    with respx.mock:
+        respx.get("https://github.com/trending").mock(
+            return_value=httpx.Response(200, text=_github_trending_html())
+        )
+        respx.get(
+            url__regex=r"https://raw\.githubusercontent\.com/.*/README\.md"
+        ).mock(return_value=httpx.Response(200, text=huge_readme))
+        async with httpx.AsyncClient() as client:
+            items = await fetch_github_trending(client)
+
+    for item in items:
+        assert len(item["raw_content"].encode("utf-8")) <= 8 * 1024
+
+
+async def test_fetch_hackernews_top_enriches_external_link_with_body() -> None:
+    article_html = """
+        <html><body><article>
+            <h1>Headline</h1>
+            <p>Detailed analysis with benchmarks, code samples, and prior art comparison.</p>
+        </article></body></html>
+    """
+    top_ids = [42]
+    item_payload = {
+        "id": 42,
+        "title": "Cool announcement",
+        "url": "https://example.com/post",
+        "text": "",
+    }
+
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/42.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        respx.get("https://example.com/post").mock(
+            return_value=httpx.Response(
+                200, text=article_html, headers={"content-type": "text/html"}
+            )
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert "benchmarks" in result[0]["raw_content"]
+    assert result[0]["raw_content"].startswith("Cool announcement")
+
+
+async def test_fetch_hackernews_top_falls_back_to_title_when_body_fetch_fails(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "argos.crawler.static_fetcher.asyncio.sleep", AsyncMock()
+    )
+    top_ids = [99]
+    item_payload = {
+        "id": 99,
+        "title": "Title only",
+        "url": "https://broken.example.com/x",
+        "text": "",
+    }
+
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/99.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        respx.get("https://broken.example.com/x").mock(
+            return_value=httpx.Response(500, text="boom")
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert result[0]["raw_content"] == "Title only"
+
+
+async def test_fetch_hackernews_top_skips_body_fetch_for_unsafe_url(monkeypatch) -> None:
+    """SSRF guard: an HN story whose `url` resolves to a private/internal
+    host must not be fetched for body enrichment — fall back to title."""
+    from argos.crawler import static_fetcher
+
+    monkeypatch.setattr(
+        static_fetcher, "_is_safe_url", AsyncMock(return_value=False)
+    )
+
+    top_ids = [1]
+    item_payload = {
+        "id": 1,
+        "title": "Suspicious",
+        "url": "http://internal.host/secret",
+        "text": "",
+    }
+
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/1.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        # No mock for internal.host — if a fetch happens, respx raises.
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert result[0]["raw_content"] == "Suspicious"
+
+
+async def test_fetch_hackernews_top_keeps_text_field_for_ask_hn() -> None:
+    """Ask HN-style stories with a `text` field skip the body fetch entirely."""
+    top_ids = [7]
+    item_payload = {
+        "id": 7,
+        "title": "Ask HN: foo?",
+        "url": None,
+        "text": "Body provided in the HN post itself.",
+    }
+
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/7.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert result[0]["source_url"] == "https://news.ycombinator.com/item?id=7"
+    assert "Body provided" in result[0]["raw_content"]

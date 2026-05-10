@@ -8,12 +8,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
+from argos.crawler.dynamic_fetcher import _is_safe_url, extract_main_content
 from argos.crawler.user_agents import random_user_agent
 from argos.models.tech_item import TechItem
 
 _HN_CONCURRENCY = 8
 _RETRY_MAX_ATTEMPTS = 3
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_RAW_CONTENT_MAX_BYTES = 8 * 1024
+_README_CANDIDATE_PATHS = ("README.md", "README.rst")
 
 
 async def _get_with_retry(
@@ -47,6 +50,37 @@ async def _get_with_retry(
     raise httpx.HTTPError(f"exhausted retries for {url}")
 
 
+def _truncate_raw_content(text: str, limit: int = _RAW_CONTENT_MAX_BYTES) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    return encoded[:limit].decode("utf-8", errors="ignore")
+
+
+def _parse_github_repo_slug(href: str) -> tuple[str, str] | None:
+    parts = [p for p in href.strip("/").split("/") if p]
+    if len(parts) < 2:
+        return None
+    return parts[0], parts[1]
+
+
+async def _fetch_github_readme(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+) -> str | None:
+    for path in _README_CANDIDATE_PATHS:
+        url = f"https://raw.githubusercontent.com/{owner}/{repo}/HEAD/{path}"
+        try:
+            response = await _get_with_retry(client, url)
+        except (httpx.HTTPError, RobotsDisallowed):
+            continue
+        text = response.text.strip()
+        if text:
+            return text
+    return None
+
+
 async def fetch_github_trending(
     client: httpx.AsyncClient,
     language: str | None = None,
@@ -55,7 +89,7 @@ async def fetch_github_trending(
     response = await _get_with_retry(client, url)
 
     soup = BeautifulSoup(response.text, "html.parser")
-    items: list[dict] = []
+    parsed: list[tuple[str, str, str, tuple[str, str] | None]] = []
 
     for article in soup.select("article.Box-row"):
         anchor = article.select_one("h2.h3.lh-condensed a")
@@ -68,10 +102,48 @@ async def fetch_github_trending(
         source_url = f"https://github.com{href}"
         title = anchor.get_text(strip=True)
         description_tag = article.select_one("p.col-9.color-fg-muted") or article.find("p")
-        raw_content = description_tag.get_text(strip=True) if description_tag else title
-        items.append({"title": title, "source_url": source_url, "raw_content": raw_content})
+        description = description_tag.get_text(strip=True) if description_tag else title
+        parsed.append((title, source_url, description, _parse_github_repo_slug(href)))
+
+    semaphore = asyncio.Semaphore(_HN_CONCURRENCY)
+
+    async def _readme_for(slug: tuple[str, str] | None) -> str | None:
+        if slug is None:
+            return None
+        async with semaphore:
+            return await _fetch_github_readme(client, slug[0], slug[1])
+
+    readmes = await asyncio.gather(*(_readme_for(slug) for *_, slug in parsed))
+
+    items: list[dict] = []
+    for (title, source_url, description, _slug), readme in zip(parsed, readmes):
+        if readme:
+            combined = f"{description}\n\n{readme}" if description else readme
+        else:
+            combined = description
+        items.append(
+            {
+                "title": title,
+                "source_url": source_url,
+                "raw_content": _truncate_raw_content(combined),
+            }
+        )
 
     return items
+
+
+async def _fetch_article_body(client: httpx.AsyncClient, url: str) -> str:
+    if not await _is_safe_url(url):
+        return ""
+    try:
+        response = await _get_with_retry(client, url)
+    except (httpx.HTTPError, RobotsDisallowed):
+        return ""
+    content_type = response.headers.get("content-type", "").lower()
+    if content_type and "html" not in content_type:
+        return ""
+    _title, body = extract_main_content(response.text)
+    return body.strip()
 
 
 async def fetch_hackernews_top(
@@ -109,10 +181,12 @@ async def fetch_hackernews_top(
                 return None
             fallback_url = f"https://news.ycombinator.com/item?id={item_id}"
             candidate = data.get("url")
+            is_external = False
             if isinstance(candidate, str) and candidate.lower().startswith(
                 ("http://", "https://")
             ):
                 url = candidate
+                is_external = True
             else:
                 url = fallback_url
             title = data.get("title") or ""
@@ -121,8 +195,18 @@ async def fetch_hackernews_top(
                 title = ""
             if not isinstance(text, str):
                 text = ""
-            raw_content = f"{title} {text}".strip() if text else title
-            return {"title": title, "source_url": url, "raw_content": raw_content}
+            if text:
+                raw_content = f"{title} {text}".strip()
+            elif is_external:
+                body = await _fetch_article_body(client, url)
+                raw_content = f"{title}\n\n{body}".strip() if body else title
+            else:
+                raw_content = title
+            return {
+                "title": title,
+                "source_url": url,
+                "raw_content": _truncate_raw_content(raw_content),
+            }
 
     results = await asyncio.gather(*(_fetch_item(i) for i in top_ids))
     return [item for item in results if item is not None]
