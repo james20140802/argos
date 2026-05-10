@@ -149,6 +149,41 @@ slack/services/
 
 ---
 
+---
+
+## MVP 다듬기 (병행 처리)
+
+두 에픽과 별개로 현재 MVP의 체감 품질을 높이는 개선 작업.
+
+### SAN-37: Keep 목록 조회 (포트폴리오)
+
+Slack slash command(`/argos portfolio` 또는 `@argos portfolio`)로 Keep-ed asset 목록 조회.
+- Block Kit 카드: 기술명, URL, Keep 날짜, last_monitored_at
+- 각 항목에 "Untrack(Archive)" 버튼
+- `briefing_query.py`에 `fetch_user_portfolio()` 추가
+
+### SAN-38: `argos run` 실행 결과 요약
+
+파이프라인 완료 후 콘솔 요약 출력:
+```
+✅ argos run 완료 (2026-05-11 09:00)
+  수집: 87개  →  유효: 34개  →  저장(신규): 21개
+  소스별: GitHub 12 / HN 8 / RSS 6 / arXiv 4
+  소요 시간: 4m 32s
+```
+
+### SAN-39: Genealogist cold start 처리
+
+DB 아이템 수 < N(기본 50)이면 genealogist 노드 스킵, 32B 모델 로드 낭비 방지.
+- `UserConfig`에 `genealogist.min_db_items` 추가
+
+### SAN-40: `limit_per_category` config화
+
+`briefing_query.py`의 하드코딩 `limit_per_category=5`를 `UserConfig`(`briefing.limit_per_category`, 기본 10)로 이동.
+SAN-33(category assignment) 완료 후 Mainstream/Alpha 균형 검증 필요.
+
+---
+
 ## Out of Scope
 
 - UX 개선 (브리핑 카드 레이아웃, TOP N 큐레이션) — 별도 epic
