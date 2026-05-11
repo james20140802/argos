@@ -11,6 +11,7 @@ _SUMMARY_MAX_CHARS = 500
 _MAX_INTERESTS = 10
 _INTEREST_TRUST_BUMP = 0.1
 _TERM_MAX_CHARS = 64
+_TRIAGE_TEXT_MAX_CHARS = 2000
 
 _TRIAGE_PROMPT = """Analyze the following text and determine if it describes a real technology (tool, library, framework, model, protocol, or platform).
 trust_score reflects substance over hype: 0.0=pure marketing, 0.5=neutral, 1.0=well-evidenced technical detail.
@@ -103,14 +104,16 @@ def _build_interests_block(topics: list[str], exclusions: list[str]) -> str:
 
 
 def _apply_interest_rules(
-    raw_text: str,
+    triage_text: str,
     result: _TriageResult,
     topics: list[str],
     exclusions: list[str],
 ) -> tuple[bool, float | None, str | None]:
     # NOTE: substring matching is intentional for v1; a word-boundary regex is a
     # follow-up if false positives (e.g. "crypto" matching "cryptography") prove noisy.
-    haystack = (raw_text or "") + " " + (result.summary or "")
+    # triage_text must be the same truncated window passed to the LLM so deterministic
+    # rules and the model decision stay consistent (see ARG-50 review).
+    haystack = (triage_text or "") + " " + (result.summary or "")
     haystack_lower = haystack.lower()
 
     for term in exclusions:
@@ -133,8 +136,9 @@ async def triage_node(state: BrainState) -> BrainState:
     topics = _normalize_terms(settings.user.interests.topics)
     exclusions = _normalize_terms(settings.user.interests.exclusions)
     interests_block = _build_interests_block(topics, exclusions)
+    triage_text = (state["raw_text"] or "")[:_TRIAGE_TEXT_MAX_CHARS]
     prompt = _TRIAGE_PROMPT.format(
-        text=state["raw_text"][:2000],
+        text=triage_text,
         language=settings.user.slack.summary_language,
         interests_block=interests_block,
     )
@@ -149,7 +153,7 @@ async def triage_node(state: BrainState) -> BrainState:
 
         if topics or exclusions:
             is_valid, trust_score, summary = _apply_interest_rules(
-                state["raw_text"], result, topics, exclusions
+                triage_text, result, topics, exclusions
             )
         else:
             is_valid = result.is_valid

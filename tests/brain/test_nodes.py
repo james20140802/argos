@@ -878,6 +878,64 @@ async def test_triage_prompt_caps_topics_at_max(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
+async def test_triage_exclusion_past_window_does_not_force_pass(monkeypatch):
+    """Exclusion terms beyond the LLM truncation window must not flip the verdict.
+
+    Regression for ARG-50 review: deterministic rules must scan the same
+    truncated text passed to the model.
+    """
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=["crypto"])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.7, "summary": "shiny"}',
+        captured,
+    )
+
+    # Push the exclusion term past the 2000-char triage window.
+    head = "A clean RAG pipeline article. " * 100
+    assert len(head) > 2000
+    raw_text = head + " (footer mentions crypto wallets)"
+
+    state = _state(raw_text=raw_text)
+    result = await triage_node(state)
+
+    # Exclusion is outside the LLM-visible window, so the verdict must stand.
+    assert result["is_valid"] is True
+    assert result["trust_score"] == pytest.approx(0.7)
+    assert result["summary"] == "shiny"
+
+
+@pytest.mark.asyncio
+async def test_triage_topic_past_window_does_not_bump_trust(monkeypatch):
+    """Topic terms beyond the LLM truncation window must not bump trust_score."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=["RAG"], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "summary": "ok"}',
+        captured,
+    )
+
+    head = "Unrelated boilerplate filler sentence. " * 100
+    assert len(head) > 2000
+    raw_text = head + " RAG appears only here in the trailing section."
+
+    state = _state(raw_text=raw_text)
+    result = await triage_node(state)
+
+    # Topic match is outside the visible window: no trust bump should fire.
+    assert result["is_valid"] is True
+    assert result["trust_score"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
 async def test_triage_normalizes_blank_and_non_string_terms(monkeypatch):
     from argos.brain.nodes import triage as triage_module
 
