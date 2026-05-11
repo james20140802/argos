@@ -59,15 +59,22 @@ async def test_dispatch_posts_header_then_threaded_items():
     }
     mock_client, mock_app, session_ctx = _patch_dispatch(items_by_category)
 
+    fetch_mock = AsyncMock(return_value=items_by_category)
     with patch(
         "argos.slack.briefing.AsyncSessionLocal", return_value=session_ctx
     ), patch(
         "argos.slack.briefing.fetch_today_briefing",
-        AsyncMock(return_value=items_by_category),
+        fetch_mock,
     ), patch("argos.slack.briefing.build_app", return_value=mock_app):
+        from argos.config import settings
+
         result = await dispatch_daily_briefing(channel="C999")
 
     assert result == "1700000000.001"
+    # fetch_today_briefing should receive the configured limit_per_category
+    assert fetch_mock.await_args.kwargs["limit_per_category"] == (
+        settings.user.briefing.limit_per_category
+    )
     calls = mock_client.chat_postMessage.await_args_list
     # 1 header + 2 category headers + 3 item replies
     assert len(calls) == 1 + 2 + 3

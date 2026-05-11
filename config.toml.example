@@ -9,6 +9,8 @@ summary_language = "Korean"
 [briefing]
 time = "07:00"
 weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+# Max items surfaced per category (Mainstream / Alpha) in each daily briefing.
+limit_per_category = 10
 
 [interests]
 topics = ["RAG", "LLM inference", "vector database"]

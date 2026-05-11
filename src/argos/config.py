@@ -41,6 +41,7 @@ class SlackConfig(BaseModel):
 class BriefingConfig(BaseModel):
     time: str = "07:00"
     weekdays: list[str] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    limit_per_category: int = 10
 
 
 class InterestsConfig(BaseModel):

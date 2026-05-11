@@ -54,6 +54,20 @@ def test_user_config_partial_toml_preserves_defaults(tmp_path):
     assert cfg.ollama.model_deepdive == "qwen3:32b"
 
 
+def test_briefing_config_limit_per_category_default():
+    cfg = UserConfig()
+    assert cfg.briefing.limit_per_category == 10
+
+
+def test_briefing_config_limit_per_category_toml_override(tmp_path):
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_bytes(b"[briefing]\nlimit_per_category = 3\n")
+    cfg = UserConfig.load(path=toml_file)
+    assert cfg.briefing.limit_per_category == 3
+    # Other briefing defaults are preserved
+    assert cfg.briefing.time == "07:00"
+
+
 def test_settings_facade_exposes_secrets_and_user(tmp_path, monkeypatch):
     monkeypatch.setenv("POSTGRES_USER", "facadeuser")
     toml_file = tmp_path / "config.toml"
