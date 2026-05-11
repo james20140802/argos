@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 
 from argos import config_store
-from argos.init_wizard import WizardAbort, WizardStepError
+from argos.init_wizard import WizardAbort, WizardCancel, WizardStepError
 from argos.init_wizard.steps.healthcheck import run_healthcheck_step
 from argos.init_wizard.steps.infra import run_infra_step
 from argos.init_wizard.steps.interests import run_interests_step
@@ -64,10 +64,23 @@ def _user_config(path: Path | None = None):
 
 
 def _handle(exc: BaseException) -> int:
-    """Translate a :class:`WizardAbort` / :class:`WizardStepError` into an exit code."""
-    if isinstance(exc, WizardAbort):
+    """Translate a :class:`WizardAbort` / :class:`WizardStepError` into an exit code.
+
+    Exit-code semantics:
+    * :class:`WizardCancel` — user explicitly chose to abort (Ctrl-C at a
+      prompt).  Not a failure; exits 0.
+    * :class:`WizardAbort` (non-cancel) — real failure: missing binary,
+      validation exhausted, non-interactive run with no valid default, etc.
+      Exits 1 so CI/automation can detect the failed setup.
+    * :class:`WizardStepError` — step-level failure with an actionable hint.
+      Exits 1.
+    """
+    if isinstance(exc, WizardCancel):
         print(f"\n{exc}")
         return 0
+    if isinstance(exc, WizardAbort):
+        print(f"\nerror: {exc}")
+        return 1
     if isinstance(exc, WizardStepError):
         print(f"\nerror: {exc}")
         if exc.hint:

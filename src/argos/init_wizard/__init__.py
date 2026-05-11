@@ -11,7 +11,26 @@ from __future__ import annotations
 
 
 class WizardAbort(RuntimeError):
-    """User-initiated abort or precondition failure that should exit cleanly (code 0)."""
+    """Precondition or validation failure that should exit non-zero (code 1).
+
+    Raised when a real failure prevents the wizard from completing: missing
+    required binaries, validation loop exhausted, non-interactive mode running
+    out of valid defaults, etc.  Automation and CI can detect this as a failed
+    run via the non-zero exit code.
+
+    For explicit user-initiated cancellations (e.g. Ctrl-C at a prompt) use
+    the :class:`WizardCancel` subclass, which exits with code 0.
+    """
+
+
+class WizardCancel(WizardAbort):
+    """Explicit user-initiated cancel that should exit cleanly (code 0).
+
+    Raised when the user consciously aborts the wizard (e.g. Ctrl-C / EOF at
+    an interactive prompt).  Unlike the base :class:`WizardAbort`, this is not
+    a failure — the user simply chose not to continue — so the process exits
+    with code 0.
+    """
 
 
 class WizardStepError(RuntimeError):
@@ -22,4 +41,4 @@ class WizardStepError(RuntimeError):
         self.hint = hint
 
 
-__all__ = ["WizardAbort", "WizardStepError"]
+__all__ = ["WizardAbort", "WizardCancel", "WizardStepError"]

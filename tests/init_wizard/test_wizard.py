@@ -4,7 +4,7 @@ import textwrap
 
 import pytest
 
-from argos.init_wizard import WizardAbort, WizardStepError, wizard
+from argos.init_wizard import WizardAbort, WizardCancel, WizardStepError, wizard
 
 
 @pytest.fixture(autouse=True)
@@ -59,14 +59,47 @@ def test_run_full_returns_one_when_healthcheck_fails(tmp_path, monkeypatch):
     assert rc == 1
 
 
-def test_run_full_handles_wizard_abort_with_zero_exit(tmp_path, monkeypatch, capsys):
+def test_run_full_precheck_failure_exits_nonzero(tmp_path, monkeypatch, capsys):
+    """WizardAbort from precheck (missing binary) must exit 1, not 0.
+
+    Regression for P1: _handle used to return 0 for all WizardAbort, masking
+    real failures in CI/automation.
+    """
     def boom():
         raise WizardAbort("docker missing")
 
     monkeypatch.setattr(wizard, "run_precheck_step", boom)
     rc = wizard.run_full(repo_root=tmp_path)
-    assert rc == 0
+    assert rc == 1
     assert "docker missing" in capsys.readouterr().out
+
+
+def test_run_full_validation_exhausted_exits_nonzero(tmp_path, monkeypatch, capsys):
+    """WizardAbort from an exhausted validation loop must exit 1.
+
+    Simulates 3 wrong Slack tokens in --non-interactive mode: the validation
+    loop raises plain WizardAbort which should propagate as exit code 1.
+    """
+    def boom(*a, **kw):
+        raise WizardAbort("validation failed after 3 attempts")
+
+    monkeypatch.setattr(wizard, "run_precheck_step", lambda: None)
+    monkeypatch.setattr(wizard, "run_infra_step", lambda *a, **kw: None)
+    monkeypatch.setattr(wizard, "run_slack_step", boom)
+    rc = wizard.run_full(repo_root=tmp_path)
+    assert rc == 1
+    assert "validation failed" in capsys.readouterr().out
+
+
+def test_run_full_user_cancel_exits_zero(tmp_path, monkeypatch, capsys):
+    """WizardCancel (explicit Ctrl-C) must exit 0 — not a failure."""
+    def boom():
+        raise WizardCancel("user cancelled prompt")
+
+    monkeypatch.setattr(wizard, "run_precheck_step", boom)
+    rc = wizard.run_full(repo_root=tmp_path)
+    assert rc == 0
+    assert "user cancelled prompt" in capsys.readouterr().out
 
 
 def test_run_full_handles_wizard_step_error_with_nonzero_exit(tmp_path, monkeypatch, capsys):

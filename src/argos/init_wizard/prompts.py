@@ -24,7 +24,7 @@ from typing import Any
 
 import questionary
 
-from argos.init_wizard import WizardAbort
+from argos.init_wizard import WizardAbort, WizardCancel
 
 _NONINTERACTIVE_ENV = "ARGOS_INIT_NONINTERACTIVE"
 
@@ -47,7 +47,7 @@ def ask_text(message: str, *, default: str | None = None) -> str:
         return fallback
     answer = questionary.text(message, default=fallback).ask()
     if answer is None:  # User hit Ctrl-C
-        raise WizardAbort("user cancelled prompt")
+        raise WizardCancel("user cancelled prompt")
     return answer
 
 
@@ -63,7 +63,7 @@ def ask_password(message: str, *, default: str | None = None) -> str:
         return fallback
     answer = questionary.password(message).ask()
     if answer is None:
-        raise WizardAbort("user cancelled prompt")
+        raise WizardCancel("user cancelled prompt")
     return answer or fallback
 
 
@@ -73,7 +73,7 @@ def ask_confirm(message: str, *, default: bool = True) -> bool:
         return default
     answer = questionary.confirm(message, default=default).ask()
     if answer is None:
-        raise WizardAbort("user cancelled prompt")
+        raise WizardCancel("user cancelled prompt")
     return bool(answer)
 
 
@@ -92,7 +92,7 @@ def ask_select(
         return choices[0]
     answer = questionary.select(message, choices=list(choices), default=default).ask()
     if answer is None:
-        raise WizardAbort("user cancelled prompt")
+        raise WizardCancel("user cancelled prompt")
     return answer
 
 
@@ -110,7 +110,7 @@ def ask_checkbox(
     q_choices = [questionary.Choice(c, checked=(c in defaults)) for c in choices]
     answer = questionary.checkbox(message, choices=q_choices).ask()
     if answer is None:
-        raise WizardAbort("user cancelled prompt")
+        raise WizardCancel("user cancelled prompt")
     return list(answer)
 
 
