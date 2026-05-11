@@ -44,6 +44,10 @@ class BriefingConfig(BaseModel):
     limit_per_category: int = Field(default=10, ge=1)
 
 
+class RunConfig(BaseModel):
+    time: str = "06:00"
+
+
 class InterestsConfig(BaseModel):
     topics: list[str] = []
     exclusions: list[str] = []
@@ -66,6 +70,7 @@ class GenealogistConfig(BaseModel):
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
+    run: RunConfig = RunConfig()
     interests: InterestsConfig = InterestsConfig()
     ollama: OllamaConfig = OllamaConfig()
     llm: LLMConfig = LLMConfig()
