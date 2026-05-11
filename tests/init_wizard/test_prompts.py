@@ -85,3 +85,52 @@ def test_validation_loop_aborts_after_max_attempts():
 def test_validation_loop_requires_positive_attempts():
     with pytest.raises(ValueError):
         prompts.with_validation_loop(lambda: "", lambda v: None, max_attempts=0)
+
+
+def test_mask_secret_preserves_slack_prefixes():
+    assert prompts.mask_secret("xoxb-1234567890-secretvalue") == "xoxb-***"
+    assert prompts.mask_secret("xapp-1-A1B2C3-tokenbody") == "xapp-***"
+
+
+def test_mask_secret_generic_fallback():
+    assert prompts.mask_secret("hunter2") == "***"
+    assert prompts.mask_secret("") == "***"
+
+
+def test_validation_loop_sensitive_scrubs_value_from_printed_error(capsys):
+    secret = "xoxb-leak-me-1234567890"
+
+    def fake_prompt():
+        return secret
+
+    def validator(value):
+        # Mimics an SDK echoing the offending token back in its error message.
+        return f"invalid_auth for token {value}"
+
+    with pytest.raises(WizardAbort) as excinfo:
+        prompts.with_validation_loop(
+            fake_prompt, validator, max_attempts=2, sensitive=True
+        )
+
+    captured = capsys.readouterr()
+    # Raw secret must never reach stdout/stderr…
+    assert secret not in captured.out
+    assert secret not in captured.err
+    # …nor the abort message that callers may log.
+    assert secret not in str(excinfo.value)
+    # The masked placeholder should be visible so the user still has context.
+    assert "xoxb-***" in captured.out
+
+
+def test_validation_loop_non_sensitive_still_prints_error_verbatim(capsys):
+    def fake_prompt():
+        return "not-a-secret"
+
+    def validator(value):
+        return "value must be foo"
+
+    with pytest.raises(WizardAbort):
+        prompts.with_validation_loop(fake_prompt, validator, max_attempts=1)
+
+    captured = capsys.readouterr()
+    assert "value must be foo" in captured.out

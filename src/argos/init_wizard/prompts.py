@@ -114,17 +114,50 @@ def ask_checkbox(
     return list(answer)
 
 
+def mask_secret(value: str) -> str:
+    """Return a redacted placeholder for a secret value.
+
+    Recognised Slack token prefixes (``xoxb-`` / ``xapp-``) are preserved so a
+    user can still tell what kind of credential was rejected, but the
+    body is replaced with ``***``. Anything else collapses to ``***``.
+    """
+    if not isinstance(value, str) or not value:
+        return "***"
+    for prefix in ("xoxb-", "xapp-"):
+        if value.startswith(prefix):
+            return f"{prefix}***"
+    return "***"
+
+
+def _scrub_error_message(error: str, value: str) -> str:
+    """Remove any occurrence of ``value`` from ``error`` so secrets never reach stdout.
+
+    Underlying SDKs (e.g. Slack ``auth.test``) occasionally echo the offending
+    token back in their exception message. The error string is operator-facing
+    UI, so we replace the raw secret with a masked placeholder before display.
+    """
+    if not value:
+        return error
+    masked = mask_secret(value)
+    return error.replace(value, masked) if value in error else error
+
+
 def with_validation_loop(
     prompt_fn: Callable[[], str],
     validator: Callable[[str], str | None],
     *,
     max_attempts: int = 3,
+    sensitive: bool = False,
 ) -> str:
     """Re-invoke ``prompt_fn`` until ``validator`` returns ``None`` (= valid).
 
     ``validator`` returns ``None`` on success or an error message string. The
     loop is capped at ``max_attempts`` (default 3) — exceeding the cap raises
     :class:`argos.init_wizard.WizardAbort` so callers exit cleanly.
+
+    When ``sensitive=True`` (e.g. for password / token prompts), the raw
+    submitted value is scrubbed from both the printed error line and the
+    :class:`WizardAbort` message so secrets are never logged in clear text.
     """
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
@@ -134,8 +167,9 @@ def with_validation_loop(
         error = validator(value)
         if error is None:
             return value
-        last_error = error
-        print(f"  ✗ {error} (attempt {attempt}/{max_attempts})")
+        display_error = _scrub_error_message(error, value) if sensitive else error
+        last_error = display_error
+        print(f"  ✗ {display_error} (attempt {attempt}/{max_attempts})")
     raise WizardAbort(f"validation failed after {max_attempts} attempts: {last_error}")
 
 
@@ -146,5 +180,6 @@ __all__ = [
     "ask_select",
     "ask_text",
     "is_noninteractive",
+    "mask_secret",
     "with_validation_loop",
 ]

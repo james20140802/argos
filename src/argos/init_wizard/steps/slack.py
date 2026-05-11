@@ -87,10 +87,13 @@ def run_slack_step(
         try:
             runners.slack_auth_test(value)
         except Exception as exc:  # noqa: BLE001 — surface error message to user
-            return str(exc)
+            # Slack SDK sometimes echoes the offending token back; scrub it.
+            return str(exc).replace(value, prompts.mask_secret(value))
         return None
 
-    bot_token = prompts.with_validation_loop(_prompt_bot, _validate_bot, max_attempts=3)
+    bot_token = prompts.with_validation_loop(
+        _prompt_bot, _validate_bot, max_attempts=3, sensitive=True
+    )
 
     def _prompt_app() -> str:
         message = f"SLACK_APP_TOKEN [{app_default_hint or 'xapp-…'}]"
@@ -103,7 +106,9 @@ def run_slack_step(
             return "app tokens must start with 'xapp-'"
         return None
 
-    app_token = prompts.with_validation_loop(_prompt_app, _validate_app, max_attempts=3)
+    app_token = prompts.with_validation_loop(
+        _prompt_app, _validate_app, max_attempts=3, sensitive=True
+    )
 
     channel_default = current_channel or "C01234567"
     channel_id = prompts.ask_text(
