@@ -76,6 +76,81 @@ def test_infra_pulls_only_missing_models(tmp_path, monkeypatch):
     assert set(pulled) == {"qwen3:32b", "nomic-embed-text"}
 
 
+def test_infra_invalid_port_in_env_raises_step_error(tmp_path, monkeypatch):
+    """A bogus POSTGRES_PORT in .env must surface as WizardStepError, not bare ValueError."""
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "POSTGRES_USER=argos\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=argos\n"
+        "POSTGRES_HOST=localhost\nPOSTGRES_PORT=5432 abc\n"
+    )
+    _stub_runners(monkeypatch, installed_models=infra.REQUIRED_OLLAMA_MODELS)
+
+    with pytest.raises(WizardStepError) as excinfo:
+        infra.run_infra_step(tmp_path, env_path=env_path)
+    assert "POSTGRES_PORT" in str(excinfo.value)
+    assert excinfo.value.hint and "positive integer" in excinfo.value.hint
+
+
+def test_infra_out_of_range_port_raises_step_error(tmp_path, monkeypatch):
+    """Numeric but out-of-range POSTGRES_PORT must also raise WizardStepError."""
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "POSTGRES_USER=argos\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=argos\n"
+        "POSTGRES_HOST=localhost\nPOSTGRES_PORT=70000\n"
+    )
+    _stub_runners(monkeypatch, installed_models=infra.REQUIRED_OLLAMA_MODELS)
+
+    with pytest.raises(WizardStepError) as excinfo:
+        infra.run_infra_step(tmp_path, env_path=env_path)
+    assert "out of range" in str(excinfo.value)
+
+
+def test_validate_port_accepts_valid():
+    assert infra._validate_port("5432") is None
+    assert infra._validate_port(" 5432 ") is None
+    assert infra._validate_port("1") is None
+    assert infra._validate_port("65535") is None
+
+
+def test_validate_port_rejects_invalid():
+    assert "not a number" in infra._validate_port("5432 abc")
+    assert "not a number" in infra._validate_port("abc")
+    assert "out of range" in infra._validate_port("0")
+    assert "out of range" in infra._validate_port("65536")
+    assert "required" in infra._validate_port("")
+
+
+def test_infra_interactive_port_reprompts_on_invalid(tmp_path, monkeypatch):
+    """Interactive mode: a bad port at the prompt should re-prompt (validation loop),
+    not propagate as a bare ValueError into run_infra_step.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "POSTGRES_USER=argos\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=argos\n"
+        "POSTGRES_HOST=localhost\nPOSTGRES_PORT=5432\n"
+    )
+    _stub_runners(monkeypatch, installed_models=infra.REQUIRED_OLLAMA_MODELS)
+    monkeypatch.delenv("ARGOS_INIT_NONINTERACTIVE", raising=False)
+
+    # Sequence of fake answers: typo "5432 abc", then valid "5433". Other prompts
+    # receive whatever default is in .env.
+    answers = iter(["argos", "p", "argos", "localhost", "5432 abc", "5433"])
+
+    def fake_ask_text(message, *, default=None):
+        return next(answers, default or "")
+
+    def fake_ask_password(message, *, default=None):
+        return next(answers, default or "")
+
+    monkeypatch.setattr(infra.prompts, "ask_text", fake_ask_text)
+    monkeypatch.setattr(infra.prompts, "ask_password", fake_ask_password)
+    monkeypatch.setattr(infra.prompts, "is_noninteractive", lambda: False)
+
+    infra.run_infra_step(tmp_path, env_path=env_path)
+    data = load_env(env_path)
+    assert data["POSTGRES_PORT"] == "5433"
+
+
 def test_infra_surfaces_pg_ready_timeout(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text(

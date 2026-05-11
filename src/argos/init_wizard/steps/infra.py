@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from argos.config_store import _mask_token_value  # reuse the existing masker
-from argos.init_wizard import prompts, runners
+from argos.init_wizard import WizardStepError, prompts, runners
 from argos.init_wizard.env_file import atomic_write_env, load_env, merge_env
 
 REQUIRED_OLLAMA_MODELS: tuple[str, ...] = ("qwen3:8b", "qwen3:32b", "nomic-embed-text")
@@ -52,6 +52,26 @@ def _mask_for_display(key: str, value: str) -> str:
     return str(_mask_token_value(value))
 
 
+def _validate_port(raw: str) -> str | None:
+    """Validator for ``POSTGRES_PORT``: must parse as int and fall in 1..65535.
+
+    Returns ``None`` on success or a short error message describing why the
+    value is rejected. The string is wired into
+    :func:`prompts.with_validation_loop`, which prints the error verbatim and
+    re-prompts up to ``max_attempts`` times.
+    """
+    stripped = raw.strip()
+    if not stripped:
+        return "port is required"
+    try:
+        port = int(stripped)
+    except ValueError:
+        return f"not a number: {stripped!r}"
+    if not (1 <= port <= 65535):
+        return f"out of range (1-65535): {port}"
+    return None
+
+
 def _prompt_pg_values(existing: dict[str, str]) -> dict[str, str]:
     """Walk through the PG_* keys and collect (possibly-new) values from the user."""
     updates: dict[str, str] = {}
@@ -61,6 +81,15 @@ def _prompt_pg_values(existing: dict[str, str]) -> dict[str, str]:
         message = f"{key} [{masked}]"
         if "PASSWORD" in key:
             value = prompts.ask_password(message, default=current)
+        elif key == "POSTGRES_PORT" and not prompts.is_noninteractive():
+            # Interactive: re-prompt on invalid input so a single typo doesn't
+            # crash the whole wizard. Non-interactive mode skips the loop —
+            # bad values from .env are caught by the runtime guard in
+            # run_infra_step and surfaced as WizardStepError.
+            value = prompts.with_validation_loop(
+                lambda msg=message, cur=current: prompts.ask_text(msg, default=cur) or cur,
+                _validate_port,
+            )
         else:
             value = prompts.ask_text(message, default=current)
         updates[key] = value or current
@@ -103,7 +132,19 @@ def run_infra_step(
     runners.docker_compose_up(repo_root)
 
     host = updates.get("POSTGRES_HOST", "localhost")
-    port = int(updates.get("POSTGRES_PORT", "5432"))
+    raw_port = updates.get("POSTGRES_PORT", "5432")
+    try:
+        port = int(raw_port.strip() if isinstance(raw_port, str) else raw_port)
+    except (ValueError, AttributeError) as exc:
+        raise WizardStepError(
+            f"invalid POSTGRES_PORT value: {raw_port!r}",
+            hint="port must be a positive integer (default 5432)",
+        ) from exc
+    if not (1 <= port <= 65535):
+        raise WizardStepError(
+            f"POSTGRES_PORT out of range (1-65535): {port}",
+            hint="set POSTGRES_PORT in .env to a value between 1 and 65535",
+        )
     print(f"  • waiting for PostgreSQL on {host}:{port}…")
     runners.wait_pg_ready(host, port)
 
