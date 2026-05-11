@@ -76,8 +76,13 @@ def run_slack_step(
     app_default_hint = _mask_for_default(current_app)
 
     def _prompt_bot() -> str:
+        # The raw current_bot token must NOT flow into ask_password's
+        # ``default=`` — CodeQL (rightly) traces that value back through the
+        # validation loop into the printed error sink. Prompt with no default
+        # and re-apply the existing value locally when the user submits empty.
         message = f"SLACK_BOT_TOKEN [{bot_default_hint or 'xoxb-…'}]"
-        return prompts.ask_password(message, default=current_bot)
+        answer = prompts.ask_password(message)
+        return answer or current_bot
 
     def _validate_bot(value: str) -> str | None:
         if not value:
@@ -86,9 +91,13 @@ def run_slack_step(
             return "bot tokens must start with 'xoxb-'"
         try:
             runners.slack_auth_test(value)
-        except Exception as exc:  # noqa: BLE001 — surface error message to user
-            # Slack SDK sometimes echoes the offending token back; scrub it.
-            return str(exc).replace(value, prompts.mask_secret(value))
+        except Exception:  # noqa: BLE001 — message intentionally discarded
+            # The Slack SDK may echo the offending token back in its
+            # exception message; returning ``str(exc)`` (even with
+            # ``.replace()`` scrubbing) lets the raw secret reach a print
+            # sink. Return a fixed message instead — the validation loop's
+            # ``sensitive=True`` mode will discard this string anyway.
+            return "slack auth.test rejected the token"
         return None
 
     bot_token = prompts.with_validation_loop(
@@ -96,8 +105,10 @@ def run_slack_step(
     )
 
     def _prompt_app() -> str:
+        # See _prompt_bot — raw current_app must not flow into ask_password.
         message = f"SLACK_APP_TOKEN [{app_default_hint or 'xapp-…'}]"
-        return prompts.ask_password(message, default=current_app)
+        answer = prompts.ask_password(message)
+        return answer or current_app
 
     def _validate_app(value: str) -> str | None:
         if not value:

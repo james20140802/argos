@@ -129,17 +129,7 @@ def mask_secret(value: str) -> str:
     return "***"
 
 
-def _scrub_error_message(error: str, value: str) -> str:
-    """Remove any occurrence of ``value`` from ``error`` so secrets never reach stdout.
-
-    Underlying SDKs (e.g. Slack ``auth.test``) occasionally echo the offending
-    token back in their exception message. The error string is operator-facing
-    UI, so we replace the raw secret with a masked placeholder before display.
-    """
-    if not value:
-        return error
-    masked = mask_secret(value)
-    return error.replace(value, masked) if value in error else error
+_SENSITIVE_GENERIC_ERROR = "validation failed (details redacted to avoid logging secrets)"
 
 
 def with_validation_loop(
@@ -156,21 +146,37 @@ def with_validation_loop(
     :class:`argos.init_wizard.WizardAbort` so callers exit cleanly.
 
     When ``sensitive=True`` (e.g. for password / token prompts), the raw
-    submitted value is scrubbed from both the printed error line and the
+    submitted value MUST NOT be embedded in the validator's error message —
+    the loop discards the validator's string entirely and substitutes a
+    fixed redacted notice for both the printed line and the
     :class:`WizardAbort` message so secrets are never logged in clear text.
+    Validators for sensitive flows should still return a non-``None`` truthy
+    sentinel on failure (any non-empty string works) to signal "retry".
     """
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
-    last_error: str | None = None
     for attempt in range(1, max_attempts + 1):
         value = prompt_fn()
         error = validator(value)
         if error is None:
             return value
-        display_error = _scrub_error_message(error, value) if sensitive else error
-        last_error = display_error
-        print(f"  ✗ {display_error} (attempt {attempt}/{max_attempts})")
-    raise WizardAbort(f"validation failed after {max_attempts} attempts: {last_error}")
+        if sensitive:
+            # Never let the validator's string (which may embed the raw
+            # secret) reach a sink. Use a fixed redacted message instead.
+            print(
+                f"  ✗ {_SENSITIVE_GENERIC_ERROR} "
+                f"(attempt {attempt}/{max_attempts})"
+            )
+        else:
+            print(f"  ✗ {error} (attempt {attempt}/{max_attempts})")
+    final_msg = (
+        _SENSITIVE_GENERIC_ERROR
+        if sensitive
+        else f"last error: {error}"  # type: ignore[possibly-undefined]
+    )
+    raise WizardAbort(
+        f"validation failed after {max_attempts} attempts ({final_msg})"
+    )
 
 
 __all__ = [

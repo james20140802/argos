@@ -116,10 +116,59 @@ def test_validation_loop_sensitive_scrubs_value_from_printed_error(capsys):
     # Raw secret must never reach stdout/stderr…
     assert secret not in captured.out
     assert secret not in captured.err
-    # …nor the abort message that callers may log.
+    # …nor the abort message that callers may log…
     assert secret not in str(excinfo.value)
-    # The masked placeholder should be visible so the user still has context.
-    assert "xoxb-***" in captured.out
+    # …nor any field on the raised exception (args, repr).
+    assert all(secret not in str(a) for a in excinfo.value.args)
+    assert secret not in repr(excinfo.value)
+    # A fixed redacted notice should be visible so the user still has context.
+    assert "redacted" in captured.out
+
+
+def test_validation_loop_sensitive_never_leaks_after_three_failures(
+    capsys, caplog, monkeypatch
+):
+    """Regression for CodeQL alert #2 — covers the password-input sink chain.
+
+    Simulates a questionary password prompt returning a sentinel three times,
+    then asserts the sentinel never reaches stdout, stderr, log records, or
+    the raised ``WizardAbort`` exception's ``args``/``repr``.
+    """
+    import logging
+
+    sentinel = "SECRET_SENTINEL_xyz123"
+    call_count = {"n": 0}
+
+    def fake_questionary_prompt():
+        call_count["n"] += 1
+        return sentinel
+
+    # Validator deliberately interpolates the value (mimics a real SDK leak).
+    def validator(value):
+        return f"backend rejected token {value!r}"
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(WizardAbort) as excinfo:
+            prompts.with_validation_loop(
+                fake_questionary_prompt,
+                validator,
+                max_attempts=3,
+                sensitive=True,
+            )
+
+    assert call_count["n"] == 3  # loop ran the full 3 attempts
+
+    captured = capsys.readouterr()
+    # Sinks that CodeQL traced from the password input must never see the
+    # raw value.
+    assert sentinel not in captured.out
+    assert sentinel not in captured.err
+    for record in caplog.records:
+        assert sentinel not in record.getMessage()
+        assert sentinel not in str(record.args or "")
+    assert sentinel not in str(excinfo.value)
+    assert all(sentinel not in str(a) for a in excinfo.value.args)
+    assert sentinel not in repr(excinfo.value)
 
 
 def test_validation_loop_non_sensitive_still_prints_error_verbatim(capsys):
