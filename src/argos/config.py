@@ -40,8 +40,15 @@ class SlackConfig(BaseModel):
 
 class BriefingConfig(BaseModel):
     time: str = "07:00"
-    weekdays: list[str] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    weekdays: list[str] = Field(
+        default_factory=lambda: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        min_length=1,
+    )
     limit_per_category: int = Field(default=10, ge=1)
+
+
+class RunConfig(BaseModel):
+    time: str = "06:00"
 
 
 class InterestsConfig(BaseModel):
@@ -66,6 +73,7 @@ class GenealogistConfig(BaseModel):
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
+    run: RunConfig = RunConfig()
     interests: InterestsConfig = InterestsConfig()
     ollama: OllamaConfig = OllamaConfig()
     llm: LLMConfig = LLMConfig()
@@ -103,6 +111,23 @@ class UserConfig(BaseModel):
                 exc,
             )
             return cls()
+
+    @classmethod
+    def load_strict(cls, *, path: Path) -> UserConfig:
+        """Load ``path`` without the silent-fallback behavior of :meth:`load`.
+
+        Unlike :meth:`load`, this re-raises:
+          - :class:`FileNotFoundError` / :class:`OSError` when the file can't be read,
+          - :class:`UnicodeDecodeError` when the file is not valid UTF-8,
+          - :class:`tomllib.TOMLDecodeError` when the file isn't valid TOML,
+          - :class:`pydantic.ValidationError` when the parsed payload fails schema.
+
+        Callers (e.g. ``argos schedule install --config <path>``) use this so an
+        explicit operator-supplied config doesn't silently fall back to defaults.
+        """
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        return cls.model_validate(data)
 
 
 class Settings:

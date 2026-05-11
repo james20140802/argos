@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from argos.config import Secrets, Settings, UserConfig
+import pytest
+from pydantic import ValidationError
+
+from argos.config import BriefingConfig, Secrets, Settings, UserConfig
 
 
 def test_secrets_loads_from_env(monkeypatch):
@@ -146,6 +149,30 @@ def test_genealogist_config_rejects_negative(tmp_path):
     cfg = UserConfig.load(path=toml_file)
     # Negative value triggers ValidationError fallback to defaults.
     assert cfg.genealogist.min_db_items == 50
+
+
+# ---------------------------------------------------------------------------
+# Finding 1 — empty weekdays silently disables briefing job
+# Pydantic-level guard: BriefingConfig must reject an empty weekdays list.
+# ---------------------------------------------------------------------------
+
+
+def test_briefing_config_rejects_empty_weekdays() -> None:
+    """weekdays=[] must raise ValidationError at pydantic construction time.
+
+    An empty weekdays list causes launchd to receive ``StartCalendarInterval:
+    <array/>``, which it interprets as "no schedule" — the job loads but never
+    fires. Rejecting at config-load time prevents this silent failure.
+    """
+    with pytest.raises(ValidationError):
+        BriefingConfig(weekdays=[])
+
+
+def test_briefing_config_default_weekdays_is_all_seven() -> None:
+    """The default weekdays value must cover all 7 days (non-empty invariant)."""
+    cfg = BriefingConfig()
+    assert len(cfg.weekdays) == 7
+    assert set(cfg.weekdays) == {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
 
 
 def test_settings_database_url_encodes_special_chars(monkeypatch):

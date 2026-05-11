@@ -75,6 +75,14 @@ uv run argos run [--url URL]...                   # Crawl → brain → save pip
 uv run argos slack                                # Start Slack bot in Socket Mode
 uv run argos brief [--channel CID]                # Dispatch today's briefing
 
+# launchd scheduler (macOS) — see src/argos/scheduler.py
+uv run argos schedule install                     # Render + bootstrap both plists from config
+uv run argos schedule status                      # Show loaded/not-loaded for both labels
+uv run argos schedule uninstall                   # Bootout both plists (idempotent)
+# Plists land at:  ~/Library/LaunchAgents/com.argos.{run,brief}.plist
+# Logs land at:    ~/Library/Logs/argos/{run,brief}.log
+# Times configured via:  briefing.time, briefing.weekdays, run.time
+
 # Tests
 uv run pytest tests/ -v                           # Run all tests
 uv run ruff check src tests                       # Lint
@@ -100,3 +108,4 @@ uv run ruff check src tests                       # Lint
 - **VRAM budget:** Only one LLM loaded at a time. 8B model must be unloaded (keep_alive: 0) before loading 32B.
 - **Rate limiting:** Crawlers must use User-Agent rotation, exponential backoff, and respect robots.txt.
 - **Robots allowlist:** `_robots.py` carves out a tiny set of vendor-published public-API hosts (currently `hacker-news.firebaseio.com`) whose generic robots.txt would falsely block documented public endpoints. Do not expand without a documented public-API contract.
+- **launchd Weekday convention:** `scheduler._weekday_to_launchd` maps Sun=0..Sat=6 — **NOT** the ISO Mon=1..Sun=7 convention. The full table is unit-tested at `tests/test_scheduler.py::test_weekday_to_launchd_full_table`. A full 7-day list collapses to a single `StartCalendarInterval` dict with no `Weekday` key; a subset expands to a list of dicts each carrying a `Weekday` int.
