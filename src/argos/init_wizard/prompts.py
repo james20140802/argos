@@ -132,6 +132,54 @@ def mask_secret(value: str) -> str:
 _SENSITIVE_GENERIC_ERROR = "validation failed (details redacted to avoid logging secrets)"
 
 
+def _validation_loop_plain(
+    prompt_fn: Callable[[], str],
+    validator: Callable[[str], str | None],
+    *,
+    max_attempts: int,
+) -> str:
+    """Plain validation loop — validator's error string flows into the printed
+    line and the abort message. Only safe for non-sensitive values."""
+    last_error: str | None = None
+    for attempt in range(1, max_attempts + 1):
+        value = prompt_fn()
+        error = validator(value)
+        if error is None:
+            return value
+        last_error = error
+        print(f"  ✗ {error} (attempt {attempt}/{max_attempts})")
+    raise WizardAbort(
+        f"validation failed after {max_attempts} attempts (last error: {last_error})"
+    )
+
+
+def _validation_loop_sensitive(
+    prompt_fn: Callable[[], str],
+    validator: Callable[[str], str | None],
+    *,
+    max_attempts: int,
+) -> str:
+    """Sensitive validation loop — the validator's return value is consumed as
+    a boolean *only*; its string contents (which may embed the raw secret) are
+    never bound to a variable and therefore cannot flow into any sink.
+
+    This is the structural defence against CodeQL's "clear-text logging of
+    sensitive information" taint analysis: because there is no assignment of
+    ``validator(value)`` to a string-typed binding inside this function, the
+    taint analyser cannot construct a flow path from the password source to
+    a print/log/exception-message sink.
+    """
+    for attempt in range(1, max_attempts + 1):
+        value = prompt_fn()
+        ok = validator(value) is None  # consume as bool only — never bind the string
+        if ok:
+            return value
+        print(f"  ✗ {_SENSITIVE_GENERIC_ERROR} (attempt {attempt}/{max_attempts})")
+    raise WizardAbort(
+        f"validation failed after {max_attempts} attempts ({_SENSITIVE_GENERIC_ERROR})"
+    )
+
+
 def with_validation_loop(
     prompt_fn: Callable[[], str],
     validator: Callable[[str], str | None],
@@ -145,37 +193,22 @@ def with_validation_loop(
     loop is capped at ``max_attempts`` (default 3) — exceeding the cap raises
     :class:`argos.init_wizard.WizardAbort` so callers exit cleanly.
 
-    When ``sensitive=True`` (e.g. for password / token prompts), the raw
-    submitted value MUST NOT be embedded in the validator's error message —
-    the loop discards the validator's string entirely and substitutes a
-    fixed redacted notice for both the printed line and the
-    :class:`WizardAbort` message so secrets are never logged in clear text.
+    When ``sensitive=True`` (e.g. for password / token prompts), control flow
+    is routed to :func:`_validation_loop_sensitive`, a *separate* function
+    that consumes the validator's return value as a boolean only — the string
+    is never bound to a local variable, so static taint analysers (CodeQL)
+    cannot trace a flow from the raw secret into a print/log/exception sink.
     Validators for sensitive flows should still return a non-``None`` truthy
     sentinel on failure (any non-empty string works) to signal "retry".
     """
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
-    for attempt in range(1, max_attempts + 1):
-        value = prompt_fn()
-        error = validator(value)
-        if error is None:
-            return value
-        if sensitive:
-            # Never let the validator's string (which may embed the raw
-            # secret) reach a sink. Use a fixed redacted message instead.
-            print(
-                f"  ✗ {_SENSITIVE_GENERIC_ERROR} "
-                f"(attempt {attempt}/{max_attempts})"
-            )
-        else:
-            print(f"  ✗ {error} (attempt {attempt}/{max_attempts})")
-    final_msg = (
-        _SENSITIVE_GENERIC_ERROR
-        if sensitive
-        else f"last error: {error}"  # type: ignore[possibly-undefined]
-    )
-    raise WizardAbort(
-        f"validation failed after {max_attempts} attempts ({final_msg})"
+    if sensitive:
+        return _validation_loop_sensitive(
+            prompt_fn, validator, max_attempts=max_attempts
+        )
+    return _validation_loop_plain(
+        prompt_fn, validator, max_attempts=max_attempts
     )
 
 

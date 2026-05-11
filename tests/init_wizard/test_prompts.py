@@ -171,6 +171,27 @@ def test_validation_loop_sensitive_never_leaks_after_three_failures(
     assert sentinel not in repr(excinfo.value)
 
 
+def test_validation_loop_sensitive_has_no_error_binding_in_source():
+    """Structural guard for CodeQL — the sensitive loop must not bind the
+    validator's return value to a string variable (e.g. ``error``), otherwise
+    taint analysis can construct a flow from the raw secret into a sink.
+
+    This test inspects the source of :func:`_validation_loop_sensitive` and
+    asserts that no ``error`` binding exists. Pair it with the runtime leak
+    test above for defence-in-depth.
+    """
+    import inspect
+
+    source = inspect.getsource(prompts._validation_loop_sensitive)
+    # The token ``error`` must not appear as an identifier anywhere in the
+    # sensitive loop's body — neither as a left-hand side, an f-string slot,
+    # nor an exception-message component.
+    assert "error" not in source, (
+        "sensitive validation loop must not bind validator's string return "
+        "to an `error` variable — see CodeQL clear-text-logging guidance"
+    )
+
+
 def test_validation_loop_non_sensitive_still_prints_error_verbatim(capsys):
     def fake_prompt():
         return "not-a-secret"
