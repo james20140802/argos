@@ -132,13 +132,18 @@ def run_reconfigure(
         _print_header(1, 2, f"Reconfigure — {section}")
         if section == "infra":
             run_infra_step(root, env_path=env_path)
-            _rebuild_database(env_path if env_path is not None else (root / ".env"))
         elif section == "slack":
             run_slack_step(root, env_path=env_path, config_path=cfg_path)
         elif section == "interests":
             run_interests_step(config_path=cfg_path)
         elif section == "schedule":
             run_schedule_step(_user_config(cfg_path))
+
+        # Always rebuild the DB engine with the correct env_path before the
+        # healthcheck — even for non-infra sections.  Without this, db_ping()
+        # targets whatever module-level engine was constructed at import time,
+        # which may use stale credentials when a non-default env_path is given.
+        _rebuild_database(env_path if env_path is not None else (root / ".env"))
 
         _print_header(2, 2, "Healthcheck")
         failures = run_healthcheck_step(root, env_path=env_path)

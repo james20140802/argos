@@ -175,3 +175,41 @@ def test_run_full_threads_config_path_to_schedule_step(tmp_path, monkeypatch):
     assert captured["user_config"].briefing.time == "13:37", (
         f"expected briefing.time='13:37', got {captured['user_config'].briefing.time!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: Finding 2 — run_reconfigure rebuilds DB engine before healthcheck
+# for non-infra sections when a non-default env_path is supplied
+# ---------------------------------------------------------------------------
+
+def test_run_reconfigure_slack_rebuilds_db_engine_from_env_path(tmp_path, monkeypatch):
+    """run_reconfigure('slack', env_path=tmp_env) must refresh the DB engine
+    from tmp_env before the healthcheck, so db_ping targets the correct host.
+
+    A non-default env_path with POSTGRES_PORT=9999 is supplied; after
+    run_reconfigure returns we assert the module-level engine URL reflects
+    port 9999.  No real DB or Slack calls are made.
+    """
+    import argos.database as db_module
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        textwrap.dedent("""\
+            POSTGRES_USER=argos
+            POSTGRES_PASSWORD=argos_dev_password
+            POSTGRES_DB=argos
+            POSTGRES_HOST=localhost
+            POSTGRES_PORT=9999
+        """)
+    )
+
+    monkeypatch.setattr(wizard, "run_slack_step", lambda *a, **kw: None)
+    monkeypatch.setattr(wizard, "run_healthcheck_step", lambda *a, **kw: 0)
+
+    rc = wizard.run_reconfigure("slack", repo_root=tmp_path, env_path=env_file)
+    assert rc == 0
+
+    url_str = str(db_module.engine.url)
+    assert ":9999/" in url_str, (
+        f"expected port 9999 in engine URL after run_reconfigure('slack'), got: {url_str}"
+    )
