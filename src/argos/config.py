@@ -40,7 +40,10 @@ class SlackConfig(BaseModel):
 
 class BriefingConfig(BaseModel):
     time: str = "07:00"
-    weekdays: list[str] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    weekdays: list[str] = Field(
+        default_factory=lambda: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        min_length=1,
+    )
     limit_per_category: int = Field(default=10, ge=1)
 
 

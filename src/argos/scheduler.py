@@ -114,7 +114,16 @@ def _calendar_intervals(
     * ``None`` or a full 7-day list → single dict with just ``Hour``/``Minute``
       (launchd interprets the absent Weekday as "every day").
     * Subset → list-of-dicts, each carrying a ``Weekday`` int.
+
+    Raises :class:`ValueError` if ``weekdays`` is an empty list — launchd
+    interprets ``StartCalendarInterval: <array/>`` as "no schedule", so an
+    empty weekdays list would silently disable the briefing job.
     """
+    if weekdays is not None and len(weekdays) == 0:
+        raise ValueError(
+            "weekdays must be non-empty; set briefing.weekdays = ['Mon', 'Tue', ...]"
+            " or omit to schedule daily"
+        )
     base = {"Hour": hour, "Minute": minute}
     if weekdays is None or len(set(_weekday_to_launchd(w) for w in weekdays)) == 7:
         return base
@@ -415,7 +424,14 @@ def reload_schedule(
     install_plist(brief_plist_path, brief_xml)
 
     bootstrap_plist(run_plist_path)
-    bootstrap_plist(brief_plist_path)
+    try:
+        bootstrap_plist(brief_plist_path)
+    except SchedulerError as exc:
+        raise SchedulerError(
+            f"run job (com.argos.run) bootstrapped successfully but brief job "
+            f"(com.argos.brief) failed: {exc}. "
+            f"To clean up, run: argos schedule uninstall && argos schedule install"
+        ) from exc
 
 
 __all__ = [

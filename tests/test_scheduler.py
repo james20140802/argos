@@ -1137,6 +1137,126 @@ def test_cli_schedule_install_rejects_schema_violation(
     assert not (isolated_paths["launch_agents"] / "com.argos.brief.plist").exists()
 
 
+# ---------------------------------------------------------------------------
+# Finding 1 — empty weekdays silently disables the briefing job
+# Runtime guard in _calendar_intervals: empty list must raise ValueError.
+# ---------------------------------------------------------------------------
+
+
+def test_calendar_intervals_raises_on_empty_weekdays() -> None:
+    """_calendar_intervals(h, m, []) must raise ValueError.
+
+    An empty list falls through the None branch, iterates nothing, and returns
+    ``intervals = []``. launchd interprets ``StartCalendarInterval: <array/>``
+    as "no schedule" — the job loads but never fires. The guard must catch this
+    before a broken plist is written.
+    """
+    with pytest.raises(ValueError, match="weekdays must be non-empty"):
+        _calendar_intervals(8, 0, [])
+
+
+def test_calendar_intervals_empty_weekdays_translates_to_scheduler_error(
+    monkeypatch,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+) -> None:
+    """install via reload_schedule with weekdays=[] must raise SchedulerError.
+
+    Uses model_construct to bypass pydantic validation and exercise the runtime
+    guard inside _calendar_intervals (defence-in-depth for programmatic callers
+    that never pass through UserConfig.model_validate).
+    """
+    from argos.config import BriefingConfig, RunConfig, UserConfig
+
+    # Bypass pydantic validation intentionally — testing the runtime guard.
+    bad_briefing = BriefingConfig.model_construct(
+        time="07:00",
+        weekdays=[],
+        limit_per_category=10,
+    )
+    user_config = UserConfig.model_construct(
+        run=RunConfig(time="06:00"),
+        briefing=bad_briefing,
+    )
+
+    monkeypatch.setattr(
+        scheduler,
+        "_run_launchctl",
+        lambda args: subprocess.CompletedProcess(["launchctl", *args], 0, "", ""),
+    )
+
+    with pytest.raises(SchedulerError, match="weekdays must be non-empty"):
+        reload_schedule(user_config)
+
+    # No plists should have been written before the error.
+    assert not (isolated_paths["launch_agents"] / "com.argos.brief.plist").exists()
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 — partial bootstrap failure leaves system in indeterminate state
+# If run bootstraps successfully but brief fails, the error message must
+# mention which job succeeded and which failed.
+# ---------------------------------------------------------------------------
+
+
+def test_reload_schedule_partial_bootstrap_failure_reports_which_succeeded(
+    monkeypatch,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+) -> None:
+    """If run bootstraps successfully but brief fails, SchedulerError must
+    include a hint that the run job is already loaded and brief failed, so
+    the operator knows the partial state and can take corrective action.
+    """
+    user_config = SimpleNamespace(
+        run=SimpleNamespace(time="06:00"),
+        briefing=SimpleNamespace(
+            time="07:00",
+            weekdays=["Mon", "Tue", "Wed", "Thu", "Fri"],
+        ),
+    )
+
+    bootstrap_call_count = {"n": 0}
+
+    def fake(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "bootstrap":
+            bootstrap_call_count["n"] += 1
+            if bootstrap_call_count["n"] == 2:
+                # Second bootstrap (brief) fails.
+                return subprocess.CompletedProcess(
+                    ["launchctl", *args],
+                    5,
+                    stdout="",
+                    stderr="Bootstrap failed: 5: Input/output error",
+                )
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout="", stderr=""
+            )
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            # First print (run) succeeds; brief never gets to print.
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake)
+
+    with pytest.raises(SchedulerError) as exc_info:
+        reload_schedule(user_config)
+
+    msg = str(exc_info.value)
+    # Must mention both what succeeded and what failed so the operator can act.
+    assert "run" in msg.lower()
+    assert "brief" in msg.lower()
+    # Must include a recovery hint.
+    assert "uninstall" in msg or "install" in msg
+
+
 def test_cli_schedule_install_accepts_valid_config(
     monkeypatch,
     fake_argos_binary: Path,
