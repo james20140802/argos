@@ -544,7 +544,7 @@ def test_cli_schedule_install_invokes_reload(
 
     called = {"reload": 0}
 
-    def fake_reload(user_config) -> None:  # noqa: ARG001
+    def fake_reload(user_config, *, config_path=None) -> None:  # noqa: ARG001
         called["reload"] += 1
 
     monkeypatch.setattr(scheduler, "reload_schedule", fake_reload)
@@ -582,3 +582,182 @@ def test_cli_schedule_uninstall_calls_bootout(
     assert "com.argos.run" in bootout_labels
     assert "com.argos.brief" in bootout_labels
     assert "Unloaded: com.argos.run" in out
+
+
+# ---------------------------------------------------------------------------
+# Regression: reload_schedule forwards config_path to both plist renderers
+# (Codex PR #41 — PRRT_kwDOR4m8Js6BC_SD)
+# ---------------------------------------------------------------------------
+
+
+def test_reload_schedule_forwards_config_path(
+    monkeypatch,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Both rendered plists must embed `--config <path>` when reload_schedule
+    is called with ``config_path=...`` — otherwise the scheduled jobs would
+    silently run against the default config, not the operator-selected one.
+    """
+    user_config = SimpleNamespace(
+        run=SimpleNamespace(time="06:00"),
+        briefing=SimpleNamespace(
+            time="07:00",
+            weekdays=["Mon", "Tue", "Wed", "Thu", "Fri"],
+        ),
+    )
+    cfg_path = tmp_path / "custom-config.toml"
+
+    def fake(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake)
+    reload_schedule(user_config, config_path=cfg_path)
+
+    run_plist = isolated_paths["launch_agents"] / "com.argos.run.plist"
+    brief_plist = isolated_paths["launch_agents"] / "com.argos.brief.plist"
+    run_data = plistlib.loads(run_plist.read_bytes())
+    brief_data = plistlib.loads(brief_plist.read_bytes())
+
+    # Both ProgramArguments must include ["--config", <cfg_path>] tail.
+    assert run_data["ProgramArguments"][-2:] == ["--config", str(cfg_path)]
+    assert brief_data["ProgramArguments"][-2:] == ["--config", str(cfg_path)]
+
+
+def test_cli_schedule_install_forwards_config_path(
+    monkeypatch,
+    capsys,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """End-to-end: `argos schedule install --config <path>` must produce
+    plists whose ProgramArguments embed that exact path.
+    """
+    from argos.cli import main
+
+    # Minimal TOML the loader will accept; we mostly care that load() resolves
+    # ``path`` to the value we passed on the CLI. Use a UserConfig.load stub
+    # so we don't need a fully-valid config file.
+    cfg_path = tmp_path / "user-config.toml"
+    cfg_path.write_text("# stub\n")
+
+    captured: dict[str, Path | None] = {"path": None}
+
+    def fake_load(*, path):  # noqa: ANN001
+        captured["path"] = path
+        return SimpleNamespace(
+            run=SimpleNamespace(time="06:00"),
+            briefing=SimpleNamespace(
+                time="07:00", weekdays=["Mon", "Tue", "Wed", "Thu", "Fri"]
+            ),
+        )
+
+    import argos.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.UserConfig, "load", staticmethod(fake_load))
+
+    def fake_launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake_launchctl)
+
+    rc = main(["schedule", "--config", str(cfg_path), "install"])
+    assert rc == 0
+    assert captured["path"] == cfg_path
+
+    run_plist = isolated_paths["launch_agents"] / "com.argos.run.plist"
+    brief_plist = isolated_paths["launch_agents"] / "com.argos.brief.plist"
+    run_data = plistlib.loads(run_plist.read_bytes())
+    brief_data = plistlib.loads(brief_plist.read_bytes())
+    assert "--config" in run_data["ProgramArguments"]
+    assert str(cfg_path) in run_data["ProgramArguments"]
+    assert "--config" in brief_data["ProgramArguments"]
+    assert str(cfg_path) in brief_data["ProgramArguments"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: malformed run.time / briefing.time surfaces as SchedulerError,
+# not an uncaught ValueError traceback.
+# (Codex PR #41 — PRRT_kwDOR4m8Js6BC_SJ)
+# ---------------------------------------------------------------------------
+
+
+def test_reload_schedule_translates_bad_time_to_scheduler_error(
+    monkeypatch,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+) -> None:
+    user_config = SimpleNamespace(
+        run=SimpleNamespace(time="25:00"),  # invalid hour
+        briefing=SimpleNamespace(
+            time="07:00", weekdays=["Mon", "Tue", "Wed", "Thu", "Fri"]
+        ),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_run_launchctl",
+        lambda args: subprocess.CompletedProcess(["launchctl", *args], 0, "", ""),
+    )
+    with pytest.raises(SchedulerError, match="invalid time format"):
+        reload_schedule(user_config)
+
+
+def test_cli_schedule_install_bad_time_exits_cleanly(
+    monkeypatch,
+    capsys,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A malformed run.time in config must produce a clean non-zero exit
+    with a clear stderr message — no Python traceback.
+    """
+    from argos.cli import main
+
+    cfg_path = tmp_path / "user-config.toml"
+    cfg_path.write_text("# stub\n")
+
+    def fake_load(*, path):  # noqa: ANN001, ARG001
+        return SimpleNamespace(
+            run=SimpleNamespace(time="25:00"),  # bad
+            briefing=SimpleNamespace(
+            time="07:00", weekdays=["Mon", "Tue", "Wed", "Thu", "Fri"]
+        ),
+        )
+
+    import argos.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.UserConfig, "load", staticmethod(fake_load))
+    monkeypatch.setattr(
+        scheduler,
+        "_run_launchctl",
+        lambda args: subprocess.CompletedProcess(["launchctl", *args], 0, "", ""),
+    )
+
+    rc = main(["schedule", "--config", str(cfg_path), "install"])
+    captured = capsys.readouterr()
+    assert rc != 0
+    # Clean error on stderr, no traceback noise.
+    assert "Scheduler error" in captured.err
+    assert "invalid time format" in captured.err
+    assert "Traceback" not in captured.err

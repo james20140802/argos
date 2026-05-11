@@ -363,12 +363,23 @@ def bootout_plist(label: str) -> None:
     )
 
 
-def reload_schedule(user_config: Any) -> None:
+def reload_schedule(
+    user_config: Any, *, config_path: Path | None = None
+) -> None:
     """Render + install + bootstrap both Argos launchd jobs.
 
     ``user_config`` must expose ``.run.time``, ``.briefing.time`` and
     ``.briefing.weekdays``. The plists are written to
     ``~/Library/LaunchAgents/com.argos.{run,brief}.plist``.
+
+    If ``config_path`` is provided, it is plumbed through to both plist
+    renderers so the scheduled jobs invoke ``argos run`` / ``argos brief``
+    with ``--config <path>`` — ensuring the runtime config matches the
+    one used to install the schedule.
+
+    Translates :class:`ValueError` from malformed ``run.time`` /
+    ``briefing.time`` into :class:`SchedulerError` so callers only need
+    to handle one exception type.
     """
     run_time = user_config.run.time
     brief_time = user_config.briefing.time
@@ -380,11 +391,18 @@ def reload_schedule(user_config: Any) -> None:
     run_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.run.plist"
     brief_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.brief.plist"
 
-    install_plist(run_plist_path, render_run_plist(time=run_time))
-    install_plist(
-        brief_plist_path,
-        render_brief_plist(time=brief_time, weekdays=brief_weekdays),
-    )
+    try:
+        run_xml = render_run_plist(time=run_time, config_path=config_path)
+        brief_xml = render_brief_plist(
+            time=brief_time,
+            weekdays=brief_weekdays,
+            config_path=config_path,
+        )
+    except ValueError as exc:
+        raise SchedulerError(f"invalid time format: {exc}") from exc
+
+    install_plist(run_plist_path, run_xml)
+    install_plist(brief_plist_path, brief_xml)
 
     bootstrap_plist(run_plist_path)
     bootstrap_plist(brief_plist_path)

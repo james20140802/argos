@@ -191,7 +191,10 @@ def _cmd_schedule_install(args: argparse.Namespace) -> int:
     path = _resolve_config_path(args)
     user_config = UserConfig.load(path=path)
     try:
-        reload_schedule(user_config)
+        # Plumb the resolved config path through so the generated plists
+        # invoke `argos run --config <path>` / `argos brief --config <path>`
+        # with the same settings the install command just validated.
+        reload_schedule(user_config, config_path=path)
     except SchedulerError as exc:
         print(f"Scheduler error: {exc}", file=sys.stderr)
         return EXIT_GENERIC
