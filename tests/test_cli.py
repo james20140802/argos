@@ -340,3 +340,127 @@ def test_plist_program_arguments_roundtrip_through_brief_parser(
         rc = main(cli_argv)
 
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Finding 1 regression: `argos schedule install` (no flag, no config file)
+# must succeed and embed the default absolute path in the plist.
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_install_no_flag_no_config_succeeds(tmp_path, monkeypatch) -> None:
+    """`argos schedule install` with no --config and no config file on disk
+    must succeed (use defaults) — this is the first-run / fresh-machine case."""
+    fake_bin = tmp_path / "argos"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    monkeypatch.setattr("argos.scheduler.shutil.which", lambda name: str(fake_bin))
+
+    default_cfg = tmp_path / "config.toml"  # does NOT exist yet
+    monkeypatch.setattr("argos.config_store.default_config_path", lambda: default_cfg)
+
+    captured_path: list = []
+
+    def fake_reload(user_config, *, config_path):
+        captured_path.append(config_path)
+
+    monkeypatch.setattr("argos.scheduler.reload_schedule", fake_reload)
+
+    rc = main(["schedule", "install"])
+
+    assert rc == 0
+    # reload_schedule must have been called with the resolved absolute path
+    assert captured_path, "reload_schedule was not called"
+    assert captured_path[0].is_absolute()
+
+
+def test_schedule_install_explicit_nonexistent_config_fails(tmp_path, monkeypatch) -> None:
+    """`argos schedule --config /nonexistent.toml install` must exit non-zero."""
+    fake_bin = tmp_path / "argos"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    monkeypatch.setattr("argos.scheduler.shutil.which", lambda name: str(fake_bin))
+
+    missing = tmp_path / "nonexistent.toml"  # does NOT exist
+
+    rc = main(["schedule", "--config", str(missing), "install"])
+
+    assert rc != 0
+
+
+def test_schedule_install_explicit_broken_toml_fails(tmp_path, monkeypatch) -> None:
+    """`argos schedule --config /broken.toml install` must exit non-zero."""
+    fake_bin = tmp_path / "argos"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    monkeypatch.setattr("argos.scheduler.shutil.which", lambda name: str(fake_bin))
+
+    bad_toml = tmp_path / "broken.toml"
+    bad_toml.write_text("not = valid [ toml")
+
+    rc = main(["schedule", "--config", str(bad_toml), "install"])
+
+    assert rc != 0
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 regression: `argos run/brief --config <bad-path>` must now exit
+# non-zero instead of silently using defaults.
+# ---------------------------------------------------------------------------
+
+
+def test_run_explicit_nonexistent_config_exits_nonzero(tmp_path, capsys) -> None:
+    """`argos run --config /nonexistent.toml` must exit non-zero with a message."""
+    missing = tmp_path / "nonexistent.toml"
+
+    rc = main(["run", "--config", str(missing)])
+
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "not found" in err.lower() or str(missing) in err
+
+
+def test_run_explicit_broken_toml_exits_nonzero(tmp_path, capsys) -> None:
+    """`argos run --config /broken.toml` must exit non-zero, not use defaults."""
+    bad_toml = tmp_path / "broken.toml"
+    bad_toml.write_text("not = valid [ toml")
+
+    rc = main(["run", "--config", str(bad_toml)])
+
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert str(bad_toml) in err
+
+
+def test_brief_explicit_nonexistent_config_exits_nonzero(tmp_path, capsys) -> None:
+    """`argos brief --config /nonexistent.toml` must exit non-zero."""
+    missing = tmp_path / "nonexistent.toml"
+
+    rc = main(["brief", "--config", str(missing)])
+
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "not found" in err.lower() or str(missing) in err
+
+
+def test_run_no_config_flag_no_file_uses_defaults(tmp_path, monkeypatch) -> None:
+    """`argos run` (no --config, no file) must succeed with defaults."""
+    default_cfg = tmp_path / "config.toml"  # does NOT exist
+    monkeypatch.setattr("argos.config_store.default_config_path", lambda: default_cfg)
+
+    summary = _make_summary()
+    states = _make_mock_states(0)
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
+        patch(
+            "argos.cli.run_full_pipeline",
+            new=AsyncMock(return_value=(states, summary)),
+        ),
+    ):
+        rc = main(["run"])
+
+    assert rc == 0

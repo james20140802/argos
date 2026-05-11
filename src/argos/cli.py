@@ -70,7 +70,7 @@ def _resolve_config_path(args: argparse.Namespace) -> Path:
     return config_store.default_config_path()
 
 
-def _apply_config_override(args: argparse.Namespace) -> None:
+def _apply_config_override(args: argparse.Namespace) -> int | None:
     """If ``--config <path>`` was passed, reload ``settings.user`` from it.
 
     The scheduled launchd jobs invoke ``argos run --config <path>`` and
@@ -78,12 +78,32 @@ def _apply_config_override(args: argparse.Namespace) -> None:
     Without this, the runtime would silently fall back to defaults /
     ``~/.config/argos/config.toml`` even though the operator explicitly
     pointed at a different file.
+
+    When ``--config`` is explicit, uses :meth:`UserConfig.load_strict` so
+    TOML/schema errors surface cleanly instead of silently falling back to
+    defaults.  Returns ``EXIT_GENERIC`` on error so the caller can propagate
+    it; returns ``None`` on success (or when no override was supplied).
     """
     override = getattr(args, "config", None)
     if not override:
-        return
+        return None
     path = Path(override).expanduser()
-    settings.user = UserConfig.load(path=path)
+    try:
+        settings.user = UserConfig.load_strict(path=path)
+    except FileNotFoundError:
+        print(f"Config file not found: {path}", file=sys.stderr)
+        return EXIT_GENERIC
+    except tomllib.TOMLDecodeError as exc:
+        print(f"Invalid TOML in {path}: {exc}", file=sys.stderr)
+        return EXIT_GENERIC
+    except ValidationError as exc:
+        first = str(exc).strip().splitlines()[0]
+        print(f"Invalid config in {path}: {first}", file=sys.stderr)
+        return EXIT_GENERIC
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"Could not read config file {path}: {exc}", file=sys.stderr)
+        return EXIT_GENERIC
+    return None
 
 
 def _cmd_config_path(args: argparse.Namespace) -> int:
@@ -209,38 +229,43 @@ def _build_schedule_parser(sub: argparse._SubParsersAction) -> None:
 def _cmd_schedule_install(args: argparse.Namespace) -> int:
     from argos.scheduler import SchedulerError, reload_schedule
 
-    path = _resolve_config_path(args)
-    # launchd runs jobs with its own cwd, so any relative path baked into the
-    # plist's ProgramArguments would resolve differently (or not at all) at
-    # scheduled-run time, silently falling back to the default. Resolve to an
-    # absolute path now; strict=True surfaces a missing file as a clean error
-    # instead of embedding a broken path.
-    try:
-        path = path.resolve(strict=True)
-    except FileNotFoundError:
-        print(f"Config file not found: {path}", file=sys.stderr)
-        return EXIT_GENERIC
-    # When --config was explicitly supplied, refuse to silently fall back to
-    # defaults on parse/validation errors — the operator pointed at a specific
-    # file and the resulting plists must reflect *its* settings, not whatever
-    # the defaults happen to be. Use load_strict so TOML/schema errors surface
-    # cleanly instead of being swallowed by UserConfig.load.
     explicit_config = bool(getattr(args, "config", None))
-    try:
-        if explicit_config:
+    path = _resolve_config_path(args)
+
+    if explicit_config:
+        # launchd runs jobs with its own cwd, so any relative path baked into
+        # the plist's ProgramArguments would resolve differently (or not at all)
+        # at scheduled-run time.  When the operator explicitly supplied a path,
+        # resolve strictly — a missing file is a hard error here because the
+        # resulting plists would embed a broken path.
+        try:
+            path = path.resolve(strict=True)
+        except FileNotFoundError:
+            print(f"Config file not found: {path}", file=sys.stderr)
+            return EXIT_GENERIC
+        # Refuse to silently fall back to defaults on parse/validation errors —
+        # the operator pointed at a specific file and the plists must reflect
+        # *its* settings, not whatever the defaults happen to be.
+        try:
             user_config = UserConfig.load_strict(path=path)
-        else:
-            user_config = UserConfig.load(path=path)
-    except tomllib.TOMLDecodeError as exc:
-        print(f"Invalid TOML in {path}: {exc}", file=sys.stderr)
-        return EXIT_GENERIC
-    except ValidationError as exc:
-        first = str(exc).strip().splitlines()[0]
-        print(f"Invalid config in {path}: {first}", file=sys.stderr)
-        return EXIT_GENERIC
-    except (OSError, UnicodeDecodeError) as exc:
-        print(f"Could not read config file {path}: {exc}", file=sys.stderr)
-        return EXIT_GENERIC
+        except tomllib.TOMLDecodeError as exc:
+            print(f"Invalid TOML in {path}: {exc}", file=sys.stderr)
+            return EXIT_GENERIC
+        except ValidationError as exc:
+            first = str(exc).strip().splitlines()[0]
+            print(f"Invalid config in {path}: {first}", file=sys.stderr)
+            return EXIT_GENERIC
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"Could not read config file {path}: {exc}", file=sys.stderr)
+            return EXIT_GENERIC
+    else:
+        # No explicit --config: the default path may not exist yet (fresh
+        # machine / first run).  Resolve without strict so we always get an
+        # absolute path to embed in the plist, and load with the swallow-default
+        # behavior so a missing file is treated as "use defaults".
+        path = path.resolve()
+        user_config = UserConfig.load(path=path)
+
     try:
         # Plumb the resolved config path through so the generated plists
         # invoke `argos run --config <path>` / `argos brief --config <path>`
@@ -347,16 +372,22 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.command == "run":
-        _apply_config_override(args)
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
         return asyncio.run(_run(args.url))
     if args.command == "slack":
-        _apply_config_override(args)
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
         from argos.main import main as slack_main
 
         asyncio.run(slack_main())
         return 0
     if args.command == "brief":
-        _apply_config_override(args)
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
         from argos.slack.briefing import dispatch_daily_briefing
 
         ts = asyncio.run(dispatch_daily_briefing(channel=args.channel))
