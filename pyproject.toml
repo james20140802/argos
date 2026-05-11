@@ -21,6 +21,7 @@ dependencies = [
     "aiohttp>=3.9",
     "tomli>=2.0; python_version < '3.11'",
     "tomli-w>=1.0",
+    "questionary>=2.0",
 ]
 
 [project.optional-dependencies]
