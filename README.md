@@ -25,17 +25,37 @@ Slack Interface (Daily briefing + Keep/Pass/Deep Dive)
 
 ## Setup
 
+가장 빠른 방법은 인터랙티브 부트스트랩 위저드를 쓰는 것입니다 (Docker 컨테이너 기동,
+Alembic 마이그레이션, 필수 Ollama 모델 다운로드, Slack 토큰 검증, launchd 스케줄링,
+헬스체크까지 한 번에 진행합니다).
+
 ```bash
 # 1. 의존성 설치 (.venv 자동 생성)
 uv sync --all-extras
 
-# 2. 환경 변수 설정
+# 2. 위저드 실행
+uv run argos init
+
+# 특정 섹션만 다시 설정하고 싶다면:
+uv run argos init --reconfigure slack       # infra / slack / interests / schedule
+```
+
+위저드는 idempotent 하게 동작합니다 — 기존 `.env` / `~/.config/argos/config.toml` 값을
+다시 디폴트로 보여주고, 사용자가 바꾼 값만 atomic하게 다시 씁니다. 시크릿 값은
+재표시 시 항상 마스킹되며 (`xoxb-***` / `***`), `.env` 파일은 항상 `chmod 600` 으로
+잠깁니다. CI나 비-TTY 환경에서는 `ARGOS_INIT_NONINTERACTIVE=1` (또는
+`--non-interactive`) 로 모든 디폴트를 조용히 채택할 수 있습니다.
+
+### 수동 설정 (선택)
+
+위저드 대신 직접 진행하고 싶다면:
+
+```bash
+uv sync --all-extras
 cp .env.example .env
 
-# 3. PostgreSQL + pgvector 시작
+# 비밀번호/토큰을 채워 넣은 뒤
 docker compose up -d
-
-# 4. DB 마이그레이션 적용
 uv run alembic upgrade head
 ```
 
