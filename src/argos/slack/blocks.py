@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from argos.models.tech_item import CategoryType, TechItem
-from argos.models.user_asset import AssetStatus
+from argos.models.user_asset import AssetStatus, UserAsset
 
 _CATEGORY_LABELS: dict[CategoryType, str] = {
     CategoryType.MAINSTREAM: "Mainstream",
@@ -148,6 +148,92 @@ def build_item_blocks(item: TechItem) -> list[dict]:
             ],
         },
     ]
+
+
+def build_portfolio_empty_blocks() -> list[dict]:
+    """포트폴리오가 비어있을 때 표시할 Block Kit 블록."""
+    return [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "\U0001f4bc 내 포트폴리오",
+                "emoji": True,
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "아직 Keep한 기술이 없습니다. 브리핑에서 Keep 버튼을 눌러 추가해보세요!",
+            },
+        },
+    ]
+
+
+def build_portfolio_blocks(assets: list[tuple[UserAsset, TechItem]]) -> list[dict]:
+    """Keep 상태 자산 목록을 Block Kit 카드로 렌더링한다."""
+    blocks: list[dict] = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"\U0001f4bc 내 포트폴리오 ({len(assets)}개)",
+                "emoji": True,
+            },
+        }
+    ]
+
+    for asset, tech_item in assets:
+        tech_id = str(tech_item.id)
+        kept_on = asset.updated_at.strftime("%Y-%m-%d") if asset.updated_at else "—"
+        last_signal = (
+            asset.last_monitored_at.strftime("%Y-%m-%d") if asset.last_monitored_at else "—"
+        )
+
+        title_link = f"<{tech_item.source_url}|{tech_item.title}>"
+        body = f"*{title_link}*\nKept on: {kept_on}  |  Last signal: {last_signal}"
+
+        # Clamp to Slack section text limit
+        if len(body) > SLACK_SECTION_TEXT_LIMIT:
+            body = body[: SLACK_SECTION_TEXT_LIMIT - 1] + "…"
+
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": body},
+            }
+        )
+        blocks.append(
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Untrack",
+                            "emoji": False,
+                        },
+                        "action_id": "action_untrack",
+                        "value": tech_id,
+                        "style": "danger",
+                        "confirm": {
+                            "title": {"type": "plain_text", "text": "Untrack?"},
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*{tech_item.title}* 를 포트폴리오에서 제거하시겠습니까?",
+                            },
+                            "confirm": {"type": "plain_text", "text": "제거"},
+                            "deny": {"type": "plain_text", "text": "취소"},
+                        },
+                    }
+                ],
+            }
+        )
+        blocks.append({"type": "divider"})
+
+    return blocks
 
 
 def build_briefing_blocks(
