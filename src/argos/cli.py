@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -166,6 +167,46 @@ def _cmd_config_list(args: argparse.Namespace) -> int:
     for key, value in rows:
         print(f"{key.ljust(key_width)} | {value}")
     return EXIT_OK
+
+
+def _build_init_parser(sub: argparse._SubParsersAction) -> None:
+    """Wire the ``argos init`` subcommand."""
+    from argos.init_wizard.wizard import RECONFIGURE_SECTIONS
+
+    init_p = sub.add_parser(
+        "init",
+        help="Interactive bootstrap (Postgres + Ollama + Slack + schedule + healthcheck)",
+        description=(
+            "Walk a 6-step wizard that sets up Argos end-to-end on a fresh machine.\n\n"
+            "Use --reconfigure to re-run only one section (the wizard always tails "
+            "with a healthcheck). Set ARGOS_INIT_NONINTERACTIVE=1 (or pass "
+            "--non-interactive) to take every default silently — useful for CI."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    init_p.add_argument(
+        "--reconfigure",
+        choices=list(RECONFIGURE_SECTIONS),
+        default=None,
+        help="Re-run only the named section instead of the full wizard",
+    )
+    init_p.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Take every default silently (sets ARGOS_INIT_NONINTERACTIVE=1)",
+    )
+
+
+def _cmd_init(args: argparse.Namespace) -> int:
+    from argos.init_wizard.wizard import run_full, run_reconfigure
+
+    if getattr(args, "non_interactive", False):
+        os.environ["ARGOS_INIT_NONINTERACTIVE"] = "1"
+
+    section = getattr(args, "reconfigure", None)
+    if section:
+        return run_reconfigure(section)
+    return run_full()
 
 
 def _build_config_parser(sub: argparse._SubParsersAction) -> None:
@@ -386,6 +427,7 @@ def main(argv: list[str] | None = None) -> int:
     brief_p.add_argument("--channel", default=None, help="Override target Slack channel ID")
 
     _build_config_parser(sub)
+    _build_init_parser(sub)
     _build_schedule_parser(sub)
 
     args = parser.parse_args(argv)
@@ -422,6 +464,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "config":
         return _dispatch_config(args)
+    if args.command == "init":
+        return _cmd_init(args)
     if args.command == "schedule":
         return _dispatch_schedule(args)
     return 1

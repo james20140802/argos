@@ -71,6 +71,8 @@ uv run alembic upgrade head                              # Apply migrations
 uv run alembic downgrade -1                              # Rollback one step
 
 # Argos CLI (operator entry points)
+uv run argos init                                 # Interactive 6-step bootstrap wizard
+uv run argos init --reconfigure slack             # Re-run one section: infra/slack/interests/schedule
 uv run argos run [--url URL]...                   # Crawl → brain → save pipeline
 uv run argos slack                                # Start Slack bot in Socket Mode
 uv run argos brief [--channel CID]                # Dispatch today's briefing
