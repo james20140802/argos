@@ -109,6 +109,23 @@ class UserConfig(BaseModel):
             )
             return cls()
 
+    @classmethod
+    def load_strict(cls, *, path: Path) -> UserConfig:
+        """Load ``path`` without the silent-fallback behavior of :meth:`load`.
+
+        Unlike :meth:`load`, this re-raises:
+          - :class:`FileNotFoundError` / :class:`OSError` when the file can't be read,
+          - :class:`UnicodeDecodeError` when the file is not valid UTF-8,
+          - :class:`tomllib.TOMLDecodeError` when the file isn't valid TOML,
+          - :class:`pydantic.ValidationError` when the parsed payload fails schema.
+
+        Callers (e.g. ``argos schedule install --config <path>``) use this so an
+        explicit operator-supplied config doesn't silently fall back to defaults.
+        """
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        return cls.model_validate(data)
+
 
 class Settings:
     def __init__(self) -> None:

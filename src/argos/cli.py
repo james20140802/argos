@@ -7,6 +7,11 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    import tomllib
+except ImportError:  # pragma: no cover — py<3.11 fallback
+    import tomli as tomllib  # type: ignore[no-reuse-import]
+
 from pydantic import ValidationError
 
 from argos import config_store
@@ -215,7 +220,27 @@ def _cmd_schedule_install(args: argparse.Namespace) -> int:
     except FileNotFoundError:
         print(f"Config file not found: {path}", file=sys.stderr)
         return EXIT_GENERIC
-    user_config = UserConfig.load(path=path)
+    # When --config was explicitly supplied, refuse to silently fall back to
+    # defaults on parse/validation errors — the operator pointed at a specific
+    # file and the resulting plists must reflect *its* settings, not whatever
+    # the defaults happen to be. Use load_strict so TOML/schema errors surface
+    # cleanly instead of being swallowed by UserConfig.load.
+    explicit_config = bool(getattr(args, "config", None))
+    try:
+        if explicit_config:
+            user_config = UserConfig.load_strict(path=path)
+        else:
+            user_config = UserConfig.load(path=path)
+    except tomllib.TOMLDecodeError as exc:
+        print(f"Invalid TOML in {path}: {exc}", file=sys.stderr)
+        return EXIT_GENERIC
+    except ValidationError as exc:
+        first = str(exc).strip().splitlines()[0]
+        print(f"Invalid config in {path}: {first}", file=sys.stderr)
+        return EXIT_GENERIC
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"Could not read config file {path}: {exc}", file=sys.stderr)
+        return EXIT_GENERIC
     try:
         # Plumb the resolved config path through so the generated plists
         # invoke `argos run --config <path>` / `argos brief --config <path>`
