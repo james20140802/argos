@@ -10,7 +10,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from argos import config_store
-from argos.config import UserConfig
+from argos.config import UserConfig, settings
 from argos.crawler.pipeline import run_full_pipeline
 from argos.database import AsyncSessionLocal
 
@@ -63,6 +63,22 @@ def _resolve_config_path(args: argparse.Namespace) -> Path:
     if override:
         return Path(override).expanduser()
     return config_store.default_config_path()
+
+
+def _apply_config_override(args: argparse.Namespace) -> None:
+    """If ``--config <path>`` was passed, reload ``settings.user`` from it.
+
+    The scheduled launchd jobs invoke ``argos run --config <path>`` and
+    ``argos brief --config <path>`` (see ``scheduler.reload_schedule``).
+    Without this, the runtime would silently fall back to defaults /
+    ``~/.config/argos/config.toml`` even though the operator explicitly
+    pointed at a different file.
+    """
+    override = getattr(args, "config", None)
+    if not override:
+        return
+    path = Path(override).expanduser()
+    settings.user = UserConfig.load(path=path)
 
 
 def _cmd_config_path(args: argparse.Namespace) -> int:
@@ -253,7 +269,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="argos")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    run_p = sub.add_parser("run", help="Run the full crawl → brain → save pipeline")
+    # Shared `--config` flag for runtime subcommands. The scheduled launchd
+    # jobs pass `--config <path>` (rendered by `scheduler.reload_schedule`),
+    # so the parsers MUST accept it or the jobs crash with argparse exit 2.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--config",
+        default=None,
+        help="Path to config.toml (defaults to ~/.config/argos/config.toml)",
+    )
+
+    run_p = sub.add_parser(
+        "run",
+        help="Run the full crawl → brain → save pipeline",
+        parents=[common],
+    )
     run_p.add_argument(
         "--url",
         action="append",
@@ -262,9 +292,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     run_p.add_argument("-v", "--verbose", action="store_true")
 
-    sub.add_parser("slack", help="Start the Slack bot (Socket Mode)")
+    sub.add_parser("slack", help="Start the Slack bot (Socket Mode)", parents=[common])
 
-    brief_p = sub.add_parser("brief", help="Dispatch today's briefing to Slack")
+    brief_p = sub.add_parser(
+        "brief",
+        help="Dispatch today's briefing to Slack",
+        parents=[common],
+    )
     brief_p.add_argument("--channel", default=None, help="Override target Slack channel ID")
 
     _build_config_parser(sub)
@@ -278,13 +312,16 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.command == "run":
+        _apply_config_override(args)
         return asyncio.run(_run(args.url))
     if args.command == "slack":
+        _apply_config_override(args)
         from argos.main import main as slack_main
 
         asyncio.run(slack_main())
         return 0
     if args.command == "brief":
+        _apply_config_override(args)
         from argos.slack.briefing import dispatch_daily_briefing
 
         ts = asyncio.run(dispatch_daily_briefing(channel=args.channel))
