@@ -522,6 +522,114 @@ def test_schedule_install_no_flag_file_exists_plist_embeds_config(
     assert str(default_cfg.resolve()) in brief_args
 
 
+def test_schedule_install_no_flag_broken_toml_plist_omits_config(
+    tmp_path, monkeypatch
+) -> None:
+    """Case 3 (PRRT_kwDOR4m8Js6BEI7i): no --config, default file EXISTS but is
+    invalid TOML → install must succeed (resilient) and the plist must NOT embed
+    --config, because the scheduled `argos run --config <path>` would hit the
+    strict _apply_config_override path and exit non-zero on every launchd trigger.
+    """
+    import subprocess
+    import plistlib
+    from argos import scheduler
+
+    fake_bin = tmp_path / "argos"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    monkeypatch.setattr("argos.scheduler.shutil.which", lambda name: str(fake_bin))
+
+    default_cfg = tmp_path / "config.toml"
+    default_cfg.write_text("not = valid [ toml")  # broken TOML
+    monkeypatch.setattr("argos.config_store.default_config_path", lambda: default_cfg)
+
+    la = tmp_path / "LaunchAgents"
+    logs = tmp_path / "Logs"
+    monkeypatch.setattr(scheduler, "_DEFAULT_LAUNCH_AGENTS", la)
+    monkeypatch.setattr(scheduler, "_DEFAULT_LOG_DIR", logs)
+    monkeypatch.setattr(scheduler, "_current_uid", lambda: 501)
+
+    def fake_launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake_launchctl)
+
+    rc = main(["schedule", "install"])
+    assert rc == 0  # install must be resilient — not fail
+
+    run_plist = la / "com.argos.run.plist"
+    brief_plist = la / "com.argos.brief.plist"
+    run_args = plistlib.loads(run_plist.read_bytes())["ProgramArguments"]
+    brief_args = plistlib.loads(brief_plist.read_bytes())["ProgramArguments"]
+
+    # Broken TOML → must NOT embed --config so launchd uses permissive defaults.
+    assert "--config" not in run_args, f"unexpected --config in run plist: {run_args}"
+    assert "--config" not in brief_args, f"unexpected --config in brief plist: {brief_args}"
+    assert run_args == [str(fake_bin), "run"]
+    assert brief_args[:2] == [str(fake_bin), "brief"]
+
+
+def test_schedule_install_no_flag_invalid_schema_plist_omits_config(
+    tmp_path, monkeypatch
+) -> None:
+    """Case 4 (PRRT_kwDOR4m8Js6BEI7i): no --config, default file EXISTS but fails
+    schema validation → install must succeed (resilient) and the plist must NOT
+    embed --config.
+    """
+    import subprocess
+    import plistlib
+    from argos import scheduler
+
+    fake_bin = tmp_path / "argos"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    monkeypatch.setattr("argos.scheduler.shutil.which", lambda name: str(fake_bin))
+
+    default_cfg = tmp_path / "config.toml"
+    # Valid TOML but schema-invalid value (limit_per_category has ge=1 constraint).
+    default_cfg.write_text("[briefing]\nlimit_per_category = 0\n")
+    monkeypatch.setattr("argos.config_store.default_config_path", lambda: default_cfg)
+
+    la = tmp_path / "LaunchAgents"
+    logs = tmp_path / "Logs"
+    monkeypatch.setattr(scheduler, "_DEFAULT_LAUNCH_AGENTS", la)
+    monkeypatch.setattr(scheduler, "_DEFAULT_LOG_DIR", logs)
+    monkeypatch.setattr(scheduler, "_current_uid", lambda: 501)
+
+    def fake_launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake_launchctl)
+
+    rc = main(["schedule", "install"])
+    assert rc == 0  # install must be resilient — not fail
+
+    run_plist = la / "com.argos.run.plist"
+    brief_plist = la / "com.argos.brief.plist"
+    run_args = plistlib.loads(run_plist.read_bytes())["ProgramArguments"]
+    brief_args = plistlib.loads(brief_plist.read_bytes())["ProgramArguments"]
+
+    # Schema-invalid file → must NOT embed --config so launchd uses permissive defaults.
+    assert "--config" not in run_args, f"unexpected --config in run plist: {run_args}"
+    assert "--config" not in brief_args, f"unexpected --config in brief plist: {brief_args}"
+    assert run_args == [str(fake_bin), "run"]
+    assert brief_args[:2] == [str(fake_bin), "brief"]
+
+
 def test_schedule_install_no_flag_no_file_launchd_invocation_uses_defaults(
     tmp_path, monkeypatch
 ) -> None:

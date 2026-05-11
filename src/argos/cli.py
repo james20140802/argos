@@ -266,13 +266,26 @@ def _cmd_schedule_install(args: argparse.Namespace) -> int:
         # missing file is treated as "use defaults".
         path = path.resolve()
         user_config = UserConfig.load(path=path)
-        # Only embed --config in the plist if the default file actually exists
-        # on disk. When it does not exist, passing config_path=None omits the
-        # flag entirely so launchd fires `argos run` (no --config) — which hits
-        # the same permissive load path and uses defaults. Embedding a path to a
-        # missing file would cause _apply_config_override to exit non-zero on
-        # every scheduled trigger (it uses load_strict for any explicit --config).
-        embed_config_path: Path | None = path if path.is_file() else None
+        # Embed --config in the plist ONLY when the default file is both present
+        # AND parseable/valid.  If the file exists but is broken TOML or fails
+        # schema validation, UserConfig.load silently fell back to defaults above
+        # but the scheduled `argos run --config <path>` would hit the strict
+        # _apply_config_override path and exit non-zero on every launchd trigger.
+        # Probe with load_strict; any failure → omit --config so the plist runs
+        # bare `argos run` which uses the permissive load path (same as defaults).
+        embed_config_path: Path | None = None
+        if path.is_file():
+            try:
+                UserConfig.load_strict(path=path)  # probe only — result discarded
+                embed_config_path = path
+            except (
+                FileNotFoundError,
+                tomllib.TOMLDecodeError,
+                ValidationError,
+                OSError,
+                UnicodeDecodeError,
+            ):
+                embed_config_path = None  # invalid file → don't embed --config
 
     try:
         # Plumb the resolved config path through so the generated plists
