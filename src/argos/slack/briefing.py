@@ -22,7 +22,11 @@ _ORDERED_CATEGORIES = (CategoryType.MAINSTREAM, CategoryType.ALPHA)
 async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
     async with AsyncSessionLocal() as session:
         now_utc = datetime.now(timezone.utc)
-        items_by_category = await fetch_today_briefing(session, now_utc=now_utc)
+        items_by_category = await fetch_today_briefing(
+            session,
+            now_utc=now_utc,
+            limit_per_category=settings.user.briefing.limit_per_category,
+        )
 
     if all(not items for items in items_by_category.values()):
         logger.info("No items today — skipping briefing dispatch")
