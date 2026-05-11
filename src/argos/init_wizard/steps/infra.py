@@ -149,7 +149,7 @@ def run_infra_step(
     runners.wait_pg_ready(host, port)
 
     print("  • applying Alembic migrations…")
-    runners.alembic_upgrade_head(repo_root)
+    runners.alembic_upgrade_head(repo_root, env_path=env_file)
 
     print("  • checking Ollama models…")
     pulled = _ensure_ollama_models(ollama_host)

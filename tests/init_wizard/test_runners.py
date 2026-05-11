@@ -273,3 +273,54 @@ def test_ollama_ping_raises_on_failure(monkeypatch):
     monkeypatch.setattr(runners.httpx, "get", fake_get)
     with pytest.raises(WizardStepError):
         runners.ollama_ping()
+
+
+# ---------------------------------------------------------------------------
+# Regression: Finding 1 — alembic_upgrade_head propagates env_path into subprocess env
+# ---------------------------------------------------------------------------
+
+
+def test_alembic_upgrade_head_passes_env_path_vars_to_subprocess(monkeypatch, tmp_path):
+    """A custom env_path must inject its POSTGRES_* values into the subprocess env.
+
+    Without this fix the Alembic subprocess inherits the parent process env and
+    may migrate the wrong database when env_path differs from the CWD's .env.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "POSTGRES_USER=argos\n"
+        "POSTGRES_PASSWORD=argos_dev_password\n"
+        "POSTGRES_DB=argos\n"
+        "POSTGRES_HOST=localhost\n"
+        "POSTGRES_PORT=9999\n"
+    )
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _make_proc(0)
+
+    monkeypatch.setattr(runners.subprocess, "run", fake_run)
+    runners.alembic_upgrade_head(tmp_path, env_path=env_file)
+
+    assert captured.get("env") is not None, "env kwarg was not passed to subprocess.run"
+    assert captured["env"]["POSTGRES_PORT"] == "9999", (
+        f"expected POSTGRES_PORT=9999 in subprocess env, got: {captured['env'].get('POSTGRES_PORT')!r}"
+    )
+
+
+def test_alembic_upgrade_head_without_env_path_passes_none_env(monkeypatch, tmp_path):
+    """Without env_path the subprocess inherits the default (None) env."""
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _make_proc(0)
+
+    monkeypatch.setattr(runners.subprocess, "run", fake_run)
+    runners.alembic_upgrade_head(tmp_path)
+
+    assert captured.get("env") is None, (
+        f"expected env=None when no env_path given, got: {captured.get('env')!r}"
+    )

@@ -20,7 +20,7 @@ def _stub_runners(monkeypatch, *, installed_models=None, compose_calls=None):
 
     monkeypatch.setattr(infra.runners, "docker_compose_up", lambda repo: compose_calls.append(repo))
     monkeypatch.setattr(infra.runners, "wait_pg_ready", lambda h, p, **kw: None)
-    monkeypatch.setattr(infra.runners, "alembic_upgrade_head", lambda repo: None)
+    monkeypatch.setattr(infra.runners, "alembic_upgrade_head", lambda repo, env_path=None: None)
     monkeypatch.setattr(infra.runners, "ollama_list", lambda host: list(installed_models))
     monkeypatch.setattr(infra.runners, "ollama_pull", lambda m: pulled.append(m))
     return pulled, compose_calls
@@ -164,7 +164,7 @@ def test_infra_surfaces_pg_ready_timeout(tmp_path, monkeypatch):
         raise WizardStepError("pg not ready", hint="check docker compose ps")
 
     monkeypatch.setattr(infra.runners, "wait_pg_ready", boom)
-    monkeypatch.setattr(infra.runners, "alembic_upgrade_head", lambda repo: None)
+    monkeypatch.setattr(infra.runners, "alembic_upgrade_head", lambda repo, env_path=None: None)
     monkeypatch.setattr(infra.runners, "ollama_list", lambda host: [])
     monkeypatch.setattr(infra.runners, "ollama_pull", lambda m: None)
 

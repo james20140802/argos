@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import socket
 import subprocess
@@ -44,8 +45,15 @@ def _run(
     cwd: Path | None = None,
     timeout: int = SUBPROCESS_DEFAULT_TIMEOUT_SEC,
     hint: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``cmd`` and surface failures as :class:`WizardStepError`."""
+    """Run ``cmd`` and surface failures as :class:`WizardStepError`.
+
+    ``env``, when provided, is passed verbatim to :func:`subprocess.run` as
+    the child process environment.  Callers that need to inject extra
+    environment variables while preserving the current process's env should
+    pass ``{**os.environ, ...}``.
+    """
     logger.debug("runners._run cmd=%s cwd=%s", cmd, cwd)
     try:
         proc = subprocess.run(
@@ -55,6 +63,7 @@ def _run(
             text=True,
             timeout=timeout,
             check=False,
+            env=env,
         )
     except FileNotFoundError as exc:
         raise WizardStepError(
@@ -150,13 +159,26 @@ def wait_pg_ready(
     )
 
 
-def alembic_upgrade_head(repo_root: Path) -> None:
-    """Apply all pending Alembic migrations."""
+def alembic_upgrade_head(repo_root: Path, env_path: Path | None = None) -> None:
+    """Apply all pending Alembic migrations.
+
+    If ``env_path`` is supplied its ``POSTGRES_*`` (and other) key/value pairs
+    are merged into the subprocess environment so Alembic's ``argos.config.Secrets``
+    reads the correct credentials — even when the caller used a non-default
+    ``.env`` location that differs from the working directory.
+    """
+    extra_env: dict[str, str] | None = None
+    if env_path is not None:
+        from argos.init_wizard.env_file import load_env
+
+        extra_env = {**os.environ, **load_env(env_path)}
+
     _run(
         ["uv", "run", "alembic", "upgrade", "head"],
         cwd=repo_root,
         hint="inspect the migration error above; you can rollback with "
         "`uv run alembic downgrade -1`",
+        env=extra_env,
     )
 
 
