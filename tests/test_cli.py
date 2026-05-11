@@ -350,7 +350,16 @@ def test_plist_program_arguments_roundtrip_through_brief_parser(
 
 def test_schedule_install_no_flag_no_config_succeeds(tmp_path, monkeypatch) -> None:
     """`argos schedule install` with no --config and no config file on disk
-    must succeed (use defaults) — this is the first-run / fresh-machine case."""
+    must succeed (use defaults) and pass config_path=None to reload_schedule.
+
+    This is the first-run / fresh-machine case. Passing config_path=None means
+    the rendered plists omit --config entirely so launchd fires `argos run`
+    without a --config arg. That path uses the permissive UserConfig.load and
+    treats a missing default file as "use built-in defaults" — which is the
+    correct behaviour on a fresh machine. Embedding the path to a missing file
+    would instead cause _apply_config_override (strict for any explicit --config)
+    to exit non-zero on every scheduled trigger.
+    """
     fake_bin = tmp_path / "argos"
     fake_bin.write_text("#!/bin/sh\n")
     fake_bin.chmod(0o755)
@@ -369,9 +378,9 @@ def test_schedule_install_no_flag_no_config_succeeds(tmp_path, monkeypatch) -> N
     rc = main(["schedule", "install"])
 
     assert rc == 0
-    # reload_schedule must have been called with the resolved absolute path
     assert captured_path, "reload_schedule was not called"
-    assert captured_path[0].is_absolute()
+    # Missing default file → config_path=None so the plist omits --config.
+    assert captured_path[0] is None
 
 
 def test_schedule_install_explicit_nonexistent_config_fails(tmp_path, monkeypatch) -> None:
@@ -401,6 +410,189 @@ def test_schedule_install_explicit_broken_toml_fails(tmp_path, monkeypatch) -> N
     rc = main(["schedule", "--config", str(bad_toml), "install"])
 
     assert rc != 0
+
+
+# ---------------------------------------------------------------------------
+# Regression (PRRT_kwDOR4m8Js6BEAqh): `schedule install` (no flag, no file)
+# must NOT embed --config in the plist. Embedding a path to a missing file
+# causes every launchd-triggered `argos run --config <path>` to exit non-zero
+# via the strict _apply_config_override path.
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_install_no_flag_no_file_plist_omits_config(
+    tmp_path, monkeypatch
+) -> None:
+    """Case 1: no --config, default file absent → ProgramArguments must be
+    exactly [argos_bin, "run"] (no --config tail).
+    """
+    import subprocess
+    import plistlib
+    from argos import scheduler
+
+    fake_bin = tmp_path / "argos"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    monkeypatch.setattr("argos.scheduler.shutil.which", lambda name: str(fake_bin))
+
+    default_cfg = tmp_path / "config.toml"  # does NOT exist
+    monkeypatch.setattr("argos.config_store.default_config_path", lambda: default_cfg)
+
+    la = tmp_path / "LaunchAgents"
+    logs = tmp_path / "Logs"
+    monkeypatch.setattr(scheduler, "_DEFAULT_LAUNCH_AGENTS", la)
+    monkeypatch.setattr(scheduler, "_DEFAULT_LOG_DIR", logs)
+    monkeypatch.setattr(scheduler, "_current_uid", lambda: 501)
+
+    def fake_launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake_launchctl)
+
+    rc = main(["schedule", "install"])
+    assert rc == 0
+
+    run_plist = la / "com.argos.run.plist"
+    brief_plist = la / "com.argos.brief.plist"
+    run_args = plistlib.loads(run_plist.read_bytes())["ProgramArguments"]
+    brief_args = plistlib.loads(brief_plist.read_bytes())["ProgramArguments"]
+
+    # No --config in either plist when the default file is absent.
+    assert "--config" not in run_args, f"unexpected --config in run plist: {run_args}"
+    assert "--config" not in brief_args, f"unexpected --config in brief plist: {brief_args}"
+    assert run_args == [str(fake_bin), "run"]
+    assert brief_args[:2] == [str(fake_bin), "brief"]
+
+
+def test_schedule_install_no_flag_file_exists_plist_embeds_config(
+    tmp_path, monkeypatch
+) -> None:
+    """Case 2: no --config, default file EXISTS → ProgramArguments must embed
+    --config <resolved-default-path>.
+    """
+    import subprocess
+    import plistlib
+    from argos import scheduler
+
+    fake_bin = tmp_path / "argos"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    monkeypatch.setattr("argos.scheduler.shutil.which", lambda name: str(fake_bin))
+
+    default_cfg = tmp_path / "config.toml"
+    default_cfg.write_text("[run]\ntime = \"06:00\"\n")  # file exists
+    monkeypatch.setattr("argos.config_store.default_config_path", lambda: default_cfg)
+
+    la = tmp_path / "LaunchAgents"
+    logs = tmp_path / "Logs"
+    monkeypatch.setattr(scheduler, "_DEFAULT_LAUNCH_AGENTS", la)
+    monkeypatch.setattr(scheduler, "_DEFAULT_LOG_DIR", logs)
+    monkeypatch.setattr(scheduler, "_current_uid", lambda: 501)
+
+    def fake_launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake_launchctl)
+
+    rc = main(["schedule", "install"])
+    assert rc == 0
+
+    run_plist = la / "com.argos.run.plist"
+    brief_plist = la / "com.argos.brief.plist"
+    run_args = plistlib.loads(run_plist.read_bytes())["ProgramArguments"]
+    brief_args = plistlib.loads(brief_plist.read_bytes())["ProgramArguments"]
+
+    assert "--config" in run_args
+    assert str(default_cfg.resolve()) in run_args
+    assert "--config" in brief_args
+    assert str(default_cfg.resolve()) in brief_args
+
+
+def test_schedule_install_no_flag_no_file_launchd_invocation_uses_defaults(
+    tmp_path, monkeypatch
+) -> None:
+    """Case 4 round-trip: after installing with no --config and no file,
+    simulate launchd's invocation of `argos run` (no --config) → exit 0.
+
+    This is the regression path: if the plist incorrectly embedded
+    `--config <missing-path>`, argos run would exit non-zero (FileNotFoundError
+    via _apply_config_override). The plist must produce a bare `argos run`.
+    """
+    fake_bin = tmp_path / "argos"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    monkeypatch.setattr("argos.scheduler.shutil.which", lambda name: str(fake_bin))
+
+    default_cfg = tmp_path / "config.toml"  # does NOT exist
+    monkeypatch.setattr("argos.config_store.default_config_path", lambda: default_cfg)
+
+    # Capture what reload_schedule receives so we can read the rendered plist.
+    import subprocess
+    import plistlib
+    from argos import scheduler
+
+    la = tmp_path / "LaunchAgents"
+    logs = tmp_path / "Logs"
+    monkeypatch.setattr(scheduler, "_DEFAULT_LAUNCH_AGENTS", la)
+    monkeypatch.setattr(scheduler, "_DEFAULT_LOG_DIR", logs)
+    monkeypatch.setattr(scheduler, "_current_uid", lambda: 501)
+
+    def fake_launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake_launchctl)
+
+    # Install with no flag and no file.
+    rc = main(["schedule", "install"])
+    assert rc == 0
+
+    run_plist = la / "com.argos.run.plist"
+    program_args = plistlib.loads(run_plist.read_bytes())["ProgramArguments"]
+    # Strip the binary (argv[0]) to get the CLI argv.
+    cli_argv = program_args[1:]
+
+    # cli_argv must be ["run"] — no --config — so launchd's invocation uses defaults.
+    assert cli_argv == ["run"], f"expected ['run'], got {cli_argv!r}"
+
+    # Now simulate launchd's actual call: `argos run` (no --config).
+    # Must succeed with default config (missing file → permissive load → defaults).
+    summary = _make_summary()
+    states = _make_mock_states(0)
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
+        patch(
+            "argos.cli.run_full_pipeline",
+            new=AsyncMock(return_value=(states, summary)),
+        ),
+    ):
+        rc2 = main(cli_argv)
+
+    assert rc2 == 0
 
 
 # ---------------------------------------------------------------------------

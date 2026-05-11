@@ -258,19 +258,30 @@ def _cmd_schedule_install(args: argparse.Namespace) -> int:
         except (OSError, UnicodeDecodeError) as exc:
             print(f"Could not read config file {path}: {exc}", file=sys.stderr)
             return EXIT_GENERIC
+        embed_config_path: Path | None = path
     else:
         # No explicit --config: the default path may not exist yet (fresh
         # machine / first run).  Resolve without strict so we always get an
-        # absolute path to embed in the plist, and load with the swallow-default
-        # behavior so a missing file is treated as "use defaults".
+        # absolute path, and load with the swallow-default behavior so a
+        # missing file is treated as "use defaults".
         path = path.resolve()
         user_config = UserConfig.load(path=path)
+        # Only embed --config in the plist if the default file actually exists
+        # on disk. When it does not exist, passing config_path=None omits the
+        # flag entirely so launchd fires `argos run` (no --config) — which hits
+        # the same permissive load path and uses defaults. Embedding a path to a
+        # missing file would cause _apply_config_override to exit non-zero on
+        # every scheduled trigger (it uses load_strict for any explicit --config).
+        embed_config_path: Path | None = path if path.is_file() else None
 
     try:
         # Plumb the resolved config path through so the generated plists
         # invoke `argos run --config <path>` / `argos brief --config <path>`
         # with the same settings the install command just validated.
-        reload_schedule(user_config, config_path=path)
+        # embed_config_path is None when the default file is absent — renderers
+        # then omit the --config arg so the scheduled job uses the same
+        # permissive default-load path as a bare `argos run`.
+        reload_schedule(user_config, config_path=embed_config_path)
     except SchedulerError as exc:
         print(f"Scheduler error: {exc}", file=sys.stderr)
         return EXIT_GENERIC
