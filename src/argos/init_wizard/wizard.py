@@ -50,10 +50,17 @@ def _print_header(step_no: int, total: int, title: str) -> None:
     print("─" * 40)
 
 
-def _user_config():
+def _rebuild_database(env_path: Path) -> None:
+    """Rebuild the database engine after the infra step may have changed POSTGRES_* values."""
+    from argos.database import rebuild
+
+    rebuild(env_path=env_path)
+
+
+def _user_config(path: Path | None = None):
     from argos.config import UserConfig
 
-    return UserConfig.load(path=config_store.default_config_path())
+    return UserConfig.load(path=path or config_store.default_config_path())
 
 
 def _handle(exc: BaseException) -> int:
@@ -85,6 +92,7 @@ def run_full(
 
         _print_header(2, total, "Infra — Postgres + Alembic + Ollama")
         run_infra_step(root, env_path=env_path)
+        _rebuild_database(env_path if env_path is not None else (root / ".env"))
 
         _print_header(3, total, "Slack — bot token + channel")
         run_slack_step(root, env_path=env_path, config_path=cfg_path)
@@ -93,7 +101,7 @@ def run_full(
         run_interests_step(config_path=cfg_path)
 
         _print_header(5, total, "Schedule — launchd plists")
-        run_schedule_step(_user_config())
+        run_schedule_step(_user_config(cfg_path))
 
         _print_header(6, total, "Healthcheck")
         failures = run_healthcheck_step(root, env_path=env_path)
@@ -124,12 +132,13 @@ def run_reconfigure(
         _print_header(1, 2, f"Reconfigure — {section}")
         if section == "infra":
             run_infra_step(root, env_path=env_path)
+            _rebuild_database(env_path if env_path is not None else (root / ".env"))
         elif section == "slack":
             run_slack_step(root, env_path=env_path, config_path=cfg_path)
         elif section == "interests":
             run_interests_step(config_path=cfg_path)
         elif section == "schedule":
-            run_schedule_step(_user_config())
+            run_schedule_step(_user_config(cfg_path))
 
         _print_header(2, 2, "Healthcheck")
         failures = run_healthcheck_step(root, env_path=env_path)
