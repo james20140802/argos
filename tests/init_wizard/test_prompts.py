@@ -108,8 +108,8 @@ def test_validation_loop_sensitive_scrubs_value_from_printed_error(capsys):
         return f"invalid_auth for token {value}"
 
     with pytest.raises(WizardAbort) as excinfo:
-        prompts.with_validation_loop(
-            fake_prompt, validator, max_attempts=2, sensitive=True
+        prompts.with_sensitive_validation_loop(
+            fake_prompt, validator, max_attempts=2
         )
 
     captured = capsys.readouterr()
@@ -149,11 +149,10 @@ def test_validation_loop_sensitive_never_leaks_after_three_failures(
 
     with caplog.at_level(logging.DEBUG):
         with pytest.raises(WizardAbort) as excinfo:
-            prompts.with_validation_loop(
+            prompts.with_sensitive_validation_loop(
                 fake_questionary_prompt,
                 validator,
                 max_attempts=3,
-                sensitive=True,
             )
 
     assert call_count["n"] == 3  # loop ran the full 3 attempts

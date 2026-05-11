@@ -8,7 +8,7 @@ The flow:
 2. Prompt for any value the user wants to update. Tokens are masked when
    echoed back as defaults via ``_mask_token_value``.
 3. Validate the bot token by calling Slack ``auth.test``; on failure, loop
-   (capped at 3 attempts via :func:`prompts.with_validation_loop`).
+   (capped at 3 attempts via :func:`prompts.with_sensitive_validation_loop`).
 4. Write the tokens back to ``.env`` only if they changed, and the
    ``slack.channel_id`` to ``config.toml`` only if it changed.
 """
@@ -95,13 +95,13 @@ def run_slack_step(
             # The Slack SDK may echo the offending token back in its
             # exception message; returning ``str(exc)`` (even with
             # ``.replace()`` scrubbing) lets the raw secret reach a print
-            # sink. Return a fixed message instead — the validation loop's
-            # ``sensitive=True`` mode will discard this string anyway.
+            # sink. Return a fixed message instead — ``with_sensitive_validation_loop``
+            # discards the validator's string return anyway.
             return "slack auth.test rejected the token"
         return None
 
-    bot_token = prompts.with_validation_loop(
-        _prompt_bot, _validate_bot, max_attempts=3, sensitive=True
+    bot_token = prompts.with_sensitive_validation_loop(
+        _prompt_bot, _validate_bot, max_attempts=3
     )
 
     def _prompt_app() -> str:
@@ -117,8 +117,8 @@ def run_slack_step(
             return "app tokens must start with 'xapp-'"
         return None
 
-    app_token = prompts.with_validation_loop(
-        _prompt_app, _validate_app, max_attempts=3, sensitive=True
+    app_token = prompts.with_sensitive_validation_loop(
+        _prompt_app, _validate_app, max_attempts=3
     )
 
     channel_default = current_channel or "C01234567"

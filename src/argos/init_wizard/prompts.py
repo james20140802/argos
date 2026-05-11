@@ -185,29 +185,56 @@ def with_validation_loop(
     validator: Callable[[str], str | None],
     *,
     max_attempts: int = 3,
-    sensitive: bool = False,
 ) -> str:
     """Re-invoke ``prompt_fn`` until ``validator`` returns ``None`` (= valid).
 
-    ``validator`` returns ``None`` on success or an error message string. The
-    loop is capped at ``max_attempts`` (default 3) — exceeding the cap raises
-    :class:`argos.init_wizard.WizardAbort` so callers exit cleanly.
+    For **non-sensitive** prompts only. ``validator`` returns ``None`` on
+    success or an error message string; the error string is printed verbatim
+    and embedded in the final :class:`argos.init_wizard.WizardAbort` message.
+    The loop is capped at ``max_attempts`` (default 3) — exceeding the cap
+    raises ``WizardAbort`` so callers exit cleanly.
 
-    When ``sensitive=True`` (e.g. for password / token prompts), control flow
-    is routed to :func:`_validation_loop_sensitive`, a *separate* function
-    that consumes the validator's return value as a boolean only — the string
-    is never bound to a local variable, so static taint analysers (CodeQL)
-    cannot trace a flow from the raw secret into a print/log/exception sink.
-    Validators for sensitive flows should still return a non-``None`` truthy
-    sentinel on failure (any non-empty string works) to signal "retry".
+    For password / token prompts use :func:`with_sensitive_validation_loop`
+    instead. That function is a separate, statically distinct entry point
+    so taint analysers (CodeQL) can prove the plain-text printing loop is
+    unreachable from sensitive call sites.
     """
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
-    if sensitive:
-        return _validation_loop_sensitive(
-            prompt_fn, validator, max_attempts=max_attempts
-        )
     return _validation_loop_plain(
+        prompt_fn, validator, max_attempts=max_attempts
+    )
+
+
+def with_sensitive_validation_loop(
+    prompt_fn: Callable[[], str],
+    validator: Callable[[str], str | None],
+    *,
+    max_attempts: int = 3,
+) -> str:
+    """Validation loop for password / token prompts.
+
+    Behaves like :func:`with_validation_loop` but routes to
+    :func:`_validation_loop_sensitive`, which consumes the validator's return
+    value as a boolean only — its string contents (which may embed the raw
+    secret) are never bound to a local variable, so static taint analysers
+    (CodeQL) cannot construct a flow path from the password source to a
+    print/log/exception-message sink.
+
+    Validators for sensitive flows should still return a non-``None`` truthy
+    sentinel on failure (any non-empty string works) to signal "retry"; the
+    string is never read.
+
+    This is intentionally a *separate* public function rather than a flag on
+    :func:`with_validation_loop`: a runtime ``if sensitive`` dispatcher leaves
+    both helpers reachable from every call site as far as CodeQL is concerned,
+    so the plain (verbatim-printing) helper still shows up as a sink for
+    password sources. With two distinct entry points, each statically points
+    at exactly one helper.
+    """
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
+    return _validation_loop_sensitive(
         prompt_fn, validator, max_attempts=max_attempts
     )
 
@@ -220,5 +247,6 @@ __all__ = [
     "ask_text",
     "is_noninteractive",
     "mask_secret",
+    "with_sensitive_validation_loop",
     "with_validation_loop",
 ]
