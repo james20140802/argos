@@ -184,6 +184,81 @@ def test_resolve_argos_binary_raises_when_missing(monkeypatch, tmp_path) -> None
 
 
 # ---------------------------------------------------------------------------
+# Regression: the fallback chain must include Apple Silicon Homebrew
+# (/opt/homebrew/bin/argos) before /usr/local/bin/argos, since Argos's
+# primary target is M1 Max and GUI/launchd contexts have a minimal PATH
+# where `shutil.which` returns None even when argos is installed.
+# (Codex PR #41 — PRRT_kwDOR4m8Js6BDg1w)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_argos_binary_finds_apple_silicon_homebrew(monkeypatch) -> None:
+    """When `shutil.which` returns None and only /opt/homebrew/bin/argos
+    is a real file, `_resolve_argos_binary` must return that path. This
+    is the GUI/launchd-spawn scenario on M1: PATH is minimal so which()
+    misses the binary even though it's installed via Homebrew.
+    """
+    monkeypatch.setattr(scheduler.shutil, "which", lambda name: None)
+
+    apple_silicon_path = Path("/opt/homebrew/bin/argos")
+    real_is_file = Path.is_file
+
+    def fake_is_file(self: Path) -> bool:
+        if self == apple_silicon_path:
+            return True
+        # Defer to the real implementation for everything else so we
+        # don't accidentally spoof other Path.is_file callers.
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", fake_is_file)
+    assert _resolve_argos_binary() == apple_silicon_path
+
+
+def test_resolve_argos_binary_prefers_apple_silicon_over_usr_local(
+    monkeypatch,
+) -> None:
+    """If both /opt/homebrew/bin/argos and /usr/local/bin/argos exist,
+    the Apple Silicon path must win — Argos targets M1.
+    """
+    monkeypatch.setattr(scheduler.shutil, "which", lambda name: None)
+
+    apple = Path("/opt/homebrew/bin/argos")
+    intel = Path("/usr/local/bin/argos")
+    real_is_file = Path.is_file
+
+    def fake_is_file(self: Path) -> bool:
+        if self in (apple, intel):
+            return True
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", fake_is_file)
+    assert _resolve_argos_binary() == apple
+
+
+def test_resolve_argos_binary_error_lists_all_four_paths(monkeypatch) -> None:
+    """When every fallback misses, the error message must mention all
+    four probed locations so operators know exactly what was checked.
+    """
+    monkeypatch.setattr(scheduler.shutil, "which", lambda name: None)
+    # No is_file overrides — none of the real fallback paths should
+    # exist under the test runner. Force them to be missing in case
+    # the runner machine actually has argos installed.
+    monkeypatch.setattr(Path, "is_file", lambda self: False)
+
+    expected_fragments = [
+        "/opt/homebrew/bin/argos",
+        "/usr/local/bin/argos",
+        ".local/bin/argos",
+        "shutil.which",
+    ]
+    with pytest.raises(SchedulerError) as exc_info:
+        _resolve_argos_binary()
+    msg = str(exc_info.value)
+    for fragment in expected_fragments:
+        assert fragment in msg, f"missing fragment {fragment!r} in error: {msg!r}"
+
+
+# ---------------------------------------------------------------------------
 # Plist rendering — round-trip via plistlib.loads
 # ---------------------------------------------------------------------------
 

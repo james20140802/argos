@@ -56,9 +56,15 @@ _DEFAULT_LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 _DEFAULT_ENV_PATH = "/usr/local/bin:/usr/bin:/bin"
 
 # Fallback locations to search if `shutil.which("argos")` returns None.
+# Order matters: Argos's primary target is Apple Silicon (M1 Max), where
+# Homebrew installs to /opt/homebrew/bin. GUI launches and launchd's own
+# spawn context have a minimal PATH, so `shutil.which` can return None
+# even when `argos` is installed — we must probe the well-known Homebrew
+# locations before giving up.
 _ARGOS_BINARY_FALLBACKS: tuple[Path, ...] = (
-    Path("/usr/local/bin/argos"),
-    Path.home() / ".local" / "bin" / "argos",
+    Path("/opt/homebrew/bin/argos"),  # Apple Silicon Homebrew (primary target)
+    Path("/usr/local/bin/argos"),  # Intel Homebrew / generic Unix
+    Path.home() / ".local" / "bin" / "argos",  # user pip/uv site
 )
 
 
@@ -125,18 +131,22 @@ def _resolve_argos_binary() -> Path:
     launchd does NOT inherit the user's PATH, so the plist must embed an
     absolute path. Resolution order:
 
-    1. ``shutil.which("argos")``
-    2. ``/usr/local/bin/argos``
-    3. ``~/.local/bin/argos``
+    1. ``shutil.which("argos")`` — honours the caller's PATH
+    2. ``/opt/homebrew/bin/argos`` — Apple Silicon Homebrew default
+       (Argos's primary target is M1 Max, so this is checked first)
+    3. ``/usr/local/bin/argos`` — Intel Homebrew / generic Unix
+    4. ``~/.local/bin/argos`` — user pip/uv site
 
-    Raises :class:`SchedulerError` with an operator-friendly message if
-    none of the candidates exist.
+    Each fallback is accepted only if ``Path.is_file()`` is true so we
+    don't embed a stale directory or symlink-to-nowhere into the plist.
+    Raises :class:`SchedulerError` with an operator-friendly message
+    listing every probed location if none of the candidates exist.
     """
     found = shutil.which("argos")
     if found:
         return Path(found)
     for candidate in _ARGOS_BINARY_FALLBACKS:
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
     raise SchedulerError(
         "Could not locate the `argos` executable. Tried `shutil.which('argos')` "
