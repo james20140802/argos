@@ -85,10 +85,22 @@ def _run(
     return proc
 
 
-def docker_compose_up(repo_root: Path) -> None:
-    """Bring up the Argos compose stack in detached mode."""
+def docker_compose_up(repo_root: Path, env_path: Path | None = None) -> None:
+    """Bring up the Argos compose stack in detached mode.
+
+    If ``env_path`` is supplied it is passed to ``docker compose`` via the
+    ``--env-file`` flag so the compose stack reads Postgres credentials from the
+    same ``.env`` file that :func:`wait_pg_ready` and
+    :func:`alembic_upgrade_head` use.  Without this, Docker would fall back to
+    its own ``.env`` search rules which may point at a different file when the
+    caller passed a non-default path.
+    """
+    cmd = ["docker", "compose"]
+    if env_path is not None:
+        cmd += ["--env-file", str(env_path)]
+    cmd += ["up", "-d"]
     _run(
-        ["docker", "compose", "up", "-d"],
+        cmd,
         cwd=repo_root,
         hint="run `docker info` to confirm Docker Desktop is running",
     )

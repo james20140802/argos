@@ -129,7 +129,7 @@ def run_infra_step(
     _persist_env(env_file, existing, updates)
 
     print("  • starting Docker compose stack…")
-    runners.docker_compose_up(repo_root)
+    runners.docker_compose_up(repo_root, env_path=env_file)
 
     host = updates.get("POSTGRES_HOST", "localhost")
     raw_port = updates.get("POSTGRES_PORT", "5432")

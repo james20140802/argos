@@ -18,7 +18,7 @@ def _stub_runners(monkeypatch, *, installed_models=None, compose_calls=None):
     compose_calls = compose_calls if compose_calls is not None else []
     pulled = []
 
-    monkeypatch.setattr(infra.runners, "docker_compose_up", lambda repo: compose_calls.append(repo))
+    monkeypatch.setattr(infra.runners, "docker_compose_up", lambda repo, env_path=None: compose_calls.append(repo))
     monkeypatch.setattr(infra.runners, "wait_pg_ready", lambda h, p, **kw: None)
     monkeypatch.setattr(infra.runners, "alembic_upgrade_head", lambda repo, env_path=None: None)
     monkeypatch.setattr(infra.runners, "ollama_list", lambda host: list(installed_models))
@@ -158,7 +158,7 @@ def test_infra_surfaces_pg_ready_timeout(tmp_path, monkeypatch):
         "POSTGRES_HOST=localhost\nPOSTGRES_PORT=5432\n"
     )
 
-    monkeypatch.setattr(infra.runners, "docker_compose_up", lambda repo: None)
+    monkeypatch.setattr(infra.runners, "docker_compose_up", lambda repo, env_path=None: None)
 
     def boom(h, p, **kw):
         raise WizardStepError("pg not ready", hint="check docker compose ps")
@@ -172,3 +172,30 @@ def test_infra_surfaces_pg_ready_timeout(tmp_path, monkeypatch):
         infra.run_infra_step(tmp_path, env_path=env_path)
     assert "pg not ready" in str(excinfo.value)
     assert excinfo.value.hint and "docker compose ps" in excinfo.value.hint
+
+
+def test_docker_compose_up_receives_env_path(tmp_path, monkeypatch):
+    """docker_compose_up must be called with the resolved env_path so Docker
+    reads credentials from the same file as wait_pg_ready / alembic."""
+    env_path = tmp_path / "custom.env"
+    env_path.write_text(
+        "POSTGRES_USER=argos\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=argos\n"
+        "POSTGRES_HOST=localhost\nPOSTGRES_PORT=5432\n"
+    )
+
+    compose_calls: list[tuple] = []
+
+    def capture_compose(repo, env_path=None):
+        compose_calls.append((repo, env_path))
+
+    monkeypatch.setattr(infra.runners, "docker_compose_up", capture_compose)
+    monkeypatch.setattr(infra.runners, "wait_pg_ready", lambda h, p, **kw: None)
+    monkeypatch.setattr(infra.runners, "alembic_upgrade_head", lambda repo, env_path=None: None)
+    monkeypatch.setattr(infra.runners, "ollama_list", lambda host: list(infra.REQUIRED_OLLAMA_MODELS))
+    monkeypatch.setattr(infra.runners, "ollama_pull", lambda m: None)
+
+    infra.run_infra_step(tmp_path, env_path=env_path)
+
+    assert len(compose_calls) == 1
+    _, received_env_path = compose_calls[0]
+    assert received_env_path == env_path
