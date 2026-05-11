@@ -15,6 +15,10 @@ _ORDERED_CATEGORIES = (CategoryType.MAINSTREAM, CategoryType.ALPHA)
 # Slack section blocks reject text longer than 3000 chars with `invalid_blocks`.
 SLACK_SECTION_TEXT_LIMIT = 3000
 
+# Slack confirmation dialog `text` field rejects strings longer than 300 chars.
+# https://api.slack.com/reference/block-kit/composition-objects#confirm
+SLACK_CONFIRM_TEXT_LIMIT = 300
+
 ITEM_STATUS_BLOCK_ID = "argos_item_status"
 
 _STATUS_LABELS: dict[AssetStatus, str] = {
@@ -198,6 +202,16 @@ def build_portfolio_blocks(assets: list[tuple[UserAsset, TechItem]]) -> list[dic
         if len(body) > SLACK_SECTION_TEXT_LIMIT:
             body = body[: SLACK_SECTION_TEXT_LIMIT - 1] + "…"
 
+        # Slack confirm dialog rejects text > 300 chars, so truncate the
+        # interpolated title to stay safely under the limit.
+        _confirm_suffix = " 를 포트폴리오에서 제거하시겠습니까?"
+        _title_budget = SLACK_CONFIRM_TEXT_LIMIT - len(_confirm_suffix) - len("**")
+        if len(tech_item.title) > _title_budget:
+            confirm_title = tech_item.title[: max(_title_budget - 1, 0)] + "…"
+        else:
+            confirm_title = tech_item.title
+        confirm_text = f"*{confirm_title}*{_confirm_suffix}"
+
         blocks.append(
             {
                 "type": "section",
@@ -222,7 +236,7 @@ def build_portfolio_blocks(assets: list[tuple[UserAsset, TechItem]]) -> list[dic
                             "title": {"type": "plain_text", "text": "Untrack?"},
                             "text": {
                                 "type": "mrkdwn",
-                                "text": f"*{tech_item.title}* 를 포트폴리오에서 제거하시겠습니까?",
+                                "text": confirm_text,
                             },
                             "confirm": {"type": "plain_text", "text": "제거"},
                             "deny": {"type": "plain_text", "text": "취소"},

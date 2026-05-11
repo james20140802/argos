@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from argos.models.tech_item import CategoryType
 from argos.slack.blocks import (
+    SLACK_CONFIRM_TEXT_LIMIT,
     SLACK_SECTION_TEXT_LIMIT,
     build_briefing_blocks,
     build_category_header_blocks,
@@ -337,3 +338,18 @@ def test_portfolio_blocks_text_does_not_exceed_slack_limit(tech_id):
     for block in blocks:
         if block.get("type") == "section" and block.get("text"):
             assert len(block["text"]["text"]) <= SLACK_SECTION_TEXT_LIMIT
+
+
+def test_portfolio_blocks_confirm_text_does_not_exceed_slack_limit(tech_id):
+    asset, _ = _make_portfolio_pair(tech_id)
+    # TechItem.title may be up to 500 chars; confirm text must still be safe.
+    item = SimpleNamespace(
+        id=tech_id,
+        title="T" * 500,
+        source_url="https://example.com/long",
+    )
+    blocks = build_portfolio_blocks([(asset, item)])
+    actions = [b for b in blocks if b["type"] == "actions"]
+    assert actions, "expected an actions block with Untrack confirm"
+    confirm = actions[0]["elements"][0]["confirm"]
+    assert len(confirm["text"]["text"]) <= SLACK_CONFIRM_TEXT_LIMIT
