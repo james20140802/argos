@@ -78,6 +78,11 @@ class UserConfig(BaseModel):
                 "Could not read config file %s (%s); using defaults.", path, exc
             )
             return cls()
+        except UnicodeDecodeError as exc:
+            logger.warning(
+                "Config file %s is not valid UTF-8 (%s); using defaults.", path, exc
+            )
+            return cls()
         except tomllib.TOMLDecodeError as exc:
             logger.warning(
                 "Config file %s contains invalid TOML (%s); using defaults.", path, exc
