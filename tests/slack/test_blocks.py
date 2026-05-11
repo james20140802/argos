@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from argos.models.tech_item import CategoryType
 from argos.slack.blocks import (
@@ -11,6 +12,8 @@ from argos.slack.blocks import (
     build_category_header_blocks,
     build_header_blocks,
     build_item_blocks,
+    build_portfolio_blocks,
+    build_portfolio_empty_blocks,
 )
 
 
@@ -250,3 +253,87 @@ def test_item_blocks_drops_summary_when_header_and_url_already_overflow(tech_id)
     assert len(text) <= SLACK_SECTION_TEXT_LIMIT
     assert "some summary" not in text
     assert long_url in text
+
+
+# ---------------------------------------------------------------------------
+# Portfolio block tests
+# ---------------------------------------------------------------------------
+
+
+def _make_portfolio_pair(tech_id: uuid.UUID, *, has_monitored_at: bool = True):
+    """Create a (UserAsset, TechItem) mock pair for portfolio block tests."""
+    item = SimpleNamespace(
+        id=tech_id,
+        title="PortfolioTech",
+        source_url="https://example.com/portfolio-tech",
+    )
+
+    asset = MagicMock()
+    asset.updated_at = datetime(2026, 5, 4, 0, 0, 0, tzinfo=timezone.utc)
+    asset.last_monitored_at = (
+        datetime(2026, 5, 3, 12, 0, 0, tzinfo=timezone.utc) if has_monitored_at else None
+    )
+    return asset, item
+
+
+def test_portfolio_empty_blocks_returns_header_and_empty_message():
+    blocks = build_portfolio_empty_blocks()
+    assert blocks[0]["type"] == "header"
+    all_text = str(blocks)
+    assert "포트폴리오" in all_text
+    assert "Keep한 기술이 없습니다" in all_text
+
+
+def test_portfolio_blocks_header_contains_count(tech_id):
+    asset, item = _make_portfolio_pair(tech_id)
+    blocks = build_portfolio_blocks([(asset, item)])
+    assert blocks[0]["type"] == "header"
+    assert "1" in blocks[0]["text"]["text"]
+
+
+def test_portfolio_blocks_section_count_matches_assets(tech_id, tech_id2):
+    pair1 = _make_portfolio_pair(tech_id)
+    pair2 = _make_portfolio_pair(tech_id2)
+    blocks = build_portfolio_blocks([pair1, pair2])
+    sections = [b for b in blocks if b["type"] == "section"]
+    assert len(sections) == 2
+
+
+def test_portfolio_blocks_section_contains_title_link(tech_id):
+    asset, item = _make_portfolio_pair(tech_id)
+    blocks = build_portfolio_blocks([(asset, item)])
+    section = next(b for b in blocks if b["type"] == "section")
+    text = section["text"]["text"]
+    assert item.source_url in text
+    assert item.title in text
+
+
+def test_portfolio_blocks_untrack_button_action_id_and_value(tech_id):
+    asset, item = _make_portfolio_pair(tech_id)
+    blocks = build_portfolio_blocks([(asset, item)])
+    actions = [b for b in blocks if b["type"] == "actions"]
+    assert len(actions) == 1
+    btn = actions[0]["elements"][0]
+    assert btn["action_id"] == "action_untrack"
+    assert btn["value"] == str(tech_id)
+
+
+def test_portfolio_blocks_last_signal_fallback_when_none(tech_id):
+    asset, item = _make_portfolio_pair(tech_id, has_monitored_at=False)
+    blocks = build_portfolio_blocks([(asset, item)])
+    section = next(b for b in blocks if b["type"] == "section")
+    assert "—" in section["text"]["text"]
+
+
+def test_portfolio_blocks_text_does_not_exceed_slack_limit(tech_id):
+    asset, item = _make_portfolio_pair(tech_id)
+    # Use an extremely long title and URL to stress the limit
+    item = SimpleNamespace(
+        id=tech_id,
+        title="T" * 400,
+        source_url="https://example.com/" + "p" * 400,
+    )
+    blocks = build_portfolio_blocks([(asset, item)])
+    for block in blocks:
+        if block.get("type") == "section" and block.get("text"):
+            assert len(block["text"]["text"]) <= SLACK_SECTION_TEXT_LIMIT
