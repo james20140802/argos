@@ -9,9 +9,9 @@ from argos.slack.handlers.pass_ import handle_pass
 
 
 def build_app() -> AsyncApp:
-    if not settings.SLACK_BOT_TOKEN:
+    if not settings.secrets.SLACK_BOT_TOKEN:
         raise ValueError("SLACK_BOT_TOKEN is not set")
-    app = AsyncApp(token=settings.SLACK_BOT_TOKEN)
+    app = AsyncApp(token=settings.secrets.SLACK_BOT_TOKEN)
     register_handlers(app)
     return app
 

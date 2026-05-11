@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 from pydantic import BaseModel, StrictBool, field_validator
 from argos.brain.graph_state import BrainState
-from argos.brain.ollama_client import SMALL_MODEL, query_ollama, unload_model
+from argos.brain.llm_client import get_llm_client
 from argos.config import settings
 
 logger = logging.getLogger(__name__)
@@ -57,10 +57,11 @@ class _TriageResult(BaseModel):
 async def triage_node(state: BrainState) -> BrainState:
     prompt = _TRIAGE_PROMPT.format(
         text=state["raw_text"][:2000],
-        language=settings.SUMMARY_LANGUAGE,
+        language=settings.user.slack.summary_language,
     )
+    client = get_llm_client()
     try:
-        raw = await query_ollama(SMALL_MODEL, prompt, keep_alive=0)
+        raw = await client.query("small", prompt, keep_alive=0)
         start = raw.find("{")
         end = raw.rfind("}") + 1
         if start == -1 or end == 0:
@@ -78,6 +79,6 @@ async def triage_node(state: BrainState) -> BrainState:
         return {**state, "is_valid": False, "trust_score": None, "summary": None}
     finally:
         try:
-            await unload_model(SMALL_MODEL)
+            await client.unload("small")
         except Exception:
             pass
