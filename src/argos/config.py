@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
+
 try:
     import tomllib
 except ImportError:
@@ -53,7 +55,7 @@ class OllamaConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    backend: str = "ollama"
+    backend: Literal["ollama"] = "ollama"
 
 
 class UserConfig(BaseModel):
