@@ -22,6 +22,8 @@ def _state(**kwargs) -> BrainState:
         "related_tech_ids": [],
         "succession_result": None,
         "saved": False,
+        "genealogy_skipped": False,
+        "genealogy_skip_reason": None,
     }
     return {**base, **kwargs}
 
@@ -335,18 +337,31 @@ async def test_save_node_uses_untitled_when_raw_text_empty():
 # embed_and_search_node — happy-path and error branches
 # ---------------------------------------------------------------------------
 
+def _mock_embed_session(*, count: int, rows: list | None = None) -> AsyncMock:
+    """Build an AsyncMock session that satisfies embed_and_search_node's
+    two-query contract: a count() probe followed (optionally) by a Top-5 query.
+    """
+    session = AsyncMock()
+    count_result = MagicMock()
+    count_result.scalar.return_value = count
+    rows_result = MagicMock()
+    rows_result.fetchall.return_value = rows or []
+    session.execute = AsyncMock(side_effect=[count_result, rows_result])
+    return session
+
+
 @pytest.mark.asyncio
-async def test_embed_node_happy_path():
+async def test_embed_node_happy_path(monkeypatch):
+    from argos.brain.nodes import embed as embed_module
+
+    monkeypatch.setattr(embed_module.settings.user.genealogist, "min_db_items", 0)
     embedding = [0.5] * 10
     mock_row = MagicMock()
     mock_row.id = uuid.uuid4()
     mock_row.title = "Similar Tech"
     mock_row.raw_content = "some content"
 
-    session = AsyncMock()
-    db_result = MagicMock()
-    db_result.fetchall.return_value = [mock_row]
-    session.execute.return_value = db_result
+    session = _mock_embed_session(count=100, rows=[mock_row])
 
     with respx.mock:
         respx.post(f"{OLLAMA_BASE_URL}/api/embeddings").mock(
@@ -357,15 +372,18 @@ async def test_embed_node_happy_path():
     assert result["related_tech_ids"] == [str(mock_row.id)]
     assert result["extracted_info"]["embedding"] == embedding
     assert len(result["extracted_info"]["similar_items"]) == 1
+    assert result.get("genealogy_skipped", False) is False
 
 
 @pytest.mark.asyncio
-async def test_embed_node_handles_empty_db_rows():
+async def test_embed_node_handles_empty_db_rows(monkeypatch):
+    """When the count is above threshold but Top-5 returns no rows, the run
+    still gets flagged as cold-start so genealogist is skipped."""
+    from argos.brain.nodes import embed as embed_module
+
+    monkeypatch.setattr(embed_module.settings.user.genealogist, "min_db_items", 0)
     embedding = [0.1, 0.2, 0.3]
-    session = AsyncMock()
-    db_result = MagicMock()
-    db_result.fetchall.return_value = []
-    session.execute.return_value = db_result
+    session = _mock_embed_session(count=100, rows=[])
 
     with respx.mock:
         respx.post(f"{OLLAMA_BASE_URL}/api/embeddings").mock(
@@ -376,11 +394,20 @@ async def test_embed_node_handles_empty_db_rows():
     assert result["related_tech_ids"] == []
     assert result["extracted_info"]["similar_items"] == []
     assert result["extracted_info"]["embedding"] == embedding
+    assert result["genealogy_skipped"] is True
+    assert result["genealogy_skip_reason"] == "cold_start"
 
 
 @pytest.mark.asyncio
-async def test_embed_node_handles_http_error():
+async def test_embed_node_handles_http_error(monkeypatch):
+    from argos.brain.nodes import embed as embed_module
+
+    monkeypatch.setattr(embed_module.settings.user.genealogist, "min_db_items", 0)
+    # The count query succeeds; the embedding HTTP call then fails.
     session = AsyncMock()
+    count_result = MagicMock()
+    count_result.scalar.return_value = 100
+    session.execute = AsyncMock(return_value=count_result)
     with respx.mock:
         respx.post(f"{OLLAMA_BASE_URL}/api/embeddings").mock(
             return_value=httpx.Response(500)
@@ -389,7 +416,84 @@ async def test_embed_node_handles_http_error():
 
     assert result["related_tech_ids"] == []
     assert result["extracted_info"] is None
-    session.execute.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# embed_and_search_node — cold-start branch (ARG-39)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_embed_node_skips_genealogy_when_below_threshold(monkeypatch):
+    from argos.brain.nodes import embed as embed_module
+
+    monkeypatch.setattr(
+        embed_module.settings.user.genealogist, "min_db_items", 50
+    )
+    embedding = [0.0] * 5
+    session = AsyncMock()
+    count_result = MagicMock()
+    count_result.scalar.return_value = 3  # well below threshold
+    session.execute = AsyncMock(return_value=count_result)
+
+    with respx.mock:
+        respx.post(f"{OLLAMA_BASE_URL}/api/embeddings").mock(
+            return_value=httpx.Response(200, json={"embedding": embedding})
+        )
+        result = await embed_and_search_node(_state(is_valid=True), session=session)
+
+    assert result["genealogy_skipped"] is True
+    assert result["genealogy_skip_reason"] == "cold_start"
+    assert result["related_tech_ids"] == []
+    # Similarity query must NOT be executed on cold start.
+    assert session.execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_embed_node_runs_genealogy_when_at_or_above_threshold(monkeypatch):
+    from argos.brain.nodes import embed as embed_module
+
+    monkeypatch.setattr(
+        embed_module.settings.user.genealogist, "min_db_items", 50
+    )
+    embedding = [0.0] * 5
+    mock_row = MagicMock()
+    mock_row.id = uuid.uuid4()
+    mock_row.title = "Tech"
+    mock_row.raw_content = "content"
+    session = _mock_embed_session(count=50, rows=[mock_row])
+
+    with respx.mock:
+        respx.post(f"{OLLAMA_BASE_URL}/api/embeddings").mock(
+            return_value=httpx.Response(200, json={"embedding": embedding})
+        )
+        result = await embed_and_search_node(_state(is_valid=True), session=session)
+
+    assert result.get("genealogy_skipped", False) is False
+    assert result["related_tech_ids"] == [str(mock_row.id)]
+
+
+@pytest.mark.asyncio
+async def test_embed_node_threshold_zero_never_skips(monkeypatch):
+    from argos.brain.nodes import embed as embed_module
+
+    monkeypatch.setattr(embed_module.settings.user.genealogist, "min_db_items", 0)
+    embedding = [0.0] * 3
+    mock_row = MagicMock()
+    mock_row.id = uuid.uuid4()
+    mock_row.title = "T"
+    mock_row.raw_content = "c"
+    session = _mock_embed_session(count=0, rows=[mock_row])
+
+    with respx.mock:
+        respx.post(f"{OLLAMA_BASE_URL}/api/embeddings").mock(
+            return_value=httpx.Response(200, json={"embedding": embedding})
+        )
+        result = await embed_and_search_node(_state(is_valid=True), session=session)
+
+    # threshold=0 means even an empty DB clears the bar; cold-start only fires
+    # if the Top-5 search also returns no rows (covered by another test).
+    assert result.get("genealogy_skipped", False) is False
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +511,30 @@ def _genealogist_state(**kwargs):
         },
         **kwargs,
     )
+
+
+@pytest.mark.asyncio
+async def test_genealogist_node_respects_skip_flag(monkeypatch):
+    """When BrainState carries genealogy_skipped=True, the node must not
+    invoke the LLM and must leave succession_result alone."""
+    from argos.brain.nodes import genealogist as gen_module
+
+    called = {"count": 0}
+
+    class _BoomClient:
+        async def query(self, *args, **kwargs):  # pragma: no cover - must not run
+            called["count"] += 1
+            raise AssertionError("LLM must not be called when skip flag is set")
+
+    monkeypatch.setattr(gen_module, "get_llm_client", lambda: _BoomClient())
+
+    state = _genealogist_state(
+        genealogy_skipped=True, genealogy_skip_reason="cold_start"
+    )
+    result = await genealogist_node(state)
+    assert called["count"] == 0
+    assert result["succession_result"] is None
+    assert result["genealogy_skipped"] is True
 
 
 @pytest.mark.asyncio
