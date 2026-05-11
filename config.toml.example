@@ -1,6 +1,18 @@
 # Argos user configuration
 # Copy to ~/.config/argos/config.toml and edit as needed.
 # All fields are optional — missing keys fall back to the defaults shown here.
+#
+# You can also manage this file from the CLI:
+#   argos config path                       # show the active config path
+#   argos config get briefing.time          # read a value
+#   argos config set briefing.time 09:30    # write (validated, atomic)
+#   argos config list                       # dump all keys (secrets masked)
+# Note: CLI writes use a TOML serializer that does NOT preserve inline
+# comments — hand-edited comments in this file will be stripped the first
+# time `argos config set` rewrites it. Secrets (POSTGRES_PASSWORD, SLACK_*
+# tokens, anything matching *token*/*password*/*secret*) are rejected by
+# `argos config set` — set those via environment variables or edit this
+# file by hand.
 
 [slack]
 channel_id = "C0123456789"
