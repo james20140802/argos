@@ -59,12 +59,17 @@ class LLMConfig(BaseModel):
     backend: Literal["ollama"] = "ollama"
 
 
+class GenealogistConfig(BaseModel):
+    min_db_items: int = Field(default=50, ge=0)
+
+
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
     interests: InterestsConfig = InterestsConfig()
     ollama: OllamaConfig = OllamaConfig()
     llm: LLMConfig = LLMConfig()
+    genealogist: GenealogistConfig = GenealogistConfig()
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:

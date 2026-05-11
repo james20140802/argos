@@ -365,3 +365,40 @@ async def test_run_static_pipeline_tags_items_with_source(mocker) -> None:
     sources = {item["source_url"]: item.get("_source") for item in result}
     assert sources["https://github.com/a/b"] == "github_trending"
     assert sources["https://hn.com/1"] == "hackernews"
+
+
+@pytest.mark.asyncio
+async def test_run_full_pipeline_counts_genealogy_skipped(mocker) -> None:
+    """summary.genealogy_skipped should equal the number of BrainStates
+    whose genealogy_skipped flag is True (ARG-39)."""
+    crawl_items = [
+        {"title": "t1", "source_url": "https://a.com", "raw_content": "a", "_source": "github_trending"},
+        {"title": "t2", "source_url": "https://b.com", "raw_content": "b", "_source": "hackernews"},
+        {"title": "t3", "source_url": "https://c.com", "raw_content": "c", "_source": "hackernews"},
+    ]
+    states = [
+        {"is_valid": True, "saved": True, "source_url": "https://a.com", "raw_text": "",
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+         "genealogy_skipped": True, "genealogy_skip_reason": "cold_start"},
+        {"is_valid": True, "saved": True, "source_url": "https://b.com", "raw_text": "",
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+         "genealogy_skipped": True, "genealogy_skip_reason": "cold_start"},
+        {"is_valid": True, "saved": True, "source_url": "https://c.com", "raw_text": "",
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+         "genealogy_skipped": False, "genealogy_skip_reason": None},
+    ]
+    state_iter = iter(states)
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
+    mocker.patch(
+        "argos.crawler.pipeline.run_brain_pipeline",
+        new=AsyncMock(side_effect=lambda **_kw: next(state_iter)),
+    )
+
+    session = AsyncMock()
+    nested_cm = AsyncMock()
+    nested_cm.__aenter__ = AsyncMock(return_value=None)
+    nested_cm.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=nested_cm)
+
+    _, summary = await pipeline.run_full_pipeline(session)
+    assert summary.genealogy_skipped == 2

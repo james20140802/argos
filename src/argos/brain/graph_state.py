@@ -12,3 +12,5 @@ class BrainState(TypedDict):
     related_tech_ids: list[str]
     succession_result: dict | None
     saved: bool
+    genealogy_skipped: bool
+    genealogy_skip_reason: str | None

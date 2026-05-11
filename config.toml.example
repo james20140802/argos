@@ -23,3 +23,9 @@ model_deepdive = "qwen3:32b"
 
 [llm]
 backend = "ollama"
+
+[genealogist]
+# Minimum number of embedded tech_items required to run the 32B genealogist
+# branch. When the DB has fewer items (cold start), the brain pipeline skips
+# the genealogist step and the 32B prewarm to save VRAM and time.
+min_db_items = 50

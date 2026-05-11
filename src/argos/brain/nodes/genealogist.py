@@ -42,6 +42,12 @@ class _SuccessionResult(BaseModel):
 async def genealogist_node(
     state: BrainState, *, prewarm_task: asyncio.Task | None = None
 ) -> BrainState:
+    if state.get("genealogy_skipped"):
+        logger.info(
+            "genealogist_node short-circuited (reason=%s)",
+            state.get("genealogy_skip_reason"),
+        )
+        return state
     if not state["is_valid"] or not state["related_tech_ids"]:
         return state
     similar_items = (state.get("extracted_info") or {}).get("similar_items", [])

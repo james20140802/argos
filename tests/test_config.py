@@ -121,6 +121,33 @@ def test_user_config_falls_back_on_permission_error(tmp_path, monkeypatch):
     assert cfg.slack.channel_id == ""
 
 
+def test_genealogist_config_default():
+    cfg = UserConfig()
+    assert cfg.genealogist.min_db_items == 50
+
+
+def test_genealogist_config_toml_override(tmp_path):
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_bytes(b"[genealogist]\nmin_db_items = 12\n")
+    cfg = UserConfig.load(path=toml_file)
+    assert cfg.genealogist.min_db_items == 12
+
+
+def test_genealogist_config_zero_is_allowed(tmp_path):
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_bytes(b"[genealogist]\nmin_db_items = 0\n")
+    cfg = UserConfig.load(path=toml_file)
+    assert cfg.genealogist.min_db_items == 0
+
+
+def test_genealogist_config_rejects_negative(tmp_path):
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_bytes(b"[genealogist]\nmin_db_items = -3\n")
+    cfg = UserConfig.load(path=toml_file)
+    # Negative value triggers ValidationError fallback to defaults.
+    assert cfg.genealogist.min_db_items == 50
+
+
 def test_settings_database_url_encodes_special_chars(monkeypatch):
     monkeypatch.setenv("POSTGRES_USER", "user@name")
     monkeypatch.setenv("POSTGRES_PASSWORD", "p@ss/word")

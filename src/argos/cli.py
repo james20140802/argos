@@ -40,6 +40,8 @@ async def _run(dynamic_urls: list[str] | None) -> int:
     print(f"크롤링: {summary.crawled_total}개{source_detail}")
     print(f"트리아지 통과: {summary.triage_pass}개")
     print(f"신규 저장: {summary.saved_new}개")
+    if summary.genealogy_skipped > 0:
+        print(f"족보 분석 스킵: {summary.genealogy_skipped}개 (DB 부족)")
     print(f"소요 시간: {_format_duration(elapsed)}")
     return 0
 

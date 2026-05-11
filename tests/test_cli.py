@@ -34,6 +34,7 @@ def _make_summary(**kwargs):
         "per_source": {"github_trending": 25, "hackernews": 20},
         "triage_pass": 12,
         "saved_new": 8,
+        "genealogy_skipped": 0,
         "duration_seconds": 83.0,
     }
     defaults.update(kwargs)
@@ -113,6 +114,50 @@ async def test_run_empty_crawl_shows_zero_counts(capsys) -> None:
     assert "크롤링: 0개" in captured
     assert "트리아지 통과: 0개" in captured
     assert "신규 저장: 0개" in captured
+
+
+@pytest.mark.asyncio
+async def test_run_prints_genealogy_skipped_line_when_nonzero(capsys) -> None:
+    summary = _make_summary(genealogy_skipped=4)
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
+        patch(
+            "argos.cli.run_full_pipeline",
+            new=AsyncMock(return_value=([], summary)),
+        ),
+    ):
+        from argos.cli import _run
+        await _run([])
+
+    captured = capsys.readouterr().out
+    assert "족보 분석 스킵: 4개 (DB 부족)" in captured
+
+
+@pytest.mark.asyncio
+async def test_run_omits_genealogy_line_when_zero(capsys) -> None:
+    summary = _make_summary(genealogy_skipped=0)
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
+        patch(
+            "argos.cli.run_full_pipeline",
+            new=AsyncMock(return_value=([], summary)),
+        ),
+    ):
+        from argos.cli import _run
+        await _run([])
+
+    captured = capsys.readouterr().out
+    assert "족보 분석 스킵" not in captured
 
 
 def test_main_run_subcommand_exits_zero(monkeypatch) -> None:
