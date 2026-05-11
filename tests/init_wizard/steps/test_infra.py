@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+import stat
+
 from argos.init_wizard import WizardStepError
 from argos.init_wizard.env_file import load_env
 from argos.init_wizard.steps import infra
@@ -199,3 +201,29 @@ def test_docker_compose_up_receives_env_path(tmp_path, monkeypatch):
     assert len(compose_calls) == 1
     _, received_env_path = compose_calls[0]
     assert received_env_path == env_path
+
+
+def test_infra_hardens_env_mode_on_noop_path(tmp_path, monkeypatch):
+    """When no values change (early-return path), the .env must still be 0600.
+
+    A user who copies .env.example with a permissive umask (0644) and then
+    re-runs init without modifying any values would otherwise keep
+    group/world-readable secrets because atomic_write_env is skipped.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "POSTGRES_USER=argos\n"
+        "POSTGRES_PASSWORD=argos_dev_password\n"
+        "POSTGRES_DB=argos\n"
+        "POSTGRES_HOST=localhost\n"
+        "POSTGRES_PORT=5432\n",
+    )
+    # Deliberately set a permissive mode to simulate a manual copy with default umask.
+    env_path.chmod(0o644)
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o644  # precondition
+
+    _stub_runners(monkeypatch, installed_models=infra.REQUIRED_OLLAMA_MODELS)
+
+    infra.run_infra_step(tmp_path, env_path=env_path)
+
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600

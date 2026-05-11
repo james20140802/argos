@@ -120,6 +120,18 @@ def atomic_write_env(path: Path, data: dict[str, str]) -> None:
         raise
 
 
+def harden_env_file_mode(path: Path) -> None:
+    """Enforce ``0600`` on an existing ``.env`` file.
+
+    Idempotent — calling ``os.chmod(path, 0o600)`` on an already-locked-down
+    file is a no-op.  Does nothing when ``path`` does not yet exist so callers
+    do not need to guard against a missing file.
+    """
+    if not path.exists():
+        return
+    os.chmod(path, ENV_FILE_MODE)
+
+
 def file_mode(path: Path) -> int:
     """Return the lower 9 permission bits of ``path`` (for tests / healthcheck)."""
     return stat.S_IMODE(path.stat().st_mode)
@@ -129,6 +141,7 @@ __all__ = [
     "ENV_FILE_MODE",
     "atomic_write_env",
     "file_mode",
+    "harden_env_file_mode",
     "load_env",
     "merge_env",
 ]

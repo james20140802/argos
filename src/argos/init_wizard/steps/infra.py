@@ -18,7 +18,7 @@ from pathlib import Path
 
 from argos.config_store import _mask_token_value  # reuse the existing masker
 from argos.init_wizard import WizardStepError, prompts, runners
-from argos.init_wizard.env_file import atomic_write_env, load_env, merge_env
+from argos.init_wizard.env_file import atomic_write_env, harden_env_file_mode, load_env, merge_env
 
 REQUIRED_OLLAMA_MODELS: tuple[str, ...] = ("qwen3:8b", "qwen3:32b", "nomic-embed-text")
 
@@ -97,9 +97,17 @@ def _prompt_pg_values(existing: dict[str, str]) -> dict[str, str]:
 
 
 def _persist_env(env_path: Path, existing: dict[str, str], updates: dict[str, str]) -> None:
-    """Write ``.env`` only when the merged data actually differs from disk."""
+    """Write ``.env`` only when the merged data actually differs from disk.
+
+    When the values are unchanged we skip the atomic rewrite to avoid
+    unnecessary mtime churn, but we still enforce ``0600`` on the existing
+    file.  A user who manually copied ``.env.example`` with a permissive umask
+    (e.g. ``0644``) and then re-runs init without changing any values would
+    otherwise keep group/world-readable secrets.
+    """
     merged = merge_env(existing, updates)
     if merged == existing:
+        harden_env_file_mode(env_path)
         return
     atomic_write_env(env_path, merged)
 
