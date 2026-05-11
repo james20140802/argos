@@ -9,7 +9,7 @@ from argos.brain.nodes.triage import triage_node
 from argos.brain.nodes.embed import embed_and_search_node
 from argos.brain.nodes.genealogist import genealogist_node
 from argos.brain.nodes.save import save_node
-from argos.brain.ollama_client import LARGE_MODEL, prewarm_model
+from argos.brain.llm_client import get_llm_client
 
 
 def _build_post_triage_graph(
@@ -44,7 +44,7 @@ async def run_brain_pipeline(
     triaged = await triage_node(initial)
     if not triaged["is_valid"]:
         return triaged
-    prewarm_task = asyncio.create_task(prewarm_model(LARGE_MODEL))
+    prewarm_task = asyncio.create_task(get_llm_client().prewarm("large"))
     try:
         compiled = _build_post_triage_graph(session, prewarm_task=prewarm_task)
         return await compiled.ainvoke(triaged)

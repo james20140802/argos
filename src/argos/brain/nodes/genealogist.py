@@ -7,7 +7,8 @@ import logging
 from pydantic import BaseModel, field_validator
 
 from argos.brain.graph_state import BrainState
-from argos.brain.ollama_client import LARGE_MODEL, LARGE_MODEL_TIMEOUT, query_ollama
+from argos.brain.llm_client import get_llm_client
+from argos.brain.ollama_client import LARGE_MODEL_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +55,13 @@ async def genealogist_node(
         new_tech=state["raw_text"][:1000],
         existing_techs=existing_techs,
     )
+    client = get_llm_client()
     try:
         if prewarm_task is not None:
             with contextlib.suppress(Exception):
                 await prewarm_task
-        raw = await query_ollama(
-            LARGE_MODEL,
+        raw = await client.query(
+            "large",
             prompt,
             keep_alive="5m",
             timeout=LARGE_MODEL_TIMEOUT,
