@@ -4,15 +4,43 @@ import argparse
 import asyncio
 import logging
 import sys
+import time
 
 from argos.crawler.pipeline import run_full_pipeline
 from argos.database import AsyncSessionLocal
 
 
+def _format_duration(seconds: float) -> str:
+    total = int(seconds)
+    minutes, secs = divmod(total, 60)
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 async def _run(dynamic_urls: list[str] | None) -> int:
+    start = time.monotonic()
     async with AsyncSessionLocal() as session:
-        results = await run_full_pipeline(session, dynamic_urls=dynamic_urls or None)
-    print(f"처리 완료: {len(results)}개 항목")
+        results, summary = await run_full_pipeline(session, dynamic_urls=dynamic_urls or None)
+    elapsed = time.monotonic() - start
+
+    # Build per-source breakdown string
+    source_parts = []
+    if "github_trending" in summary.per_source:
+        source_parts.append(f"GitHub: {summary.per_source['github_trending']}")
+    if "hackernews" in summary.per_source:
+        source_parts.append(f"HN: {summary.per_source['hackernews']}")
+    for src, cnt in summary.per_source.items():
+        if src not in ("github_trending", "hackernews"):
+            source_parts.append(f"{src}: {cnt}")
+    source_detail = f" ({', '.join(source_parts)})" if source_parts else ""
+
+    print("✅ argos run 완료")
+    print("─────────────────────────────")
+    print(f"크롤링: {summary.crawled_total}개{source_detail}")
+    print(f"트리아지 통과: {summary.triage_pass}개")
+    print(f"신규 저장: {summary.saved_new}개")
+    print(f"소요 시간: {_format_duration(elapsed)}")
     return 0
 
 

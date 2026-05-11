@@ -11,3 +11,4 @@ class BrainState(TypedDict):
     extracted_info: dict | None
     related_tech_ids: list[str]
     succession_result: dict | None
+    saved: bool

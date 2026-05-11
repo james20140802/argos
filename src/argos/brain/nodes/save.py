@@ -53,6 +53,7 @@ async def save_node(state: BrainState, session: AsyncSession) -> BrainState:
 
     session.add(item)
     await session.flush()
+    state["saved"] = True
 
     succession_result = state.get("succession_result")
     if succession_result is not None and succession_result.get("replace_target_id") is not None:

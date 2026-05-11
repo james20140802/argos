@@ -21,6 +21,7 @@ def _state(**kwargs) -> BrainState:
         "extracted_info": None,
         "related_tech_ids": [],
         "succession_result": None,
+        "saved": False,
     }
     return {**base, **kwargs}
 
@@ -642,3 +643,35 @@ async def test_embed_node_handles_db_error_after_successful_embedding():
         result = await embed_and_search_node(_state(is_valid=True), session=session)
     assert result["related_tech_ids"] == []
     assert result["extracted_info"] is None
+
+
+# ---------------------------------------------------------------------------
+# save_node — saved flag
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_save_node_sets_saved_true_on_insert():
+    session = _mock_session_no_existing()
+    result = await save_node(_state(is_valid=True), session=session)
+    assert result["saved"] is True
+
+
+@pytest.mark.asyncio
+async def test_save_node_does_not_set_saved_on_duplicate():
+    session = _mock_session_with_existing()
+    result = await save_node(_state(is_valid=True), session=session)
+    assert result["saved"] is False
+
+
+@pytest.mark.asyncio
+async def test_save_node_does_not_set_saved_when_invalid():
+    session = AsyncMock()
+    result = await save_node(_state(is_valid=False), session=session)
+    assert result["saved"] is False
+
+
+@pytest.mark.asyncio
+async def test_save_node_does_not_set_saved_on_empty_source_url():
+    session = _mock_session_no_existing()
+    result = await save_node(_state(is_valid=True, source_url=""), session=session)
+    assert result["saved"] is False

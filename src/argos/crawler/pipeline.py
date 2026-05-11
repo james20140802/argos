@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from dataclasses import dataclass, field
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +22,15 @@ logger = logging.getLogger(__name__)
 _DYNAMIC_CONCURRENCY = 3
 
 
+@dataclass
+class PipelineSummary:
+    crawled_total: int
+    per_source: dict[str, int] = field(default_factory=dict)
+    triage_pass: int = 0
+    saved_new: int = 0
+    duration_seconds: float = 0.0
+
+
 async def run_static_pipeline(session: AsyncSession) -> list[dict]:
     async with httpx.AsyncClient(timeout=15) as client:
         results = await asyncio.gather(
@@ -35,6 +46,8 @@ async def run_static_pipeline(session: AsyncSession) -> list[dict]:
         if isinstance(result, Exception):
             logger.warning("static source %s failed: %r", source, result)
             continue
+        for item in result:
+            item["_source"] = source
         combined.extend(result)
 
     return await filter_duplicate_urls(session, combined)
@@ -64,6 +77,7 @@ async def run_full_crawl(
         if isinstance(result, asyncio.CancelledError):
             raise result
         if isinstance(result, dict):
+            result["_source"] = "dynamic"
             dynamic_items.append(result)
         elif isinstance(result, Exception):
             logger.warning("dynamic fetch failed for %s: %r", url, result)
@@ -74,8 +88,16 @@ async def run_full_crawl(
 async def run_full_pipeline(
     session: AsyncSession,
     dynamic_urls: list[str] | None = None,
-) -> list[BrainState]:
+) -> tuple[list[BrainState], PipelineSummary]:
+    start = time.monotonic()
     crawl_items = await run_full_crawl(session, dynamic_urls)
+
+    # Compute per-source counts from crawled items
+    per_source: dict[str, int] = {}
+    for item in crawl_items:
+        src = item.get("_source", "unknown")
+        per_source[src] = per_source.get(src, 0) + 1
+
     results: list[BrainState] = []
     for item in crawl_items:
         source_url = item.get("source_url", "").strip()
@@ -98,4 +120,16 @@ async def run_full_pipeline(
                 "run_full_pipeline: brain pipeline failed for %s: %r", source_url, exc
             )
     await session.commit()
-    return results
+
+    duration = time.monotonic() - start
+    triage_pass = sum(1 for s in results if s.get("is_valid", False))
+    saved_new = sum(1 for s in results if s.get("saved", False))
+
+    summary = PipelineSummary(
+        crawled_total=len(crawl_items),
+        per_source=per_source,
+        triage_pass=triage_pass,
+        saved_new=saved_new,
+        duration_seconds=duration,
+    )
+    return results, summary

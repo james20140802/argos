@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from argos.crawler import pipeline
+from argos.crawler.pipeline import PipelineSummary
 
 
 @pytest.fixture
@@ -209,6 +210,7 @@ async def test_run_full_pipeline_calls_brain_for_each_item(mocker) -> None:
     mock_state = {
         "is_valid": True, "source_url": "https://a.com", "raw_text": "",
         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+        "saved": False,
     }
     mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
     mocker.patch("argos.crawler.pipeline.run_brain_pipeline", new=AsyncMock(return_value=mock_state))
@@ -219,19 +221,24 @@ async def test_run_full_pipeline_calls_brain_for_each_item(mocker) -> None:
     nested_cm.__aexit__ = AsyncMock(return_value=False)
     session.begin_nested = MagicMock(return_value=nested_cm)
 
-    results = await pipeline.run_full_pipeline(session)
+    results, summary = await pipeline.run_full_pipeline(session)
     assert len(results) == 2
     from argos.crawler import pipeline as _p
     assert _p.run_brain_pipeline.call_count == 2
+    assert isinstance(summary, PipelineSummary)
+    assert summary.crawled_total == 2
 
 
 @pytest.mark.asyncio
 async def test_run_full_pipeline_returns_empty_on_empty_crawl(mocker) -> None:
     mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=[]))
     brain_mock = mocker.patch("argos.crawler.pipeline.run_brain_pipeline", new=AsyncMock())
-    results = await pipeline.run_full_pipeline(AsyncMock())
+    results, summary = await pipeline.run_full_pipeline(AsyncMock())
     assert results == []
     brain_mock.assert_not_called()
+    assert isinstance(summary, PipelineSummary)
+    assert summary.crawled_total == 0
+    assert summary.saved_new == 0
 
 
 @pytest.mark.asyncio
@@ -243,6 +250,7 @@ async def test_run_full_pipeline_skips_items_with_empty_source_url(mocker) -> No
     mock_state = {
         "is_valid": True, "source_url": "https://good.com", "raw_text": "",
         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+        "saved": False,
     }
     mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
     brain_mock = mocker.patch("argos.crawler.pipeline.run_brain_pipeline",
@@ -254,7 +262,7 @@ async def test_run_full_pipeline_skips_items_with_empty_source_url(mocker) -> No
     nested_cm.__aexit__ = AsyncMock(return_value=False)
     session.begin_nested = MagicMock(return_value=nested_cm)
 
-    results = await pipeline.run_full_pipeline(session)
+    results, summary = await pipeline.run_full_pipeline(session)
     assert len(results) == 1
     brain_mock.assert_called_once()
 
@@ -268,6 +276,7 @@ async def test_run_full_pipeline_continues_after_brain_failure(mocker) -> None:
     good_state = {
         "is_valid": True, "source_url": "https://good.com", "raw_text": "",
         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+        "saved": False,
     }
     call_count = 0
 
@@ -289,6 +298,70 @@ async def test_run_full_pipeline_continues_after_brain_failure(mocker) -> None:
     session = AsyncMock()
     session.begin_nested = MagicMock(return_value=FakeNested())
 
-    results = await pipeline.run_full_pipeline(session)
+    results, summary = await pipeline.run_full_pipeline(session)
     assert len(results) == 1
     assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_full_pipeline_summary_counts_saved_and_triage(mocker) -> None:
+    crawl_items = [
+        {"title": "t1", "source_url": "https://a.com", "raw_content": "a", "_source": "github_trending"},
+        {"title": "t2", "source_url": "https://b.com", "raw_content": "b", "_source": "hackernews"},
+        {"title": "t3", "source_url": "https://c.com", "raw_content": "c", "_source": "hackernews"},
+    ]
+    states = [
+        {"is_valid": True, "saved": True, "source_url": "https://a.com", "raw_text": "",
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None},
+        {"is_valid": True, "saved": False, "source_url": "https://b.com", "raw_text": "",
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None},
+        {"is_valid": False, "saved": False, "source_url": "https://c.com", "raw_text": "",
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None},
+    ]
+    state_iter = iter(states)
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
+    mocker.patch(
+        "argos.crawler.pipeline.run_brain_pipeline",
+        new=AsyncMock(side_effect=lambda **_kw: next(state_iter)),
+    )
+
+    session = AsyncMock()
+    nested_cm = AsyncMock()
+    nested_cm.__aenter__ = AsyncMock(return_value=None)
+    nested_cm.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=nested_cm)
+
+    results, summary = await pipeline.run_full_pipeline(session)
+    assert summary.crawled_total == 3
+    assert summary.per_source["github_trending"] == 1
+    assert summary.per_source["hackernews"] == 2
+    assert summary.triage_pass == 2
+    assert summary.saved_new == 1
+    assert summary.duration_seconds >= 0
+
+
+@pytest.mark.asyncio
+async def test_run_static_pipeline_tags_items_with_source(mocker) -> None:
+    gh = [
+        {"title": "gh-1", "source_url": "https://github.com/a/b", "raw_content": "x"},
+    ]
+    hn = [
+        {"title": "hn-1", "source_url": "https://hn.com/1", "raw_content": "p"},
+    ]
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_github_trending",
+        new=AsyncMock(return_value=gh),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_hackernews_top",
+        new=AsyncMock(return_value=hn),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.filter_duplicate_urls",
+        new=AsyncMock(side_effect=lambda _session, items: items),
+    )
+
+    result = await pipeline.run_static_pipeline(AsyncMock())
+    sources = {item["source_url"]: item.get("_source") for item in result}
+    assert sources["https://github.com/a/b"] == "github_trending"
+    assert sources["https://hn.com/1"] == "hackernews"
