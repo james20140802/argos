@@ -57,7 +57,7 @@ class _TriageResult(BaseModel):
 async def triage_node(state: BrainState) -> BrainState:
     prompt = _TRIAGE_PROMPT.format(
         text=state["raw_text"][:2000],
-        language=settings.SUMMARY_LANGUAGE,
+        language=settings.user.slack.summary_language,
     )
     try:
         raw = await query_ollama(SMALL_MODEL, prompt, keep_alive=0)

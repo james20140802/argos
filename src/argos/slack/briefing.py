@@ -29,7 +29,7 @@ async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
         return None
 
     app = build_app()
-    target_channel = channel or settings.SLACK_CHANNEL_ID
+    target_channel = channel or settings.user.slack.channel_id
 
     header_response = await app.client.chat_postMessage(
         channel=target_channel,
