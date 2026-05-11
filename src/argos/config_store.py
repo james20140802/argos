@@ -26,7 +26,7 @@ try:
 except ImportError:  # pragma: no cover - Python <3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from argos.config import UserConfig
 
@@ -242,7 +242,7 @@ def set_value(path: Path, dotted_key: str, raw_value: str) -> UserConfig:
 def _flatten(obj: Any, prefix: str = "") -> list[tuple[str, Any]]:
     if isinstance(obj, BaseModel):
         out: list[tuple[str, Any]] = []
-        for name in obj.model_fields:
+        for name in type(obj).model_fields:
             value = getattr(obj, name)
             new_prefix = f"{prefix}.{name}" if prefix else name
             out.extend(_flatten(value, new_prefix))
