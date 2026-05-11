@@ -19,6 +19,16 @@ SLACK_SECTION_TEXT_LIMIT = 3000
 # https://api.slack.com/reference/block-kit/composition-objects#confirm
 SLACK_CONFIRM_TEXT_LIMIT = 300
 
+# Slack messages reject payloads with more than 50 blocks (`invalid_blocks`).
+# https://api.slack.com/reference/block-kit/blocks
+SLACK_MAX_BLOCKS = 50
+
+# Portfolio rendering emits 3 blocks per item (section + actions + divider),
+# plus 1 header block. To stay within SLACK_MAX_BLOCKS while reserving 1 block
+# for a truncation notice, we cap visible portfolio items at 16:
+#   1 (header) + 16 * 3 (items) + 1 (truncation notice) = 50.
+PORTFOLIO_MAX_ITEMS = 16
+
 ITEM_STATUS_BLOCK_ID = "argos_item_status"
 
 _STATUS_LABELS: dict[AssetStatus, str] = {
@@ -176,19 +186,29 @@ def build_portfolio_empty_blocks() -> list[dict]:
 
 
 def build_portfolio_blocks(assets: list[tuple[UserAsset, TechItem]]) -> list[dict]:
-    """Keep 상태 자산 목록을 Block Kit 카드로 렌더링한다."""
+    """Keep 상태 자산 목록을 Block Kit 카드로 렌더링한다.
+
+    Slack rejects messages with more than 50 blocks, so render at most
+    ``PORTFOLIO_MAX_ITEMS`` assets and append a context note when truncated.
+    The header still reports the full count so the user knows how many are
+    hidden.
+    """
+    total = len(assets)
+    visible_assets = assets[:PORTFOLIO_MAX_ITEMS]
+    hidden_count = total - len(visible_assets)
+
     blocks: list[dict] = [
         {
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": f"\U0001f4bc 내 포트폴리오 ({len(assets)}개)",
+                "text": f"\U0001f4bc 내 포트폴리오 ({total}개)",
                 "emoji": True,
             },
         }
     ]
 
-    for asset, tech_item in assets:
+    for asset, tech_item in visible_assets:
         tech_id = str(tech_item.id)
         kept_on = asset.updated_at.strftime("%Y-%m-%d") if asset.updated_at else "—"
         last_signal = (
@@ -246,6 +266,22 @@ def build_portfolio_blocks(assets: list[tuple[UserAsset, TechItem]]) -> list[dic
             }
         )
         blocks.append({"type": "divider"})
+
+    if hidden_count > 0:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"외 {hidden_count}개 자산은 표시되지 않았습니다 "
+                            f"(최대 {PORTFOLIO_MAX_ITEMS}개까지 표시)."
+                        ),
+                    }
+                ],
+            }
+        )
 
     return blocks
 

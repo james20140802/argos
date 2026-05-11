@@ -7,7 +7,9 @@ from unittest.mock import MagicMock
 
 from argos.models.tech_item import CategoryType
 from argos.slack.blocks import (
+    PORTFOLIO_MAX_ITEMS,
     SLACK_CONFIRM_TEXT_LIMIT,
+    SLACK_MAX_BLOCKS,
     SLACK_SECTION_TEXT_LIMIT,
     build_briefing_blocks,
     build_category_header_blocks,
@@ -353,3 +355,50 @@ def test_portfolio_blocks_confirm_text_does_not_exceed_slack_limit(tech_id):
     assert actions, "expected an actions block with Untrack confirm"
     confirm = actions[0]["elements"][0]["confirm"]
     assert len(confirm["text"]["text"]) <= SLACK_CONFIRM_TEXT_LIMIT
+
+
+def _make_many_portfolio_pairs(count: int):
+    pairs = []
+    for _ in range(count):
+        tid = uuid.uuid4()
+        pairs.append(_make_portfolio_pair(tid))
+    return pairs
+
+
+def test_portfolio_blocks_respects_slack_50_block_cap():
+    # 30 kept assets would naïvely produce 1 + 30*3 = 91 blocks, well over the
+    # Slack 50-block limit. The renderer must clamp the payload.
+    pairs = _make_many_portfolio_pairs(30)
+    blocks = build_portfolio_blocks(pairs)
+    assert len(blocks) <= SLACK_MAX_BLOCKS
+
+
+def test_portfolio_blocks_renders_at_most_portfolio_max_items():
+    pairs = _make_many_portfolio_pairs(PORTFOLIO_MAX_ITEMS + 5)
+    blocks = build_portfolio_blocks(pairs)
+    actions = [b for b in blocks if b["type"] == "actions"]
+    assert len(actions) == PORTFOLIO_MAX_ITEMS
+
+
+def test_portfolio_blocks_appends_truncation_notice_when_over_cap():
+    over_by = 5
+    pairs = _make_many_portfolio_pairs(PORTFOLIO_MAX_ITEMS + over_by)
+    blocks = build_portfolio_blocks(pairs)
+    # The last block should be a context block noting the hidden count.
+    assert blocks[-1]["type"] == "context"
+    notice_text = blocks[-1]["elements"][0]["text"]
+    assert str(over_by) in notice_text
+
+
+def test_portfolio_blocks_header_reports_full_count_when_truncated():
+    over_by = 7
+    pairs = _make_many_portfolio_pairs(PORTFOLIO_MAX_ITEMS + over_by)
+    blocks = build_portfolio_blocks(pairs)
+    header_text = blocks[0]["text"]["text"]
+    assert str(PORTFOLIO_MAX_ITEMS + over_by) in header_text
+
+
+def test_portfolio_blocks_no_truncation_notice_when_under_cap(tech_id):
+    asset, item = _make_portfolio_pair(tech_id)
+    blocks = build_portfolio_blocks([(asset, item)])
+    assert all(b.get("type") != "context" for b in blocks)
