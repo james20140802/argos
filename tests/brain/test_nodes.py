@@ -111,21 +111,21 @@ async def test_triage_node_drops_summary_when_invalid():
 async def test_triage_prompt_uses_configured_summary_language(monkeypatch):
     from argos.brain.nodes import triage as triage_module
 
-    monkeypatch.setattr(triage_module.settings, "SUMMARY_LANGUAGE", "English")
+    monkeypatch.setattr(triage_module.settings.user.slack, "summary_language", "English")
     captured: dict = {}
 
-    async def _fake_query(model, prompt, **kwargs):
-        captured["prompt"] = prompt
-        return (
-            '{"is_valid": true, "reason": "x", "trust_score": 0.5,'
-            ' "summary": "An English blurb."}'
-        )
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return (
+                '{"is_valid": true, "reason": "x", "trust_score": 0.5,'
+                ' "summary": "An English blurb."}'
+            )
 
-    async def _fake_unload(_model):
-        return None
+        async def unload(self, model_role):
+            return None
 
-    monkeypatch.setattr(triage_module, "query_ollama", _fake_query)
-    monkeypatch.setattr(triage_module, "unload_model", _fake_unload)
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _FakeClient())
 
     result = await triage_node(_state())
     assert "English" in captured["prompt"]
@@ -481,11 +481,12 @@ async def test_genealogist_disables_qwen_thinking_via_api(monkeypatch):
 
     captured: dict = {}
 
-    async def _fake_query(model, prompt, **kwargs):
-        captured.update(kwargs)
-        return '{"replace_target_id": null, "relation_type": null, "reason": "x"}'
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured.update(kwargs)
+            return '{"replace_target_id": null, "relation_type": null, "reason": "x"}'
 
-    monkeypatch.setattr(gen_module, "query_ollama", _fake_query)
+    monkeypatch.setattr(gen_module, "get_llm_client", lambda: _FakeClient())
     await genealogist_node(_genealogist_state())
 
     assert captured.get("think") is False
@@ -515,20 +516,21 @@ async def test_genealogist_node_awaits_prewarm_task():
 @pytest.mark.asyncio
 async def test_genealogist_node_uses_large_model_timeout(monkeypatch):
     from argos.brain.nodes import genealogist as gen_module
-    from argos.brain.ollama_client import LARGE_MODEL, LARGE_MODEL_TIMEOUT
+    from argos.brain.ollama_client import LARGE_MODEL_TIMEOUT
 
     captured: dict = {}
 
-    async def _fake_query(model, prompt, keep_alive="5m", timeout=120, **_kwargs):
-        captured["model"] = model
-        captured["timeout"] = timeout
-        captured["keep_alive"] = keep_alive
-        return '{"replace_target_id": null, "relation_type": null, "reason": "x"}'
+    class _FakeClient:
+        async def query(self, model_role, prompt, keep_alive="5m", timeout=120, **_kwargs):
+            captured["model_role"] = model_role
+            captured["timeout"] = timeout
+            captured["keep_alive"] = keep_alive
+            return '{"replace_target_id": null, "relation_type": null, "reason": "x"}'
 
-    monkeypatch.setattr(gen_module, "query_ollama", _fake_query)
+    monkeypatch.setattr(gen_module, "get_llm_client", lambda: _FakeClient())
     await genealogist_node(_genealogist_state())
 
-    assert captured["model"] == LARGE_MODEL
+    assert captured["model_role"] == "large"
     assert captured["timeout"] == LARGE_MODEL_TIMEOUT
     assert captured["keep_alive"] == "5m"
 

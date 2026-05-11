@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+from argos.config import Secrets, Settings, UserConfig
+
+
+def test_secrets_loads_from_env(monkeypatch):
+    monkeypatch.setenv("POSTGRES_USER", "testuser")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "testpass")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    s = Secrets()
+    assert s.POSTGRES_USER == "testuser"
+    assert s.POSTGRES_PASSWORD == "testpass"
+    assert s.SLACK_BOT_TOKEN == "xoxb-test"
+    assert s.SLACK_APP_TOKEN == "xapp-test"
+
+
+def test_secrets_defaults_without_env(monkeypatch):
+    monkeypatch.delenv("POSTGRES_USER", raising=False)
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    s = Secrets(_env_file=None)
+    assert s.POSTGRES_USER == "argos"
+    assert s.SLACK_BOT_TOKEN == ""
+
+
+def test_user_config_loads_from_toml(tmp_path):
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_bytes(
+        b'[slack]\nchannel_id = "C999"\nsummary_language = "English"\n'
+        b'[interests]\ntopics = ["RAG", "LLM"]\n'
+    )
+    cfg = UserConfig.load(path=toml_file)
+    assert cfg.slack.channel_id == "C999"
+    assert cfg.slack.summary_language == "English"
+    assert cfg.interests.topics == ["RAG", "LLM"]
+
+
+def test_user_config_falls_back_to_defaults_when_missing(tmp_path):
+    missing = tmp_path / "nonexistent.toml"
+    cfg = UserConfig.load(path=missing)
+    assert cfg.slack.channel_id == ""
+    assert cfg.slack.summary_language == "Korean"
+    assert cfg.interests.topics == []
+    assert cfg.ollama.model_triage == "qwen3:8b"
+    assert cfg.llm.backend == "ollama"
+
+
+def test_user_config_partial_toml_preserves_defaults(tmp_path):
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_bytes(b'[briefing]\ntime = "09:00"\n')
+    cfg = UserConfig.load(path=toml_file)
+    assert cfg.briefing.time == "09:00"
+    assert cfg.slack.summary_language == "Korean"
+    assert cfg.ollama.model_deepdive == "qwen3:32b"
+
+
+def test_settings_facade_exposes_secrets_and_user(tmp_path, monkeypatch):
+    monkeypatch.setenv("POSTGRES_USER", "facadeuser")
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_bytes(b'[slack]\nchannel_id = "C123"\n')
+
+    s = Settings.__new__(Settings)
+    s.secrets = Secrets(_env_file=None)
+    s.user = UserConfig.load(path=toml_file)
+
+    assert s.secrets.POSTGRES_USER == "facadeuser"
+    assert s.user.slack.channel_id == "C123"
+
+
+def test_settings_database_url_encodes_special_chars(monkeypatch):
+    monkeypatch.setenv("POSTGRES_USER", "user@name")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "p@ss/word")
+    monkeypatch.setenv("POSTGRES_HOST", "localhost")
+    monkeypatch.setenv("POSTGRES_PORT", "5432")
+    monkeypatch.setenv("POSTGRES_DB", "argos")
+
+    s = Settings.__new__(Settings)
+    s.secrets = Secrets(_env_file=None)
+    s.user = UserConfig()
+
+    url = s.database_url
+    assert "user%40name" in url
+    assert "p%40ss%2Fword" in url
+    assert url.startswith("postgresql+asyncpg://")
