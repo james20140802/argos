@@ -140,6 +140,117 @@ def test_persist_tokens_hardens_env_mode_on_noop(tmp_path, monkeypatch):
     assert file_mode(env_path) == 0o600
 
 
+# --- Regression tests for P1: channel ID validation ---
+
+def _make_auth_stubs(monkeypatch):
+    monkeypatch.setattr(slack_step.runners, "slack_auth_test", lambda t, a=None: {"ok": True})
+    monkeypatch.setattr(
+        slack_step.runners, "slack_app_connections_open",
+        lambda t: {"ok": True, "url": "wss://example.com"},
+    )
+
+
+def test_channel_empty_input_aborts_on_fresh_install(tmp_path, monkeypatch):
+    """Fresh install: current_channel="" + user presses Enter → WizardAbort, never persists empty."""
+    env_path = tmp_path / ".env"
+    cfg_path = tmp_path / "config.toml"
+    _seed_env(env_path)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text('[slack]\nchannel_id = ""\nsummary_language = "Korean"\n')
+
+    _make_auth_stubs(monkeypatch)
+
+    write_calls = []
+    monkeypatch.setattr(
+        slack_step.config_store,
+        "set_value",
+        lambda p, k, v: write_calls.append((k, v)),
+    )
+
+    # Noninteractive mode → ask_text always returns "" → all 3 attempts invalid.
+    with pytest.raises(WizardAbort):
+        slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
+
+    # Must never have written an empty channel ID.
+    empty_writes = [(k, v) for k, v in write_calls if k == "slack.channel_id" and not v]
+    assert empty_writes == []
+
+
+def test_channel_existing_value_kept_on_enter(tmp_path, monkeypatch):
+    """current_channel='C01234567' + user presses Enter → keeps existing value (real default)."""
+    env_path = tmp_path / ".env"
+    cfg_path = tmp_path / "config.toml"
+    _seed_env(env_path)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text('[slack]\nchannel_id = "C01234567"\nsummary_language = "Korean"\n')
+
+    _make_auth_stubs(monkeypatch)
+
+    # Noninteractive mode + default="C01234567" → ask_text returns "C01234567".
+    # Validator accepts; no write since value is unchanged.
+    write_calls = []
+    original_set = slack_step.config_store.set_value
+
+    def spy_set(path, key, value):
+        write_calls.append((key, value))
+        return original_set(path, key, value)
+
+    monkeypatch.setattr(slack_step.config_store, "set_value", spy_set)
+
+    slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
+    # Value unchanged → no write.
+    assert ("slack.channel_id", "C01234567") not in write_calls
+
+
+def test_channel_bogus_hash_general_aborts(tmp_path, monkeypatch):
+    """Input '#general' (not a channel ID) → validator rejects every attempt → WizardAbort."""
+    env_path = tmp_path / ".env"
+    cfg_path = tmp_path / "config.toml"
+    _seed_env(env_path)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text('[slack]\nchannel_id = ""\nsummary_language = "Korean"\n')
+
+    _make_auth_stubs(monkeypatch)
+
+    monkeypatch.setattr(slack_step.prompts, "ask_text", lambda msg, default=None: "#general")
+
+    write_calls = []
+    monkeypatch.setattr(
+        slack_step.config_store,
+        "set_value",
+        lambda p, k, v: write_calls.append((k, v)),
+    )
+
+    with pytest.raises(WizardAbort):
+        slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
+
+    bogus_writes = [(k, v) for k, v in write_calls if k == "slack.channel_id"]
+    assert bogus_writes == []
+
+
+def test_channel_valid_id_persists(tmp_path, monkeypatch):
+    """Valid input 'C09876543' → persisted to config.toml."""
+    env_path = tmp_path / ".env"
+    cfg_path = tmp_path / "config.toml"
+    _seed_env(env_path)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text('[slack]\nchannel_id = ""\nsummary_language = "Korean"\n')
+
+    _make_auth_stubs(monkeypatch)
+
+    monkeypatch.setattr(slack_step.prompts, "ask_text", lambda msg, default=None: "C09876543")
+
+    write_calls = []
+    monkeypatch.setattr(
+        slack_step.config_store,
+        "set_value",
+        lambda p, k, v: write_calls.append((k, v)),
+    )
+
+    slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
+    assert ("slack.channel_id", "C09876543") in write_calls
+
+
 # --- Regression tests for Finding 2: apps.connections.open validation ---
 
 def test_app_token_validator_accepts_valid_xapp_token(tmp_path, monkeypatch):

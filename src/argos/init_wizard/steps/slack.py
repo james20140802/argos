@@ -15,6 +15,7 @@ The flow:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from argos import config_store
@@ -129,10 +130,20 @@ def run_slack_step(
         _prompt_app, _validate_app, max_attempts=3
     )
 
-    channel_default = current_channel or "C01234567"
-    channel_id = prompts.ask_text(
-        f"Slack channel ID [{channel_default}]",
-        default=current_channel,
+    def _prompt_channel() -> str:
+        if current_channel:
+            return prompts.ask_text("Slack channel ID", default=current_channel)
+        return prompts.ask_text("Slack channel ID (e.g. C01234567)")
+
+    def _validate_channel(value: str) -> str | None:
+        if not value:
+            return "channel ID is required"
+        if not re.fullmatch(r"C[A-Z0-9]+", value):
+            return "channel ID must start with 'C' followed by uppercase letters or digits (e.g. C01234567)"
+        return None
+
+    channel_id = prompts.with_validation_loop(
+        _prompt_channel, _validate_channel, max_attempts=3
     )
 
     _persist_tokens(env_file, bot_token, app_token)
