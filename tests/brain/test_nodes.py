@@ -677,3 +677,228 @@ async def test_save_node_does_not_set_saved_on_empty_source_url():
     session = _mock_session_no_existing()
     result = await save_node(_state(is_valid=True, source_url=""), session=session)
     assert result["saved"] is False
+
+
+# ---------------------------------------------------------------------------
+# triage_node — Interests injection (ARG-50)
+# ---------------------------------------------------------------------------
+
+
+def _patch_interests(monkeypatch, triage_module, *, topics, exclusions):
+    monkeypatch.setattr(triage_module.settings.user.interests, "topics", topics)
+    monkeypatch.setattr(
+        triage_module.settings.user.interests, "exclusions", exclusions
+    )
+
+
+def _install_fake_client(monkeypatch, triage_module, response: str, captured: dict):
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return response
+
+        async def unload(self, model_role):
+            return None
+
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _FakeClient())
+
+
+@pytest.mark.asyncio
+async def test_triage_empty_interests_preserves_llm_result(monkeypatch):
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "summary": "ok"}',
+        captured,
+    )
+
+    state = _state(raw_text="This is about crypto wallets.")
+    result = await triage_node(state)
+
+    assert result["is_valid"] is True
+    assert result["trust_score"] == 0.5
+    assert result["summary"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_triage_topic_match_bumps_trust_score(monkeypatch):
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=["RAG"], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.6, "summary": "s"}',
+        captured,
+    )
+
+    state = _state(raw_text="Retrieval-augmented generation (RAG) pipeline notes.")
+    result = await triage_node(state)
+
+    assert result["is_valid"] is True
+    assert result["trust_score"] == pytest.approx(0.7)
+
+
+@pytest.mark.asyncio
+async def test_triage_topic_bump_caps_at_one(monkeypatch):
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=["RAG"], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.95, "summary": "s"}',
+        captured,
+    )
+
+    state = _state(raw_text="A RAG benchmark paper.")
+    result = await triage_node(state)
+
+    assert result["trust_score"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_triage_topic_match_is_case_insensitive(monkeypatch):
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=["rag"], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.6, "summary": "s"}',
+        captured,
+    )
+
+    state = _state(raw_text="An article describing RAG architecture.")
+    result = await triage_node(state)
+
+    assert result["trust_score"] == pytest.approx(0.7)
+
+
+@pytest.mark.asyncio
+async def test_triage_exclusion_match_forces_pass(monkeypatch):
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=["crypto"])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.9, "summary": "shiny"}',
+        captured,
+    )
+
+    state = _state(raw_text="Crypto wallet integration walkthrough.")
+    result = await triage_node(state)
+
+    assert result["is_valid"] is False
+    assert result["trust_score"] == 0.0
+    assert result["summary"] is None
+
+
+@pytest.mark.asyncio
+async def test_triage_exclusion_beats_topic_when_both_match(monkeypatch):
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(
+        monkeypatch, triage_module, topics=["RAG"], exclusions=["crypto"]
+    )
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.8, "summary": "ok"}',
+        captured,
+    )
+
+    state = _state(raw_text="A RAG pipeline indexing crypto tweets.")
+    result = await triage_node(state)
+
+    assert result["is_valid"] is False
+    assert result["trust_score"] == 0.0
+    assert result["summary"] is None
+
+
+@pytest.mark.asyncio
+async def test_triage_prompt_includes_interest_topics(monkeypatch):
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(
+        monkeypatch, triage_module, topics=["RAG", "LLM"], exclusions=[]
+    )
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "summary": "s"}',
+        captured,
+    )
+
+    await triage_node(_state(raw_text="An overview of vector search."))
+
+    prompt = captured["prompt"]
+    assert "User interests" in prompt
+    assert "RAG" in prompt
+    assert "LLM" in prompt
+    assert "Exclusions" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_triage_prompt_caps_topics_at_max(monkeypatch, caplog):
+    import logging as _logging
+
+    from argos.brain.nodes import triage as triage_module
+
+    topics = [f"topic{i}" for i in range(15)]
+    _patch_interests(monkeypatch, triage_module, topics=topics, exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "summary": "s"}',
+        captured,
+    )
+
+    with caplog.at_level(_logging.WARNING, logger="argos.brain.nodes.triage"):
+        await triage_node(_state(raw_text="Unrelated body."))
+
+    prompt = captured["prompt"]
+    for i in range(10):
+        assert f"topic{i}" in prompt
+    for i in range(10, 15):
+        assert f"topic{i}" not in prompt
+    assert any("truncated" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_triage_normalizes_blank_and_non_string_terms(monkeypatch):
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(
+        monkeypatch,
+        triage_module,
+        topics=["", " ", None, "RAG"],  # type: ignore[list-item]
+        exclusions=[],
+    )
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "summary": "s"}',
+        captured,
+    )
+
+    await triage_node(_state(raw_text="Some RAG content."))
+
+    prompt = captured["prompt"]
+    assert "RAG" in prompt
+    # No empty-term artifacts like ", ," in the rendered list
+    assert ", ," not in prompt
+    assert ":  ," not in prompt
