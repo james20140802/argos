@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -84,16 +85,48 @@ def docker_compose_up(repo_root: Path) -> None:
     )
 
 
+def _socket_probe(host: str, port: int, *, timeout: float = 2.0) -> bool:
+    """Best-effort TCP-connect readiness check used as the ``pg_isready`` fallback.
+
+    ``pg_isready`` is the preferred probe because it understands the Postgres
+    startup handshake; but on a clean machine that has Docker + Ollama but no
+    local Postgres client binaries the executable is missing. A bare TCP
+    connect is sufficient for our purposes: the Postgres server only opens its
+    listening socket once it's ready to accept startup packets, so a successful
+    ``connect()`` is a strong proxy for "ready". Returns ``False`` on any
+    socket error (refused / unreachable / DNS / timeout).
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def wait_pg_ready(
     host: str,
     port: int,
     *,
     timeout: int = PG_READY_DEFAULT_TIMEOUT_SEC,
 ) -> None:
-    """Poll ``pg_isready`` until PostgreSQL accepts connections or timeout expires."""
+    """Poll ``pg_isready`` until PostgreSQL accepts connections or timeout expires.
+
+    Falls back to a TCP ``connect()`` probe when the ``pg_isready`` binary is
+    absent from the host (common on clean machines that have Docker + Ollama
+    but no local Postgres client tools installed).
+    """
     deadline = time.monotonic() + timeout
     last_stderr = ""
+    use_socket_fallback = False
     while time.monotonic() < deadline:
+        if use_socket_fallback:
+            # pg_isready missing: drop straight into the socket probe path.
+            remaining = max(0.1, min(2.0, deadline - time.monotonic()))
+            if _socket_probe(host, port, timeout=remaining):
+                return
+            last_stderr = "pg_isready unavailable; TCP connect refused"
+            time.sleep(PG_READY_POLL_INTERVAL_SEC)
+            continue
         try:
             proc = subprocess.run(
                 ["pg_isready", "-h", host, "-p", str(port)],
@@ -104,13 +137,12 @@ def wait_pg_ready(
             )
         except FileNotFoundError:
             # pg_isready is bundled with the postgres image but may be absent on the host;
-            # fall back to a TCP connect probe via httpx (HTTPS not required — we just want
-            # the socket).
-            proc = None
-        if proc is not None and proc.returncode == 0:
+            # switch to a TCP connect probe for the rest of the polling window.
+            use_socket_fallback = True
+            continue
+        if proc.returncode == 0:
             return
-        if proc is not None:
-            last_stderr = (proc.stderr or proc.stdout or "").strip()
+        last_stderr = (proc.stderr or proc.stdout or "").strip()
         time.sleep(PG_READY_POLL_INTERVAL_SEC)
     raise WizardStepError(
         f"PostgreSQL at {host}:{port} did not become ready within {timeout}s",

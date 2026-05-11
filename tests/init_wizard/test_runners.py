@@ -114,6 +114,63 @@ def test_wait_pg_ready_times_out(monkeypatch):
     assert "did not become ready" in msg
 
 
+def test_wait_pg_ready_falls_back_to_socket_probe_when_pg_isready_missing(monkeypatch):
+    """When pg_isready is not on PATH, wait_pg_ready should use a TCP probe."""
+
+    def fake_run(*a, **kw):
+        raise FileNotFoundError("pg_isready")
+
+    probe_calls = {"count": 0}
+
+    def fake_probe(host, port, *, timeout):
+        probe_calls["count"] += 1
+        # Succeed on the first probe so the function returns promptly.
+        return True
+
+    monkeypatch.setattr(runners.subprocess, "run", fake_run)
+    monkeypatch.setattr(runners, "_socket_probe", fake_probe)
+    monkeypatch.setattr(runners, "PG_READY_POLL_INTERVAL_SEC", 0.01)
+
+    assert runners.wait_pg_ready("localhost", 5432, timeout=1) is None
+    assert probe_calls["count"] == 1
+
+
+def test_wait_pg_ready_socket_fallback_times_out_when_nothing_listening(monkeypatch):
+    """pg_isready missing + no TCP listener → WizardStepError with helpful hint."""
+
+    def fake_run(*a, **kw):
+        raise FileNotFoundError("pg_isready")
+
+    monkeypatch.setattr(runners.subprocess, "run", fake_run)
+    monkeypatch.setattr(runners, "_socket_probe", lambda *a, **kw: False)
+    monkeypatch.setattr(runners, "PG_READY_POLL_INTERVAL_SEC", 0.01)
+
+    with pytest.raises(WizardStepError) as excinfo:
+        runners.wait_pg_ready("localhost", 5432, timeout=0.05)
+    assert "did not become ready" in str(excinfo.value)
+    assert excinfo.value.hint is not None
+
+
+def test_socket_probe_returns_true_when_listener_accepts(monkeypatch):
+    class _Sock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(runners.socket, "create_connection", lambda *a, **kw: _Sock())
+    assert runners._socket_probe("localhost", 5432, timeout=0.1) is True
+
+
+def test_socket_probe_returns_false_on_oserror(monkeypatch):
+    def boom(*a, **kw):
+        raise OSError("refused")
+
+    monkeypatch.setattr(runners.socket, "create_connection", boom)
+    assert runners._socket_probe("localhost", 5432, timeout=0.1) is False
+
+
 # ---------------------------------------------------------------------------
 # ollama_list / ollama_pull
 # ---------------------------------------------------------------------------
