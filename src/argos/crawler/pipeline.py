@@ -28,6 +28,7 @@ class PipelineSummary:
     per_source: dict[str, int] = field(default_factory=dict)
     triage_pass: int = 0
     saved_new: int = 0
+    genealogy_skipped: int = 0
     duration_seconds: float = 0.0
 
 
@@ -124,12 +125,14 @@ async def run_full_pipeline(
     duration = time.monotonic() - start
     triage_pass = sum(1 for s in results if s.get("is_valid", False))
     saved_new = sum(1 for s in results if s.get("saved", False))
+    genealogy_skipped = sum(1 for s in results if s.get("genealogy_skipped", False))
 
     summary = PipelineSummary(
         crawled_total=len(crawl_items),
         per_source=per_source,
         triage_pass=triage_pass,
         saved_new=saved_new,
+        genealogy_skipped=genealogy_skipped,
         duration_seconds=duration,
     )
     return results, summary
