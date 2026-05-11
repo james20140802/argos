@@ -160,6 +160,63 @@ async def test_run_omits_genealogy_line_when_zero(capsys) -> None:
     assert "족보 분석 스킵" not in captured
 
 
+# ---------------------------------------------------------------------------
+# argos init dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_init_help_lists_reconfigure_choices(capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["init", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "--reconfigure" in out
+    for section in ("infra", "slack", "interests", "schedule"):
+        assert section in out
+
+
+def test_init_full_dispatches_to_run_full(monkeypatch) -> None:
+    seen = {}
+
+    def fake_full(*a, **kw):
+        seen["called"] = "full"
+        return 0
+
+    monkeypatch.setattr("argos.init_wizard.wizard.run_full", fake_full)
+    rc = main(["init"])
+    assert rc == 0
+    assert seen["called"] == "full"
+
+
+def test_init_reconfigure_section_dispatches(monkeypatch) -> None:
+    seen = {}
+
+    def fake_reconfigure(section, *a, **kw):
+        seen["section"] = section
+        return 0
+
+    monkeypatch.setattr("argos.init_wizard.wizard.run_reconfigure", fake_reconfigure)
+    rc = main(["init", "--reconfigure", "interests"])
+    assert rc == 0
+    assert seen["section"] == "interests"
+
+
+def test_init_non_interactive_flag_sets_env_var(monkeypatch) -> None:
+    monkeypatch.delenv("ARGOS_INIT_NONINTERACTIVE", raising=False)
+    seen = {}
+
+    def fake_full(*a, **kw):
+        # Capture env at call time so we know the CLI flipped it before dispatch.
+        import os
+
+        seen["env"] = os.environ.get("ARGOS_INIT_NONINTERACTIVE")
+        return 0
+
+    monkeypatch.setattr("argos.init_wizard.wizard.run_full", fake_full)
+    main(["init", "--non-interactive"])
+    assert seen["env"] == "1"
+
+
 def test_main_run_subcommand_exits_zero(monkeypatch) -> None:
     summary = _make_summary()
     states = _make_mock_states(1)
