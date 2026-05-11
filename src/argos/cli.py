@@ -205,6 +205,16 @@ def _cmd_schedule_install(args: argparse.Namespace) -> int:
     from argos.scheduler import SchedulerError, reload_schedule
 
     path = _resolve_config_path(args)
+    # launchd runs jobs with its own cwd, so any relative path baked into the
+    # plist's ProgramArguments would resolve differently (or not at all) at
+    # scheduled-run time, silently falling back to the default. Resolve to an
+    # absolute path now; strict=True surfaces a missing file as a clean error
+    # instead of embedding a broken path.
+    try:
+        path = path.resolve(strict=True)
+    except FileNotFoundError:
+        print(f"Config file not found: {path}", file=sys.stderr)
+        return EXIT_GENERIC
     user_config = UserConfig.load(path=path)
     try:
         # Plumb the resolved config path through so the generated plists

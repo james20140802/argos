@@ -761,3 +761,183 @@ def test_cli_schedule_install_bad_time_exits_cleanly(
     assert "Scheduler error" in captured.err
     assert "invalid time format" in captured.err
     assert "Traceback" not in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Regression: a relative `--config` path must be resolved to an absolute
+# path before being embedded in the plist's ProgramArguments. launchd runs
+# jobs with its own cwd, so a verbatim relative path would resolve to a
+# different file (or nothing) at scheduled-run time.
+# (Codex PR #41 — PRRT_kwDOR4m8Js6BDVFo)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_schedule_install_resolves_relative_config_path(
+    monkeypatch,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """`argos schedule install --config ./relative.toml` must embed the
+    fully-resolved absolute path in both plists' ProgramArguments.
+    """
+    from argos.cli import main
+
+    cfg_path = tmp_path / "user-config.toml"
+    cfg_path.write_text("# stub\n")
+
+    monkeypatch.chdir(tmp_path)
+
+    captured: dict[str, Path | None] = {"path": None}
+
+    def fake_load(*, path):  # noqa: ANN001
+        captured["path"] = path
+        return SimpleNamespace(
+            run=SimpleNamespace(time="06:00"),
+            briefing=SimpleNamespace(
+                time="07:00", weekdays=["Mon", "Tue", "Wed", "Thu", "Fri"]
+            ),
+        )
+
+    import argos.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.UserConfig, "load", staticmethod(fake_load))
+
+    def fake_launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake_launchctl)
+
+    rc = main(["schedule", "--config", "./user-config.toml", "install"])
+    assert rc == 0
+
+    # Loader must have received an absolute path (not the relative form).
+    assert captured["path"] is not None
+    assert captured["path"].is_absolute()
+    assert captured["path"] == cfg_path.resolve()
+
+    run_plist = isolated_paths["launch_agents"] / "com.argos.run.plist"
+    brief_plist = isolated_paths["launch_agents"] / "com.argos.brief.plist"
+    run_args = plistlib.loads(run_plist.read_bytes())["ProgramArguments"]
+    brief_args = plistlib.loads(brief_plist.read_bytes())["ProgramArguments"]
+
+    # ProgramArguments must carry the resolved absolute path, not "./..."
+    assert run_args[-2:] == ["--config", str(cfg_path.resolve())]
+    assert brief_args[-2:] == ["--config", str(cfg_path.resolve())]
+    assert run_args[-1].startswith("/")
+    assert brief_args[-1].startswith("/")
+    assert "./user-config.toml" not in run_args
+    assert "./user-config.toml" not in brief_args
+
+
+def test_cli_schedule_install_missing_config_exits_cleanly(
+    monkeypatch,
+    capsys,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """`argos schedule install --config ./nonexistent.toml` must exit
+    non-zero with a clean error (no traceback) instead of silently
+    embedding a broken path in the plist.
+    """
+    from argos.cli import main
+
+    monkeypatch.chdir(tmp_path)
+
+    # If UserConfig.load is reached, the strict resolve failed silently.
+    def fake_load(*, path):  # noqa: ANN001, ARG001
+        raise AssertionError(
+            "UserConfig.load must not be called when --config points at "
+            "a nonexistent file"
+        )
+
+    import argos.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.UserConfig, "load", staticmethod(fake_load))
+    monkeypatch.setattr(
+        scheduler,
+        "_run_launchctl",
+        lambda args: subprocess.CompletedProcess(["launchctl", *args], 0, "", ""),
+    )
+
+    rc = main(["schedule", "--config", "./nonexistent.toml", "install"])
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "Config file not found" in captured.err
+    assert "Traceback" not in captured.err
+
+    # No plists should have been written for the failed install.
+    assert not (isolated_paths["launch_agents"] / "com.argos.run.plist").exists()
+    assert not (isolated_paths["launch_agents"] / "com.argos.brief.plist").exists()
+
+
+def test_cli_schedule_install_default_config_path_is_absolute(
+    monkeypatch,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """With no `--config` flag, the default ``~/.config/argos/config.toml``
+    must still resolve to an absolute path and end up in the plist.
+    """
+    from argos.cli import main
+    from argos import config_store
+
+    # Point HOME at tmp_path so default_config_path() lands inside the sandbox.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    fake_home_cfg = tmp_path / ".config" / "argos" / "config.toml"
+    fake_home_cfg.parent.mkdir(parents=True, exist_ok=True)
+    fake_home_cfg.write_text("# stub\n")
+
+    # Sanity: default_config_path now points at our sandboxed file.
+    assert config_store.default_config_path() == fake_home_cfg
+
+    captured: dict[str, Path | None] = {"path": None}
+
+    def fake_load(*, path):  # noqa: ANN001
+        captured["path"] = path
+        return SimpleNamespace(
+            run=SimpleNamespace(time="06:00"),
+            briefing=SimpleNamespace(
+                time="07:00", weekdays=["Mon", "Tue", "Wed", "Thu", "Fri"]
+            ),
+        )
+
+    import argos.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.UserConfig, "load", staticmethod(fake_load))
+
+    def fake_launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake_launchctl)
+
+    rc = main(["schedule", "install"])
+    assert rc == 0
+    assert captured["path"] is not None
+    assert captured["path"].is_absolute()
+
+    run_plist = isolated_paths["launch_agents"] / "com.argos.run.plist"
+    run_args = plistlib.loads(run_plist.read_bytes())["ProgramArguments"]
+    assert "--config" in run_args
+    cfg_arg = run_args[run_args.index("--config") + 1]
+    assert cfg_arg.startswith("/")
+    assert cfg_arg == str(fake_home_cfg.resolve())
