@@ -144,10 +144,10 @@ def _resolve_argos_binary() -> Path:
     """
     found = shutil.which("argos")
     if found:
-        return Path(found)
+        return Path(found).resolve()
     for candidate in _ARGOS_BINARY_FALLBACKS:
         if candidate.is_file():
-            return candidate
+            return candidate.resolve()
     raise SchedulerError(
         "Could not locate the `argos` executable. Tried `shutil.which('argos')` "
         f"and fallbacks {[str(p) for p in _ARGOS_BINARY_FALLBACKS]!r}. "

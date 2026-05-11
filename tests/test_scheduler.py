@@ -39,12 +39,17 @@ from argos.scheduler import (
 
 @pytest.fixture
 def fake_argos_binary(monkeypatch, tmp_path) -> Path:
-    """Force `shutil.which("argos")` to return a path inside tmp_path."""
+    """Force `shutil.which("argos")` to return a path inside tmp_path.
+
+    Returns the *resolved* path so comparisons against plist content (which
+    uses the resolved path after the launchd absolute-path fix) stay correct
+    on macOS where tmp_path is a symlink to /private/var/folders/...
+    """
     binary = tmp_path / "argos"
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)
     monkeypatch.setattr(scheduler.shutil, "which", lambda name: str(binary))
-    return binary
+    return binary.resolve()
 
 
 @pytest.fixture
@@ -164,7 +169,7 @@ def test_resolve_argos_binary_uses_which(monkeypatch, tmp_path) -> None:
     binary = tmp_path / "argos"
     binary.write_text("")
     monkeypatch.setattr(scheduler.shutil, "which", lambda name: str(binary))
-    assert _resolve_argos_binary() == binary
+    assert _resolve_argos_binary() == binary.resolve()
 
 
 def test_resolve_argos_binary_falls_back_to_usr_local(monkeypatch, tmp_path) -> None:
@@ -172,7 +177,7 @@ def test_resolve_argos_binary_falls_back_to_usr_local(monkeypatch, tmp_path) -> 
     fake = tmp_path / "argos"
     fake.write_text("")
     monkeypatch.setattr(scheduler, "_ARGOS_BINARY_FALLBACKS", (fake,))
-    assert _resolve_argos_binary() == fake
+    assert _resolve_argos_binary() == fake.resolve()
 
 
 def test_resolve_argos_binary_raises_when_missing(monkeypatch, tmp_path) -> None:
@@ -256,6 +261,38 @@ def test_resolve_argos_binary_error_lists_all_four_paths(monkeypatch) -> None:
     msg = str(exc_info.value)
     for fragment in expected_fragments:
         assert fragment in msg, f"missing fragment {fragment!r} in error: {msg!r}"
+
+
+# ---------------------------------------------------------------------------
+# Regression: relative path from shutil.which must be resolved to absolute
+# (PRRT_kwDOR4m8Js6BIcF7 — launchd doesn't inherit cwd, so a relative path
+# in ProgramArguments[0] silently fails to start the scheduled job).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_argos_binary_absolute_when_which_returns_relative(
+    monkeypatch, tmp_path
+) -> None:
+    """If PATH contains '.' and shutil.which returns a relative path like
+    './argos', _resolve_argos_binary must resolve it to an absolute path.
+    launchd agents have no meaningful cwd, so relative paths cause silent
+    launch failures.
+    """
+    binary = tmp_path / "argos"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+
+    # Simulate shutil.which returning a relative path
+    monkeypatch.setattr(scheduler.shutil, "which", lambda name: "./argos")
+
+    # Resolve must still succeed because Path("./argos").resolve() uses cwd,
+    # but more importantly the returned path must be absolute regardless of
+    # what cwd happens to be.
+    result = _resolve_argos_binary()
+    assert result.is_absolute(), (
+        f"_resolve_argos_binary() returned a non-absolute path: {result!r}. "
+        "launchd does not inherit cwd, so relative paths cause launch failures."
+    )
 
 
 # ---------------------------------------------------------------------------
