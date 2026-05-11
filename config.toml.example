@@ -1,0 +1,23 @@
+# Argos user configuration
+# Copy to ~/.config/argos/config.toml and edit as needed.
+# All fields are optional — missing keys fall back to the defaults shown here.
+
+[slack]
+channel_id = "C0123456789"
+summary_language = "Korean"
+
+[briefing]
+time = "07:00"
+weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+[interests]
+topics = ["RAG", "LLM inference", "vector database"]
+exclusions = ["crypto", "NFT"]
+
+[ollama]
+host = "http://localhost:11434"
+model_triage = "qwen3:8b"
+model_deepdive = "qwen3:32b"
+
+[llm]
+backend = "ollama"
