@@ -4,14 +4,14 @@ import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from argos.brain.graph_state import BrainState
-from argos.brain.ollama_client import OLLAMA_BASE_URL
+from argos.brain.ollama_client import _base_url
 
 logger = logging.getLogger(__name__)
 
 async def get_embedding(text_input: str) -> list[float]:
     payload = {"model": "nomic-embed-text", "prompt": text_input, "keep_alive": 0}
     async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(f"{OLLAMA_BASE_URL}/api/embeddings", json=payload)
+        resp = await client.post(f"{_base_url()}/api/embeddings", json=payload)
         resp.raise_for_status()
         return resp.json()["embedding"]
 

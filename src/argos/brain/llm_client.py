@@ -51,6 +51,9 @@ class OllamaClient:
 
         self._small = settings.user.ollama.model_triage
         self._large = settings.user.ollama.model_deepdive
+        # Host is propagated via ollama_client._base_url(), which reads
+        # settings.user.ollama.host at call time, so all inference respects
+        # the configured host rather than the hard-coded default.
 
     def _resolve(self, role: Literal["small", "large"]) -> str:
         return self._small if role == "small" else self._large

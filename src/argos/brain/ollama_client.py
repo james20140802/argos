@@ -13,6 +13,19 @@ DEFAULT_NUM_CTX = 4096
 _MODEL_LOCK = asyncio.Lock()
 
 
+def _base_url() -> str:
+    """Return the Ollama base URL from config, falling back to the default."""
+    try:
+        from argos.config import settings
+
+        host = settings.user.ollama.host
+        if host:
+            return host.rstrip("/")
+    except Exception:
+        pass
+    return OLLAMA_BASE_URL
+
+
 async def _generate(
     model: str,
     prompt: str,
@@ -31,7 +44,7 @@ async def _generate(
     if think is not None:
         payload["think"] = think
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10)) as client:
-        resp = await client.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload)
+        resp = await client.post(f"{_base_url()}/api/generate", json=payload)
         resp.raise_for_status()
         return resp.json()["response"]
 
@@ -39,7 +52,7 @@ async def _generate(
 async def _unload(model: str) -> None:
     payload = {"model": model, "prompt": "", "keep_alive": 0}
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload)
+        resp = await client.post(f"{_base_url()}/api/generate", json=payload)
         resp.raise_for_status()
 
 
