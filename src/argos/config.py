@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 try:
     import tomllib
 except ImportError:
@@ -7,8 +8,10 @@ except ImportError:
 from pathlib import Path
 from urllib.parse import quote
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Secrets(BaseSettings):
@@ -67,9 +70,26 @@ class UserConfig(BaseModel):
         try:
             with open(path, "rb") as f:
                 data = tomllib.load(f)
+            return cls.model_validate(data)
         except FileNotFoundError:
             return cls()
-        return cls.model_validate(data)
+        except OSError as exc:
+            logger.warning(
+                "Could not read config file %s (%s); using defaults.", path, exc
+            )
+            return cls()
+        except tomllib.TOMLDecodeError as exc:
+            logger.warning(
+                "Config file %s contains invalid TOML (%s); using defaults.", path, exc
+            )
+            return cls()
+        except ValidationError as exc:
+            logger.warning(
+                "Config file %s failed schema validation (%s); using defaults.",
+                path,
+                exc,
+            )
+            return cls()
 
 
 class Settings:

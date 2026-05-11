@@ -67,6 +67,38 @@ def test_settings_facade_exposes_secrets_and_user(tmp_path, monkeypatch):
     assert s.user.slack.channel_id == "C123"
 
 
+def test_user_config_falls_back_on_malformed_toml(tmp_path):
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_bytes(b"[slack\nchannel_id = oops\n")  # invalid TOML
+    cfg = UserConfig.load(path=toml_file)
+    assert cfg.slack.channel_id == ""
+    assert cfg.slack.summary_language == "Korean"
+
+
+def test_user_config_falls_back_on_schema_validation_error(tmp_path):
+    toml_file = tmp_path / "config.toml"
+    # ollama.host must be a string; supplying an integer causes ValidationError
+    toml_file.write_bytes(b"[ollama]\nhost = 99\n")
+    cfg = UserConfig.load(path=toml_file)
+    assert cfg.ollama.host == "http://localhost:11434"
+
+
+def test_user_config_falls_back_on_permission_error(tmp_path, monkeypatch):
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_bytes(b'[slack]\nchannel_id = "C1"\n')
+
+    original_open = open
+
+    def raise_permission(*args, **kwargs):
+        if str(toml_file) in str(args[0]):
+            raise PermissionError("no read permission")
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", raise_permission)
+    cfg = UserConfig.load(path=toml_file)
+    assert cfg.slack.channel_id == ""
+
+
 def test_settings_database_url_encodes_special_chars(monkeypatch):
     monkeypatch.setenv("POSTGRES_USER", "user@name")
     monkeypatch.setenv("POSTGRES_PASSWORD", "p@ss/word")
