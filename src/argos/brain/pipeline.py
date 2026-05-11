@@ -40,6 +40,7 @@ async def run_brain_pipeline(
         "extracted_info": None,
         "related_tech_ids": [],
         "succession_result": None,
+        "saved": False,
     }
     triaged = await triage_node(initial)
     if not triaged["is_valid"]:
