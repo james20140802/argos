@@ -20,6 +20,10 @@ _REQUIRED_BINARIES: dict[str, str] = {
     "ollama": (
         "install Ollama: https://ollama.com/download (or `brew install ollama`)"
     ),
+    "uv": (
+        "install uv (required for migrations and CLI): https://github.com/astral-sh/uv "
+        "(or `brew install uv`)"
+    ),
 }
 
 
