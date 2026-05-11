@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.models.tech_item import CategoryType, TechItem
+from argos.models.user_asset import AssetStatus, UserAsset
 
 KST = timezone(timedelta(hours=9))
 
@@ -49,3 +50,16 @@ async def fetch_today_briefing(
         result[category] = list(rows.scalars().all())
 
     return result
+
+
+async def fetch_user_portfolio(
+    session: AsyncSession,
+) -> list[tuple[UserAsset, TechItem]]:
+    stmt = (
+        select(UserAsset, TechItem)
+        .join(TechItem, UserAsset.tech_id == TechItem.id)
+        .where(UserAsset.status == AssetStatus.KEEP)
+        .order_by(UserAsset.updated_at.desc())
+    )
+    rows = await session.execute(stmt)
+    return [(row[0], row[1]) for row in rows.all()]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -8,6 +10,8 @@ import pytest
 from argos.slack.handlers.deep_dive import handle_deep_dive
 from argos.slack.handlers.keep import handle_keep
 from argos.slack.handlers.pass_ import handle_pass
+from argos.slack.handlers.portfolio import handle_portfolio_command
+from argos.slack.handlers.untrack import handle_untrack
 
 
 def _make_body(tech_id: uuid.UUID) -> dict:
@@ -254,3 +258,175 @@ async def test_deep_dive_passes_thread_metadata_to_background_task(
     assert locals_["channel_id"] == "C123"
     assert locals_["thread_ts"] == "1700000000.001"
     assert locals_["client"] is mock_client
+
+
+# ---------------------------------------------------------------------------
+# handle_portfolio_command tests
+# ---------------------------------------------------------------------------
+
+
+def _make_portfolio_session_ctx(assets: list) -> tuple[AsyncMock, MagicMock]:
+    """Build an async session context mock that returns `assets` from execute."""
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.all.return_value = assets
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    return mock_session, mock_ctx
+
+
+def _make_asset_item_pair(tech_id_val: uuid.UUID):
+    item = SimpleNamespace(
+        id=tech_id_val,
+        title="TestTech",
+        source_url="https://example.com/test",
+    )
+    asset = MagicMock()
+    asset.updated_at = datetime(2026, 5, 4, 0, 0, 0, tzinfo=timezone.utc)
+    asset.last_monitored_at = None
+    return (asset, item)
+
+
+@pytest.mark.asyncio
+async def test_portfolio_command_ack_called_first(tech_id, mock_ack, mock_respond):
+    call_order = []
+    mock_ack.side_effect = lambda: call_order.append("ack")
+    mock_respond.side_effect = lambda *a, **kw: call_order.append("respond")
+
+    _, mock_ctx = _make_portfolio_session_ctx([_make_asset_item_pair(tech_id)])
+
+    with patch("argos.slack.handlers.portfolio.AsyncSessionLocal", return_value=mock_ctx):
+        await handle_portfolio_command(mock_ack, {}, mock_respond)
+
+    assert call_order[0] == "ack"
+    mock_ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_portfolio_command_responds_ephemerally_with_assets(tech_id, mock_ack, mock_respond):
+    pair = _make_asset_item_pair(tech_id)
+    _, mock_ctx = _make_portfolio_session_ctx([pair])
+
+    with patch("argos.slack.handlers.portfolio.AsyncSessionLocal", return_value=mock_ctx):
+        await handle_portfolio_command(mock_ack, {}, mock_respond)
+
+    mock_respond.assert_awaited_once()
+    kwargs = mock_respond.call_args.kwargs
+    assert kwargs.get("response_type") == "ephemeral"
+    assert "blocks" in kwargs
+    # Should have header block
+    header = kwargs["blocks"][0]
+    assert header["type"] == "header"
+
+
+@pytest.mark.asyncio
+async def test_portfolio_command_responds_with_empty_state_when_no_assets(mock_ack, mock_respond):
+    _, mock_ctx = _make_portfolio_session_ctx([])
+
+    with patch("argos.slack.handlers.portfolio.AsyncSessionLocal", return_value=mock_ctx):
+        await handle_portfolio_command(mock_ack, {}, mock_respond)
+
+    mock_respond.assert_awaited_once()
+    kwargs = mock_respond.call_args.kwargs
+    all_text = str(kwargs["blocks"])
+    assert "Keep한 기술이 없습니다" in all_text
+
+
+# ---------------------------------------------------------------------------
+# handle_untrack tests
+# ---------------------------------------------------------------------------
+
+
+def _make_untrack_body(tech_id: uuid.UUID) -> dict:
+    return {"actions": [{"value": str(tech_id)}]}
+
+
+def _make_untrack_session_ctx(
+    inserted_id: uuid.UUID | None = None,
+    portfolio_assets: list | None = None,
+) -> tuple[AsyncMock, MagicMock]:
+    """Build a session that handles both the transition INSERT and portfolio SELECT."""
+    if inserted_id is None:
+        inserted_id = uuid.uuid4()
+    if portfolio_assets is None:
+        portfolio_assets = []
+
+    mock_session = AsyncMock()
+    call_count = 0
+
+    async def _execute(stmt):
+        nonlocal call_count
+        mock_result = MagicMock()
+        if call_count == 0:
+            # First call is INSERT ... ON CONFLICT from transition_asset
+            mock_result.scalar_one_or_none.return_value = inserted_id
+        else:
+            # Subsequent calls are SELECT for fetch_user_portfolio
+            mock_result.all.return_value = portfolio_assets
+        call_count += 1
+        return mock_result
+
+    mock_session.execute = _execute
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    return mock_session, mock_ctx
+
+
+@pytest.mark.asyncio
+async def test_untrack_ack_called_first(tech_id, mock_ack, mock_respond):
+    call_order = []
+    mock_ack.side_effect = lambda: call_order.append("ack")
+    mock_respond.side_effect = lambda *a, **kw: call_order.append("respond")
+
+    _, mock_ctx = _make_untrack_session_ctx()
+
+    with patch("argos.slack.handlers.untrack.AsyncSessionLocal", return_value=mock_ctx):
+        await handle_untrack(mock_ack, _make_untrack_body(tech_id), mock_respond)
+
+    assert call_order[0] == "ack"
+    mock_ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_untrack_invalid_uuid_responds_with_error(mock_ack, mock_respond):
+    body = {"actions": [{"value": "not-a-uuid"}]}
+    await handle_untrack(mock_ack, body, mock_respond)
+    mock_ack.assert_awaited_once()
+    mock_respond.assert_awaited_once()
+    assert "잘못된" in mock_respond.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_untrack_success_rerenders_portfolio_without_removed_asset(
+    tech_id, mock_ack, mock_respond
+):
+    # After untrack, portfolio is empty
+    _, mock_ctx = _make_untrack_session_ctx(portfolio_assets=[])
+
+    with patch("argos.slack.handlers.untrack.AsyncSessionLocal", return_value=mock_ctx):
+        await handle_untrack(mock_ack, _make_untrack_body(tech_id), mock_respond)
+
+    mock_respond.assert_awaited_once()
+    kwargs = mock_respond.call_args.kwargs
+    assert kwargs.get("replace_original") is True
+    # Should show empty state
+    all_text = str(kwargs["blocks"])
+    assert "Keep한 기술이 없습니다" in all_text
+
+
+@pytest.mark.asyncio
+async def test_untrack_commits_session(tech_id, mock_ack, mock_respond):
+    mock_session, mock_ctx = _make_untrack_session_ctx()
+
+    with patch("argos.slack.handlers.untrack.AsyncSessionLocal", return_value=mock_ctx):
+        await handle_untrack(mock_ack, _make_untrack_body(tech_id), mock_respond)
+
+    mock_session.commit.assert_awaited_once()
