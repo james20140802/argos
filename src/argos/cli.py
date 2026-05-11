@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from argos import config_store
+from argos.config import UserConfig
 from argos.crawler.pipeline import run_full_pipeline
 from argos.database import AsyncSessionLocal
 
@@ -160,6 +161,78 @@ def _build_config_parser(sub: argparse._SubParsersAction) -> None:
     actions.add_parser("list", help="List all config keys (secrets masked)")
 
 
+def _build_schedule_parser(sub: argparse._SubParsersAction) -> None:
+    schedule_p = sub.add_parser(
+        "schedule",
+        help="Install/remove the launchd jobs for `argos run` and `argos brief`",
+        description=(
+            "Manage the macOS launchd schedule for Argos.\n\n"
+            "Actions:\n"
+            "  install    Render + bootstrap both plists from the current config.\n"
+            "  uninstall  Bootout both plists (no error if already absent).\n"
+            "  status     Print loaded/not-loaded for both labels."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    schedule_p.add_argument(
+        "--config",
+        default=None,
+        help="Path to config.toml (defaults to ~/.config/argos/config.toml)",
+    )
+    actions = schedule_p.add_subparsers(dest="schedule_action", required=True)
+    actions.add_parser("install", help="Install + bootstrap both launchd jobs")
+    actions.add_parser("uninstall", help="Bootout both launchd jobs")
+    actions.add_parser("status", help="Show loaded/not-loaded for both labels")
+
+
+def _cmd_schedule_install(args: argparse.Namespace) -> int:
+    from argos.scheduler import SchedulerError, reload_schedule
+
+    path = _resolve_config_path(args)
+    user_config = UserConfig.load(path=path)
+    try:
+        reload_schedule(user_config)
+    except SchedulerError as exc:
+        print(f"Scheduler error: {exc}", file=sys.stderr)
+        return EXIT_GENERIC
+    print("Scheduled: com.argos.run, com.argos.brief")
+    return EXIT_OK
+
+
+def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
+    from argos.scheduler import SchedulerError, bootout_plist
+
+    failures: list[str] = []
+    for label in ("com.argos.run", "com.argos.brief"):
+        try:
+            bootout_plist(label)
+            print(f"Unloaded: {label}")
+        except SchedulerError as exc:
+            failures.append(f"{label}: {exc}")
+            print(f"Failed to unload {label}: {exc}", file=sys.stderr)
+    return EXIT_GENERIC if failures else EXIT_OK
+
+
+def _cmd_schedule_status(_args: argparse.Namespace) -> int:
+    from argos.scheduler import is_loaded
+
+    for label in ("com.argos.run", "com.argos.brief"):
+        state = "loaded" if is_loaded(label) else "not loaded"
+        print(f"{label}: {state}")
+    return EXIT_OK
+
+
+def _dispatch_schedule(args: argparse.Namespace) -> int:
+    action = args.schedule_action
+    if action == "install":
+        return _cmd_schedule_install(args)
+    if action == "uninstall":
+        return _cmd_schedule_uninstall(args)
+    if action == "status":
+        return _cmd_schedule_status(args)
+    return EXIT_GENERIC
+
+
 def _dispatch_config(args: argparse.Namespace) -> int:
     action = args.config_action
     if action == "path":
@@ -192,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     brief_p.add_argument("--channel", default=None, help="Override target Slack channel ID")
 
     _build_config_parser(sub)
+    _build_schedule_parser(sub)
 
     args = parser.parse_args(argv)
 
@@ -218,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "config":
         return _dispatch_config(args)
+    if args.command == "schedule":
+        return _dispatch_schedule(args)
     return 1
 
 
