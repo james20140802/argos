@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from argos.init_wizard import WizardAbort
-from argos.init_wizard.env_file import load_env
+from argos.init_wizard.env_file import file_mode, load_env
 from argos.init_wizard.steps import slack as slack_step
 
 
@@ -113,6 +113,31 @@ def test_slack_step_writes_new_channel_id(tmp_path, monkeypatch):
 
     slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
     assert ("slack.channel_id", "C222") in write_calls
+
+
+# --- Regression test: Finding 2 (P2) — harden .env mode on no-op persist ---
+
+def test_persist_tokens_hardens_env_mode_on_noop(tmp_path, monkeypatch):
+    """When tokens are unchanged (early-return path), .env must be hardened to 0600."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("SLACK_BOT_TOKEN=xoxb-existing\nSLACK_APP_TOKEN=xapp-existing\n")
+    # Start with loose permissions to verify harden_env_file_mode fires.
+    env_path.chmod(0o644)
+    assert file_mode(env_path) == 0o644
+
+    cfg_path = tmp_path / "config.toml"
+    _seed_config(cfg_path)
+
+    monkeypatch.setattr(slack_step.runners, "slack_auth_test", lambda t, a=None: {"ok": True})
+    monkeypatch.setattr(
+        slack_step.runners, "slack_app_connections_open",
+        lambda t: {"ok": True, "url": "wss://example.com"},
+    )
+
+    slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
+
+    # No tokens changed → early-return path → harden_env_file_mode must enforce 0600.
+    assert file_mode(env_path) == 0o600
 
 
 # --- Regression tests for Finding 2: apps.connections.open validation ---

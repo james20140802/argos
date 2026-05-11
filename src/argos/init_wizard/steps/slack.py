@@ -20,7 +20,7 @@ from pathlib import Path
 from argos import config_store
 from argos.config_store import _mask_token_value
 from argos.init_wizard import prompts, runners
-from argos.init_wizard.env_file import atomic_write_env, load_env, merge_env
+from argos.init_wizard.env_file import atomic_write_env, harden_env_file_mode, load_env, merge_env
 
 
 def _mask_for_default(value: str) -> str:
@@ -43,6 +43,7 @@ def _persist_tokens(env_path: Path, bot_token: str, app_token: str) -> None:
     if existing.get("SLACK_APP_TOKEN", "") != app_token:
         updates["SLACK_APP_TOKEN"] = app_token
     if not updates:
+        harden_env_file_mode(env_path)
         return
     merged = merge_env(existing, updates)
     atomic_write_env(env_path, merged)
