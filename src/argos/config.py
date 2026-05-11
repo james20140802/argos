@@ -10,7 +10,7 @@ except ImportError:
 from pathlib import Path
 from urllib.parse import quote
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ class SlackConfig(BaseModel):
 class BriefingConfig(BaseModel):
     time: str = "07:00"
     weekdays: list[str] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    limit_per_category: int = 10
+    limit_per_category: int = Field(default=10, ge=1)
 
 
 class InterestsConfig(BaseModel):
