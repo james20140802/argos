@@ -115,6 +115,13 @@ def run_slack_step(
             return "app token is required (Socket Mode connection needs it)"
         if not value.startswith("xapp-"):
             return "app tokens must start with 'xapp-'"
+        try:
+            runners.slack_app_connections_open(value)
+        except Exception:  # noqa: BLE001 — message intentionally discarded
+            # The Slack SDK or runner may echo the offending token back in its
+            # exception message; returning a fixed string prevents any token
+            # from reaching a print sink via the validation loop.
+            return "slack apps.connections.open rejected the app token"
         return None
 
     app_token = prompts.with_sensitive_validation_loop(

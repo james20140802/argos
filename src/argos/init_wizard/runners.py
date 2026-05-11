@@ -223,7 +223,7 @@ def slack_auth_test(bot_token: str, app_token: str | None = None) -> dict:
     The ``app_token`` is accepted for symmetry with the wizard step (which
     collects both) but is not exercised here — Slack rejects ``xapp-`` tokens
     for ``auth.test`` so we only validate the ``xoxb-`` bot token. The app
-    token is later validated implicitly when the bot connects via Socket Mode.
+    token is validated separately via :func:`slack_app_connections_open`.
     """
     if not bot_token:
         raise WizardStepError(
@@ -247,6 +247,40 @@ def slack_auth_test(bot_token: str, app_token: str | None = None) -> dict:
         raise WizardStepError(
             f"Slack auth.test failed: {payload.get('error', 'unknown')}",
             hint="confirm the bot token is the xoxb- value from OAuth & Permissions",
+        )
+    return payload
+
+
+def slack_app_connections_open(app_token: str) -> dict:
+    """Call Slack ``apps.connections.open`` with the app token and return the JSON response.
+
+    This validates the ``xapp-`` app-level token before Socket Mode is started,
+    catching revoked, foreign, or typoed tokens at wizard time rather than at
+    bot startup. The endpoint is the exact one used by the Socket Mode client
+    internally, so a successful probe is strong evidence the connection will work.
+    """
+    if not app_token:
+        raise WizardStepError(
+            "SLACK_APP_TOKEN is empty",
+            hint="generate an xapp- token at https://api.slack.com/apps (Socket Mode) and re-enter it",
+        )
+    try:
+        resp = httpx.post(
+            "https://slack.com/api/apps.connections.open",
+            headers={"Authorization": f"Bearer {app_token}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise WizardStepError(
+            f"network error calling Slack apps.connections.open: {exc}",
+            hint="check internet connectivity and try again",
+        ) from exc
+    payload = resp.json()
+    if not payload.get("ok"):
+        raise WizardStepError(
+            "slack app token rejected by apps.connections.open",
+            hint=payload.get("error", "unknown"),
         )
     return payload
 
@@ -292,6 +326,7 @@ __all__ = [
     "ollama_ping",
     "ollama_pull",
     "run_async",
+    "slack_app_connections_open",
     "slack_auth_test",
     "wait_pg_ready",
     "which",

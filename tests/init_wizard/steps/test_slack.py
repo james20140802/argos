@@ -37,6 +37,10 @@ def test_slack_step_validates_and_persists(tmp_path, monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(slack_step.runners, "slack_auth_test", fake_auth)
+    monkeypatch.setattr(
+        slack_step.runners, "slack_app_connections_open",
+        lambda t: {"ok": True, "url": "wss://example.com"},
+    )
 
     slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
 
@@ -65,6 +69,10 @@ def test_slack_step_idempotent_when_channel_unchanged(tmp_path, monkeypatch):
     _seed_config(cfg_path)
 
     monkeypatch.setattr(slack_step.runners, "slack_auth_test", lambda t, a=None: {"ok": True})
+    monkeypatch.setattr(
+        slack_step.runners, "slack_app_connections_open",
+        lambda t: {"ok": True, "url": "wss://example.com"},
+    )
 
     write_calls = []
     original_set = slack_step.config_store.set_value
@@ -89,6 +97,10 @@ def test_slack_step_writes_new_channel_id(tmp_path, monkeypatch):
     cfg_path.write_text('[slack]\nchannel_id = "C111"\nsummary_language = "Korean"\n')
 
     monkeypatch.setattr(slack_step.runners, "slack_auth_test", lambda t, a=None: {"ok": True})
+    monkeypatch.setattr(
+        slack_step.runners, "slack_app_connections_open",
+        lambda t: {"ok": True, "url": "wss://example.com"},
+    )
 
     # Patch ask_text to return a different channel id (simulating real input).
     monkeypatch.setattr(slack_step.prompts, "ask_text", lambda msg, default=None: "C222")
@@ -101,3 +113,44 @@ def test_slack_step_writes_new_channel_id(tmp_path, monkeypatch):
 
     slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
     assert ("slack.channel_id", "C222") in write_calls
+
+
+# --- Regression tests for Finding 2: apps.connections.open validation ---
+
+def test_app_token_validator_accepts_valid_xapp_token(tmp_path, monkeypatch):
+    """apps.connections.open returns ok:true → validator accepts the token."""
+    env_path = tmp_path / ".env"
+    cfg_path = tmp_path / "config.toml"
+    env_path.write_text("SLACK_BOT_TOKEN=xoxb-valid\nSLACK_APP_TOKEN=xapp-valid\n")
+    _seed_config(cfg_path)
+
+    monkeypatch.setattr(slack_step.runners, "slack_auth_test", lambda t, a=None: {"ok": True})
+    monkeypatch.setattr(
+        slack_step.runners, "slack_app_connections_open",
+        lambda t: {"ok": True, "url": "wss://wss-primary.slack.com/link"},
+    )
+
+    # Should not raise — both tokens accepted.
+    slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
+
+
+def test_app_token_validator_rejects_on_connections_open_failure(tmp_path, monkeypatch):
+    """apps.connections.open returns ok:false → validator rejects, loop aborts after 3."""
+    from argos.init_wizard import WizardStepError
+
+    env_path = tmp_path / ".env"
+    cfg_path = tmp_path / "config.toml"
+    env_path.write_text("SLACK_BOT_TOKEN=xoxb-valid\nSLACK_APP_TOKEN=xapp-revoked\n")
+    _seed_config(cfg_path)
+
+    monkeypatch.setattr(slack_step.runners, "slack_auth_test", lambda t, a=None: {"ok": True})
+    monkeypatch.setattr(
+        slack_step.runners, "slack_app_connections_open",
+        lambda t: (_ for _ in ()).throw(
+            WizardStepError("slack app token rejected by apps.connections.open", hint="invalid_auth")
+        ),
+    )
+
+    # Validation loop exhausts 3 attempts and raises WizardAbort.
+    with pytest.raises(WizardAbort):
+        slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
