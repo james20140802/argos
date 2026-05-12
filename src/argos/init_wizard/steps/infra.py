@@ -124,6 +124,22 @@ def _ensure_ollama_models(host: str) -> list[str]:
     return pulled
 
 
+def _ensure_playwright_chromium() -> None:
+    """Ensure Playwright's Chromium browser is installed locally.
+
+    If Chromium is already present, prints a confirmation and returns.
+    If absent, prints a progress message and invokes
+    :func:`runners.playwright_install_chromium` which streams the download
+    live to the terminal.  Raises :class:`WizardStepError` on install failure
+    (propagated from the runner).
+    """
+    if runners.playwright_chromium_installed():
+        print("  • Playwright Chromium already installed")
+    else:
+        print("  • installing Playwright Chromium (~150MB, this may take a few minutes)…")
+        runners.playwright_install_chromium()
+
+
 def run_infra_step(
     repo_root: Path,
     env_path: Path | None = None,
@@ -165,6 +181,8 @@ def run_infra_step(
         print(f"  • pulled: {', '.join(pulled)}")
     else:
         print("  • all required Ollama models already installed")
+
+    _ensure_playwright_chromium()
 
 
 __all__ = ["REQUIRED_OLLAMA_MODELS", "run_infra_step"]
