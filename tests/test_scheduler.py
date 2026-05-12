@@ -312,7 +312,24 @@ def test_render_run_plist_round_trip(fake_argos_binary: Path, tmp_path: Path) ->
     assert data["StandardErrorPath"].endswith("run.log")
     assert data["RunAtLoad"] is False
     assert data["KeepAlive"] is False
-    assert "PATH" in data["EnvironmentVariables"]
+    path_val = data["EnvironmentVariables"]["PATH"]
+    # Apple Silicon Homebrew must be first so M1 Max binaries take precedence
+    # in launchd's minimal spawn environment (ARG-72).
+    assert path_val.startswith("/opt/homebrew/bin"), (
+        f"PATH must start with /opt/homebrew/bin; got: {path_val!r}"
+    )
+    # All five segments must be present in the correct precedence order.
+    expected_segments = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+    for segment in expected_segments:
+        assert segment in path_val, (
+            f"PATH segment {segment!r} missing from: {path_val!r}"
+        )
 
 
 def test_render_brief_plist_weekday_subset(
