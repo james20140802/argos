@@ -312,7 +312,53 @@ def test_render_run_plist_round_trip(fake_argos_binary: Path, tmp_path: Path) ->
     assert data["StandardErrorPath"].endswith("run.log")
     assert data["RunAtLoad"] is False
     assert data["KeepAlive"] is False
-    assert "PATH" in data["EnvironmentVariables"]
+    path_val = data["EnvironmentVariables"]["PATH"]
+    # Apple Silicon Homebrew must be first so M1 Max binaries take precedence
+    # in launchd's minimal spawn environment (ARG-72).
+    assert path_val.startswith("/opt/homebrew/bin"), (
+        f"PATH must start with /opt/homebrew/bin; got: {path_val!r}"
+    )
+    # All five segments must be present in the correct precedence order.
+    expected_segments = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+    for segment in expected_segments:
+        assert segment in path_val, (
+            f"PATH segment {segment!r} missing from: {path_val!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Regression: both rendered plists must carry the exact Apple Silicon-first
+# PATH so launchd-spawned jobs find Homebrew binaries on M1 Max (ARG-72).
+# ---------------------------------------------------------------------------
+
+
+def test_render_plist_path_includes_homebrew(
+    fake_argos_binary: Path, tmp_path: Path
+) -> None:
+    """render_run_plist and render_brief_plist must both embed exactly
+    '/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin'
+    in EnvironmentVariables.PATH. launchd does not inherit the user PATH,
+    so the Apple Silicon Homebrew prefix must be explicit in the plist.
+    """
+    expected_path = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
+
+    run_xml = render_run_plist(time="06:00", log_dir=tmp_path)
+    run_data = plistlib.loads(run_xml.encode("utf-8"))
+    assert run_data["EnvironmentVariables"]["PATH"] == expected_path, (
+        f"render_run_plist PATH mismatch: {run_data['EnvironmentVariables']['PATH']!r}"
+    )
+
+    brief_xml = render_brief_plist(time="07:00", log_dir=tmp_path)
+    brief_data = plistlib.loads(brief_xml.encode("utf-8"))
+    assert brief_data["EnvironmentVariables"]["PATH"] == expected_path, (
+        f"render_brief_plist PATH mismatch: {brief_data['EnvironmentVariables']['PATH']!r}"
+    )
 
 
 def test_render_brief_plist_weekday_subset(
