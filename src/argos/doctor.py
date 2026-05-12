@@ -81,7 +81,8 @@ def check_ollama_qwen3_8b() -> Row:
 def check_python_version() -> Row:
     """Probe: Python version is >=3.10 and <3.13."""
     vi = sys.version_info
-    version_str = f"{vi.major}.{vi.minor}.{vi.micro}"
+    # Use index access so tests can patch sys.version_info with a plain tuple.
+    version_str = f"{vi[0]}.{vi[1]}.{vi[2]}"
 
     if vi < (3, 10):
         return ("Python version", "FAIL", f"{version_str} — requires >=3.10")
