@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from argos import config_store
 from argos.init_wizard import runners
 from argos.init_wizard.env_file import load_env
 
@@ -61,7 +62,7 @@ def run_healthcheck_step(
     ollama_host: str = "http://localhost:11434",
 ) -> int:
     """Run every probe and return the number of failures (0 = healthy)."""
-    env_file = env_path if env_path is not None else (repo_root / ".env")
+    env_file = env_path or config_store.default_env_path()
     env = load_env(env_file)
     bot_token = env.get("SLACK_BOT_TOKEN", "")
 

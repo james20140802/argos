@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from argos.config_store import _mask_token_value  # reuse the existing masker
+from argos.config_store import _mask_token_value, default_env_path  # reuse the existing masker
 from argos.init_wizard import WizardStepError, prompts, runners
 from argos.init_wizard.env_file import atomic_write_env, harden_env_file_mode, load_env, merge_env
 
@@ -131,7 +131,7 @@ def run_infra_step(
     ollama_host: str = "http://localhost:11434",
 ) -> None:
     """Drive the full infra sub-flow. Idempotent — re-running is safe."""
-    env_file = env_path if env_path is not None else (repo_root / ".env")
+    env_file = env_path or default_env_path()
     existing = load_env(env_file)
     updates = _prompt_pg_values(existing)
     _persist_env(env_file, existing, updates)

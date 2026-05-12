@@ -65,7 +65,7 @@ def run_slack_step(
     """Prompt for + validate + persist Slack credentials and channel ID."""
     from argos.config import UserConfig  # local import keeps test isolation cheap
 
-    env_file = env_path if env_path is not None else (repo_root / ".env")
+    env_file = env_path or config_store.default_env_path()
     cfg_file = config_path if config_path is not None else config_store.default_config_path()
 
     existing_env = load_env(env_file)

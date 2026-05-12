@@ -105,7 +105,7 @@ def run_full(
 
         _print_header(2, total, "Infra — Postgres + Alembic + Ollama")
         run_infra_step(root, env_path=env_path)
-        _rebuild_database(env_path if env_path is not None else (root / ".env"))
+        _rebuild_database(env_path or config_store.default_env_path())
 
         _print_header(3, total, "Slack — bot token + channel")
         run_slack_step(root, env_path=env_path, config_path=cfg_path)
@@ -156,7 +156,7 @@ def run_reconfigure(
         # healthcheck — even for non-infra sections.  Without this, db_ping()
         # targets whatever module-level engine was constructed at import time,
         # which may use stale credentials when a non-default env_path is given.
-        _rebuild_database(env_path if env_path is not None else (root / ".env"))
+        _rebuild_database(env_path or config_store.default_env_path())
 
         _print_header(2, 2, "Healthcheck")
         failures = run_healthcheck_step(root, env_path=env_path)
