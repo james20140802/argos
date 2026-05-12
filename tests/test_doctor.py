@@ -143,10 +143,10 @@ def test_check_ollama_qwen3_8b_uses_configured_host(monkeypatch):
 
 
 def test_check_ollama_models_all_present(monkeypatch):
-    """All three required models present → three OK rows."""
+    """All three required models present (exact IDs) → three OK rows."""
     monkeypatch.setattr(
         "argos.init_wizard.runners.ollama_list",
-        lambda **kw: ["qwen3:8b", "qwen3:32b", "nomic-embed-text:latest"],
+        lambda **kw: ["qwen3:8b", "qwen3:32b", "nomic-embed-text"],
     )
     rows = doctor.check_ollama_models()
     assert len(rows) == 3
@@ -181,6 +181,21 @@ def test_check_ollama_models_ollama_unreachable(monkeypatch):
     assert len(rows) == 3
     assert all(status == "FAIL" for _, status, _ in rows)
     assert all(detail for _, _, detail in rows)
+
+
+def test_check_ollama_models_tagged_variant_does_not_satisfy_exact_name(monkeypatch):
+    """A differently-tagged variant (e.g. qwen3:8b-instruct) must NOT satisfy
+    the requirement for the exact ID qwen3:8b — doctor should report FAIL so
+    the user knows to pull the correct tag."""
+    monkeypatch.setattr(
+        "argos.init_wizard.runners.ollama_list",
+        lambda **kw: ["qwen3:8b-instruct", "qwen3:32b", "nomic-embed-text"],
+    )
+    rows = doctor.check_ollama_models()
+    by_name = {name: status for name, status, _ in rows}
+    assert by_name["qwen3:8b"] == "FAIL"
+    assert by_name["qwen3:32b"] == "OK"
+    assert by_name["nomic-embed-text"] == "OK"
 
 
 def test_check_ollama_models_uses_configured_host(monkeypatch):

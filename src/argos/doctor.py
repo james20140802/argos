@@ -61,8 +61,8 @@ def check_ollama_installed() -> Row:
 def check_ollama_qwen3_8b(ollama_host: str = "http://localhost:11434") -> Row:
     """Probe: qwen3:8b model is pulled locally.
 
-    Calls ``runners.ollama_list()`` against *ollama_host* and looks for a model
-    name starting with ``qwen3:8b``.  Converts ``WizardStepError`` (Ollama
+    Calls ``runners.ollama_list()`` against *ollama_host* and looks for an
+    exact match on ``qwen3:8b``.  Converts ``WizardStepError`` (Ollama
     unreachable) to FAIL.
 
     Args:
@@ -78,7 +78,7 @@ def check_ollama_qwen3_8b(ollama_host: str = "http://localhost:11434") -> Row:
     except WizardStepError as exc:
         return ("Qwen3-8B pulled", "FAIL", str(exc).splitlines()[0])
 
-    if any(m.startswith("qwen3:8b") for m in models):
+    if "qwen3:8b" in models:
         return ("Qwen3-8B pulled", "OK", "")
 
     return ("Qwen3-8B pulled", "FAIL", "model not found — run: ollama pull qwen3:8b")
@@ -107,8 +107,12 @@ def check_ollama_models(ollama_host: str = "http://localhost:11434") -> list[Row
 
     rows: list[Row] = []
     for model in REQUIRED_OLLAMA_MODELS:
-        # Match on prefix so tagged variants (e.g. qwen3:8b-instruct) also pass.
-        if any(m.startswith(model) for m in available):
+        # Use exact match to align with the runtime pull check in infra.py
+        # (_ensure_ollama_models), which also uses exact membership.  Prefix
+        # matching was previously used here but caused false-OK results when a
+        # differently-tagged variant (e.g. qwen3:8b-instruct) was installed
+        # instead of the exact model ID that inference calls request.
+        if model in available:
             rows.append((model, "OK", ""))
         else:
             rows.append((model, "FAIL", f"model not found — run: ollama pull {model}"))
