@@ -72,6 +72,8 @@ uv run alembic upgrade head                              # Apply migrations
 uv run alembic downgrade -1                              # Rollback one step
 
 # Argos CLI (operator entry points)
+uv run argos --version                            # Print installed package version
+uv run argos doctor                               # Pre-flight health check (Docker / Ollama / Python / macOS)
 uv run argos init                                 # Interactive 6-step bootstrap wizard (installs Playwright Chromium automatically)
 uv run argos init --reconfigure slack             # Re-run one section: infra/slack/interests/schedule
 uv run argos run [--url URL]...                   # Crawl → brain → save pipeline
