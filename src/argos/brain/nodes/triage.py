@@ -27,6 +27,7 @@ class _TriageResult(BaseModel):
     reason: str
     trust_score: float | None = None
     summary: str | None = None
+    is_relevant: StrictBool = True
 
     @field_validator("trust_score", mode="before")
     @classmethod
