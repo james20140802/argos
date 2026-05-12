@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import httpx
 import pytest
@@ -324,3 +325,99 @@ def test_alembic_upgrade_head_without_env_path_passes_none_env(monkeypatch, tmp_
     assert captured.get("env") is None, (
         f"expected env=None when no env_path given, got: {captured.get('env')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# playwright_chromium_installed
+# ---------------------------------------------------------------------------
+
+
+def test_playwright_chromium_installed_returns_true_when_path_exists(monkeypatch, tmp_path):
+    """Detection helper returns True when sync_playwright resolves an existing executable."""
+    fake_exec = tmp_path / "chrome"
+    fake_exec.touch()
+
+    class _FakePW:
+        class chromium:
+            executable_path = str(fake_exec)
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_sync_playwright():
+        yield _FakePW()
+
+    import playwright.sync_api as _pw_sync_api
+
+    monkeypatch.setattr(_pw_sync_api, "sync_playwright", fake_sync_playwright)
+    assert runners.playwright_chromium_installed() is True
+
+
+def test_playwright_chromium_installed_returns_false_when_path_missing(monkeypatch, tmp_path):
+    """Detection helper returns False when the resolved executable does not exist."""
+    absent_path = tmp_path / "no_chrome_here"
+
+    class _FakePW:
+        class chromium:
+            executable_path = str(absent_path)
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_sync_playwright():
+        yield _FakePW()
+
+    import playwright.sync_api as _pw_sync_api
+
+    monkeypatch.setattr(_pw_sync_api, "sync_playwright", fake_sync_playwright)
+    assert runners.playwright_chromium_installed() is False
+
+
+def test_playwright_chromium_installed_returns_false_on_playwright_error(monkeypatch):
+    """Detection helper returns False when sync_playwright raises any exception."""
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def boom():
+        raise Exception("Playwright not initialised")
+        yield  # required by contextmanager protocol
+
+    import playwright.sync_api as _pw_sync_api
+
+    monkeypatch.setattr(_pw_sync_api, "sync_playwright", boom)
+    assert runners.playwright_chromium_installed() is False
+
+
+# ---------------------------------------------------------------------------
+# playwright_install_chromium
+# ---------------------------------------------------------------------------
+
+
+def test_playwright_install_chromium_invokes_subprocess(monkeypatch):
+    """Install helper calls subprocess.run with the correct command."""
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["capture_output"] = kwargs.get("capture_output")
+        return _make_proc(0)
+
+    monkeypatch.setattr(runners.subprocess, "run", fake_run)
+    runners.playwright_install_chromium()
+    assert seen["cmd"] == [sys.executable, "-m", "playwright", "install", "chromium"]
+    assert seen["capture_output"] is False
+
+
+def test_playwright_install_chromium_raises_on_nonzero_exit(monkeypatch):
+    """Install helper raises WizardStepError with the fallback hint on non-zero exit."""
+    monkeypatch.setattr(
+        runners.subprocess,
+        "run",
+        lambda *a, **kw: _make_proc(1, stderr="download failed"),
+    )
+    with pytest.raises(WizardStepError) as excinfo:
+        runners.playwright_install_chromium()
+    assert "exited with code 1" in str(excinfo.value)
+    assert excinfo.value.hint is not None
+    assert "playwright install chromium" in excinfo.value.hint

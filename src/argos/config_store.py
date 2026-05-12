@@ -57,6 +57,13 @@ def default_config_path() -> Path:
     return Path.home() / ".config" / "argos" / "config.toml"
 
 
+def default_env_path() -> Path:
+    """Return the canonical XDG user env path (``~/.config/argos/.env``)."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    xdg_base = Path(xdg) if xdg else Path.home() / ".config"
+    return xdg_base / "argos" / ".env"
+
+
 def is_secret(dotted_key: str) -> bool:
     """Return True if ``dotted_key`` names a secret that must not be CLI-settable."""
     lower = dotted_key.lower()

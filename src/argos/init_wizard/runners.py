@@ -18,6 +18,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -318,6 +319,92 @@ def run_async(coro) -> None:
     asyncio.run(coro)
 
 
+# ---------------------------------------------------------------------------
+# Playwright Chromium helpers
+# ---------------------------------------------------------------------------
+
+# 30 minutes mirrors the ollama_pull timeout — the ~150MB download can be slow.
+PLAYWRIGHT_INSTALL_TIMEOUT_SEC = 60 * 30
+
+
+def _run_streaming(
+    cmd: list[str],
+    *,
+    timeout: int = PLAYWRIGHT_INSTALL_TIMEOUT_SEC,
+    hint: str | None = None,
+) -> None:
+    """Run ``cmd`` with stdout/stderr streamed live to the terminal.
+
+    Unlike :func:`_run`, output is not captured so the user can see progress
+    bars from long-running commands (e.g. ``playwright install chromium``).
+    On non-zero exit a :class:`WizardStepError` is raised with ``hint``; the
+    user already saw any error output on screen, so we omit the snippet.
+    """
+    logger.debug("runners._run_streaming cmd=%s", cmd)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=False,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise WizardStepError(
+            f"command not found: {cmd[0]}",
+            hint=hint or f"install {cmd[0]} and re-run `argos init`",
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise WizardStepError(
+            f"timeout after {timeout}s running {' '.join(cmd)}",
+            hint=hint or "increase the timeout or check whether the service is healthy",
+        ) from exc
+    if proc.returncode != 0:
+        raise WizardStepError(
+            f"{' '.join(cmd)} exited with code {proc.returncode}",
+            hint=hint,
+        )
+
+
+def playwright_chromium_installed() -> bool:
+    """Return ``True`` if Playwright's Chromium executable exists on disk.
+
+    Uses Playwright's own Python API to resolve the expected executable path,
+    then checks for its presence with :func:`os.path.exists`. This is faster
+    and more reliable than parsing ``playwright install --dry-run`` output and
+    avoids spawning Node. Returns ``False`` on any Playwright ``Error`` (e.g.
+    the browser has never been installed) or if the resolved path is absent.
+    """
+    try:
+        # Lazy import so wizard startup is not slowed by the Playwright import
+        # chain when this module is loaded but the helper is not yet called.
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            path = pw.chromium.executable_path
+        return os.path.exists(path)
+    except Exception:  # noqa: BLE001 — covers playwright Error + any import issue
+        return False
+
+
+def playwright_install_chromium() -> None:
+    """Run ``playwright install chromium`` and stream progress to the terminal.
+
+    Invokes Playwright via the current Python interpreter
+    (``sys.executable -m playwright install chromium``) rather than a bare
+    ``playwright`` entry point.  This is necessary because pipx only exposes
+    the package's own entry points; dependency apps such as ``playwright`` are
+    not on PATH unless ``--include-deps`` was used.  Using ``sys.executable``
+    guarantees the call lands in the same venv that Argos itself is running in,
+    regardless of installation method.  Raises :class:`WizardStepError` with a
+    manual-fallback hint on non-zero exit.
+    """
+    _run_streaming(
+        [sys.executable, "-m", "playwright", "install", "chromium"],
+        timeout=PLAYWRIGHT_INSTALL_TIMEOUT_SEC,
+        hint="run `python -m playwright install chromium` manually and then re-run `argos init`",
+    )
+
+
 __all__ = [
     "alembic_upgrade_head",
     "db_ping",
@@ -325,6 +412,8 @@ __all__ = [
     "ollama_list",
     "ollama_ping",
     "ollama_pull",
+    "playwright_chromium_installed",
+    "playwright_install_chromium",
     "run_async",
     "slack_app_connections_open",
     "slack_auth_test",
