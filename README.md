@@ -167,12 +167,15 @@ uv run argos brief --channel C0987654321
 
 당일 처리된 항목이 없으면 자동으로 발송을 건너뜁니다 (빈 메시지 방지).
 
-> **자동 스케줄링 (선택):** 매일 정해진 시각 발송을 원한다면 macOS `launchd` 또는 `cron`을 활용하세요. 별도 클라우드 의존성을 만들지 않기 위해 Argos 자체에는 스케줄러를 두지 않았습니다.
+> **자동 스케줄링:** `argos init` 위저드가 macOS `launchd` 잡을 자동으로 등록합니다 (`com.argos.run`, `com.argos.brief`). 직접 관리하려면 `argos schedule` 서브커맨드를 쓰세요. 플리스트는 `~/Library/LaunchAgents/`에, 로그는 `~/Library/Logs/argos/{run,brief}.log`에 남습니다.
 >
-> ```cron
-> # 매일 오전 9시(KST) 발송 — crontab -e
-> 0 9 * * * cd /path/to/argos && /usr/local/bin/uv run argos brief >> argos.log 2>&1
+> ```bash
+> uv run argos schedule install      # config.toml 기준으로 두 잡을 등록 + 부트스트랩
+> uv run argos schedule status       # 두 라벨의 로드 여부 확인
+> uv run argos schedule uninstall    # 두 잡을 모두 해제 (이미 없어도 에러 없음)
 > ```
+>
+> 스케줄 시각은 `~/.config/argos/config.toml`의 `briefing.time` / `briefing.weekdays` / `run.time`로 조정합니다 (아래 `argos config` 참고).
 
 ### 5. 일반적인 워크플로우
 
@@ -186,6 +189,23 @@ uv run argos brief
 # 3) 봇 데몬을 띄워두면 Keep/Pass/Deep Dive 버튼이 동작
 uv run argos slack
 ```
+
+## Configuration (`argos config`)
+
+런타임 설정은 `~/.config/argos/config.toml`에 저장됩니다 (위저드가 생성). 시크릿(Slack 토큰, DB 비밀번호 등)은 `.env`에 두고, 동작 옵션만 config.toml에서 관리합니다. CLI로 안전하게 읽고 쓸 수 있습니다.
+
+```bash
+uv run argos config path             # 사용 중인 config.toml 경로 출력
+uv run argos config list             # 전체 키 출력 (시크릿은 마스킹됨)
+uv run argos config get briefing.time
+uv run argos config set briefing.time 09:00
+uv run argos config set briefing.weekdays "mon,tue,wed,thu,fri"
+uv run argos config set briefing.limit_per_category 5
+```
+
+종료 코드: `0` 성공 · `1` I/O 등 일반 오류 · `2` 알 수 없는 키 · `3` 검증 실패 · `4` 시크릿 거부(`.env`에서 직접 관리).
+
+설정을 바꾼 뒤 스케줄 시각/요일이 영향받는다면 `uv run argos schedule install`을 다시 돌려 플리스트를 갱신하세요.
 
 ## Testing
 
