@@ -53,7 +53,13 @@ _WEEKDAY_TO_LAUNCHD: dict[str, int] = {
 
 _DEFAULT_LOG_DIR = Path.home() / "Library" / "Logs" / "argos"
 _DEFAULT_LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
-_DEFAULT_ENV_PATH = "/usr/local/bin:/usr/bin:/bin"
+# Apple Silicon Homebrew (/opt/homebrew) is listed first so that M1 Max
+# binaries (Argos's primary target) take precedence in launchd's minimal
+# PATH. Intel Homebrew (/usr/local/bin) and POSIX fallbacks follow so the
+# plist also works on x86 Macs. launchd tolerates non-existent PATH entries,
+# so the extra segments are harmless on machines where /opt/homebrew doesn't
+# exist.
+_DEFAULT_ENV_PATH = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
 
 # Fallback locations to search if `shutil.which("argos")` returns None.
 # Order matters: Argos's primary target is Apple Silicon (M1 Max), where
