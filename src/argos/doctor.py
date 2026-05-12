@@ -84,6 +84,37 @@ def check_ollama_qwen3_8b(ollama_host: str = "http://localhost:11434") -> Row:
     return ("Qwen3-8B pulled", "FAIL", "model not found — run: ollama pull qwen3:8b")
 
 
+def check_ollama_models(ollama_host: str = "http://localhost:11434") -> list[Row]:
+    """Probe all Ollama models required by Argos.
+
+    Returns one ``Row`` per required model (``qwen3:8b``, ``qwen3:32b``,
+    ``nomic-embed-text``).  A single ``ollama list`` call is made; if Ollama is
+    unreachable all rows are marked FAIL with the same error detail.
+
+    Args:
+        ollama_host: Base URL for the Ollama API.  Callers should pass
+            ``cfg.ollama.host`` so the probe honours the configured host.
+    """
+    from argos.init_wizard import runners
+    from argos.init_wizard import WizardStepError
+    from argos.init_wizard.steps.infra import REQUIRED_OLLAMA_MODELS
+
+    try:
+        available = runners.ollama_list(host=ollama_host)
+    except WizardStepError as exc:
+        error_detail = str(exc).splitlines()[0]
+        return [(model, "FAIL", error_detail) for model in REQUIRED_OLLAMA_MODELS]
+
+    rows: list[Row] = []
+    for model in REQUIRED_OLLAMA_MODELS:
+        # Match on prefix so tagged variants (e.g. qwen3:8b-instruct) also pass.
+        if any(m.startswith(model) for m in available):
+            rows.append((model, "OK", ""))
+        else:
+            rows.append((model, "FAIL", f"model not found — run: ollama pull {model}"))
+    return rows
+
+
 def check_python_version() -> Row:
     """Probe: Python version is >=3.10 and <3.13."""
     vi = sys.version_info
@@ -144,6 +175,7 @@ __all__ = [
     "check_docker",
     "check_macos_version",
     "check_ollama_installed",
+    "check_ollama_models",
     "check_ollama_qwen3_8b",
     "check_python_version",
     "print_doctor_table",

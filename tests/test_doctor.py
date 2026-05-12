@@ -138,6 +138,65 @@ def test_check_ollama_qwen3_8b_uses_configured_host(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# check_ollama_models
+# ---------------------------------------------------------------------------
+
+
+def test_check_ollama_models_all_present(monkeypatch):
+    """All three required models present → three OK rows."""
+    monkeypatch.setattr(
+        "argos.init_wizard.runners.ollama_list",
+        lambda **kw: ["qwen3:8b", "qwen3:32b", "nomic-embed-text:latest"],
+    )
+    rows = doctor.check_ollama_models()
+    assert len(rows) == 3
+    assert all(status == "OK" for _, status, _ in rows)
+    names = [name for name, _, _ in rows]
+    assert "qwen3:8b" in names
+    assert "qwen3:32b" in names
+    assert "nomic-embed-text" in names
+
+
+def test_check_ollama_models_partial_missing(monkeypatch):
+    """Only 8b present; 32b and embed missing → one OK, two FAIL rows."""
+    monkeypatch.setattr(
+        "argos.init_wizard.runners.ollama_list",
+        lambda **kw: ["qwen3:8b"],
+    )
+    rows = doctor.check_ollama_models()
+    assert len(rows) == 3
+    by_name = {name: status for name, status, _ in rows}
+    assert by_name["qwen3:8b"] == "OK"
+    assert by_name["qwen3:32b"] == "FAIL"
+    assert by_name["nomic-embed-text"] == "FAIL"
+
+
+def test_check_ollama_models_ollama_unreachable(monkeypatch):
+    """Ollama unreachable → all three rows FAIL with the same error."""
+    def _raise(**kw):
+        raise WizardStepError("could not reach Ollama at http://localhost:11434")
+
+    monkeypatch.setattr("argos.init_wizard.runners.ollama_list", _raise)
+    rows = doctor.check_ollama_models()
+    assert len(rows) == 3
+    assert all(status == "FAIL" for _, status, _ in rows)
+    assert all(detail for _, _, detail in rows)
+
+
+def test_check_ollama_models_uses_configured_host(monkeypatch):
+    """ollama_host kwarg is forwarded to runners.ollama_list."""
+    captured: dict = {}
+
+    def _capture(**kw):
+        captured.update(kw)
+        return ["qwen3:8b", "qwen3:32b", "nomic-embed-text"]
+
+    monkeypatch.setattr("argos.init_wizard.runners.ollama_list", _capture)
+    doctor.check_ollama_models(ollama_host="http://custom-host:12345")
+    assert captured.get("host") == "http://custom-host:12345"
+
+
+# ---------------------------------------------------------------------------
 # check_python_version
 # ---------------------------------------------------------------------------
 
@@ -227,7 +286,10 @@ def test_doctor_command_exits_zero_when_all_ok(monkeypatch, capsys):
     # the need to monkey-patch sys.version_info globally (which breaks bs4 etc.).
     monkeypatch.setattr("argos.doctor.check_docker", lambda: ("Docker daemon", "OK", ""))
     monkeypatch.setattr("argos.doctor.check_ollama_installed", lambda: ("Ollama installed", "OK", ""))
-    monkeypatch.setattr("argos.doctor.check_ollama_qwen3_8b", lambda **kw: ("Qwen3-8B pulled", "OK", ""))
+    monkeypatch.setattr(
+        "argos.doctor.check_ollama_models",
+        lambda **kw: [("qwen3:8b", "OK", ""), ("qwen3:32b", "OK", ""), ("nomic-embed-text", "OK", "")],
+    )
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "OK", "13.0.0"))
 
@@ -242,7 +304,14 @@ def test_doctor_command_exits_nonzero_when_probe_fails(monkeypatch, capsys):
     """When at least one probe FAILs, `argos doctor` returns non-zero."""
     monkeypatch.setattr("argos.doctor.check_docker", lambda: ("Docker daemon", "FAIL", "daemon not running"))
     monkeypatch.setattr("argos.doctor.check_ollama_installed", lambda: ("Ollama installed", "FAIL", "not found"))
-    monkeypatch.setattr("argos.doctor.check_ollama_qwen3_8b", lambda **kw: ("Qwen3-8B pulled", "FAIL", "not pulled"))
+    monkeypatch.setattr(
+        "argos.doctor.check_ollama_models",
+        lambda **kw: [
+            ("qwen3:8b", "FAIL", "not pulled"),
+            ("qwen3:32b", "FAIL", "not pulled"),
+            ("nomic-embed-text", "FAIL", "not pulled"),
+        ],
+    )
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "OK", "13.0.0"))
 
@@ -255,7 +324,10 @@ def test_doctor_warn_only_does_not_fail(monkeypatch, capsys):
     """macOS too-old is WARN, not FAIL → exit 0 when that's the only issue."""
     monkeypatch.setattr("argos.doctor.check_docker", lambda: ("Docker daemon", "OK", ""))
     monkeypatch.setattr("argos.doctor.check_ollama_installed", lambda: ("Ollama installed", "OK", ""))
-    monkeypatch.setattr("argos.doctor.check_ollama_qwen3_8b", lambda **kw: ("Qwen3-8B pulled", "OK", ""))
+    monkeypatch.setattr(
+        "argos.doctor.check_ollama_models",
+        lambda **kw: [("qwen3:8b", "OK", ""), ("qwen3:32b", "OK", ""), ("nomic-embed-text", "OK", "")],
+    )
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     # macOS 11 → WARN only
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "WARN", "11.0.0 — old"))

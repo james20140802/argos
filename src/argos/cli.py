@@ -253,7 +253,8 @@ def _build_doctor_parser(sub: argparse._SubParsersAction) -> None:
         help="Run pre-flight health probes (Docker, Ollama, Python, macOS)",
         description=(
             "Run a read-only structured check of every prerequisite Argos needs.\n\n"
-            "Probes: Docker daemon, Ollama installed, Qwen3-8B pulled, Python version,\n"
+            "Probes: Docker daemon, Ollama installed, required models pulled\n"
+            "(qwen3:8b, qwen3:32b, nomic-embed-text), Python version,\n"
             "macOS version (warn-only). Prints a table and exits 0 only when no probe FAILs."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -266,7 +267,7 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
         check_docker,
         check_macos_version,
         check_ollama_installed,
-        check_ollama_qwen3_8b,
+        check_ollama_models,
         check_python_version,
         print_doctor_table,
     )
@@ -275,7 +276,7 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
     rows = [
         check_docker(),
         check_ollama_installed(),
-        check_ollama_qwen3_8b(ollama_host=cfg.ollama.host),
+        *check_ollama_models(ollama_host=cfg.ollama.host),
         check_python_version(),
         check_macos_version(),
     ]
