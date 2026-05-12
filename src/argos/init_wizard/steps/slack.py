@@ -138,8 +138,10 @@ def run_slack_step(
     def _validate_channel(value: str) -> str | None:
         if not value:
             return "channel ID is required"
-        if not re.fullmatch(r"C[A-Z0-9]+", value):
-            return "channel ID must start with 'C' followed by uppercase letters or digits (e.g. C01234567)"
+        # C = public channel, G = private/group channel.
+        # D (DM) is excluded: briefings target bot-invited channels, not DMs.
+        if not re.fullmatch(r"[CG][A-Z0-9]+", value):
+            return "channel ID must start with 'C' (public) or 'G' (private) followed by uppercase letters or digits (e.g. C01234567)"
         return None
 
     channel_id = prompts.with_validation_loop(
