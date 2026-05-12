@@ -251,6 +251,78 @@ def test_channel_valid_id_persists(tmp_path, monkeypatch):
     assert ("slack.channel_id", "C09876543") in write_calls
 
 
+def test_channel_g_prefix_accepted(tmp_path, monkeypatch):
+    """G-prefix private channel ID is accepted and persisted to config.toml."""
+    env_path = tmp_path / ".env"
+    cfg_path = tmp_path / "config.toml"
+    _seed_env(env_path)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text('[slack]\nchannel_id = ""\nsummary_language = "Korean"\n')
+
+    _make_auth_stubs(monkeypatch)
+
+    monkeypatch.setattr(slack_step.prompts, "ask_text", lambda msg, default=None: "G09876543")
+
+    write_calls = []
+    monkeypatch.setattr(
+        slack_step.config_store,
+        "set_value",
+        lambda p, k, v: write_calls.append((k, v)),
+    )
+
+    slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
+    assert ("slack.channel_id", "G09876543") in write_calls
+
+
+def test_channel_c_prefix_still_accepted(tmp_path, monkeypatch):
+    """Regression: C-prefix public channel ID continues to be accepted (ARG-71)."""
+    env_path = tmp_path / ".env"
+    cfg_path = tmp_path / "config.toml"
+    _seed_env(env_path)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text('[slack]\nchannel_id = ""\nsummary_language = "Korean"\n')
+
+    _make_auth_stubs(monkeypatch)
+
+    monkeypatch.setattr(slack_step.prompts, "ask_text", lambda msg, default=None: "C01234567")
+
+    write_calls = []
+    monkeypatch.setattr(
+        slack_step.config_store,
+        "set_value",
+        lambda p, k, v: write_calls.append((k, v)),
+    )
+
+    slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
+    assert ("slack.channel_id", "C01234567") in write_calls
+
+
+def test_channel_d_prefix_rejected(tmp_path, monkeypatch):
+    """D-prefix DM channel ID is rejected → WizardAbort after 3 attempts, no write."""
+    env_path = tmp_path / ".env"
+    cfg_path = tmp_path / "config.toml"
+    _seed_env(env_path)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text('[slack]\nchannel_id = ""\nsummary_language = "Korean"\n')
+
+    _make_auth_stubs(monkeypatch)
+
+    monkeypatch.setattr(slack_step.prompts, "ask_text", lambda msg, default=None: "D01234567")
+
+    write_calls = []
+    monkeypatch.setattr(
+        slack_step.config_store,
+        "set_value",
+        lambda p, k, v: write_calls.append((k, v)),
+    )
+
+    with pytest.raises(WizardAbort):
+        slack_step.run_slack_step(tmp_path, env_path=env_path, config_path=cfg_path)
+
+    dm_writes = [(k, v) for k, v in write_calls if k == "slack.channel_id"]
+    assert dm_writes == []
+
+
 # --- Regression tests for Finding 2: apps.connections.open validation ---
 
 def test_app_token_validator_accepts_valid_xapp_token(tmp_path, monkeypatch):
