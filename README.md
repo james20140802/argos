@@ -18,7 +18,7 @@ Slack Interface (Daily briefing + Keep/Pass/Deep Dive)
 
 ## Prerequisites
 
-Argos는 로컬 머신에서 완전히 실행되므로, 아래 네 가지가 미리 설치되어 있어야 합니다.
+Argos는 로컬 머신에서 완전히 실행되므로, 아래 다섯 가지가 미리 설치되어 있어야 합니다.
 
 | 항목 | 버전 | 비고 |
 |------|------|------|
@@ -26,6 +26,7 @@ Argos는 로컬 머신에서 완전히 실행되므로, 아래 네 가지가 미
 | [Ollama](https://ollama.com) | 최신 | Qwen3-8B / 32B 로컬 추론용 |
 | Slack 워크스페이스 | — | 봇 설치 권한 필요 |
 | Python 3.10–3.12 | >=3.10, <3.13 | 3.13은 아직 지원하지 않음 |
+| [uv](https://docs.astral.sh/uv/) | 최신 | Alembic 마이그레이션 / 부트스트랩 실행용 |
 
 ## Install via pipx
 
