@@ -330,12 +330,12 @@ def test_config_migrate_env_happy_path(tmp_path, monkeypatch, capsys):
 
     assert rc == 0
     dest = tmp_path / ".config" / "argos" / ".env"
+    bak = Path(str(src) + ".bak")  # <source>.bak i.e. .env.bak
     assert dest.exists()
-    assert dest.read_text() == src.with_suffix(".env.bak").read_text()
+    assert dest.read_text() == bak.read_text()
     assert "migrated" in dest.read_text()
 
     # Source renamed to .bak.
-    bak = tmp_path / ".env.bak"
     assert bak.exists()
     assert not src.exists()
 

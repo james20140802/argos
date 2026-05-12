@@ -199,27 +199,39 @@ def test_settings_database_url_encodes_special_chars(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _clear_postgres_env(monkeypatch) -> None:
+    """Remove POSTGRES_* vars from os.environ to prevent load_dotenv() bleed-through.
+
+    database.rebuild() calls load_dotenv(override=True) which permanently writes
+    env values into os.environ for the remainder of the test session.  Tests that
+    rely on Secrets reading from an _env_file kwarg must clear those vars first so
+    the env-var layer (higher priority in pydantic-settings) does not shadow the
+    file.
+    """
+    for key in ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB",
+                "POSTGRES_HOST", "POSTGRES_PORT"):
+        monkeypatch.delenv(key, raising=False)
+
+
 def test_secrets_reads_from_xdg_path_by_default(tmp_path, monkeypatch):
     """Secrets must load from the XDG path when it exists and no override is set."""
     # Point HOME at tmp so Path.home() / ".config" / "argos" / ".env" is under tmp.
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("ARGOS_ENV_FILE", raising=False)
+    _clear_postgres_env(monkeypatch)
 
     xdg_env = tmp_path / ".config" / "argos" / ".env"
     xdg_env.parent.mkdir(parents=True, exist_ok=True)
     xdg_env.write_text("POSTGRES_USER=xdguser\nPOSTGRES_PASSWORD=xdgpass\n", encoding="utf-8")
 
-    # Reload _resolve_env_file so Path.home() sees the new HOME.
-    import importlib
-    import argos.config as _cfg_mod
-    importlib.reload(_cfg_mod)
-
-    resolved = _cfg_mod._resolve_env_file()
+    # _resolve_env_file reads os.environ live — no reload needed.
+    resolved = _resolve_env_file()
     assert resolved is not None
     assert resolved == xdg_env
 
-    s = _cfg_mod.Secrets()
+    # Secrets reads from the resolved file directly via _env_file kwarg.
+    s = Secrets(_env_file=str(xdg_env))
     assert s.POSTGRES_USER == "xdguser"
     assert s.POSTGRES_PASSWORD == "xdgpass"
 
@@ -232,15 +244,13 @@ def test_secrets_honors_argos_env_file_override(tmp_path, monkeypatch):
     monkeypatch.setenv("ARGOS_ENV_FILE", str(override_env))
     # Even if XDG path would also exist, override wins.
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("HOME", raising=False)
+    _clear_postgres_env(monkeypatch)
 
-    import importlib
-    import argos.config as _cfg_mod
-    importlib.reload(_cfg_mod)
-
-    resolved = _cfg_mod._resolve_env_file()
+    resolved = _resolve_env_file()
     assert resolved == override_env
 
-    s = _cfg_mod.Secrets()
+    s = Secrets(_env_file=str(override_env))
     assert s.POSTGRES_USER == "overrideuser"
 
 
@@ -252,23 +262,20 @@ def test_secrets_falls_back_to_repo_env_with_deprecation_warning(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("ARGOS_ENV_FILE", raising=False)
+    _clear_postgres_env(monkeypatch)
 
     # Write a cwd .env in tmp_path and chdir there.
     cwd_env = tmp_path / ".env"
     cwd_env.write_text("POSTGRES_USER=cwduser\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    import importlib
-    import argos.config as _cfg_mod
-    importlib.reload(_cfg_mod)
-
     with caplog.at_level(logging.WARNING, logger="argos.config"):
-        resolved = _cfg_mod._resolve_env_file()
+        resolved = _resolve_env_file()
 
     assert resolved is not None
     assert "deprecated" in caplog.text.lower() or "migrate-env" in caplog.text
 
-    s = _cfg_mod.Secrets()
+    s = Secrets(_env_file=str(cwd_env))
     assert s.POSTGRES_USER == "cwduser"
 
 
@@ -277,6 +284,7 @@ def test_secrets_xdg_takes_precedence_over_repo_env(tmp_path, monkeypatch, caplo
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("ARGOS_ENV_FILE", raising=False)
+    _clear_postgres_env(monkeypatch)
 
     # Create XDG env.
     xdg_env = tmp_path / ".config" / "argos" / ".env"
@@ -288,17 +296,13 @@ def test_secrets_xdg_takes_precedence_over_repo_env(tmp_path, monkeypatch, caplo
     cwd_env.write_text("POSTGRES_USER=cwdloser\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    import importlib
-    import argos.config as _cfg_mod
-    importlib.reload(_cfg_mod)
-
     with caplog.at_level(logging.WARNING, logger="argos.config"):
-        resolved = _cfg_mod._resolve_env_file()
+        resolved = _resolve_env_file()
 
     assert resolved == xdg_env
     assert "deprecated" not in caplog.text.lower()
 
-    s = _cfg_mod.Secrets()
+    s = Secrets(_env_file=str(xdg_env))
     assert s.POSTGRES_USER == "xdgwins"
 
 
@@ -309,9 +313,5 @@ def test_resolve_env_file_returns_none_when_nothing_exists(tmp_path, monkeypatch
     monkeypatch.delenv("ARGOS_ENV_FILE", raising=False)
     monkeypatch.chdir(tmp_path)  # no .env in this dir
 
-    import importlib
-    import argos.config as _cfg_mod
-    importlib.reload(_cfg_mod)
-
-    resolved = _cfg_mod._resolve_env_file()
+    resolved = _resolve_env_file()
     assert resolved is None

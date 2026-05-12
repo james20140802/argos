@@ -220,7 +220,7 @@ def _cmd_config_migrate_env(args: argparse.Namespace) -> int:
         raise
 
     # Rename source to <source>.bak so it no longer shadows the XDG copy.
-    bak = src.with_suffix(src.suffix + ".bak")
+    bak = Path(str(src) + ".bak")
     try:
         os.rename(src, bak)
     except OSError as exc:
