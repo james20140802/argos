@@ -105,6 +105,22 @@ uv run ruff check src tests                       # Lint
 - **Branch naming:** `feat/`, `fix/`, `docs/`, `refactor/`, `chore/` prefixes. English, lowercase, hyphen-separated.
 - **Commits:** Atomic commits with gitmoji prefix. One logical change per commit.
 
+### Releases
+
+The CD workflow (`.github/workflows/release.yml`) publishes to PyPI automatically when a `v*.*.*` tag is pushed. Before tagging:
+
+1. Bump `project.version` in `pyproject.toml` in the commit you intend to tag.
+2. Create an **annotated** tag — the tag message becomes the GitHub Release body:
+   ```bash
+   git tag -a vMAJOR.MINOR.PATCH -m "Release notes / changelog here"
+   ```
+3. Push the tag:
+   ```bash
+   git push --tags
+   ```
+
+The workflow will fail fast if the tag version (`vX.Y.Z` → `X.Y.Z`) does not match `project.version` in `pyproject.toml`. Always use annotated tags (`git tag -a`); lightweight tags produce an empty release body.
+
 ## Constraints
 
 - **Zero cloud cost.** Everything runs locally on M1 Max 32GB. No paid APIs, no cloud DB.
