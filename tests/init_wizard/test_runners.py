@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import httpx
 import pytest
@@ -404,7 +405,7 @@ def test_playwright_install_chromium_invokes_subprocess(monkeypatch):
 
     monkeypatch.setattr(runners.subprocess, "run", fake_run)
     runners.playwright_install_chromium()
-    assert seen["cmd"] == ["playwright", "install", "chromium"]
+    assert seen["cmd"] == [sys.executable, "-m", "playwright", "install", "chromium"]
     assert seen["capture_output"] is False
 
 

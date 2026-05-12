@@ -18,6 +18,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -388,15 +389,19 @@ def playwright_chromium_installed() -> bool:
 def playwright_install_chromium() -> None:
     """Run ``playwright install chromium`` and stream progress to the terminal.
 
-    Uses the bare ``playwright`` entry point (not ``uv run playwright …``) so
-    this works for both ``pipx``-installed Argos (where ``uv`` is not on PATH)
-    and ``uv run``-based development setups.  Raises :class:`WizardStepError`
-    with a manual-fallback hint on non-zero exit.
+    Invokes Playwright via the current Python interpreter
+    (``sys.executable -m playwright install chromium``) rather than a bare
+    ``playwright`` entry point.  This is necessary because pipx only exposes
+    the package's own entry points; dependency apps such as ``playwright`` are
+    not on PATH unless ``--include-deps`` was used.  Using ``sys.executable``
+    guarantees the call lands in the same venv that Argos itself is running in,
+    regardless of installation method.  Raises :class:`WizardStepError` with a
+    manual-fallback hint on non-zero exit.
     """
     _run_streaming(
-        ["playwright", "install", "chromium"],
+        [sys.executable, "-m", "playwright", "install", "chromium"],
         timeout=PLAYWRIGHT_INSTALL_TIMEOUT_SEC,
-        hint="run `playwright install chromium` manually and then re-run `argos init`",
+        hint="run `python -m playwright install chromium` manually and then re-run `argos init`",
     )
 
 
