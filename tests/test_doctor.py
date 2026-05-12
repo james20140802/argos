@@ -197,6 +197,26 @@ def test_check_ollama_models_uses_configured_host(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# check_uv_installed
+# ---------------------------------------------------------------------------
+
+
+def test_check_uv_installed_ok(monkeypatch):
+    monkeypatch.setattr("argos.init_wizard.runners.which", lambda b: "/usr/local/bin/uv")
+    name, status, detail = doctor.check_uv_installed()
+    assert name == "uv installed"
+    assert status == "OK"
+    assert detail == ""
+
+
+def test_check_uv_installed_missing(monkeypatch):
+    monkeypatch.setattr("argos.init_wizard.runners.which", lambda b: None)
+    _, status, detail = doctor.check_uv_installed()
+    assert status == "FAIL"
+    assert "uv" in detail.lower()
+
+
+# ---------------------------------------------------------------------------
 # check_python_version
 # ---------------------------------------------------------------------------
 
@@ -292,6 +312,7 @@ def test_doctor_command_exits_zero_when_all_ok(monkeypatch, capsys):
     )
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "OK", "13.0.0"))
+    monkeypatch.setattr("argos.doctor.check_uv_installed", lambda: ("uv installed", "OK", ""))
 
     from argos.cli import main
     rc = main(["doctor"])
@@ -314,6 +335,7 @@ def test_doctor_command_exits_nonzero_when_probe_fails(monkeypatch, capsys):
     )
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "OK", "13.0.0"))
+    monkeypatch.setattr("argos.doctor.check_uv_installed", lambda: ("uv installed", "OK", ""))
 
     from argos.cli import main
     rc = main(["doctor"])
@@ -331,6 +353,7 @@ def test_doctor_warn_only_does_not_fail(monkeypatch, capsys):
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     # macOS 11 → WARN only
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "WARN", "11.0.0 — old"))
+    monkeypatch.setattr("argos.doctor.check_uv_installed", lambda: ("uv installed", "OK", ""))
 
     from argos.cli import main
     rc = main(["doctor"])

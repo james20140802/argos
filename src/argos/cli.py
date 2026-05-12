@@ -269,6 +269,7 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
         check_ollama_installed,
         check_ollama_models,
         check_python_version,
+        check_uv_installed,
         print_doctor_table,
     )
 
@@ -279,6 +280,7 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
         *check_ollama_models(ollama_host=cfg.ollama.host),
         check_python_version(),
         check_macos_version(),
+        check_uv_installed(),
     ]
 
     print_doctor_table(rows)

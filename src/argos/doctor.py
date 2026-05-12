@@ -115,6 +115,25 @@ def check_ollama_models(ollama_host: str = "http://localhost:11434") -> list[Row
     return rows
 
 
+def check_uv_installed() -> Row:
+    """Probe: uv binary is on PATH.
+
+    ``argos init`` hard-requires ``uv`` (``_REQUIRED_BINARIES`` in
+    ``init_wizard/steps/precheck.py``) and migrations are executed via
+    ``uv run alembic``.  A missing ``uv`` makes the next init step fail
+    immediately, so this probe surfaces the gap at doctor time.
+    """
+    from argos.init_wizard import runners
+
+    if runners.which("uv") is None:
+        return (
+            "uv installed",
+            "FAIL",
+            "uv binary not found — install from https://github.com/astral-sh/uv (or `brew install uv`)",
+        )
+    return ("uv installed", "OK", "")
+
+
 def check_python_version() -> Row:
     """Probe: Python version is >=3.10 and <3.13."""
     vi = sys.version_info
@@ -178,5 +197,6 @@ __all__ = [
     "check_ollama_models",
     "check_ollama_qwen3_8b",
     "check_python_version",
+    "check_uv_installed",
     "print_doctor_table",
 ]
