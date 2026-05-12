@@ -16,10 +16,13 @@ _TRIAGE_TEXT_MAX_CHARS = 2000
 _TRIAGE_PROMPT = """Analyze the following text and determine if it describes a real technology (tool, library, framework, model, protocol, or platform).
 trust_score reflects substance over hype: 0.0=pure marketing, 0.5=neutral, 1.0=well-evidenced technical detail.
 summary is a 1-2 sentence factual blurb (max 500 chars) describing what the technology is and why it matters; written in {language}. Use null if is_valid is false.
-Respond ONLY with valid JSON: {{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "..."}}
+Respond ONLY with valid JSON: {schema}
 {interests_block}
 Text:
 {text}"""
+
+_SCHEMA_BASE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "..."}}'
+_SCHEMA_WITH_RELEVANCE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "...", "is_relevant": true/false}}'
 
 
 class _TriageResult(BaseModel):
@@ -97,6 +100,10 @@ def _build_interests_block(topics: list[str], exclusions: list[str]) -> str:
         lines.append(
             "User interests (boost relevance if matched): " + ", ".join(topics)
         )
+        lines.append(
+            "Is this text directly related to one of the user interest topics above?"
+            " Set is_relevant to true if yes, false if no."
+        )
     if exclusions:
         lines.append(
             "Exclusions (pass immediately if matched): " + ", ".join(exclusions)
@@ -137,11 +144,13 @@ async def triage_node(state: BrainState) -> BrainState:
     topics = _normalize_terms(settings.user.interests.topics)
     exclusions = _normalize_terms(settings.user.interests.exclusions)
     interests_block = _build_interests_block(topics, exclusions)
+    schema = _SCHEMA_WITH_RELEVANCE if topics else _SCHEMA_BASE
     triage_text = (state["raw_text"] or "")[:_TRIAGE_TEXT_MAX_CHARS]
     prompt = _TRIAGE_PROMPT.format(
         text=triage_text,
         language=settings.user.slack.summary_language,
         interests_block=interests_block,
+        schema=schema,
     )
     client = get_llm_client()
     try:
