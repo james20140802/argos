@@ -14,18 +14,27 @@ def _force_noninteractive(monkeypatch):
     monkeypatch.setenv("ARGOS_INIT_NONINTERACTIVE", "1")
 
 
-def _stub_runners(monkeypatch, *, installed_models=None, compose_calls=None):
-    """Stub every runner so the test never hits real Docker/Ollama."""
+def _stub_runners(
+    monkeypatch,
+    *,
+    installed_models=None,
+    compose_calls=None,
+    chromium_installed=True,
+):
+    """Stub every runner so the test never hits real Docker/Ollama/Playwright."""
     installed_models = installed_models or []
     compose_calls = compose_calls if compose_calls is not None else []
     pulled = []
+    install_calls = []
 
     monkeypatch.setattr(infra.runners, "docker_compose_up", lambda repo, env_path=None: compose_calls.append(repo))
     monkeypatch.setattr(infra.runners, "wait_pg_ready", lambda h, p, **kw: None)
     monkeypatch.setattr(infra.runners, "alembic_upgrade_head", lambda repo, env_path=None: None)
     monkeypatch.setattr(infra.runners, "ollama_list", lambda host: list(installed_models))
     monkeypatch.setattr(infra.runners, "ollama_pull", lambda m: pulled.append(m))
-    return pulled, compose_calls
+    monkeypatch.setattr(infra.runners, "playwright_chromium_installed", lambda: chromium_installed)
+    monkeypatch.setattr(infra.runners, "playwright_install_chromium", lambda: install_calls.append(True))
+    return pulled, compose_calls, install_calls
 
 
 def test_infra_uses_existing_env_defaults(tmp_path, monkeypatch):
@@ -70,7 +79,7 @@ def test_infra_pulls_only_missing_models(tmp_path, monkeypatch):
         "POSTGRES_USER=argos\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=argos\n"
         "POSTGRES_HOST=localhost\nPOSTGRES_PORT=5432\n"
     )
-    pulled, _ = _stub_runners(monkeypatch, installed_models=["qwen3:8b"])
+    pulled, _, _install = _stub_runners(monkeypatch, installed_models=["qwen3:8b"])
 
     infra.run_infra_step(tmp_path, env_path=env_path)
 
@@ -227,3 +236,70 @@ def test_infra_hardens_env_mode_on_noop_path(tmp_path, monkeypatch):
     infra.run_infra_step(tmp_path, env_path=env_path)
 
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+
+
+# ---------------------------------------------------------------------------
+# _ensure_playwright_chromium sub-phase
+# ---------------------------------------------------------------------------
+
+
+def _env_file(tmp_path):
+    """Helper: write a minimal valid .env and return its path."""
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "POSTGRES_USER=argos\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=argos\n"
+        "POSTGRES_HOST=localhost\nPOSTGRES_PORT=5432\n"
+    )
+    return env_path
+
+
+def test_chromium_absent_triggers_install(tmp_path, monkeypatch):
+    """When Chromium is not installed, playwright_install_chromium must be called once."""
+    env_path = _env_file(tmp_path)
+    _, _, install_calls = _stub_runners(
+        monkeypatch,
+        installed_models=infra.REQUIRED_OLLAMA_MODELS,
+        chromium_installed=False,
+    )
+
+    infra.run_infra_step(tmp_path, env_path=env_path)
+
+    assert len(install_calls) == 1
+
+
+def test_chromium_present_skips_install(tmp_path, monkeypatch):
+    """When Chromium is already installed, playwright_install_chromium must not be called."""
+    env_path = _env_file(tmp_path)
+    _, _, install_calls = _stub_runners(
+        monkeypatch,
+        installed_models=infra.REQUIRED_OLLAMA_MODELS,
+        chromium_installed=True,
+    )
+
+    infra.run_infra_step(tmp_path, env_path=env_path)
+
+    assert install_calls == []
+
+
+def test_chromium_install_failure_propagates_step_error(tmp_path, monkeypatch):
+    """A failed Chromium install must raise WizardStepError with the manual-fallback hint."""
+    env_path = _env_file(tmp_path)
+    _stub_runners(
+        monkeypatch,
+        installed_models=infra.REQUIRED_OLLAMA_MODELS,
+        chromium_installed=False,
+    )
+
+    def boom():
+        raise WizardStepError(
+            "playwright install chromium exited with code 1",
+            hint="run `playwright install chromium` manually and then re-run `argos init`",
+        )
+
+    monkeypatch.setattr(infra.runners, "playwright_install_chromium", boom)
+
+    with pytest.raises(WizardStepError) as excinfo:
+        infra.run_infra_step(tmp_path, env_path=env_path)
+    assert "playwright install chromium" in str(excinfo.value).lower()
+    assert excinfo.value.hint is not None
+    assert "playwright install chromium" in excinfo.value.hint
