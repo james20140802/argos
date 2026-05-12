@@ -361,6 +361,39 @@ def test_render_plist_with_config_path(
     ]
 
 
+def test_render_run_plist_emits_working_directory(
+    fake_argos_binary: Path, tmp_path: Path
+) -> None:
+    # WorkingDirectory is what lets pydantic-settings find .env at runtime —
+    # without it, launchd starts the job from `/` and config silently falls
+    # back to defaults, surfacing as Postgres auth failures (ARG-73).
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    xml = render_run_plist(
+        time="06:00", log_dir=tmp_path, working_directory=repo
+    )
+    data = plistlib.loads(xml.encode("utf-8"))
+    assert data["WorkingDirectory"] == str(repo)
+
+
+def test_render_run_plist_defaults_working_directory_to_cwd(
+    fake_argos_binary: Path, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    xml = render_run_plist(time="06:00", log_dir=tmp_path)
+    data = plistlib.loads(xml.encode("utf-8"))
+    assert data["WorkingDirectory"] == str(tmp_path)
+
+
+def test_render_brief_plist_defaults_working_directory_to_cwd(
+    fake_argos_binary: Path, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    xml = render_brief_plist(time="07:00", log_dir=tmp_path)
+    data = plistlib.loads(xml.encode("utf-8"))
+    assert data["WorkingDirectory"] == str(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # install_plist atomicity
 # ---------------------------------------------------------------------------
@@ -613,6 +646,46 @@ def test_reload_schedule_writes_both_plists_and_bootstraps(
     assert brief_plist.exists()
     assert str(run_plist) in bootstrap_calls
     assert str(brief_plist) in bootstrap_calls
+
+
+def test_reload_schedule_emits_install_cwd_as_working_directory(
+    monkeypatch,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    # `argos schedule install` is run from the repo root; both plists should
+    # bake that path into WorkingDirectory so launchd jobs can load .env.
+    user_config = SimpleNamespace(
+        run=SimpleNamespace(time="06:00"),
+        briefing=SimpleNamespace(
+            time="07:00",
+            weekdays=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        ),
+    )
+    install_cwd = tmp_path / "fake_repo"
+    install_cwd.mkdir()
+    monkeypatch.chdir(install_cwd)
+
+    def fake(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake)
+    reload_schedule(user_config)
+
+    for name in ("com.argos.run.plist", "com.argos.brief.plist"):
+        data = plistlib.loads(
+            (isolated_paths["launch_agents"] / name).read_bytes()
+        )
+        assert data["WorkingDirectory"] == str(install_cwd)
 
 
 # ---------------------------------------------------------------------------
