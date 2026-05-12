@@ -308,3 +308,106 @@ def test_is_secret_patterns():
     assert config_store.is_secret("any.SECRET.thing")
     assert not config_store.is_secret("briefing.time")
     assert not config_store.is_secret("interests.topics")
+
+
+# ---------------------------------------------------------------------------
+# argos config migrate-env (ARG-74)
+# ---------------------------------------------------------------------------
+
+
+def test_config_migrate_env_happy_path(tmp_path, monkeypatch, capsys):
+    """migrate-env copies .env to XDG location, renames source to .bak."""
+    import stat
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    src = tmp_path / ".env"
+    src.write_text("POSTGRES_USER=migrated\nPOSTGRES_PASSWORD=secret\n", encoding="utf-8")
+
+    rc = run_cli("config", "migrate-env", "--from", str(src))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    dest = tmp_path / ".config" / "argos" / ".env"
+    bak = Path(str(src) + ".bak")  # <source>.bak i.e. .env.bak
+    assert dest.exists()
+    assert dest.read_text() == bak.read_text()
+    assert "migrated" in dest.read_text()
+
+    # Source renamed to .bak.
+    assert bak.exists()
+    assert not src.exists()
+
+    # Destination is 0600.
+    mode = stat.S_IMODE(dest.stat().st_mode)
+    assert mode == 0o600
+
+    assert str(dest) in out
+    assert ".bak" in out
+
+
+def test_config_migrate_env_idempotent_when_dest_is_newer(tmp_path, monkeypatch, capsys):
+    """When destination is newer than source, migrate-env exits 0 without changes."""
+    import time
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    dest = tmp_path / ".config" / "argos" / ".env"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("POSTGRES_USER=existing\n", encoding="utf-8")
+
+    # Ensure src is older than dest.
+    time.sleep(0.05)
+    src = tmp_path / ".env"
+    src.write_text("POSTGRES_USER=newvalue\n", encoding="utf-8")
+    # Force src mtime to be older than dest.
+    old_mtime = dest.stat().st_mtime - 10
+    import os
+    os.utime(src, (old_mtime, old_mtime))
+
+    rc = run_cli("config", "migrate-env", "--from", str(src))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "Nothing to migrate" in out
+    # Destination content unchanged.
+    assert dest.read_text() == "POSTGRES_USER=existing\n"
+    # Source not renamed.
+    assert src.exists()
+
+
+def test_config_migrate_env_missing_source(tmp_path, monkeypatch, capsys):
+    """When source .env does not exist, migrate-env exits 1 with an error message."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    missing = tmp_path / "nonexistent.env"
+    rc = run_cli("config", "migrate-env", "--from", str(missing))
+    err = capsys.readouterr().err
+
+    assert rc == 1
+    assert "not found" in err.lower() or str(missing) in err
+
+
+def test_config_migrate_env_preserves_0600_perms(tmp_path, monkeypatch, capsys):
+    """migrate-env enforces 0600 on the destination regardless of source mode."""
+    import stat
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    src = tmp_path / ".env"
+    src.write_text("POSTGRES_USER=permtest\n", encoding="utf-8")
+    # Loosen source permissions to simulate a user-created file.
+    import os
+    os.chmod(src, 0o644)
+
+    rc = run_cli("config", "migrate-env", "--from", str(src))
+    capsys.readouterr()
+
+    assert rc == 0
+    dest = tmp_path / ".config" / "argos" / ".env"
+    mode = stat.S_IMODE(dest.stat().st_mode)
+    assert mode == 0o600

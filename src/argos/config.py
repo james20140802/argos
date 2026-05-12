@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal
+import os
+from pathlib import Path
+from typing import Any, Literal
+from urllib.parse import quote
 
 try:
     import tomllib
 except ImportError:
     import tomli as tomllib  # type: ignore[no-reuse-import]
-from pathlib import Path
-from urllib.parse import quote
 
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,9 +17,46 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 logger = logging.getLogger(__name__)
 
 
+def _resolve_env_file() -> Path | None:
+    """Resolve the .env path without reading it yet.
+
+    Resolution order:
+    1. ``ARGOS_ENV_FILE`` environment variable (absolute escape hatch).
+    2. XDG path (``${XDG_CONFIG_HOME:-~/.config}/argos/.env``) when it exists.
+    3. Repo-root ``./.env`` (cwd-relative) when it exists — deprecated; emits
+       a WARNING telling the user to run ``argos config migrate-env``.
+
+    Returns ``None`` when no candidate file exists (pydantic-settings will then
+    skip file loading and fall back to environment variables / defaults).
+    """
+    # 1. Explicit override — always wins, even if the path does not exist.
+    env_file_override = os.environ.get("ARGOS_ENV_FILE")
+    if env_file_override:
+        return Path(env_file_override)
+
+    # 2. XDG path.
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    xdg_base = Path(xdg) if xdg else Path.home() / ".config"
+    xdg_path = xdg_base / "argos" / ".env"
+    if xdg_path.exists():
+        return xdg_path
+
+    # 3. Deprecated cwd-relative .env (repo-root fallback).
+    cwd_env = Path(".env")
+    if cwd_env.exists():
+        logger.warning(
+            "Loading secrets from repo-root .env is deprecated — run "
+            "`argos config migrate-env` to move it to %s",
+            xdg_path,
+        )
+        return cwd_env
+
+    return None
+
+
 class Secrets(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=None,  # file resolution is handled in __init__
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -31,6 +69,14 @@ class Secrets(BaseSettings):
 
     SLACK_BOT_TOKEN: str = ""
     SLACK_APP_TOKEN: str = ""
+
+    def __init__(self, **kwargs: Any) -> None:
+        # When the caller explicitly passes ``_env_file`` (including
+        # ``_env_file=None`` from tests), honour it without interference.
+        if "_env_file" in kwargs:
+            super().__init__(**kwargs)
+            return
+        super().__init__(_env_file=_resolve_env_file(), **kwargs)
 
 
 class SlackConfig(BaseModel):

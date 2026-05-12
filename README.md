@@ -40,11 +40,14 @@ uv run argos init
 uv run argos init --reconfigure slack       # infra / slack / interests / schedule
 ```
 
-위저드는 idempotent 하게 동작합니다 — 기존 `.env` / `~/.config/argos/config.toml` 값을
+위저드는 idempotent 하게 동작합니다 — 기존 `~/.config/argos/.env` / `~/.config/argos/config.toml` 값을
 다시 디폴트로 보여주고, 사용자가 바꾼 값만 atomic하게 다시 씁니다. 시크릿 값은
 재표시 시 항상 마스킹되며 (`xoxb-***` / `***`), `.env` 파일은 항상 `chmod 600` 으로
 잠깁니다. CI나 비-TTY 환경에서는 `ARGOS_INIT_NONINTERACTIVE=1` (또는
 `--non-interactive`) 로 모든 디폴트를 조용히 채택할 수 있습니다.
+
+> **기존 repo-root `.env` 사용자:** `uv run argos config migrate-env` 를 실행하면
+> 기존 `.env`를 `~/.config/argos/.env`로 이동하고 원본은 `.env.bak`으로 백업합니다.
 
 ### 수동 설정 (선택)
 
@@ -52,7 +55,9 @@ uv run argos init --reconfigure slack       # infra / slack / interests / schedu
 
 ```bash
 uv sync --all-extras
-cp .env.example .env
+mkdir -p ~/.config/argos
+cp .env.example ~/.config/argos/.env
+chmod 600 ~/.config/argos/.env
 
 # 비밀번호/토큰을 채워 넣은 뒤
 docker compose up -d
@@ -134,7 +139,7 @@ DB에 쌓인 그날의 기술 신호를 Block Kit 카드로 발송하고, 사용
 
 ### 2. 환경변수 설정
 
-`.env` 에 아래 세 값을 채웁니다 (`.env.example` 참고).
+`~/.config/argos/.env` 에 아래 세 값을 채웁니다 (`.env.example` 참고).
 
 ```dotenv
 SLACK_BOT_TOKEN=xoxb-...
@@ -192,7 +197,7 @@ uv run argos slack
 
 ## Configuration (`argos config`)
 
-런타임 설정은 `~/.config/argos/config.toml`에 저장됩니다 (위저드가 생성). 시크릿(Slack 토큰, DB 비밀번호 등)은 `.env`에 두고, 동작 옵션만 config.toml에서 관리합니다. CLI로 안전하게 읽고 쓸 수 있습니다.
+런타임 설정은 `~/.config/argos/config.toml`에 저장됩니다 (위저드가 생성). 시크릿(Slack 토큰, DB 비밀번호 등)은 `~/.config/argos/.env`에 두고, 동작 옵션만 config.toml에서 관리합니다. CLI로 안전하게 읽고 쓸 수 있습니다.
 
 ```bash
 uv run argos config path             # 사용 중인 config.toml 경로 출력

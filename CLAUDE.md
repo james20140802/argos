@@ -63,7 +63,8 @@ docker compose down                               # Stop
 
 # Environment (uv manages .venv automatically)
 uv sync --all-extras                              # Create .venv and install runtime + dev deps
-cp .env.example .env                              # Create local env file
+cp .env.example ~/.config/argos/.env && chmod 600 ~/.config/argos/.env  # Create XDG env file
+# Existing repo-root .env users: uv run argos config migrate-env
 
 # Alembic migrations
 uv run alembic revision --autogenerate -m "description"  # Generate migration
