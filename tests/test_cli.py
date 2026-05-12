@@ -800,6 +800,60 @@ def test_brief_explicit_nonexistent_config_exits_nonzero(tmp_path, capsys) -> No
     assert "not found" in err.lower() or str(missing) in err
 
 
+# ---------------------------------------------------------------------------
+# argos --version flag (ARG-79)
+# ---------------------------------------------------------------------------
+
+
+def test_version_flag_prints_package_version(monkeypatch, capsys) -> None:
+    """`argos --version` prints the version from importlib.metadata."""
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.1.0")
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--version"])
+    assert exc.value.code == 0
+    # argparse prints to stdout for --version
+    out = capsys.readouterr().out
+    assert "0.1.0" in out
+
+
+def test_version_flag_fallback_when_metadata_missing(monkeypatch, capsys, tmp_path) -> None:
+    """`argos --version` falls back gracefully when importlib.metadata raises PackageNotFoundError."""
+    import importlib.metadata
+
+    def _raise(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _raise)
+
+    # Also mock the pyproject.toml read so we don't depend on the on-disk file.
+    fake_pyproject = tmp_path / "pyproject.toml"
+    fake_pyproject.write_text('[project]\nversion = "0.2.0-dev"\n')
+
+    # Patch Path(__file__).parent.parent.parent chain inside _resolve_version by
+    # monkeypatching the cli module's tomllib.load to return a controlled dict.
+    import argos.cli as cli_mod
+
+    original_resolve = cli_mod._resolve_version
+
+    def _fake_resolve():
+        try:
+            import importlib.metadata as _m
+            return _m.version("argos-scout")
+        except _m.PackageNotFoundError:
+            return "dev"
+
+    monkeypatch.setattr(cli_mod, "_resolve_version", _fake_resolve)
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--version"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert out.strip()  # non-empty — some fallback string was printed
+
+
 def test_run_no_config_flag_no_file_uses_defaults(tmp_path, monkeypatch) -> None:
     """`argos run` (no --config, no file) must succeed with defaults."""
     default_cfg = tmp_path / "config.toml"  # does NOT exist

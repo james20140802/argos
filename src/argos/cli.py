@@ -246,6 +246,55 @@ def _cmd_config_migrate_env(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _build_doctor_parser(sub: argparse._SubParsersAction) -> None:
+    """Wire the ``argos doctor`` subcommand."""
+    doctor_p = sub.add_parser(
+        "doctor",
+        help="Run pre-flight health probes (Docker, Ollama, Python, macOS)",
+        description=(
+            "Run a read-only structured check of every prerequisite Argos needs.\n\n"
+            "Probes: Docker daemon, Ollama installed, required models pulled\n"
+            "(qwen3:8b, qwen3:32b, nomic-embed-text), Python version,\n"
+            "macOS version (warn-only). Prints a table and exits 0 only when no probe FAILs."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    doctor_p.add_argument(
+        "--config",
+        default=None,
+        help="Path to config.toml (defaults to ~/.config/argos/config.toml)",
+    )
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    from argos.doctor import (
+        check_docker,
+        check_macos_version,
+        check_ollama_installed,
+        check_ollama_models,
+        check_python_version,
+        check_uv_installed,
+        print_doctor_table,
+    )
+
+    rc = _apply_config_override(args)
+    if rc is not None:
+        return rc
+
+    rows = [
+        check_docker(),
+        check_ollama_installed(),
+        *check_ollama_models(ollama_host=settings.user.ollama.host),
+        check_python_version(),
+        check_macos_version(),
+        check_uv_installed(),
+    ]
+
+    print_doctor_table(rows)
+    failures = sum(1 for _, status, _ in rows if status == "FAIL")
+    return 0 if failures == 0 else 1
+
+
 def _build_init_parser(sub: argparse._SubParsersAction) -> None:
     """Wire the ``argos init`` subcommand."""
     from argos.init_wizard.wizard import RECONFIGURE_SECTIONS
@@ -491,8 +540,32 @@ def _dispatch_config(args: argparse.Namespace) -> int:
     return EXIT_GENERIC
 
 
+def _resolve_version() -> str:
+    """Return the installed package version, falling back gracefully for dev installs."""
+    import importlib.metadata
+
+    try:
+        return importlib.metadata.version("argos-scout")
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    # Editable install without dist-info: try reading pyproject.toml directly.
+    try:
+        _here = Path(__file__).parent.parent.parent  # src/argos -> src -> repo root
+        _pyproject = _here / "pyproject.toml"
+        with open(_pyproject, "rb") as _f:
+            _data = tomllib.load(_f)
+        return _data.get("project", {}).get("version", "unknown")
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="argos")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"argos {_resolve_version()}",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # Shared `--config` flag for runtime subcommands. The scheduled launchd
@@ -528,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     brief_p.add_argument("--channel", default=None, help="Override target Slack channel ID")
 
     _build_config_parser(sub)
+    _build_doctor_parser(sub)
     _build_init_parser(sub)
     _build_schedule_parser(sub)
 
@@ -565,6 +639,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "config":
         return _dispatch_config(args)
+    if args.command == "doctor":
+        return _cmd_doctor(args)
     if args.command == "init":
         return _cmd_init(args)
     if args.command == "schedule":

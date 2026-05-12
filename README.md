@@ -18,50 +18,60 @@ Slack Interface (Daily briefing + Keep/Pass/Deep Dive)
 
 ## Prerequisites
 
-- Docker
-- Python ≥ 3.10
-- [uv](https://docs.astral.sh/uv/) (Python 패키지 매니저)
-- [Ollama](https://ollama.com) (Processing Brain 실행 시 필요)
+Argos는 로컬 머신에서 완전히 실행되므로, 아래 다섯 가지가 미리 설치되어 있어야 합니다.
 
-## Setup
+| 항목 | 버전 | 비고 |
+|------|------|------|
+| Docker / [Colima](https://github.com/abiosoft/colima) | 최신 | PostgreSQL + pgvector 컨테이너 실행용 |
+| [Ollama](https://ollama.com) | 최신 | Qwen3-8B / 32B 로컬 추론용 |
+| Slack 워크스페이스 | — | 봇 설치 권한 필요 |
+| Python 3.10–3.12 | >=3.10, <3.13 | 3.13은 아직 지원하지 않음 |
+| [uv](https://docs.astral.sh/uv/) | 최신 | Alembic 마이그레이션 / 부트스트랩 실행용 |
 
-가장 빠른 방법은 인터랙티브 부트스트랩 위저드를 쓰는 것입니다 (Docker 컨테이너 기동,
-Alembic 마이그레이션, 필수 Ollama 모델 다운로드, Slack 토큰 검증, launchd 스케줄링,
-헬스체크까지 한 번에 진행합니다).
+## Install via pipx
+
+[pipx](https://pipx.pypa.io/)를 사용하면 독립된 가상환경에 Argos를 설치할 수 있습니다.
 
 ```bash
-# 1. 의존성 설치 (.venv 자동 생성)
-uv sync --all-extras
+pipx install argos-scout
+```
 
-# 2. 위저드 실행
-uv run argos init
+> **기본 Python이 지원 범위 밖인 경우** (3.13 이상 또는 3.9 이하):
+>
+> ```bash
+> pipx install --python python3.12 argos-scout
+> ```
 
-# 특정 섹션만 다시 설정하고 싶다면:
-uv run argos init --reconfigure slack       # infra / slack / interests / schedule
+### Bootstrap
+
+설치 후 인터랙티브 위저드로 환경을 설정합니다 (Docker 컨테이너 기동, Alembic 마이그레이션,
+Ollama 모델 다운로드, Slack 토큰 검증, launchd 스케줄 등록까지 한 번에 진행합니다).
+
+```bash
+argos init
+```
+
+특정 섹션만 다시 설정하고 싶다면:
+
+```bash
+argos init --reconfigure slack       # infra / slack / interests / schedule
 ```
 
 위저드는 idempotent 하게 동작합니다 — 기존 `~/.config/argos/.env` / `~/.config/argos/config.toml` 값을
 다시 디폴트로 보여주고, 사용자가 바꾼 값만 atomic하게 다시 씁니다. 시크릿 값은
 재표시 시 항상 마스킹되며 (`xoxb-***` / `***`), `.env` 파일은 항상 `chmod 600` 으로
-잠깁니다. CI나 비-TTY 환경에서는 `ARGOS_INIT_NONINTERACTIVE=1` (또는
-`--non-interactive`) 로 모든 디폴트를 조용히 채택할 수 있습니다.
+잠깁니다.
 
-> **기존 repo-root `.env` 사용자:** `uv run argos config migrate-env` 를 실행하면
+> **기존 repo-root `.env` 사용자:** `argos config migrate-env` 를 실행하면
 > 기존 `.env`를 `~/.config/argos/.env`로 이동하고 원본은 `.env.bak`으로 백업합니다.
 
-### 수동 설정 (선택)
+### Verify
 
-위저드 대신 직접 진행하고 싶다면:
+설치와 환경이 올바른지 확인합니다.
 
 ```bash
-uv sync --all-extras
-mkdir -p ~/.config/argos
-cp .env.example ~/.config/argos/.env
-chmod 600 ~/.config/argos/.env
-
-# 비밀번호/토큰을 채워 넣은 뒤
-docker compose up -d
-uv run alembic upgrade head
+argos doctor       # Docker / Ollama / Python / macOS 프리플라이트 체크
+argos --version    # 설치된 패키지 버전 출력
 ```
 
 ## Running
@@ -220,6 +230,40 @@ uv run pytest tests/ -v
 
 # Brain 노드만
 uv run pytest tests/brain/ -v
+```
+
+## Contributing / Dev from source
+
+소스에서 직접 개발하거나 기여하려면:
+
+```bash
+# 1. 저장소 클론 + 의존성 설치 (.venv 자동 생성)
+git clone https://github.com/james20140802/argos.git
+cd argos
+uv sync --all-extras
+
+# 2. 환경 파일 생성
+mkdir -p ~/.config/argos
+cp .env.example ~/.config/argos/.env
+chmod 600 ~/.config/argos/.env
+
+# 3. 비밀번호/토큰을 채워 넣은 뒤 인프라 기동
+docker compose up -d
+uv run alembic upgrade head
+
+# 4. 위저드로 나머지 설정
+uv run argos init
+```
+
+CI나 비-TTY 환경에서는 `ARGOS_INIT_NONINTERACTIVE=1` (또는
+`--non-interactive`) 로 모든 디폴트를 조용히 채택할 수 있습니다.
+
+```bash
+# 테스트 실행
+uv run pytest tests/ -v
+
+# 린트
+uv run ruff check src tests
 ```
 
 ## Database
