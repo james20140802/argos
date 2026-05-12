@@ -169,6 +169,83 @@ def _cmd_config_list(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_config_migrate_env(args: argparse.Namespace) -> int:
+    """Migrate a repo-root .env to the XDG location atomically.
+
+    Copies the source file to ``~/.config/argos/.env`` (or the
+    ``XDG_CONFIG_HOME``-derived path), preserving ``0600`` permissions, then
+    renames the source to ``<source>.bak`` so it no longer shadows the XDG
+    copy at runtime.
+    """
+    import shutil
+    import stat as _stat
+
+    dest = config_store.default_env_path()
+
+    # Resolve source path: --from flag overrides; default is cwd/.env.
+    from_arg = getattr(args, "from_path", None)
+    src = Path(from_arg).expanduser() if from_arg else Path(".env").resolve()
+
+    if not src.exists():
+        print(f"Source .env not found: {src}", file=sys.stderr)
+        return EXIT_GENERIC
+
+    # Idempotency guard: if the destination already exists and is newer than
+    # the source, skip the migration to avoid overwriting a more recent file.
+    if dest.exists():
+        src_mtime = src.stat().st_mtime
+        dest_mtime = dest.stat().st_mtime
+        if dest_mtime >= src_mtime:
+            print(
+                f"XDG .env already exists and is up-to-date: {dest}\n"
+                "Nothing to migrate.  Delete the destination first if you "
+                "want to force a re-migration."
+            )
+            return EXIT_OK
+
+    # Atomic copy: write to a temp sibling of the destination, then replace.
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    try:
+        shutil.copy2(src, tmp)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, dest)
+        # Ensure final destination is 0600 even if it pre-existed with looser perms.
+        os.chmod(dest, 0o600)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+    # Rename source to <source>.bak so it no longer shadows the XDG copy.
+    bak = src.with_suffix(src.suffix + ".bak")
+    try:
+        os.rename(src, bak)
+    except OSError as exc:
+        # Migration already complete; just warn about the bak rename failure.
+        print(
+            f"Warning: could not rename {src} to {bak}: {exc}\n"
+            f"The .env was copied to {dest} but the original was not renamed.",
+            file=sys.stderr,
+        )
+        return EXIT_OK
+
+    print(f"Migrated: {src} -> {dest}")
+    print(f"Original backed up at: {bak}")
+    print(f"Delete {bak} when you're sure the migration worked.")
+    # Verify destination permissions.
+    mode = _stat.S_IMODE(dest.stat().st_mode)
+    if mode != 0o600:  # pragma: no cover - defensive; chmod above should guarantee this
+        print(
+            f"Warning: destination permissions are {oct(mode)}, expected 0600.  "
+            f"Run: chmod 600 {dest}",
+            file=sys.stderr,
+        )
+    return EXIT_OK
+
+
 def _build_init_parser(sub: argparse._SubParsersAction) -> None:
     """Wire the ``argos init`` subcommand."""
     from argos.init_wizard.wizard import RECONFIGURE_SECTIONS
@@ -241,6 +318,28 @@ def _build_config_parser(sub: argparse._SubParsersAction) -> None:
     set_p.add_argument("value")
 
     actions.add_parser("list", help="List all config keys (secrets masked)")
+
+    migrate_env_p = actions.add_parser(
+        "migrate-env",
+        help="Move repo-root .env to ~/.config/argos/.env (XDG location)",
+        description=(
+            "Copies the repo-root .env to the XDG location "
+            "(${XDG_CONFIG_HOME:-~/.config}/argos/.env) atomically with 0600 "
+            "permissions, then renames the source to <source>.bak so it no "
+            "longer shadows the XDG copy at runtime.\n\n"
+            "Idempotent: if the destination already exists and is newer than "
+            "the source, the command prints a message and exits 0 without "
+            "modifying anything."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    migrate_env_p.add_argument(
+        "--from",
+        dest="from_path",
+        default=None,
+        metavar="PATH",
+        help="Source .env path (default: ./.env in the current directory)",
+    )
 
 
 def _build_schedule_parser(sub: argparse._SubParsersAction) -> None:
@@ -387,6 +486,8 @@ def _dispatch_config(args: argparse.Namespace) -> int:
         return _cmd_config_set(args)
     if action == "list":
         return _cmd_config_list(args)
+    if action == "migrate-env":
+        return _cmd_config_migrate_env(args)
     return EXIT_GENERIC
 
 
