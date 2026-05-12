@@ -332,6 +332,35 @@ def test_render_run_plist_round_trip(fake_argos_binary: Path, tmp_path: Path) ->
         )
 
 
+# ---------------------------------------------------------------------------
+# Regression: both rendered plists must carry the exact Apple Silicon-first
+# PATH so launchd-spawned jobs find Homebrew binaries on M1 Max (ARG-72).
+# ---------------------------------------------------------------------------
+
+
+def test_render_plist_path_includes_homebrew(
+    fake_argos_binary: Path, tmp_path: Path
+) -> None:
+    """render_run_plist and render_brief_plist must both embed exactly
+    '/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin'
+    in EnvironmentVariables.PATH. launchd does not inherit the user PATH,
+    so the Apple Silicon Homebrew prefix must be explicit in the plist.
+    """
+    expected_path = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
+
+    run_xml = render_run_plist(time="06:00", log_dir=tmp_path)
+    run_data = plistlib.loads(run_xml.encode("utf-8"))
+    assert run_data["EnvironmentVariables"]["PATH"] == expected_path, (
+        f"render_run_plist PATH mismatch: {run_data['EnvironmentVariables']['PATH']!r}"
+    )
+
+    brief_xml = render_brief_plist(time="07:00", log_dir=tmp_path)
+    brief_data = plistlib.loads(brief_xml.encode("utf-8"))
+    assert brief_data["EnvironmentVariables"]["PATH"] == expected_path, (
+        f"render_brief_plist PATH mismatch: {brief_data['EnvironmentVariables']['PATH']!r}"
+    )
+
+
 def test_render_brief_plist_weekday_subset(
     fake_argos_binary: Path, tmp_path: Path
 ) -> None:
