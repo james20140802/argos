@@ -188,8 +188,15 @@ def _build_plist_dict(
     calendar: dict[str, int] | list[dict[str, int]],
     log_dir: Path,
     log_basename: str,
+    working_directory: Path,
 ) -> dict[str, Any]:
-    """Assemble the dict that :func:`plistlib.dumps` will serialize."""
+    """Assemble the dict that :func:`plistlib.dumps` will serialize.
+
+    ``WorkingDirectory`` is required because pydantic-settings resolves
+    ``env_file=".env"`` against the process cwd — launchd otherwise runs
+    jobs from ``/`` and silently falls back to empty config, which surfaces
+    as DB auth failures at runtime.
+    """
     return {
         "Label": label,
         "ProgramArguments": program_args,
@@ -197,6 +204,7 @@ def _build_plist_dict(
         "StandardOutPath": str(log_dir / f"{log_basename}.log"),
         "StandardErrorPath": str(log_dir / f"{log_basename}.log"),
         "EnvironmentVariables": {"PATH": _DEFAULT_ENV_PATH},
+        "WorkingDirectory": str(working_directory),
         "RunAtLoad": False,
         "KeepAlive": False,
     }
@@ -211,6 +219,7 @@ def _render_plist(
     weekdays: list[str] | None,
     config_path: Path | None,
     log_dir: Path | None,
+    working_directory: Path | None,
 ) -> str:
     hour, minute = _parse_hhmm(time)
     argos_bin = _resolve_argos_binary()
@@ -219,12 +228,16 @@ def _render_plist(
         program_args.extend(["--config", str(config_path)])
     calendar = _calendar_intervals(hour, minute, weekdays)
     resolved_log_dir = log_dir if log_dir is not None else _DEFAULT_LOG_DIR
+    resolved_cwd = (
+        working_directory if working_directory is not None else Path.cwd()
+    )
     payload = _build_plist_dict(
         label=label,
         program_args=program_args,
         calendar=calendar,
         log_dir=resolved_log_dir,
         log_basename=log_basename,
+        working_directory=resolved_cwd,
     )
     return plistlib.dumps(payload, fmt=plistlib.FMT_XML).decode("utf-8")
 
@@ -240,8 +253,14 @@ def render_run_plist(
     label: str = "com.argos.run",
     config_path: Path | None = None,
     log_dir: Path | None = None,
+    working_directory: Path | None = None,
 ) -> str:
-    """Render the ``argos run`` plist as XML text."""
+    """Render the ``argos run`` plist as XML text.
+
+    ``working_directory`` is emitted as the plist's ``WorkingDirectory``
+    so pydantic-settings can find ``.env`` at runtime. Defaults to
+    ``Path.cwd()`` when not provided.
+    """
     return _render_plist(
         label=label,
         subcommand="run",
@@ -250,6 +269,7 @@ def render_run_plist(
         weekdays=None,  # `argos run` is daily.
         config_path=config_path,
         log_dir=log_dir,
+        working_directory=working_directory,
     )
 
 
@@ -260,12 +280,17 @@ def render_brief_plist(
     label: str = "com.argos.brief",
     config_path: Path | None = None,
     log_dir: Path | None = None,
+    working_directory: Path | None = None,
 ) -> str:
     """Render the ``argos brief`` plist as XML text.
 
     ``weekdays`` accepts day-names (``["Mon", "Tue", …]``) to match
     :class:`argos.config.BriefingConfig.weekdays`. ``None`` or a full
     7-day list collapses to a daily-style ``StartCalendarInterval``.
+
+    ``working_directory`` is emitted as the plist's ``WorkingDirectory``
+    so pydantic-settings can find ``.env`` at runtime. Defaults to
+    ``Path.cwd()`` when not provided.
     """
     return _render_plist(
         label=label,
@@ -275,6 +300,7 @@ def render_brief_plist(
         weekdays=weekdays,
         config_path=config_path,
         log_dir=log_dir,
+        working_directory=working_directory,
     )
 
 
@@ -410,12 +436,21 @@ def reload_schedule(
     run_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.run.plist"
     brief_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.brief.plist"
 
+    # Capture cwd once so both plists agree on the same WorkingDirectory,
+    # even if some caller mutates cwd between the two render calls.
+    install_cwd = Path.cwd()
+
     try:
-        run_xml = render_run_plist(time=run_time, config_path=config_path)
+        run_xml = render_run_plist(
+            time=run_time,
+            config_path=config_path,
+            working_directory=install_cwd,
+        )
         brief_xml = render_brief_plist(
             time=brief_time,
             weekdays=brief_weekdays,
             config_path=config_path,
+            working_directory=install_cwd,
         )
     except ValueError as exc:
         raise SchedulerError(f"invalid time format: {exc}") from exc
