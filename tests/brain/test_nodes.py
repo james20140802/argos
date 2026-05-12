@@ -1088,3 +1088,146 @@ async def test_triage_normalizes_blank_and_non_string_terms(monkeypatch):
     # No empty-term artifacts like ", ," in the rendered list
     assert ", ," not in prompt
     assert ":  ," not in prompt
+
+
+# ---------------------------------------------------------------------------
+# triage_node — is_relevant gating (ARG-86)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_triage_is_relevant_false_demotes_to_invalid(monkeypatch):
+    """When LLM emits is_relevant=false with non-empty topics, item must be demoted."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=["AI", "LLM"], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "real tech", "trust_score": 0.8, "summary": "ok", "is_relevant": false}',
+        captured,
+    )
+
+    state = _state(raw_text="A tool for managing npm supply-chain vulnerabilities.")
+    result = await triage_node(state)
+
+    assert result["is_valid"] is False
+    assert result["trust_score"] is None
+    assert result["summary"] is None
+
+
+@pytest.mark.asyncio
+async def test_triage_is_relevant_true_with_topics_passes_through_rules(monkeypatch):
+    """When LLM emits is_relevant=true with non-empty topics, _apply_interest_rules runs."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=["LLM"], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.6, "summary": "s", "is_relevant": true}',
+        captured,
+    )
+
+    # text contains the topic term so trust-score bump fires
+    state = _state(raw_text="LLM benchmarking framework released.")
+    result = await triage_node(state)
+
+    assert result["is_valid"] is True
+    # trust bump of 0.1 applied via _apply_interest_rules
+    assert result["trust_score"] == pytest.approx(0.7)
+
+
+@pytest.mark.asyncio
+async def test_triage_empty_topics_no_is_relevant_key_regression(monkeypatch):
+    """When topics is empty, a response without is_relevant still validates (fail-open)."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "summary": "ok"}',
+        captured,
+    )
+
+    state = _state(raw_text="A new database indexing library.")
+    result = await triage_node(state)
+
+    # Behavior identical to pre-ARG-86: is_relevant key absent, no gating
+    assert result["is_valid"] is True
+    assert result["trust_score"] == pytest.approx(0.5)
+    assert result["summary"] == "ok"
+    # Prompt must not mention is_relevant when topics empty
+    assert "is_relevant" not in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_triage_npm_supply_chain_irrelevant_to_ai_topics(monkeypatch):
+    """Concrete scenario: npm supply-chain text with AI/LLM/Agent topics -> not saved."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(
+        monkeypatch, triage_module, topics=["AI", "LLM", "Agent"], exclusions=[]
+    )
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "real tool", "trust_score": 0.75, "summary": "npm audit tool", "is_relevant": false}',
+        captured,
+    )
+
+    state = _state(
+        raw_text=(
+            "socket.dev launches supply-chain scanner for npm packages, "
+            "detecting malicious dependencies before they ship to production."
+        )
+    )
+    result = await triage_node(state)
+
+    # LLM judged not relevant to AI/LLM/Agent topics → demoted to invalid → not saved
+    assert result["is_valid"] is False
+    assert result["trust_score"] is None
+    assert result["summary"] is None
+
+
+@pytest.mark.asyncio
+async def test_triage_prompt_includes_is_relevant_schema_when_topics_present(monkeypatch):
+    """When topics is non-empty, the prompt must include is_relevant in the JSON schema example."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=["AI"], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "summary": "s", "is_relevant": true}',
+        captured,
+    )
+
+    await triage_node(_state(raw_text="An AI inference runtime."))
+
+    assert "is_relevant" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_triage_prompt_omits_is_relevant_schema_when_topics_empty(monkeypatch):
+    """When topics is empty, the prompt must NOT include is_relevant in the JSON schema."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "summary": "s"}',
+        captured,
+    )
+
+    await triage_node(_state(raw_text="A new database library."))
+
+    assert "is_relevant" not in captured["prompt"]
