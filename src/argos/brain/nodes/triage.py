@@ -161,7 +161,15 @@ async def triage_node(state: BrainState) -> BrainState:
             raise ValueError("No JSON found in response")
         result = _TriageResult.model_validate_json(raw[start:end])
 
-        if topics or exclusions:
+        if topics and not result.is_relevant:
+            logger.info(
+                "triage relevance gate: is_relevant=False for topics=%s; demoting to invalid",
+                topics,
+            )
+            is_valid = False
+            trust_score = None
+            summary = None
+        elif topics or exclusions:
             is_valid, trust_score, summary = _apply_interest_rules(
                 triage_text, result, topics, exclusions
             )
