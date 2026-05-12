@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Omni-Lens: Tech Scout - AI 기술 동향 자동 추적 슬랙봇"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 keywords = ["slack", "ai", "trend-tracking", "llm", "crawler", "pgvector"]
 classifiers = [
     "Development Status :: 3 - Alpha",
