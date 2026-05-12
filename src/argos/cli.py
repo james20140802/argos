@@ -261,6 +261,7 @@ def _build_doctor_parser(sub: argparse._SubParsersAction) -> None:
 
 
 def _cmd_doctor(_args: argparse.Namespace) -> int:
+    from argos.config import UserConfig
     from argos.doctor import (
         check_docker,
         check_macos_version,
@@ -270,10 +271,11 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
         print_doctor_table,
     )
 
+    cfg = UserConfig.load()
     rows = [
         check_docker(),
         check_ollama_installed(),
-        check_ollama_qwen3_8b(),
+        check_ollama_qwen3_8b(ollama_host=cfg.ollama.host),
         check_python_version(),
         check_macos_version(),
     ]

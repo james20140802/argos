@@ -58,17 +58,23 @@ def check_ollama_installed() -> Row:
     return ("Ollama installed", "OK", "")
 
 
-def check_ollama_qwen3_8b() -> Row:
+def check_ollama_qwen3_8b(ollama_host: str = "http://localhost:11434") -> Row:
     """Probe: qwen3:8b model is pulled locally.
 
-    Calls ``runners.ollama_list()`` and looks for a model name starting with
-    ``qwen3:8b``.  Converts ``WizardStepError`` (Ollama unreachable) to FAIL.
+    Calls ``runners.ollama_list()`` against *ollama_host* and looks for a model
+    name starting with ``qwen3:8b``.  Converts ``WizardStepError`` (Ollama
+    unreachable) to FAIL.
+
+    Args:
+        ollama_host: Base URL for the Ollama API (e.g. ``http://localhost:11434``).
+            Defaults to the standard local address; callers should pass
+            ``cfg.ollama.host`` so the probe honours the configured host.
     """
     from argos.init_wizard import runners
     from argos.init_wizard import WizardStepError
 
     try:
-        models = runners.ollama_list()
+        models = runners.ollama_list(host=ollama_host)
     except WizardStepError as exc:
         return ("Qwen3-8B pulled", "FAIL", str(exc).splitlines()[0])
 

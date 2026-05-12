@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
-
-import pytest
 
 import argos.doctor as doctor
 from argos.init_wizard import WizardStepError
@@ -127,6 +124,19 @@ def test_check_ollama_qwen3_8b_ollama_unreachable(monkeypatch):
     assert detail  # non-empty
 
 
+def test_check_ollama_qwen3_8b_uses_configured_host(monkeypatch):
+    """ollama_host kwarg is forwarded to runners.ollama_list."""
+    captured: dict = {}
+
+    def _capture(**kw):
+        captured.update(kw)
+        return ["qwen3:8b"]
+
+    monkeypatch.setattr("argos.init_wizard.runners.ollama_list", _capture)
+    doctor.check_ollama_qwen3_8b(ollama_host="http://custom-host:12345")
+    assert captured.get("host") == "http://custom-host:12345"
+
+
 # ---------------------------------------------------------------------------
 # check_python_version
 # ---------------------------------------------------------------------------
@@ -217,7 +227,7 @@ def test_doctor_command_exits_zero_when_all_ok(monkeypatch, capsys):
     # the need to monkey-patch sys.version_info globally (which breaks bs4 etc.).
     monkeypatch.setattr("argos.doctor.check_docker", lambda: ("Docker daemon", "OK", ""))
     monkeypatch.setattr("argos.doctor.check_ollama_installed", lambda: ("Ollama installed", "OK", ""))
-    monkeypatch.setattr("argos.doctor.check_ollama_qwen3_8b", lambda: ("Qwen3-8B pulled", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_ollama_qwen3_8b", lambda **kw: ("Qwen3-8B pulled", "OK", ""))
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "OK", "13.0.0"))
 
@@ -232,7 +242,7 @@ def test_doctor_command_exits_nonzero_when_probe_fails(monkeypatch, capsys):
     """When at least one probe FAILs, `argos doctor` returns non-zero."""
     monkeypatch.setattr("argos.doctor.check_docker", lambda: ("Docker daemon", "FAIL", "daemon not running"))
     monkeypatch.setattr("argos.doctor.check_ollama_installed", lambda: ("Ollama installed", "FAIL", "not found"))
-    monkeypatch.setattr("argos.doctor.check_ollama_qwen3_8b", lambda: ("Qwen3-8B pulled", "FAIL", "not pulled"))
+    monkeypatch.setattr("argos.doctor.check_ollama_qwen3_8b", lambda **kw: ("Qwen3-8B pulled", "FAIL", "not pulled"))
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "OK", "13.0.0"))
 
@@ -245,7 +255,7 @@ def test_doctor_warn_only_does_not_fail(monkeypatch, capsys):
     """macOS too-old is WARN, not FAIL → exit 0 when that's the only issue."""
     monkeypatch.setattr("argos.doctor.check_docker", lambda: ("Docker daemon", "OK", ""))
     monkeypatch.setattr("argos.doctor.check_ollama_installed", lambda: ("Ollama installed", "OK", ""))
-    monkeypatch.setattr("argos.doctor.check_ollama_qwen3_8b", lambda: ("Qwen3-8B pulled", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_ollama_qwen3_8b", lambda **kw: ("Qwen3-8B pulled", "OK", ""))
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     # macOS 11 → WARN only
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "WARN", "11.0.0 — old"))
