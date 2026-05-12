@@ -248,7 +248,7 @@ def _cmd_config_migrate_env(args: argparse.Namespace) -> int:
 
 def _build_doctor_parser(sub: argparse._SubParsersAction) -> None:
     """Wire the ``argos doctor`` subcommand."""
-    sub.add_parser(
+    doctor_p = sub.add_parser(
         "doctor",
         help="Run pre-flight health probes (Docker, Ollama, Python, macOS)",
         description=(
@@ -259,10 +259,14 @@ def _build_doctor_parser(sub: argparse._SubParsersAction) -> None:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    doctor_p.add_argument(
+        "--config",
+        default=None,
+        help="Path to config.toml (defaults to ~/.config/argos/config.toml)",
+    )
 
 
-def _cmd_doctor(_args: argparse.Namespace) -> int:
-    from argos.config import UserConfig
+def _cmd_doctor(args: argparse.Namespace) -> int:
     from argos.doctor import (
         check_docker,
         check_macos_version,
@@ -273,11 +277,14 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
         print_doctor_table,
     )
 
-    cfg = UserConfig.load()
+    rc = _apply_config_override(args)
+    if rc is not None:
+        return rc
+
     rows = [
         check_docker(),
         check_ollama_installed(),
-        *check_ollama_models(ollama_host=cfg.ollama.host),
+        *check_ollama_models(ollama_host=settings.user.ollama.host),
         check_python_version(),
         check_macos_version(),
         check_uv_installed(),

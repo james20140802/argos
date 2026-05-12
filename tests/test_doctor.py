@@ -373,3 +373,27 @@ def test_doctor_warn_only_does_not_fail(monkeypatch, capsys):
     from argos.cli import main
     rc = main(["doctor"])
     assert rc == 0
+
+
+def test_doctor_config_override_passes_custom_ollama_host(monkeypatch, tmp_path, capsys):
+    """argos doctor --config <path> honours ollama.host from the config file."""
+    cfg = tmp_path / "custom.toml"
+    cfg.write_text('[ollama]\nhost = "http://custom-host:9999"\n')
+
+    captured: dict = {}
+
+    def _capture_models(**kw):
+        captured.update(kw)
+        return [("qwen3:8b", "OK", ""), ("qwen3:32b", "OK", ""), ("nomic-embed-text", "OK", "")]
+
+    monkeypatch.setattr("argos.doctor.check_docker", lambda: ("Docker daemon", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_ollama_installed", lambda: ("Ollama installed", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_ollama_models", _capture_models)
+    monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
+    monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "OK", "13.0.0"))
+    monkeypatch.setattr("argos.doctor.check_uv_installed", lambda: ("uv installed", "OK", ""))
+
+    from argos.cli import main
+    rc = main(["doctor", "--config", str(cfg)])
+    assert rc == 0
+    assert captured.get("ollama_host") == "http://custom-host:9999"
