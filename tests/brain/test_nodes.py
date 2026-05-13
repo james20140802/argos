@@ -1012,6 +1012,46 @@ async def test_save_node_does_not_set_saved_on_empty_source_url():
 
 
 # ---------------------------------------------------------------------------
+# save_node — category persistence (ARG-54)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_save_node_persists_triage_decided_mainstream_category():
+    from argos.models.tech_item import CategoryType
+
+    session = _mock_session_no_existing()
+    await save_node(
+        _state(is_valid=True, category=CategoryType.MAINSTREAM), session=session
+    )
+    added_item = session.add.call_args[0][0]
+    assert added_item.category is CategoryType.MAINSTREAM
+
+
+@pytest.mark.asyncio
+async def test_save_node_persists_triage_decided_alpha_category():
+    from argos.models.tech_item import CategoryType
+
+    session = _mock_session_no_existing()
+    await save_node(
+        _state(is_valid=True, category=CategoryType.ALPHA), session=session
+    )
+    added_item = session.add.call_args[0][0]
+    assert added_item.category is CategoryType.ALPHA
+
+
+@pytest.mark.asyncio
+async def test_save_node_falls_back_to_alpha_when_category_is_none():
+    """When state.category is None (e.g. older code path), save_node must default to ALPHA."""
+    from argos.models.tech_item import CategoryType
+
+    session = _mock_session_no_existing()
+    await save_node(_state(is_valid=True, category=None), session=session)
+    added_item = session.add.call_args[0][0]
+    assert added_item.category is CategoryType.ALPHA
+
+
+# ---------------------------------------------------------------------------
 # triage_node — Interests injection (ARG-50)
 # ---------------------------------------------------------------------------
 

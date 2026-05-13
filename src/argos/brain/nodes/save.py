@@ -43,7 +43,9 @@ async def save_node(state: BrainState, session: AsyncSession) -> BrainState:
         source_url=state["source_url"],
         raw_content=state["raw_text"],
         summary=state.get("summary"),
-        category=CategoryType.ALPHA,
+        # Use triage-decided category, falling back to ALPHA as a safe default
+        # in case it was not set (e.g. state produced by an older code path).
+        category=state.get("category") or CategoryType.ALPHA,
         trust_score=state.get("trust_score"),
     )
 
