@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain import run_brain_pipeline
 from argos.brain.graph_state import BrainState
-from argos.config import UserConfig
+from argos.config import settings
 from argos.crawler.dynamic_fetcher import fetch_dynamic_page
 from argos.crawler.rss_fetcher import run_rss_fetchers
 from argos.crawler.static_fetcher import (
@@ -59,7 +59,7 @@ async def run_static_pipeline(session: AsyncSession) -> list[dict]:
 
 async def run_rss_pipeline(session: AsyncSession) -> list[dict]:
     """Fetch all configured RSS feeds and return deduplicated item dicts."""
-    feeds = UserConfig.load().rss.feeds
+    feeds = settings.user.rss.feeds
     items = await run_rss_fetchers(feeds)
     for item in items:
         host = urlsplit(item.get("source_url", "")).netloc or "rss"
