@@ -9,11 +9,21 @@ from argos.brain.nodes.embed import embed_and_search_node
 from argos.brain.nodes.genealogist import genealogist_node
 from argos.brain.nodes.save import save_node
 from argos.brain.llm_client import get_llm_client
+from argos.models.tech_item import CategoryType
 
 
 async def run_brain_pipeline(
-    raw_text: str, source_url: str, session: AsyncSession
+    raw_text: str,
+    source_url: str,
+    session: AsyncSession,
+    *,
+    source_category: CategoryType | None = None,
 ) -> BrainState:
+    # source_category is an optional hint from the fetcher (e.g. RSS in ARG-52,
+    # arXiv in ARG-53) indicating which category the source leans towards.
+    # GitHub/HN fetchers do not pass it (defaults to None).
+    # Callers in run_full_pipeline may forward item.get("source_category") here
+    # once ARG-52/53 land; the field is ignored by current GitHub/HN paths.
     initial: BrainState = {
         "raw_text": raw_text,
         "source_url": source_url,
@@ -26,6 +36,8 @@ async def run_brain_pipeline(
         "saved": False,
         "genealogy_skipped": False,
         "genealogy_skip_reason": None,
+        "source_category": source_category,
+        "category": None,
     }
     triaged = await triage_node(initial)
     if not triaged["is_valid"]:
