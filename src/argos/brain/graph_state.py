@@ -1,6 +1,8 @@
 from __future__ import annotations
 from typing import TypedDict
 
+from argos.models.tech_item import CategoryType
+
 
 class BrainState(TypedDict):
     raw_text: str
@@ -14,3 +16,9 @@ class BrainState(TypedDict):
     saved: bool
     genealogy_skipped: bool
     genealogy_skip_reason: str | None
+    # Hint from the fetcher (RSS, arXiv, etc.) indicating which category the
+    # source leans towards. GitHub/HN fetchers leave this as None.
+    source_category: CategoryType | None
+    # Decided by triage_node via LLM; falls back to ALPHA if LLM omits the
+    # field or returns an unrecognised value.
+    category: CategoryType | None
