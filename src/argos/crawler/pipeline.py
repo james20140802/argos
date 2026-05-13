@@ -110,6 +110,13 @@ async def run_full_pipeline(
             continue
         try:
             async with session.begin_nested():
+                # ARG-52 (RSS) and ARG-53 (arXiv) fetchers will set a
+                # "source_category" key on crawled item dicts to hint the
+                # triage node towards Mainstream or Alpha.  GitHub/HN items
+                # produced here carry no such key, so source_category defaults
+                # to None — leaving the LLM to decide without a hint.
+                # Once ARG-52/53 land, forward the hint like:
+                #   source_category=item.get("source_category")
                 state = await run_brain_pipeline(
                     raw_text=item.get("raw_content") or "",
                     source_url=source_url,
