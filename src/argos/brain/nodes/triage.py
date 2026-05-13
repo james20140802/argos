@@ -113,6 +113,16 @@ def _normalize_terms(raw: list) -> list[str]:
     return out
 
 
+def _build_source_hint_block(source_category: CategoryType | None) -> str:
+    """Return an optional one-line hint for the LLM, or empty string."""
+    if source_category is None:
+        return ""
+    return (
+        f"Source hint: this item came from a {source_category.value}-leaning source;"
+        " weigh accordingly but rely on content for the final decision.\n"
+    )
+
+
 def _build_interests_block(topics: list[str], exclusions: list[str]) -> str:
     if not topics and not exclusions:
         return ""
@@ -165,12 +175,14 @@ async def triage_node(state: BrainState) -> BrainState:
     topics = _normalize_terms(settings.user.interests.topics)
     exclusions = _normalize_terms(settings.user.interests.exclusions)
     interests_block = _build_interests_block(topics, exclusions)
+    source_hint_block = _build_source_hint_block(state.get("source_category"))
     schema = _SCHEMA_WITH_RELEVANCE if topics else _SCHEMA_BASE
     triage_text = (state["raw_text"] or "")[:_TRIAGE_TEXT_MAX_CHARS]
     prompt = _TRIAGE_PROMPT.format(
         text=triage_text,
         language=settings.user.slack.summary_language,
         interests_block=interests_block,
+        source_hint_block=source_hint_block,
         schema=schema,
     )
     client = get_llm_client()
@@ -190,24 +202,34 @@ async def triage_node(state: BrainState) -> BrainState:
             is_valid = False
             trust_score = None
             summary = None
+            category = None
         elif topics or exclusions:
             is_valid, trust_score, summary = _apply_interest_rules(
                 triage_text, result, topics, exclusions
             )
+            category = result.category if is_valid else None
         else:
             is_valid = result.is_valid
             trust_score = result.trust_score
             summary = result.summary if result.is_valid else None
+            category = result.category if result.is_valid else None
 
         return {
             **state,
             "is_valid": is_valid,
             "trust_score": trust_score,
             "summary": summary,
+            "category": category,
         }
     except Exception as exc:
         logger.warning("triage_node failed: %r", exc)
-        return {**state, "is_valid": False, "trust_score": None, "summary": None}
+        return {
+            **state,
+            "is_valid": False,
+            "trust_score": None,
+            "summary": None,
+            "category": None,
+        }
     finally:
         try:
             await client.unload("small")
