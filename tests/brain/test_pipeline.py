@@ -1,4 +1,4 @@
-"""Tests for argos.brain.pipeline.run_brain_pipeline (ARG-39).
+"""Tests for argos.brain.pipeline.run_brain_pipeline (ARG-39, ARG-54).
 
 Focus: verify that the 32B prewarm and the genealogist LLM call are skipped
 when embed_and_search_node flags a cold start. We mock every node so the test
@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from argos.brain import pipeline as brain_pipeline
+from argos.models.tech_item import CategoryType
 
 
 def _triaged_state(**overrides):
@@ -27,6 +28,8 @@ def _triaged_state(**overrides):
         "saved": False,
         "genealogy_skipped": False,
         "genealogy_skip_reason": None,
+        "source_category": None,
+        "category": None,
     }
     base.update(overrides)
     return base
@@ -146,3 +149,72 @@ async def test_run_brain_pipeline_returns_early_when_triage_fails(monkeypatch):
     embed_mock.assert_not_awaited()
     genealogist_mock.assert_not_awaited()
     save_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# run_brain_pipeline — source_category forwarding (ARG-54)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_brain_pipeline_forwards_source_category_into_initial_state(
+    monkeypatch,
+):
+    """source_category kwarg must be seeded into the initial BrainState."""
+    triaged = _triaged_state(source_category=CategoryType.MAINSTREAM)
+    cold = _triaged_state(
+        genealogy_skipped=True,
+        genealogy_skip_reason="cold_start",
+        source_category=CategoryType.MAINSTREAM,
+    )
+    saved = {**cold, "saved": True}
+
+    captured_initial: dict = {}
+
+    async def _fake_triage(state):
+        captured_initial.update(state)
+        return triaged
+
+    monkeypatch.setattr(brain_pipeline, "triage_node", _fake_triage)
+    monkeypatch.setattr(
+        brain_pipeline, "embed_and_search_node", AsyncMock(return_value=cold)
+    )
+    monkeypatch.setattr(brain_pipeline, "genealogist_node", AsyncMock())
+    monkeypatch.setattr(
+        brain_pipeline, "save_node", AsyncMock(return_value=saved)
+    )
+    monkeypatch.setattr(
+        brain_pipeline, "get_llm_client", lambda: MagicMock()
+    )
+
+    await brain_pipeline.run_brain_pipeline(
+        "x", "https://e.com", MagicMock(), source_category=CategoryType.MAINSTREAM
+    )
+
+    assert captured_initial["source_category"] is CategoryType.MAINSTREAM
+    assert captured_initial["category"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_brain_pipeline_defaults_source_category_to_none(monkeypatch):
+    """When called without source_category, initial state must have None for both fields."""
+    captured_initial: dict = {}
+
+    rejected = _triaged_state(is_valid=False)
+
+    async def _fake_triage(state):
+        captured_initial.update(state)
+        return rejected
+
+    monkeypatch.setattr(brain_pipeline, "triage_node", _fake_triage)
+    monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock())
+    monkeypatch.setattr(brain_pipeline, "genealogist_node", AsyncMock())
+    monkeypatch.setattr(brain_pipeline, "save_node", AsyncMock())
+    monkeypatch.setattr(
+        brain_pipeline, "get_llm_client", lambda: MagicMock()
+    )
+
+    await brain_pipeline.run_brain_pipeline("x", "https://e.com", MagicMock())
+
+    assert captured_initial["source_category"] is None
+    assert captured_initial["category"] is None

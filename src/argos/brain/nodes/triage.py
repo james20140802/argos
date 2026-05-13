@@ -4,6 +4,7 @@ from pydantic import BaseModel, StrictBool, field_validator
 from argos.brain.graph_state import BrainState
 from argos.brain.llm_client import get_llm_client
 from argos.config import settings
+from argos.models.tech_item import CategoryType
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +17,14 @@ _TRIAGE_TEXT_MAX_CHARS = 2000
 _TRIAGE_PROMPT = """Analyze the following text and determine if it describes a real technology (tool, library, framework, model, protocol, or platform).
 trust_score reflects substance over hype: 0.0=pure marketing, 0.5=neutral, 1.0=well-evidenced technical detail.
 summary is a 1-2 sentence factual blurb (max 500 chars) describing what the technology is and why it matters; written in {language}. Use null if is_valid is false.
-Respond ONLY with valid JSON: {schema}
+category must be one of "Mainstream" or "Alpha". Mainstream = mature, widely adopted technology; Alpha = cutting-edge, experimental, or niche. Default to "Alpha" when uncertain.
+{source_hint_block}Respond ONLY with valid JSON: {schema}
 {interests_block}
 Text:
 {text}"""
 
-_SCHEMA_BASE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "..."}}'
-_SCHEMA_WITH_RELEVANCE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "...", "is_relevant": true/false}}'
+_SCHEMA_BASE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "...", "category": "Mainstream"|"Alpha"}}'
+_SCHEMA_WITH_RELEVANCE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "...", "category": "Mainstream"|"Alpha", "is_relevant": true/false}}'
 
 
 class _TriageResult(BaseModel):
@@ -31,6 +33,25 @@ class _TriageResult(BaseModel):
     trust_score: float | None = None
     summary: str | None = None
     is_relevant: StrictBool = True
+    category: CategoryType = CategoryType.ALPHA
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _normalize_category(cls, v):
+        """Accept case-insensitive strings; fall back to ALPHA on null/garbage."""
+        if v is None:
+            return CategoryType.ALPHA
+        if isinstance(v, CategoryType):
+            return v
+        if isinstance(v, str):
+            s = v.strip()
+            if not s or s.lower() in {"null", "none"}:
+                return CategoryType.ALPHA
+            # Case-insensitive match against enum values ("Mainstream", "Alpha")
+            for member in CategoryType:
+                if s.lower() == member.value.lower():
+                    return member
+        return CategoryType.ALPHA
 
     @field_validator("trust_score", mode="before")
     @classmethod
@@ -92,6 +113,35 @@ def _normalize_terms(raw: list) -> list[str]:
     return out
 
 
+def _build_source_hint_block(source_category: CategoryType | str | None) -> str:
+    """Return an optional one-line hint for the LLM, or empty string.
+
+    Accepts a ``CategoryType`` enum member or a plain string (e.g. ``"Mainstream"``
+    as may be provided by fetcher-supplied item dicts).  Unrecognised or null values
+    produce an empty string rather than raising ``AttributeError``.
+    """
+    if source_category is None:
+        return ""
+    if isinstance(source_category, CategoryType):
+        label = source_category.value
+    elif isinstance(source_category, str):
+        s = source_category.strip()
+        matched: CategoryType | None = None
+        for member in CategoryType:
+            if s.lower() == member.value.lower():
+                matched = member
+                break
+        if matched is None:
+            return ""
+        label = matched.value
+    else:
+        return ""
+    return (
+        f"Source hint: this item came from a {label}-leaning source;"
+        " weigh accordingly but rely on content for the final decision.\n"
+    )
+
+
 def _build_interests_block(topics: list[str], exclusions: list[str]) -> str:
     if not topics and not exclusions:
         return ""
@@ -144,12 +194,14 @@ async def triage_node(state: BrainState) -> BrainState:
     topics = _normalize_terms(settings.user.interests.topics)
     exclusions = _normalize_terms(settings.user.interests.exclusions)
     interests_block = _build_interests_block(topics, exclusions)
+    source_hint_block = _build_source_hint_block(state.get("source_category"))
     schema = _SCHEMA_WITH_RELEVANCE if topics else _SCHEMA_BASE
     triage_text = (state["raw_text"] or "")[:_TRIAGE_TEXT_MAX_CHARS]
     prompt = _TRIAGE_PROMPT.format(
         text=triage_text,
         language=settings.user.slack.summary_language,
         interests_block=interests_block,
+        source_hint_block=source_hint_block,
         schema=schema,
     )
     client = get_llm_client()
@@ -169,24 +221,34 @@ async def triage_node(state: BrainState) -> BrainState:
             is_valid = False
             trust_score = None
             summary = None
+            category = None
         elif topics or exclusions:
             is_valid, trust_score, summary = _apply_interest_rules(
                 triage_text, result, topics, exclusions
             )
+            category = result.category if is_valid else None
         else:
             is_valid = result.is_valid
             trust_score = result.trust_score
             summary = result.summary if result.is_valid else None
+            category = result.category if result.is_valid else None
 
         return {
             **state,
             "is_valid": is_valid,
             "trust_score": trust_score,
             "summary": summary,
+            "category": category,
         }
     except Exception as exc:
         logger.warning("triage_node failed: %r", exc)
-        return {**state, "is_valid": False, "trust_score": None, "summary": None}
+        return {
+            **state,
+            "is_valid": False,
+            "trust_score": None,
+            "summary": None,
+            "category": None,
+        }
     finally:
         try:
             await client.unload("small")

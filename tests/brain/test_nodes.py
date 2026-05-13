@@ -24,6 +24,8 @@ def _state(**kwargs) -> BrainState:
         "saved": False,
         "genealogy_skipped": False,
         "genealogy_skip_reason": None,
+        "source_category": None,
+        "category": None,
     }
     return {**base, **kwargs}
 
@@ -168,6 +170,246 @@ def test_triage_result_truncates_long_summary():
     )
     result = _TriageResult.model_validate_json(payload)
     assert len(result.summary) == _SUMMARY_MAX_CHARS
+
+# ---------------------------------------------------------------------------
+# _TriageResult — category field validator (ARG-54)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ('"Mainstream"', "Mainstream"),
+        ('"mainstream"', "Mainstream"),
+        ('"MAINSTREAM"', "Mainstream"),
+        ('"Alpha"', "Alpha"),
+        ('"alpha"', "Alpha"),
+        ('"ALPHA"', "Alpha"),
+        # fallback cases
+        ("null", "Alpha"),
+        ('"null"', "Alpha"),
+        ('"none"', "Alpha"),
+        ('"garbage"', "Alpha"),
+        ('"  "', "Alpha"),
+    ],
+)
+def test_triage_result_category_validator(raw, expected):
+    from argos.brain.nodes.triage import _TriageResult
+
+    payload = (
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "category": ' + raw + "}"
+    )
+    result = _TriageResult.model_validate_json(payload)
+    assert result.category.value == expected
+
+
+def test_triage_result_category_defaults_to_alpha_when_field_absent():
+    from argos.brain.nodes.triage import _TriageResult
+    from argos.models.tech_item import CategoryType
+
+    payload = '{"is_valid": true, "reason": "x", "trust_score": 0.5}'
+    result = _TriageResult.model_validate_json(payload)
+    assert result.category is CategoryType.ALPHA
+
+
+# ---------------------------------------------------------------------------
+# triage_node — category propagation (ARG-54)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_triage_node_propagates_mainstream_category(monkeypatch):
+    """When LLM returns category=Mainstream on a valid item, state carries MAINSTREAM."""
+    from argos.brain.nodes import triage as triage_module
+    from argos.models.tech_item import CategoryType
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.7, "summary": "ok", "category": "Mainstream"}',
+        captured,
+    )
+
+    result = await triage_node(_state(raw_text="React 19 stable release."))
+    assert result["category"] is CategoryType.MAINSTREAM
+    assert result["is_valid"] is True
+
+
+@pytest.mark.asyncio
+async def test_triage_node_propagates_alpha_category(monkeypatch):
+    """When LLM returns category=Alpha on a valid item, state carries ALPHA."""
+    from argos.brain.nodes import triage as triage_module
+    from argos.models.tech_item import CategoryType
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.6, "summary": "ok", "category": "Alpha"}',
+        captured,
+    )
+
+    result = await triage_node(_state(raw_text="Experimental LLM inference runtime."))
+    assert result["category"] is CategoryType.ALPHA
+    assert result["is_valid"] is True
+
+
+@pytest.mark.asyncio
+async def test_triage_node_category_fallback_to_alpha_when_field_missing(monkeypatch):
+    """When LLM omits category field, validator defaults to ALPHA and it is propagated."""
+    from argos.brain.nodes import triage as triage_module
+    from argos.models.tech_item import CategoryType
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "summary": "ok"}',
+        captured,
+    )
+
+    result = await triage_node(_state(raw_text="A new tool."))
+    assert result["category"] is CategoryType.ALPHA
+
+
+@pytest.mark.asyncio
+async def test_triage_node_category_fallback_to_alpha_when_garbage(monkeypatch):
+    """When LLM returns garbage for category, validator falls back to ALPHA."""
+    from argos.brain.nodes import triage as triage_module
+    from argos.models.tech_item import CategoryType
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "summary": "ok", "category": "banana"}',
+        captured,
+    )
+
+    result = await triage_node(_state(raw_text="A new tool."))
+    assert result["category"] is CategoryType.ALPHA
+
+
+@pytest.mark.asyncio
+async def test_triage_node_category_none_when_item_invalid(monkeypatch):
+    """When item is invalid, category must be None regardless of LLM value."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": false, "reason": "marketing", "trust_score": 0.1, "category": "Mainstream"}',
+        captured,
+    )
+
+    result = await triage_node(_state(raw_text="Pure marketing copy."))
+    assert result["is_valid"] is False
+    assert result["category"] is None
+
+
+@pytest.mark.asyncio
+async def test_triage_node_category_none_on_parse_error(monkeypatch):
+    """On LLM parse failure, category must be None."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+
+    class _BrokenClient:
+        async def query(self, model_role, prompt, **kwargs):
+            return "not json at all"
+
+        async def unload(self, model_role):
+            return None
+
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _BrokenClient())
+
+    result = await triage_node(_state(raw_text="Test."))
+    assert result["is_valid"] is False
+    assert result["category"] is None
+
+
+@pytest.mark.asyncio
+async def test_triage_node_source_hint_in_prompt_when_present(monkeypatch):
+    """When state has source_category, the prompt must include the source hint."""
+    from argos.brain.nodes import triage as triage_module
+    from argos.models.tech_item import CategoryType
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.6, "summary": "ok", "category": "Mainstream"}',
+        captured,
+    )
+
+    await triage_node(_state(raw_text="React release.", source_category=CategoryType.MAINSTREAM))
+    assert "Source hint" in captured["prompt"]
+    assert "Mainstream" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_triage_node_no_source_hint_in_prompt_when_absent(monkeypatch):
+    """When state has source_category=None, no source hint line in prompt."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.6, "summary": "ok"}',
+        captured,
+    )
+
+    await triage_node(_state(raw_text="React release.", source_category=None))
+    assert "Source hint" not in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_triage_node_source_hint_accepts_plain_string(monkeypatch):
+    """source_category supplied as a plain string must not raise AttributeError."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.6, "summary": "ok", "category": "Mainstream"}',
+        captured,
+    )
+
+    # Pass source_category as a raw string, as fetcher-provided item dicts would.
+    await triage_node(_state(raw_text="React release.", source_category="Mainstream"))
+    assert "Source hint" in captured["prompt"]
+    assert "Mainstream" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_triage_node_source_hint_unrecognised_string_produces_no_hint(monkeypatch):
+    """An unrecognised source_category string must produce no hint, not an error."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.6, "summary": "ok"}',
+        captured,
+    )
+
+    await triage_node(_state(raw_text="React release.", source_category="garbage_value"))
+    assert "Source hint" not in captured["prompt"]
+
 
 @pytest.mark.asyncio
 async def test_embed_node_skips_if_invalid():
@@ -805,6 +1047,46 @@ async def test_save_node_does_not_set_saved_on_empty_source_url():
     session = _mock_session_no_existing()
     result = await save_node(_state(is_valid=True, source_url=""), session=session)
     assert result["saved"] is False
+
+
+# ---------------------------------------------------------------------------
+# save_node — category persistence (ARG-54)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_save_node_persists_triage_decided_mainstream_category():
+    from argos.models.tech_item import CategoryType
+
+    session = _mock_session_no_existing()
+    await save_node(
+        _state(is_valid=True, category=CategoryType.MAINSTREAM), session=session
+    )
+    added_item = session.add.call_args[0][0]
+    assert added_item.category is CategoryType.MAINSTREAM
+
+
+@pytest.mark.asyncio
+async def test_save_node_persists_triage_decided_alpha_category():
+    from argos.models.tech_item import CategoryType
+
+    session = _mock_session_no_existing()
+    await save_node(
+        _state(is_valid=True, category=CategoryType.ALPHA), session=session
+    )
+    added_item = session.add.call_args[0][0]
+    assert added_item.category is CategoryType.ALPHA
+
+
+@pytest.mark.asyncio
+async def test_save_node_falls_back_to_alpha_when_category_is_none():
+    """When state.category is None (e.g. older code path), save_node must default to ALPHA."""
+    from argos.models.tech_item import CategoryType
+
+    session = _mock_session_no_existing()
+    await save_node(_state(is_valid=True, category=None), session=session)
+    added_item = session.add.call_args[0][0]
+    assert added_item.category is CategoryType.ALPHA
 
 
 # ---------------------------------------------------------------------------
