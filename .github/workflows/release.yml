@@ -28,9 +28,9 @@ jobs:
 
       - name: Verify tag is annotated
         run: |
-          TAG_TYPE=$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")
-          if [ "$TAG_TYPE" != "tag" ]; then
-            echo "ERROR: '$GITHUB_REF_NAME' is a $TAG_TYPE (lightweight tag). Releases require an annotated tag (git tag -a)." >&2
+          PEELED=$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME^{}")
+          if [ -z "$PEELED" ]; then
+            echo "ERROR: '$GITHUB_REF_NAME' is a lightweight tag. Releases require an annotated tag (git tag -a)." >&2
             exit 1
           fi
 
