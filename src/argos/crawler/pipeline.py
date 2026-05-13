@@ -71,28 +71,24 @@ async def run_full_crawl(
     session: AsyncSession,
     dynamic_urls: list[str] | None = None,
 ) -> list[dict]:
-    static_task = asyncio.create_task(run_static_pipeline(session))
-    rss_task = asyncio.create_task(run_rss_pipeline(session))
-
-    static_result, rss_result = await asyncio.gather(
-        static_task, rss_task, return_exceptions=True
-    )
-
+    # Run sub-pipelines sequentially: AsyncSession is not safe for concurrent
+    # use, so overlapping DB calls (filter_duplicate_urls) in both branches
+    # would cause session-state errors and silently drop items.
     static_items: list[dict] = []
-    if isinstance(static_result, asyncio.CancelledError):
-        raise static_result
-    elif isinstance(static_result, Exception):
-        logger.warning("run_full_crawl: static pipeline failed: %r", static_result)
-    else:
-        static_items = static_result
+    try:
+        static_items = await run_static_pipeline(session)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("run_full_crawl: static pipeline failed: %r", exc)
 
     rss_items: list[dict] = []
-    if isinstance(rss_result, asyncio.CancelledError):
-        raise rss_result
-    elif isinstance(rss_result, Exception):
-        logger.warning("run_full_crawl: rss pipeline failed: %r", rss_result)
-    else:
-        rss_items = rss_result
+    try:
+        rss_items = await run_rss_pipeline(session)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("run_full_crawl: rss pipeline failed: %r", exc)
 
     if not dynamic_urls:
         return await filter_duplicate_urls(session, [*static_items, *rss_items])
