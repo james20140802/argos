@@ -48,6 +48,18 @@ def test_normalize_abs_url_new_style_id():
     assert _normalize_abs_url(url) == "https://arxiv.org/abs/1234.56789"
 
 
+def test_normalize_abs_url_legacy_id_with_archive_prefix():
+    # Legacy IDs contain an archive prefix separated by a slash,
+    # e.g. hep-ex/0307015v1 — the old regex incorrectly truncated to "hep-ex"
+    url = "http://arxiv.org/abs/hep-ex/0307015v1"
+    assert _normalize_abs_url(url) == "https://arxiv.org/abs/hep-ex/0307015"
+
+
+def test_normalize_abs_url_legacy_id_no_version():
+    url = "http://arxiv.org/abs/hep-th/9802150"
+    assert _normalize_abs_url(url) == "https://arxiv.org/abs/hep-th/9802150"
+
+
 # ---------------------------------------------------------------------------
 # (b) _entry_to_dict — correct keys + _source_category is ALPHA
 # ---------------------------------------------------------------------------

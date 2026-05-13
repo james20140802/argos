@@ -49,9 +49,10 @@ _ARXIV_API_BASE = "http://export.arxiv.org/api/query"
 # Category query covering AI / machine learning / computational linguistics
 _ARXIV_QUERY = "cat:cs.AI+OR+cat:cs.LG+OR+cat:cs.CL"
 
-# Regex that captures the bare paper ID without a trailing version suffix
-# e.g.  "http://arxiv.org/abs/2401.12345v2" → bare_id = "2401.12345"
-_BARE_ID_RE = re.compile(r"/abs/([^/v]+(?:\.\d+)?)")
+# Regex that strips a trailing version suffix from a bare arXiv paper ID.
+# Handles both new-style IDs (e.g. "2401.12345v2") and legacy IDs that
+# contain slashes (e.g. "hep-ex/0307015v1").
+_VERSION_SUFFIX_RE = re.compile(r"v\d+$")
 
 
 def _truncate(text: str, max_bytes: int = _MAX_CONTENT_BYTES) -> str:
@@ -66,19 +67,23 @@ def _normalize_abs_url(entry_id: str) -> str:
     """Return the canonical ``https://arxiv.org/abs/{bare_id}`` URL.
 
     Strips any ``vN`` version suffix and normalises the scheme to https.
+    Handles both new-style IDs (e.g. ``2401.12345``) and legacy IDs with
+    archive prefixes (e.g. ``hep-ex/0307015``).
 
     >>> _normalize_abs_url("http://arxiv.org/abs/2401.12345v2")
     'https://arxiv.org/abs/2401.12345'
     >>> _normalize_abs_url("https://arxiv.org/abs/2401.12345")
     'https://arxiv.org/abs/2401.12345'
+    >>> _normalize_abs_url("http://arxiv.org/abs/hep-ex/0307015v1")
+    'https://arxiv.org/abs/hep-ex/0307015'
     """
-    m = _BARE_ID_RE.search(entry_id)
-    if m:
-        return f"https://arxiv.org/abs/{m.group(1)}"
-    # Fallback: force https and strip vN suffix with a simple pattern
+    idx = entry_id.find("/abs/")
+    if idx != -1:
+        bare = _VERSION_SUFFIX_RE.sub("", entry_id[idx + 5:])
+        return f"https://arxiv.org/abs/{bare}"
+    # Fallback: force https and strip trailing vN suffix
     url = entry_id.replace("http://", "https://", 1)
-    # strip trailing vN
-    url = re.sub(r"v\d+$", "", url)
+    url = _VERSION_SUFFIX_RE.sub("", url)
     return url
 
 
