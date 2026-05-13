@@ -374,6 +374,44 @@ async def test_triage_node_no_source_hint_in_prompt_when_absent(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_triage_node_source_hint_accepts_plain_string(monkeypatch):
+    """source_category supplied as a plain string must not raise AttributeError."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.6, "summary": "ok", "category": "Mainstream"}',
+        captured,
+    )
+
+    # Pass source_category as a raw string, as fetcher-provided item dicts would.
+    await triage_node(_state(raw_text="React release.", source_category="Mainstream"))
+    assert "Source hint" in captured["prompt"]
+    assert "Mainstream" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_triage_node_source_hint_unrecognised_string_produces_no_hint(monkeypatch):
+    """An unrecognised source_category string must produce no hint, not an error."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch,
+        triage_module,
+        '{"is_valid": true, "reason": "x", "trust_score": 0.6, "summary": "ok"}',
+        captured,
+    )
+
+    await triage_node(_state(raw_text="React release.", source_category="garbage_value"))
+    assert "Source hint" not in captured["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_embed_node_skips_if_invalid():
     session = AsyncMock()
     result = await embed_and_search_node(_state(is_valid=False), session=session)

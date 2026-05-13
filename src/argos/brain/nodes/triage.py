@@ -113,12 +113,31 @@ def _normalize_terms(raw: list) -> list[str]:
     return out
 
 
-def _build_source_hint_block(source_category: CategoryType | None) -> str:
-    """Return an optional one-line hint for the LLM, or empty string."""
+def _build_source_hint_block(source_category: CategoryType | str | None) -> str:
+    """Return an optional one-line hint for the LLM, or empty string.
+
+    Accepts a ``CategoryType`` enum member or a plain string (e.g. ``"Mainstream"``
+    as may be provided by fetcher-supplied item dicts).  Unrecognised or null values
+    produce an empty string rather than raising ``AttributeError``.
+    """
     if source_category is None:
         return ""
+    if isinstance(source_category, CategoryType):
+        label = source_category.value
+    elif isinstance(source_category, str):
+        s = source_category.strip()
+        matched: CategoryType | None = None
+        for member in CategoryType:
+            if s.lower() == member.value.lower():
+                matched = member
+                break
+        if matched is None:
+            return ""
+        label = matched.value
+    else:
+        return ""
     return (
-        f"Source hint: this item came from a {source_category.value}-leaning source;"
+        f"Source hint: this item came from a {label}-leaning source;"
         " weigh accordingly but rely on content for the final decision.\n"
     )
 
