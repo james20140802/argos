@@ -6,6 +6,18 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
+# RSS feed defaults — 6 AI-company mainstream blogs + 2 Reddit subs (Alpha)
+_DEFAULT_RSS_FEEDS: list[dict[str, str]] = [
+    {"url": "https://openai.com/blog/rss.xml", "category": "Mainstream"},
+    {"url": "https://www.anthropic.com/rss.xml", "category": "Mainstream"},
+    {"url": "https://blog.google/technology/ai/rss/", "category": "Mainstream"},
+    {"url": "https://ai.meta.com/blog/rss/", "category": "Mainstream"},
+    {"url": "https://mistral.ai/rss", "category": "Mainstream"},
+    {"url": "https://huggingface.co/blog/feed.xml", "category": "Mainstream"},
+    {"url": "https://www.reddit.com/r/MachineLearning/.rss", "category": "Alpha"},
+    {"url": "https://www.reddit.com/r/LocalLLaMA/.rss", "category": "Alpha"},
+]
+
 try:
     import tomllib
 except ImportError:
@@ -116,6 +128,17 @@ class GenealogistConfig(BaseModel):
     min_db_items: int = Field(default=50, ge=0)
 
 
+class RSSFeedConfig(BaseModel):
+    url: str
+    category: Literal["Mainstream", "Alpha"] = "Mainstream"
+
+
+class RSSConfig(BaseModel):
+    feeds: list[RSSFeedConfig] = Field(
+        default_factory=lambda: [RSSFeedConfig(**f) for f in _DEFAULT_RSS_FEEDS]
+    )
+
+
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
@@ -124,6 +147,7 @@ class UserConfig(BaseModel):
     ollama: OllamaConfig = OllamaConfig()
     llm: LLMConfig = LLMConfig()
     genealogist: GenealogistConfig = GenealogistConfig()
+    rss: RSSConfig = Field(default_factory=RSSConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
 from argos.crawler import pipeline
 from argos.crawler.pipeline import PipelineSummary
+from argos.models.tech_item import CategoryType
 
 
 @pytest.fixture
@@ -30,6 +31,12 @@ def patched_static(mocker):
     mocker.patch(
         "argos.crawler.pipeline.filter_duplicate_urls",
         new=AsyncMock(side_effect=lambda _session, items: items),
+    )
+    # Stub out the RSS pipeline so tests that only care about static sources
+    # don't make real network requests (ARG-52).
+    mocker.patch(
+        "argos.crawler.pipeline.run_rss_pipeline",
+        new=AsyncMock(return_value=[]),
     )
     return gh, hn
 
@@ -402,3 +409,64 @@ async def test_run_full_pipeline_counts_genealogy_skipped(mocker) -> None:
 
     _, summary = await pipeline.run_full_pipeline(session)
     assert summary.genealogy_skipped == 2
+
+
+# ---------------------------------------------------------------------------
+# ARG-52: source_category forwarding from RSS items into run_brain_pipeline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_full_pipeline_forwards_source_category_from_rss_item(mocker) -> None:
+    """RSS items with _source_category must forward that hint into run_brain_pipeline
+    as source_category=; GitHub/HN items without the key must call without it."""
+    rss_item = {
+        "title": "RSS post",
+        "source_url": "https://openai.com/blog/post",
+        "raw_content": "rss content",
+        "_source": "rss:openai.com",
+        "_source_category": CategoryType.MAINSTREAM,
+    }
+    static_item = {
+        "title": "GitHub repo",
+        "source_url": "https://github.com/a/b",
+        "raw_content": "github content",
+        "_source": "github_trending",
+        # no _source_category key
+    }
+    crawl_items = [rss_item, static_item]
+
+    good_state = {
+        "is_valid": True,
+        "saved": False,
+        "source_url": "",
+        "raw_text": "",
+        "extracted_info": None,
+        "related_tech_ids": [],
+        "succession_result": None,
+        "genealogy_skipped": False,
+        "genealogy_skip_reason": None,
+    }
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
+    brain_mock = mocker.patch(
+        "argos.crawler.pipeline.run_brain_pipeline",
+        new=AsyncMock(return_value=good_state),
+    )
+
+    session = AsyncMock()
+    nested_cm = AsyncMock()
+    nested_cm.__aenter__ = AsyncMock(return_value=None)
+    nested_cm.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=nested_cm)
+
+    await pipeline.run_full_pipeline(session)
+
+    assert brain_mock.call_count == 2
+    rss_call, static_call = brain_mock.call_args_list
+
+    # RSS item: source_category kwarg must be forwarded
+    assert rss_call.kwargs.get("source_category") is CategoryType.MAINSTREAM
+
+    # Static item: source_category kwarg must NOT be present (to avoid
+    # breaking existing call signatures that don't accept the kwarg)
+    assert "source_category" not in static_call.kwargs

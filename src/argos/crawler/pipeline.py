@@ -4,13 +4,16 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain import run_brain_pipeline
 from argos.brain.graph_state import BrainState
+from argos.config import settings
 from argos.crawler.dynamic_fetcher import fetch_dynamic_page
+from argos.crawler.rss_fetcher import run_rss_fetchers
 from argos.crawler.static_fetcher import (
     fetch_github_trending,
     fetch_hackernews_top,
@@ -54,14 +57,41 @@ async def run_static_pipeline(session: AsyncSession) -> list[dict]:
     return await filter_duplicate_urls(session, combined)
 
 
+async def run_rss_pipeline(session: AsyncSession) -> list[dict]:
+    """Fetch all configured RSS feeds and return deduplicated item dicts."""
+    feeds = settings.user.rss.feeds
+    items = await run_rss_fetchers(feeds)
+    for item in items:
+        host = urlsplit(item.get("source_url", "")).netloc or "rss"
+        item["_source"] = f"rss:{host}"
+    return await filter_duplicate_urls(session, items)
+
+
 async def run_full_crawl(
     session: AsyncSession,
     dynamic_urls: list[str] | None = None,
 ) -> list[dict]:
-    static_items = await run_static_pipeline(session)
+    # Run sub-pipelines sequentially: AsyncSession is not safe for concurrent
+    # use, so overlapping DB calls (filter_duplicate_urls) in both branches
+    # would cause session-state errors and silently drop items.
+    static_items: list[dict] = []
+    try:
+        static_items = await run_static_pipeline(session)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("run_full_crawl: static pipeline failed: %r", exc)
+
+    rss_items: list[dict] = []
+    try:
+        rss_items = await run_rss_pipeline(session)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("run_full_crawl: rss pipeline failed: %r", exc)
 
     if not dynamic_urls:
-        return static_items
+        return await filter_duplicate_urls(session, [*static_items, *rss_items])
 
     semaphore = asyncio.Semaphore(_DYNAMIC_CONCURRENCY)
 
@@ -83,7 +113,7 @@ async def run_full_crawl(
         elif isinstance(result, Exception):
             logger.warning("dynamic fetch failed for %s: %r", url, result)
 
-    return await filter_duplicate_urls(session, [*static_items, *dynamic_items])
+    return await filter_duplicate_urls(session, [*static_items, *rss_items, *dynamic_items])
 
 
 async def run_full_pipeline(
@@ -110,18 +140,24 @@ async def run_full_pipeline(
             continue
         try:
             async with session.begin_nested():
-                # ARG-52 (RSS) and ARG-53 (arXiv) fetchers will set a
-                # "source_category" key on crawled item dicts to hint the
-                # triage node towards Mainstream or Alpha.  GitHub/HN items
-                # produced here carry no such key, so source_category defaults
-                # to None — leaving the LLM to decide without a hint.
-                # Once ARG-52/53 land, forward the hint like:
-                #   source_category=item.get("source_category")
-                state = await run_brain_pipeline(
-                    raw_text=item.get("raw_content") or "",
-                    source_url=source_url,
-                    session=session,
-                )
+                # RSS (ARG-52) and arXiv (ARG-53) fetchers stamp a
+                # "_source_category" key on their item dicts to hint triage.
+                # GitHub/HN items carry no such key, so source_category
+                # defaults to None — leaving the LLM to decide without a hint.
+                source_category = item.get("_source_category")
+                if source_category is not None:
+                    state = await run_brain_pipeline(
+                        raw_text=item.get("raw_content") or "",
+                        source_url=source_url,
+                        session=session,
+                        source_category=source_category,
+                    )
+                else:
+                    state = await run_brain_pipeline(
+                        raw_text=item.get("raw_content") or "",
+                        source_url=source_url,
+                        session=session,
+                    )
             results.append(state)
         except Exception as exc:
             logger.warning(
