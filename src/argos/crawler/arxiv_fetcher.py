@@ -10,12 +10,14 @@ Public API
 
 Design notes
 ------------
-- Uses a single GET to ``http://export.arxiv.org/api/query`` (arXiv's
-  vendor-published public API — no robots gate required, mirrors the HN
-  allowlist precedent in ``_robots._ROBOTS_ALLOWLISTED_HOSTS``).
+- Pages through ``http://export.arxiv.org/api/query`` (arXiv's vendor-published
+  public API — no robots gate required, mirrors the HN allowlist precedent in
+  ``_robots._ROBOTS_ALLOWLISTED_HOSTS``) using the ``start=`` offset parameter
+  until entries fall outside the lookback window or the feed is exhausted.
 - arXiv recommends a 3-second delay between requests for bulk/repeated use.
-  We issue at most ONE GET per pipeline run so this threshold is not crossed.
-  If paging is added in the future, honour the 3-second inter-request delay.
+  A 3-second ``asyncio.sleep`` is inserted between page fetches (not before
+  the first request).  A safety cap of ``_MAX_PAGES`` pages prevents runaway
+  loops on a misbehaving feed.
 - ``feedparser`` is used to parse the Atom XML bytes (already a dep via
   ARG-52).  We pass raw bytes from httpx rather than a URL so the HTTP call
   stays under httpx (consistent User-Agent rotation + timeout).
@@ -48,6 +50,13 @@ _ARXIV_API_BASE = "http://export.arxiv.org/api/query"
 
 # Category query covering AI / machine learning / computational linguistics
 _ARXIV_QUERY = "cat:cs.AI+OR+cat:cs.LG+OR+cat:cs.CL"
+
+# Maximum number of pages to fetch in a single call (safety cap against
+# misbehaving feeds that never return entries older than the cutoff).
+_MAX_PAGES = 20
+
+# Delay between paginated requests, as recommended by arXiv for bulk access.
+_INTER_REQUEST_DELAY = 3.0  # seconds
 
 # Regex that strips a trailing version suffix from a bare arXiv paper ID.
 # Handles both new-style IDs (e.g. "2401.12345v2") and legacy IDs that
@@ -117,12 +126,17 @@ async def fetch_arxiv_recent(
 ) -> list[dict]:
     """Fetch arXiv papers in cs.AI/cs.LG/cs.CL submitted in the last *hours*.
 
+    Pages through the arXiv API using the ``start=`` offset parameter until
+    entries fall outside the lookback window or the feed is exhausted.  A
+    3-second delay is observed between page fetches per arXiv's bulk-access
+    recommendation.  At most ``_MAX_PAGES`` pages are fetched as a safety cap.
+
     Parameters
     ----------
     hours:
         How far back to look (default: 24 h).
     max_results:
-        Maximum number of entries to request from the API (default: 100).
+        Number of entries to request per page (default: 100).
     client:
         Optional pre-constructed ``httpx.AsyncClient`` (useful for testing);
         if ``None`` a fresh client is created and closed inside this call.
@@ -131,59 +145,90 @@ async def fetch_arxiv_recent(
     the pipeline must not crash when arXiv is unreachable.
     """
     ua = random_user_agent()
-    params = {
-        "search_query": _ARXIV_QUERY,
-        "sortBy": "submittedDate",
-        "sortOrder": "descending",
-        "max_results": str(max_results),
-    }
-
-    # Build query string manually to avoid double-encoding the '+OR+' operators
-    query_string = "&".join(f"{k}={v}" for k, v in params.items())
-    url = f"{_ARXIV_API_BASE}?{query_string}"
-
     cutoff_epoch = time.time() - hours * 3600
 
-    try:
-        _close_client = client is None
-        if client is None:
-            client = httpx.AsyncClient(timeout=30, headers={"User-Agent": ua})
-
-        try:
-            response = await client.get(url, headers={"User-Agent": ua})
-        finally:
-            if _close_client:
-                await client.aclose()
-
-        if response.status_code >= 400:
-            logger.warning(
-                "arxiv_fetcher: HTTP %d from arXiv API — returning []",
-                response.status_code,
-            )
-            return []
-
-        content = response.content  # bytes
-
-    except Exception as exc:
-        logger.warning("arxiv_fetcher: request failed: %r — returning []", exc)
-        return []
-
-    try:
-        parsed = await asyncio.to_thread(feedparser.parse, content)
-    except Exception as exc:
-        logger.warning("arxiv_fetcher: feedparser failed: %r — returning []", exc)
-        return []
+    _close_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(timeout=30, headers={"User-Agent": ua})
 
     items: list[dict] = []
-    for entry in getattr(parsed, "entries", []):
-        published_parsed = getattr(entry, "published_parsed", None)
-        if published_parsed is not None:
-            pub_epoch = calendar.timegm(published_parsed)  # UTC-correct
-            if pub_epoch < cutoff_epoch:
-                continue  # older than the cutoff window — skip
+    start = 0
 
-        item = _entry_to_dict(entry)
-        if item["source_url"]:
-            items.append(item)
+    try:
+        for page in range(_MAX_PAGES):
+            if page > 0:
+                await asyncio.sleep(_INTER_REQUEST_DELAY)
+
+            params = {
+                "search_query": _ARXIV_QUERY,
+                "sortBy": "submittedDate",
+                "sortOrder": "descending",
+                "max_results": str(max_results),
+                "start": str(start),
+            }
+            # Build query string manually to avoid double-encoding the '+OR+' operators
+            query_string = "&".join(f"{k}={v}" for k, v in params.items())
+            url = f"{_ARXIV_API_BASE}?{query_string}"
+
+            try:
+                response = await client.get(url, headers={"User-Agent": ua})
+            except Exception as exc:
+                logger.warning(
+                    "arxiv_fetcher: request failed on page %d: %r — stopping pagination",
+                    page,
+                    exc,
+                )
+                break
+
+            if response.status_code >= 400:
+                logger.warning(
+                    "arxiv_fetcher: HTTP %d from arXiv API on page %d — stopping pagination",
+                    response.status_code,
+                    page,
+                )
+                break
+
+            try:
+                parsed = await asyncio.to_thread(feedparser.parse, response.content)
+            except Exception as exc:
+                logger.warning(
+                    "arxiv_fetcher: feedparser failed on page %d: %r — stopping pagination",
+                    page,
+                    exc,
+                )
+                break
+
+            entries = getattr(parsed, "entries", [])
+            if not entries:
+                # Feed exhausted
+                break
+
+            reached_cutoff = False
+            for entry in entries:
+                published_parsed = getattr(entry, "published_parsed", None)
+                if published_parsed is not None:
+                    pub_epoch = calendar.timegm(published_parsed)  # UTC-correct
+                    if pub_epoch < cutoff_epoch:
+                        # Results are sorted descending; everything after this
+                        # point is even older — stop pagination.
+                        reached_cutoff = True
+                        break
+
+                item = _entry_to_dict(entry)
+                if item["source_url"]:
+                    items.append(item)
+
+            if reached_cutoff:
+                break
+
+            if len(entries) < max_results:
+                # Fewer entries than requested — feed is exhausted
+                break
+
+            start += max_results
+
+    finally:
+        if _close_client:
+            await client.aclose()
 
     return items

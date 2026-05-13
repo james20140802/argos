@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import time
-import calendar
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -255,6 +254,79 @@ async def test_fetch_arxiv_recent_returns_empty_on_feedparser_exception(mock_cli
         items = await fetch_arxiv_recent(client=mock_client)
 
     assert items == []
+
+
+# ---------------------------------------------------------------------------
+# (d2) Pagination — fetches multiple pages until cutoff is reached
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_arxiv_recent_paginates_until_cutoff():
+    """When page 1 is full (max_results entries), a second page is fetched.
+
+    Page 1 returns max_results=2 recent entries (all within the window).
+    Page 2 returns 1 old entry (outside the window), which halts pagination.
+    The result must contain the 2 recent entries from page 1 only.
+    """
+    recent1 = _recent_entry(title="Recent A", paper_id="2401.00001", hours_ago=1)
+    recent2 = _recent_entry(title="Recent B", paper_id="2401.00002", hours_ago=2)
+    old = _old_entry(title="Old", paper_id="2301.00099", hours_ago=48)
+
+    page1_result = _make_feedparser_result([recent1, recent2])
+    page2_result = _make_feedparser_result([old])
+
+    mock_client = AsyncMock()
+    resp1 = MagicMock()
+    resp1.status_code = 200
+    resp1.content = b"<feed/>"
+    resp2 = MagicMock()
+    resp2.status_code = 200
+    resp2.content = b"<feed/>"
+    mock_client.get = AsyncMock(side_effect=[resp1, resp2])
+    mock_client.aclose = AsyncMock()
+
+    parse_results = [page1_result, page2_result]
+    call_count = 0
+
+    async def fake_to_thread(fn, *args, **kwargs):
+        nonlocal call_count
+        result = parse_results[call_count]
+        call_count += 1
+        return result
+
+    with patch("argos.crawler.arxiv_fetcher.asyncio.sleep", new=AsyncMock()), \
+         patch("argos.crawler.arxiv_fetcher.asyncio.to_thread", new=fake_to_thread):
+        items = await fetch_arxiv_recent(hours=24, max_results=2, client=mock_client)
+
+    assert len(items) == 2
+    titles = {i["title"] for i in items}
+    assert titles == {"Recent A", "Recent B"}
+    # Two GET requests should have been made
+    assert mock_client.get.call_count == 2
+
+
+async def test_fetch_arxiv_recent_stops_when_page_not_full():
+    """When a page returns fewer entries than max_results, no further page is fetched."""
+    recent = _recent_entry(title="Only Paper", paper_id="2401.55555", hours_ago=1)
+    page1_result = _make_feedparser_result([recent])
+
+    mock_client = AsyncMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.content = b"<feed/>"
+    mock_client.get = AsyncMock(return_value=resp)
+    mock_client.aclose = AsyncMock()
+
+    with patch("argos.crawler.arxiv_fetcher.asyncio.sleep", new=AsyncMock()), \
+         patch(
+             "argos.crawler.arxiv_fetcher.asyncio.to_thread",
+             new=AsyncMock(return_value=page1_result),
+         ):
+        items = await fetch_arxiv_recent(hours=24, max_results=100, client=mock_client)
+
+    assert len(items) == 1
+    # Only one GET — page was not full so pagination stopped
+    assert mock_client.get.call_count == 1
 
 
 # ---------------------------------------------------------------------------
