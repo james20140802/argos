@@ -38,6 +38,12 @@ def patched_static(mocker):
         "argos.crawler.pipeline.run_rss_pipeline",
         new=AsyncMock(return_value=[]),
     )
+    # Stub out the arXiv pipeline so tests that only care about static sources
+    # don't make real network requests (ARG-53).
+    mocker.patch(
+        "argos.crawler.pipeline.run_arxiv_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
     return gh, hn
 
 
@@ -470,3 +476,132 @@ async def test_run_full_pipeline_forwards_source_category_from_rss_item(mocker) 
     # Static item: source_category kwarg must NOT be present (to avoid
     # breaking existing call signatures that don't accept the kwarg)
     assert "source_category" not in static_call.kwargs
+
+
+# ---------------------------------------------------------------------------
+# ARG-53: arXiv sub-pipeline integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def patched_static_with_arxiv(mocker):
+    """patched_static extended with a single arXiv item fixture."""
+    arxiv_item = {
+        "title": "Arxiv Paper",
+        "source_url": "https://arxiv.org/abs/2401.11111",
+        "raw_content": "Arxiv abstract.",
+        "_source": "arxiv",
+        "_source_category": CategoryType.ALPHA,
+    }
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_github_trending",
+        new=AsyncMock(return_value=[]),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.fetch_hackernews_top",
+        new=AsyncMock(return_value=[]),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.filter_duplicate_urls",
+        new=AsyncMock(side_effect=lambda _session, items: items),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.run_rss_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.run_arxiv_pipeline",
+        new=AsyncMock(return_value=[arxiv_item]),
+    )
+    return arxiv_item
+
+
+@pytest.mark.asyncio
+async def test_run_full_crawl_includes_arxiv_items(patched_static_with_arxiv) -> None:
+    """arXiv items must appear in the run_full_crawl result with _source='arxiv'."""
+    session = AsyncMock()
+    result = await pipeline.run_full_crawl(session, dynamic_urls=None)
+
+    assert len(result) == 1
+    item = result[0]
+    assert item["source_url"] == "https://arxiv.org/abs/2401.11111"
+    assert item["_source"] == "arxiv"
+    assert item["_source_category"] is CategoryType.ALPHA
+
+
+@pytest.mark.asyncio
+async def test_run_full_pipeline_forwards_source_category_from_arxiv_item(mocker) -> None:
+    """arXiv items with _source_category must forward that hint into
+    run_brain_pipeline as source_category=CategoryType.ALPHA."""
+    arxiv_item = {
+        "title": "Arxiv Paper",
+        "source_url": "https://arxiv.org/abs/2401.11111",
+        "raw_content": "Arxiv abstract.",
+        "_source": "arxiv",
+        "_source_category": CategoryType.ALPHA,
+    }
+    mocker.patch(
+        "argos.crawler.pipeline.run_full_crawl",
+        new=AsyncMock(return_value=[arxiv_item]),
+    )
+    good_state = {
+        "is_valid": True,
+        "saved": False,
+        "source_url": "https://arxiv.org/abs/2401.11111",
+        "raw_text": "",
+        "extracted_info": None,
+        "related_tech_ids": [],
+        "succession_result": None,
+        "genealogy_skipped": False,
+        "genealogy_skip_reason": None,
+    }
+    brain_mock = mocker.patch(
+        "argos.crawler.pipeline.run_brain_pipeline",
+        new=AsyncMock(return_value=good_state),
+    )
+
+    session = AsyncMock()
+    nested_cm = AsyncMock()
+    nested_cm.__aenter__ = AsyncMock(return_value=None)
+    nested_cm.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=nested_cm)
+
+    await pipeline.run_full_pipeline(session)
+
+    brain_mock.assert_called_once()
+    call_kwargs = brain_mock.call_args.kwargs
+    assert call_kwargs.get("source_category") is CategoryType.ALPHA
+
+
+@pytest.mark.asyncio
+async def test_run_full_crawl_arxiv_failure_does_not_abort_static_rss(mocker) -> None:
+    """A failing arXiv pipeline must not prevent static or RSS results from
+    flowing through run_full_crawl (failure isolation parity with RSS)."""
+    static_item = {
+        "title": "Static Result",
+        "source_url": "https://github.com/x/y",
+        "raw_content": "static content",
+        "_source": "github_trending",
+    }
+    mocker.patch(
+        "argos.crawler.pipeline.run_static_pipeline",
+        new=AsyncMock(return_value=[static_item]),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.run_rss_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.run_arxiv_pipeline",
+        new=AsyncMock(side_effect=RuntimeError("arXiv API down")),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.filter_duplicate_urls",
+        new=AsyncMock(side_effect=lambda _session, items: items),
+    )
+
+    result = await pipeline.run_full_crawl(AsyncMock(), dynamic_urls=None)
+
+    # Static item must still be present despite arXiv failure
+    assert len(result) == 1
+    assert result[0]["source_url"] == "https://github.com/x/y"
