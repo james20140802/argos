@@ -169,6 +169,47 @@ def test_triage_result_truncates_long_summary():
     result = _TriageResult.model_validate_json(payload)
     assert len(result.summary) == _SUMMARY_MAX_CHARS
 
+# ---------------------------------------------------------------------------
+# _TriageResult — category field validator (ARG-54)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ('"Mainstream"', "Mainstream"),
+        ('"mainstream"', "Mainstream"),
+        ('"MAINSTREAM"', "Mainstream"),
+        ('"Alpha"', "Alpha"),
+        ('"alpha"', "Alpha"),
+        ('"ALPHA"', "Alpha"),
+        # fallback cases
+        ("null", "Alpha"),
+        ('"null"', "Alpha"),
+        ('"none"', "Alpha"),
+        ('"garbage"', "Alpha"),
+        ('"  "', "Alpha"),
+    ],
+)
+def test_triage_result_category_validator(raw, expected):
+    from argos.brain.nodes.triage import _TriageResult
+
+    payload = (
+        '{"is_valid": true, "reason": "x", "trust_score": 0.5, "category": ' + raw + "}"
+    )
+    result = _TriageResult.model_validate_json(payload)
+    assert result.category.value == expected
+
+
+def test_triage_result_category_defaults_to_alpha_when_field_absent():
+    from argos.brain.nodes.triage import _TriageResult
+    from argos.models.tech_item import CategoryType
+
+    payload = '{"is_valid": true, "reason": "x", "trust_score": 0.5}'
+    result = _TriageResult.model_validate_json(payload)
+    assert result.category is CategoryType.ALPHA
+
+
 @pytest.mark.asyncio
 async def test_embed_node_skips_if_invalid():
     session = AsyncMock()

@@ -4,6 +4,7 @@ from pydantic import BaseModel, StrictBool, field_validator
 from argos.brain.graph_state import BrainState
 from argos.brain.llm_client import get_llm_client
 from argos.config import settings
+from argos.models.tech_item import CategoryType
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +17,14 @@ _TRIAGE_TEXT_MAX_CHARS = 2000
 _TRIAGE_PROMPT = """Analyze the following text and determine if it describes a real technology (tool, library, framework, model, protocol, or platform).
 trust_score reflects substance over hype: 0.0=pure marketing, 0.5=neutral, 1.0=well-evidenced technical detail.
 summary is a 1-2 sentence factual blurb (max 500 chars) describing what the technology is and why it matters; written in {language}. Use null if is_valid is false.
-Respond ONLY with valid JSON: {schema}
+category must be one of "Mainstream" or "Alpha". Mainstream = mature, widely adopted technology; Alpha = cutting-edge, experimental, or niche. Default to "Alpha" when uncertain.
+{source_hint_block}Respond ONLY with valid JSON: {schema}
 {interests_block}
 Text:
 {text}"""
 
-_SCHEMA_BASE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "..."}}'
-_SCHEMA_WITH_RELEVANCE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "...", "is_relevant": true/false}}'
+_SCHEMA_BASE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "...", "category": "Mainstream"|"Alpha"}}'
+_SCHEMA_WITH_RELEVANCE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "...", "category": "Mainstream"|"Alpha", "is_relevant": true/false}}'
 
 
 class _TriageResult(BaseModel):
@@ -31,6 +33,25 @@ class _TriageResult(BaseModel):
     trust_score: float | None = None
     summary: str | None = None
     is_relevant: StrictBool = True
+    category: CategoryType = CategoryType.ALPHA
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _normalize_category(cls, v):
+        """Accept case-insensitive strings; fall back to ALPHA on null/garbage."""
+        if v is None:
+            return CategoryType.ALPHA
+        if isinstance(v, CategoryType):
+            return v
+        if isinstance(v, str):
+            s = v.strip()
+            if not s or s.lower() in {"null", "none"}:
+                return CategoryType.ALPHA
+            # Case-insensitive match against enum values ("Mainstream", "Alpha")
+            for member in CategoryType:
+                if s.lower() == member.value.lower():
+                    return member
+        return CategoryType.ALPHA
 
     @field_validator("trust_score", mode="before")
     @classmethod
