@@ -124,8 +124,17 @@ class LLMConfig(BaseModel):
     backend: Literal["ollama"] = "ollama"
 
 
+class TriageConfig(BaseModel):
+    preflight_filter: bool = True
+    num_ctx: int = Field(default=2048, ge=512)
+
+
 class GenealogistConfig(BaseModel):
     min_db_items: int = Field(default=50, ge=0)
+    trust_skip_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    num_ctx: int = Field(default=3072, ge=512)
+    context_top_n: int = Field(default=3, ge=1, le=10)
+    context_max_chars: int = Field(default=300, ge=50)
 
 
 class RSSFeedConfig(BaseModel):
@@ -146,6 +155,7 @@ class UserConfig(BaseModel):
     interests: InterestsConfig = InterestsConfig()
     ollama: OllamaConfig = OllamaConfig()
     llm: LLMConfig = LLMConfig()
+    triage: TriageConfig = TriageConfig()
     genealogist: GenealogistConfig = GenealogistConfig()
     rss: RSSConfig = Field(default_factory=RSSConfig)
 
