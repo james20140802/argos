@@ -215,6 +215,31 @@ async def test_run_static_pipeline_returns_empty_when_both_sources_fail(mocker) 
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_run_full_pipeline_preflight_filter_disabled_passes_all_items(mocker) -> None:
+    """When triage.preflight_filter is False, all items reach the batch pipeline."""
+    crawl_items = [
+        {"title": "job ad", "source_url": "https://a.com", "raw_content": "We're hiring"},
+        {"title": "tech", "source_url": "https://b.com", "raw_content": "LangGraph 0.2"},
+    ]
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
+    batch_mock = mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
+    # Disable the preflight filter via settings
+    mocker.patch(
+        "argos.crawler.pipeline.settings",
+        **{"user.triage.preflight_filter": False},
+    )
+
+    _, summary = await pipeline.run_full_pipeline(AsyncMock())
+
+    passed_items = batch_mock.call_args.args[0]
+    assert len(passed_items) == 2
+    assert summary.preflight_filtered == 0
+
+
+@pytest.mark.asyncio
 async def test_run_full_pipeline_calls_brain_for_each_item(mocker) -> None:
     crawl_items = [
         {"title": "t1", "source_url": "https://a.com", "raw_content": "content a"},
