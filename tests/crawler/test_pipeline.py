@@ -11,6 +11,40 @@ from argos.models.tech_item import CategoryType
 
 
 @pytest.fixture
+def patched_queue(mocker):
+    """Stub crawl-queue DB helpers so run_full_pipeline tests stay in-memory.
+
+    Items upserted via _upsert_crawl_queue are immediately returned by
+    _pop_from_queue, making the queue transparent for integration tests.
+    """
+    _stored: list[dict] = []
+
+    async def _fake_upsert(session, items):
+        _stored.clear()
+        _stored.extend(items)
+        return len(items)
+
+    async def _fake_pop(session, limit):
+        batch = _stored[:limit] if limit > 0 else list(_stored)
+        rows = []
+        for item in batch:
+            row = MagicMock()
+            row.source_url = item.get("source_url", "")
+            row.raw_content = item.get("raw_content", "")
+            row.source = item.get("_source")
+            cat = item.get("_source_category")
+            row.source_category = cat.value if isinstance(cat, CategoryType) else cat
+            rows.append(row)
+        return rows
+
+    mocker.patch("argos.crawler.pipeline._upsert_crawl_queue", side_effect=_fake_upsert)
+    mocker.patch("argos.crawler.pipeline._pop_from_queue", side_effect=_fake_pop)
+    mocker.patch("argos.crawler.pipeline._delete_from_queue", new=AsyncMock())
+    mocker.patch("argos.crawler.pipeline._queue_count", new=AsyncMock(return_value=0))
+    return _stored
+
+
+@pytest.fixture
 def patched_static(mocker):
     gh = [
         {"title": "gh-1", "source_url": "https://github.com/a/b", "raw_content": "x"},
@@ -215,7 +249,7 @@ async def test_run_static_pipeline_returns_empty_when_both_sources_fail(mocker) 
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_preflight_filter_disabled_passes_all_items(mocker) -> None:
+async def test_run_full_pipeline_preflight_filter_disabled_passes_all_items(mocker, patched_queue) -> None:
     """When triage.preflight_filter is False, all items reach the batch pipeline."""
     crawl_items = [
         {"title": "job ad", "source_url": "https://a.com", "raw_content": "We're hiring"},
@@ -226,10 +260,10 @@ async def test_run_full_pipeline_preflight_filter_disabled_passes_all_items(mock
         "argos.crawler.pipeline.run_batch_brain_pipeline",
         new=AsyncMock(return_value=[]),
     )
-    # Disable the preflight filter via settings
+    # Disable the preflight filter via settings; daily_limit=0 → unlimited
     mocker.patch(
         "argos.crawler.pipeline.settings",
-        **{"user.triage.preflight_filter": False},
+        **{"user.triage.preflight_filter": False, "user.run.daily_limit": 0},
     )
 
     _, summary = await pipeline.run_full_pipeline(AsyncMock())
@@ -240,7 +274,7 @@ async def test_run_full_pipeline_preflight_filter_disabled_passes_all_items(mock
 
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_calls_brain_for_each_item(mocker) -> None:
+async def test_run_full_pipeline_calls_brain_for_each_item(mocker, patched_queue) -> None:
     crawl_items = [
         {"title": "t1", "source_url": "https://a.com", "raw_content": "content a"},
         {"title": "t2", "source_url": "https://b.com", "raw_content": "content b"},
@@ -267,7 +301,7 @@ async def test_run_full_pipeline_calls_brain_for_each_item(mocker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_returns_empty_on_empty_crawl(mocker) -> None:
+async def test_run_full_pipeline_returns_empty_on_empty_crawl(mocker, patched_queue) -> None:
     mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=[]))
     batch_mock = mocker.patch(
         "argos.crawler.pipeline.run_batch_brain_pipeline",
@@ -283,7 +317,7 @@ async def test_run_full_pipeline_returns_empty_on_empty_crawl(mocker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_skips_items_with_empty_source_url(mocker) -> None:
+async def test_run_full_pipeline_skips_items_with_empty_source_url(mocker, patched_queue) -> None:
     crawl_items = [
         {"title": "no-url", "source_url": "", "raw_content": "x"},
         {"title": "has-url", "source_url": "https://good.com", "raw_content": "y"},
@@ -308,7 +342,7 @@ async def test_run_full_pipeline_skips_items_with_empty_source_url(mocker) -> No
 
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_continues_after_brain_failure(mocker) -> None:
+async def test_run_full_pipeline_continues_after_brain_failure(mocker, patched_queue) -> None:
     """Batch pipeline handling partial failures returns partial results."""
     crawl_items = [
         {"title": "item1", "source_url": "https://a.com", "raw_content": "a"},
@@ -332,7 +366,7 @@ async def test_run_full_pipeline_continues_after_brain_failure(mocker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_summary_counts_saved_and_triage(mocker) -> None:
+async def test_run_full_pipeline_summary_counts_saved_and_triage(mocker, patched_queue) -> None:
     crawl_items = [
         {"title": "t1", "source_url": "https://a.com", "raw_content": "a", "_source": "github_trending"},
         {"title": "t2", "source_url": "https://b.com", "raw_content": "b", "_source": "hackernews"},
@@ -392,7 +426,7 @@ async def test_run_static_pipeline_tags_items_with_source(mocker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_counts_genealogy_skipped(mocker) -> None:
+async def test_run_full_pipeline_counts_genealogy_skipped(mocker, patched_queue) -> None:
     """summary.genealogy_skipped should equal cold-start skips; trust skips tracked separately (ARG-39, ARG-87)."""
     crawl_items = [
         {"title": "t1", "source_url": "https://a.com", "raw_content": "a", "_source": "github_trending"},
@@ -426,7 +460,7 @@ async def test_run_full_pipeline_counts_genealogy_skipped(mocker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_forwards_source_category_from_rss_item(mocker) -> None:
+async def test_run_full_pipeline_forwards_source_category_from_rss_item(mocker, patched_queue) -> None:
     """RSS items with _source_category must be passed to run_batch_brain_pipeline
     with the key intact; GitHub/HN items without it also pass through unchanged."""
     rss_item = {
@@ -457,7 +491,7 @@ async def test_run_full_pipeline_forwards_source_category_from_rss_item(mocker) 
     assert len(passed_items) == 2
     rss, static = passed_items
     assert rss["_source_category"] is CategoryType.MAINSTREAM
-    assert "_source_category" not in static
+    assert static.get("_source_category") is None
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +546,7 @@ async def test_run_full_crawl_includes_arxiv_items(patched_static_with_arxiv) ->
 
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_forwards_source_category_from_arxiv_item(mocker) -> None:
+async def test_run_full_pipeline_forwards_source_category_from_arxiv_item(mocker, patched_queue) -> None:
     """arXiv items with _source_category must be passed to run_batch_brain_pipeline
     with the key intact so _make_initial_state can seed BrainState.source_category."""
     arxiv_item = {
@@ -571,3 +605,126 @@ async def test_run_full_crawl_arxiv_failure_does_not_abort_static_rss(mocker) ->
     # Static item must still be present despite arXiv failure
     assert len(result) == 1
     assert result[0]["source_url"] == "https://github.com/x/y"
+
+
+# ---------------------------------------------------------------------------
+# ARG-93: crawl queue + daily_limit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_full_pipeline_queue_selected_matches_crawled(mocker, patched_queue) -> None:
+    """queue_selected in summary equals the number of items returned from queue."""
+    crawl_items = [
+        {"title": "t1", "source_url": "https://a.com", "raw_content": "a"},
+        {"title": "t2", "source_url": "https://b.com", "raw_content": "b"},
+        {"title": "t3", "source_url": "https://c.com", "raw_content": "c"},
+    ]
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
+    mocker.patch("argos.crawler.pipeline.run_batch_brain_pipeline", new=AsyncMock(return_value=[]))
+
+    _, summary = await pipeline.run_full_pipeline(AsyncMock())
+
+    assert summary.queue_selected == 3
+    assert summary.queue_remaining == 0
+    assert summary.crawled_total == 3
+
+
+@pytest.mark.asyncio
+async def test_run_full_pipeline_daily_limit_caps_brain_items(mocker) -> None:
+    """When daily_limit < total queue size, only daily_limit items reach brain pipeline."""
+    crawl_items = [
+        {"title": f"t{i}", "source_url": f"https://url{i}.com", "raw_content": f"c{i}"}
+        for i in range(5)
+    ]
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
+    batch_mock = mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
+
+    stored: list[dict] = []
+
+    async def _fake_upsert(session, items):
+        stored.clear()
+        stored.extend(items)
+        return len(items)
+
+    async def _fake_pop(session, limit):
+        batch = stored[:limit] if limit > 0 else list(stored)
+        rows = []
+        for item in batch:
+            row = MagicMock()
+            row.source_url = item["source_url"]
+            row.raw_content = item.get("raw_content", "")
+            row.source = item.get("_source")
+            row.source_category = None
+            rows.append(row)
+        return rows
+
+    async def _fake_count(session):
+        return max(0, len(stored) - 2)
+
+    mocker.patch("argos.crawler.pipeline._upsert_crawl_queue", side_effect=_fake_upsert)
+    mocker.patch("argos.crawler.pipeline._pop_from_queue", side_effect=_fake_pop)
+    mocker.patch("argos.crawler.pipeline._delete_from_queue", new=AsyncMock())
+    mocker.patch("argos.crawler.pipeline._queue_count", side_effect=_fake_count)
+    mocker.patch(
+        "argos.crawler.pipeline.settings",
+        **{"user.triage.preflight_filter": False, "user.run.daily_limit": 2},
+    )
+
+    _, summary = await pipeline.run_full_pipeline(AsyncMock())
+
+    passed = batch_mock.call_args.args[0]
+    assert len(passed) == 2
+    assert summary.queue_selected == 2
+    assert summary.queue_remaining == 3
+
+
+@pytest.mark.asyncio
+async def test_run_full_pipeline_daily_limit_zero_means_unlimited(mocker) -> None:
+    """daily_limit=0 must send all queued items to brain (unlimited mode)."""
+    crawl_items = [
+        {"title": f"t{i}", "source_url": f"https://url{i}.com", "raw_content": f"c{i}"}
+        for i in range(10)
+    ]
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
+    batch_mock = mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
+
+    stored: list[dict] = []
+
+    async def _fake_upsert(session, items):
+        stored.clear()
+        stored.extend(items)
+        return len(items)
+
+    async def _fake_pop(session, limit):
+        batch = stored[:limit] if limit > 0 else list(stored)
+        rows = []
+        for item in batch:
+            row = MagicMock()
+            row.source_url = item["source_url"]
+            row.raw_content = item.get("raw_content", "")
+            row.source = None
+            row.source_category = None
+            rows.append(row)
+        return rows
+
+    mocker.patch("argos.crawler.pipeline._upsert_crawl_queue", side_effect=_fake_upsert)
+    mocker.patch("argos.crawler.pipeline._pop_from_queue", side_effect=_fake_pop)
+    mocker.patch("argos.crawler.pipeline._delete_from_queue", new=AsyncMock())
+    mocker.patch("argos.crawler.pipeline._queue_count", new=AsyncMock(return_value=0))
+    mocker.patch(
+        "argos.crawler.pipeline.settings",
+        **{"user.triage.preflight_filter": False, "user.run.daily_limit": 0},
+    )
+
+    _, summary = await pipeline.run_full_pipeline(AsyncMock())
+
+    passed = batch_mock.call_args.args[0]
+    assert len(passed) == 10
+    assert summary.queue_selected == 10

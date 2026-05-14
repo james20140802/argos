@@ -107,6 +107,7 @@ class BriefingConfig(BaseModel):
 
 class RunConfig(BaseModel):
     time: str = "06:00"
+    daily_limit: int = Field(default=150, ge=0)
 
 
 class InterestsConfig(BaseModel):

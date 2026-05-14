@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 
 import httpx
 from bs4 import BeautifulSoup
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
 from argos.crawler.dynamic_fetcher import _is_safe_url, extract_main_content
 from argos.crawler.user_agents import random_user_agent
+from argos.models.crawl_queue import CrawlQueue
 from argos.models.tech_item import TechItem
 
 _HN_CONCURRENCY = 8
@@ -126,6 +128,7 @@ async def fetch_github_trending(
                 "title": title,
                 "source_url": source_url,
                 "raw_content": _truncate_raw_content(combined),
+                "_published_at": None,
             }
         )
 
@@ -202,10 +205,18 @@ async def fetch_hackernews_top(
                 raw_content = f"{title}\n\n{body}".strip() if body else title
             else:
                 raw_content = title
+            time_val = data.get("time")
+            published_at: dt.datetime | None = None
+            if isinstance(time_val, (int, float)):
+                try:
+                    published_at = dt.datetime.fromtimestamp(time_val, tz=dt.timezone.utc)
+                except (ValueError, OSError):
+                    pass
             return {
                 "title": title,
                 "source_url": url,
                 "raw_content": _truncate_raw_content(raw_content),
+                "_published_at": published_at,
             }
 
     results = await asyncio.gather(*(_fetch_item(i) for i in top_ids))
@@ -220,9 +231,14 @@ async def filter_duplicate_urls(
         return []
 
     candidate_urls = [item["source_url"] for item in items]
-    stmt = select(TechItem.source_url).where(TechItem.source_url.in_(candidate_urls))
-    result = await session.execute(stmt)
-    existing_urls: set[str] = set(result.scalars().all())
+
+    result_tech = await session.execute(
+        select(TechItem.source_url).where(TechItem.source_url.in_(candidate_urls))
+    )
+    result_queue = await session.execute(
+        select(CrawlQueue.source_url).where(CrawlQueue.source_url.in_(candidate_urls))
+    )
+    existing_urls: set[str] = set(result_tech.scalars().all()) | set(result_queue.scalars().all())
 
     deduped: list[dict] = []
     seen: set[str] = set(existing_urls)

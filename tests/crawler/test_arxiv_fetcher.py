@@ -79,7 +79,7 @@ def _make_entry(
 def test_entry_to_dict_correct_keys():
     entry = _make_entry()
     item = _entry_to_dict(entry)
-    assert set(item.keys()) == {"title", "source_url", "raw_content", "_source_category"}
+    assert set(item.keys()) == {"title", "source_url", "raw_content", "_source_category", "_published_at"}
 
 
 def test_entry_to_dict_source_category_is_alpha():

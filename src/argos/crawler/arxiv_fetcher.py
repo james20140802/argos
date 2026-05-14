@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import calendar
+import datetime as dt
 import logging
 import time
 import re
@@ -100,7 +101,7 @@ def _entry_to_dict(entry: object) -> dict:
     """Convert a feedparser Atom entry to the canonical crawler item dict.
 
     Returns a dict with keys: ``title``, ``source_url``, ``raw_content``,
-    ``_source_category``.  ``source_url`` is normalised via
+    ``_source_category``, ``_published_at``.  ``source_url`` is normalised via
     ``_normalize_abs_url`` so deduplication survives versioned re-fetches.
     """
     title: str = getattr(entry, "title", "") or ""
@@ -110,11 +111,20 @@ def _entry_to_dict(entry: object) -> dict:
     source_url = _normalize_abs_url(entry_id) if entry_id else ""
     raw_content = _truncate(f"{title}\n\n{summary}")
 
+    published_parsed = getattr(entry, "published_parsed", None)
+    published_at: dt.datetime | None = None
+    if published_parsed is not None:
+        try:
+            published_at = dt.datetime(*published_parsed[:6], tzinfo=dt.timezone.utc)
+        except (TypeError, ValueError):
+            pass
+
     return {
         "title": title,
         "source_url": source_url,
         "raw_content": raw_content,
         "_source_category": CategoryType.ALPHA,
+        "_published_at": published_at,
     }
 
 
