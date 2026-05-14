@@ -140,16 +140,18 @@ async def run_batch_brain_pipeline(
     if genealogy_candidates:
         prewarm_task = asyncio.create_task(get_llm_client().prewarm("large"))
         try:
+            passed_prewarm = False
             for i in genealogy_candidates:
                 embedded_states[i] = await genealogist_node(
-                    embedded_states[i], prewarm_task=prewarm_task
+                    embedded_states[i],
+                    prewarm_task=prewarm_task if not passed_prewarm else None,
                 )
-                prewarm_task = None  # only await once
+                passed_prewarm = True
         finally:
-            if prewarm_task is not None and not prewarm_task.done():
+            if not prewarm_task.done():
                 prewarm_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await prewarm_task
+            with contextlib.suppress(BaseException):
+                await prewarm_task
         # Unload 32B after all genealogy work is done.
         try:
             await get_llm_client().unload("large")
