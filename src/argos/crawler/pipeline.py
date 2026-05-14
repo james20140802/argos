@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 import httpx
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain import run_batch_brain_pipeline
@@ -21,6 +23,8 @@ from argos.crawler.static_fetcher import (
     fetch_hackernews_top,
     filter_duplicate_urls,
 )
+from argos.models.crawl_queue import CrawlQueue
+from argos.models.tech_item import CategoryType
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +35,14 @@ _DYNAMIC_CONCURRENCY = 3
 class PipelineSummary:
     crawled_total: int
     per_source: dict[str, int] = field(default_factory=dict)
+    queue_selected: int = 0
     triage_pass: int = 0
     saved_new: int = 0
     genealogy_skipped: int = 0
     trust_skipped: int = 0
     preflight_filtered: int = 0
     duration_seconds: float = 0.0
+    queue_remaining: int = 0
 
 
 async def run_static_pipeline(session: AsyncSession) -> list[dict]:
@@ -136,44 +142,122 @@ async def run_full_crawl(
     return await filter_duplicate_urls(session, [*static_items, *rss_items, *arxiv_items, *dynamic_items])
 
 
+async def _upsert_crawl_queue(session: AsyncSession, items: list[dict]) -> int:
+    """Insert new items into crawl_queue; skip on source_url conflict.
+
+    Returns the number of rows submitted (pre-conflict-resolution count).
+    """
+    if not items:
+        return 0
+    rows = [
+        {
+            "source_url": item["source_url"],
+            "raw_content": item.get("raw_content"),
+            "source": item.get("_source"),
+            "source_category": (
+                item["_source_category"].value
+                if isinstance(item.get("_source_category"), CategoryType)
+                else item.get("_source_category")
+            ),
+            "published_at": item.get("_published_at"),
+        }
+        for item in items
+    ]
+    stmt = pg_insert(CrawlQueue).values(rows).on_conflict_do_nothing(index_elements=["source_url"])
+    await session.execute(stmt)
+    return len(rows)
+
+
+async def _pop_from_queue(session: AsyncSession, limit: int) -> list[CrawlQueue]:
+    """Select up to *limit* items from crawl_queue, newest published_at first.
+
+    When *limit* is 0, all items are returned (unlimited mode).
+    NULL published_at rows sort after all non-NULL rows; queued_at ASC breaks ties.
+    """
+    stmt = select(CrawlQueue).order_by(
+        CrawlQueue.published_at.desc().nulls_last(),
+        CrawlQueue.queued_at.asc(),
+    )
+    if limit > 0:
+        stmt = stmt.limit(limit)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def _delete_from_queue(session: AsyncSession, urls: list[str]) -> None:
+    if not urls:
+        return
+    await session.execute(
+        delete(CrawlQueue).where(CrawlQueue.source_url.in_(urls))
+    )
+
+
+async def _queue_count(session: AsyncSession) -> int:
+    result = await session.execute(select(func.count()).select_from(CrawlQueue))
+    return result.scalar_one()
+
+
 async def run_full_pipeline(
     session: AsyncSession,
     dynamic_urls: list[str] | None = None,
 ) -> tuple[list[BrainState], PipelineSummary]:
     start = time.monotonic()
+    daily_limit = settings.user.run.daily_limit
+
+    # ── Stage 1: crawl all sources, dedup against tech_items + crawl_queue ──
     crawl_items = await run_full_crawl(session, dynamic_urls)
 
-    # Compute per-source counts from crawled items
     per_source: dict[str, int] = {}
     for item in crawl_items:
         src = item.get("_source", "unknown")
         per_source[src] = per_source.get(src, 0) + 1
 
+    # ── Stage 2: upsert new items into the queue ──────────────────────────
+    queued_total = await _upsert_crawl_queue(session, crawl_items)
+    await session.flush()
+
+    # ── Stage 3: select today's batch from queue ──────────────────────────
+    queue_rows = await _pop_from_queue(session, daily_limit)
+    selected_items = [
+        {
+            "source_url": row.source_url,
+            "raw_content": row.raw_content or "",
+            "_source": row.source,
+            "_source_category": (
+                CategoryType(row.source_category) if row.source_category else None
+            ),
+        }
+        for row in queue_rows
+    ]
+
+    # ── Stage 4: preflight filter ─────────────────────────────────────────
     preflight_filtered = 0
     if settings.user.triage.preflight_filter:
-        filtered_items: list[dict] = []
-        for item in crawl_items:
+        filtered: list[dict] = []
+        for item in selected_items:
             if is_preflight_reject(item.get("raw_content") or ""):
-                logger.info(
-                    "preflight rejected: %s", item.get("source_url", "unknown")
-                )
+                logger.info("preflight rejected: %s", item.get("source_url", "unknown"))
                 preflight_filtered += 1
             else:
-                filtered_items.append(item)
-        crawl_items = filtered_items
+                filtered.append(item)
+        selected_items = filtered
 
-    # Drop items with no source_url before handing off to the batch pipeline.
-    valid_items = [
-        item for item in crawl_items if item.get("source_url", "").strip()
-    ]
-    skipped_no_url = len(crawl_items) - len(valid_items)
+    valid_items = [item for item in selected_items if item.get("source_url", "").strip()]
+    skipped_no_url = len(selected_items) - len(valid_items)
     if skipped_no_url:
         logger.warning(
-            "run_full_pipeline: %d crawled item(s) missing source_url, skipping",
+            "run_full_pipeline: %d queued item(s) missing source_url, skipping",
             skipped_no_url,
         )
 
+    # ── Stage 5: brain pipeline ───────────────────────────────────────────
     results: list[BrainState] = await run_batch_brain_pipeline(valid_items, session)
+
+    # ── Stage 6: remove processed rows from queue ─────────────────────────
+    processed_urls = [row.source_url for row in queue_rows]
+    await _delete_from_queue(session, processed_urls)
+    queue_remaining = await _queue_count(session)
+
     await session.commit()
 
     duration = time.monotonic() - start
@@ -189,13 +273,15 @@ async def run_full_pipeline(
     )
 
     summary = PipelineSummary(
-        crawled_total=len(crawl_items) + preflight_filtered,
+        crawled_total=queued_total,
         per_source=per_source,
+        queue_selected=len(queue_rows),
         triage_pass=triage_pass,
         saved_new=saved_new,
         genealogy_skipped=genealogy_skipped,
         trust_skipped=trust_skipped,
         preflight_filtered=preflight_filtered,
         duration_seconds=duration,
+        queue_remaining=queue_remaining,
     )
     return results, summary

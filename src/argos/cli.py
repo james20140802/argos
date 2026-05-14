@@ -49,6 +49,13 @@ def _print_run_summary(summary, elapsed: float) -> None:
             source_parts.append(f"{src}: {cnt}")
     source_detail = f" ({', '.join(source_parts)})" if source_parts else ""
 
+    queue_total = summary.queue_selected + summary.queue_remaining
+    queue_detail = (
+        f"{summary.queue_selected}개 / {queue_total}개 (잔여: {summary.queue_remaining}개)"
+        if queue_total
+        else f"{summary.queue_selected}개"
+    )
+
     if sys.stdout.isatty():
         try:
             from rich.console import Console
@@ -59,7 +66,8 @@ def _print_run_summary(summary, elapsed: float) -> None:
             table.add_column(style="bold cyan", no_wrap=True)
             table.add_column()
 
-            table.add_row("크롤링", f"{summary.crawled_total}개{source_detail}")
+            table.add_row("신규 크롤링", f"{summary.crawled_total}개{source_detail}")
+            table.add_row("일일 처리", queue_detail)
             if summary.preflight_filtered:
                 table.add_row("사전 필터 제거", f"{summary.preflight_filtered}개")
             table.add_row("트리아지 통과", f"{summary.triage_pass}개")
@@ -80,7 +88,8 @@ def _print_run_summary(summary, elapsed: float) -> None:
     # Non-TTY / Rich unavailable fallback
     print("✅ argos run 완료")
     print("─────────────────────────────")
-    print(f"크롤링: {summary.crawled_total}개{source_detail}")
+    print(f"신규 크롤링: {summary.crawled_total}개{source_detail}")
+    print(f"일일 처리: {queue_detail}")
     if summary.preflight_filtered:
         print(f"사전 필터 제거: {summary.preflight_filtered}개")
     print(f"트리아지 통과: {summary.triage_pass}개")

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
 from argos.crawler.dynamic_fetcher import _is_safe_url, extract_main_content
 from argos.crawler.user_agents import random_user_agent
+from argos.models.crawl_queue import CrawlQueue
 from argos.models.tech_item import TechItem
 
 _HN_CONCURRENCY = 8
@@ -230,9 +231,14 @@ async def filter_duplicate_urls(
         return []
 
     candidate_urls = [item["source_url"] for item in items]
-    stmt = select(TechItem.source_url).where(TechItem.source_url.in_(candidate_urls))
-    result = await session.execute(stmt)
-    existing_urls: set[str] = set(result.scalars().all())
+
+    result_tech = await session.execute(
+        select(TechItem.source_url).where(TechItem.source_url.in_(candidate_urls))
+    )
+    result_queue = await session.execute(
+        select(CrawlQueue.source_url).where(CrawlQueue.source_url.in_(candidate_urls))
+    )
+    existing_urls: set[str] = set(result_tech.scalars().all()) | set(result_queue.scalars().all())
 
     deduped: list[dict] = []
     seen: set[str] = set(existing_urls)
