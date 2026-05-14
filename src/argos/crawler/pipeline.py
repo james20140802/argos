@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain import run_brain_pipeline
 from argos.brain.graph_state import BrainState
+from argos.brain.preflight import is_preflight_reject
 from argos.config import settings
 from argos.crawler.arxiv_fetcher import fetch_arxiv_recent
 from argos.crawler.dynamic_fetcher import fetch_dynamic_page
@@ -148,6 +149,19 @@ async def run_full_pipeline(
         src = item.get("_source", "unknown")
         per_source[src] = per_source.get(src, 0) + 1
 
+    preflight_filtered = 0
+    if settings.user.triage.preflight_filter:
+        filtered_items: list[dict] = []
+        for item in crawl_items:
+            if is_preflight_reject(item.get("raw_content") or ""):
+                logger.info(
+                    "preflight rejected: %s", item.get("source_url", "unknown")
+                )
+                preflight_filtered += 1
+            else:
+                filtered_items.append(item)
+        crawl_items = filtered_items
+
     results: list[BrainState] = []
     for item in crawl_items:
         source_url = item.get("source_url", "").strip()
@@ -197,12 +211,13 @@ async def run_full_pipeline(
     )
 
     summary = PipelineSummary(
-        crawled_total=len(crawl_items),
+        crawled_total=len(crawl_items) + preflight_filtered,
         per_source=per_source,
         triage_pass=triage_pass,
         saved_new=saved_new,
         genealogy_skipped=genealogy_skipped,
         trust_skipped=trust_skipped,
+        preflight_filtered=preflight_filtered,
         duration_seconds=duration,
     )
     return results, summary
