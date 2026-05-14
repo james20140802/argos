@@ -254,8 +254,21 @@ async def run_full_pipeline(
     results: list[BrainState] = await run_batch_brain_pipeline(valid_items, session)
 
     # ── Stage 6: remove processed rows from queue ─────────────────────────
-    processed_urls = [row.source_url for row in queue_rows]
-    await _delete_from_queue(session, processed_urls)
+    # Items where save_node raised (is_valid=True, saved=False) stay in the
+    # queue so a transient DB error triggers a retry on the next run.
+    # Triage-rejected items (is_valid=False) are deleted — they are not tech
+    # items and retrying them wastes compute.
+    save_failed_urls: set[str] = {
+        s["source_url"]
+        for s in results
+        if s.get("is_valid") and not s.get("saved") and s.get("source_url")
+    }
+    urls_to_delete = [
+        row.source_url
+        for row in queue_rows
+        if row.source_url not in save_failed_urls
+    ]
+    await _delete_from_queue(session, urls_to_delete)
     queue_remaining = await _queue_count(session)
 
     await session.commit()
