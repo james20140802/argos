@@ -1,15 +1,18 @@
 from __future__ import annotations
 import asyncio
 import contextlib
+import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from argos.brain.graph_state import BrainState
-from argos.brain.nodes.triage import triage_node
-from argos.brain.nodes.embed import embed_and_search_node
+from argos.brain.nodes.triage import triage_node, batch_triage_states
+from argos.brain.nodes.embed import embed_and_search_node, batch_embed_and_search_node
 from argos.brain.nodes.genealogist import genealogist_node
 from argos.brain.nodes.save import save_node
 from argos.brain.llm_client import get_llm_client
 from argos.models.tech_item import CategoryType
+
+logger = logging.getLogger(__name__)
 
 
 async def run_brain_pipeline(
@@ -70,3 +73,105 @@ async def run_brain_pipeline(
             prewarm_task.cancel()
         with contextlib.suppress(BaseException):
             await prewarm_task
+
+
+def _make_initial_state(item: dict) -> BrainState:
+    source_category = item.get("_source_category")
+    return {
+        "raw_text": item.get("raw_content") or "",
+        "source_url": item.get("source_url", "").strip(),
+        "is_valid": False,
+        "trust_score": None,
+        "summary": None,
+        "extracted_info": None,
+        "related_tech_ids": [],
+        "succession_result": None,
+        "saved": False,
+        "genealogy_skipped": False,
+        "genealogy_skip_reason": None,
+        "source_category": source_category,
+        "category": None,
+    }
+
+
+async def run_batch_brain_pipeline(
+    items: list[dict],
+    session: AsyncSession,
+) -> list[BrainState]:
+    """Process N items through the brain pipeline with 3 model swaps total.
+
+    Stage order: batch triage (8B × 1 swap) → batch embed (/api/embed × 1 call)
+    → trust-score gate → batch genealogy (32B × 1 swap) → per-item save.
+
+    The single-URL run_brain_pipeline is preserved for backwards compatibility
+    and single-URL callers (e.g. tests, future Slack Deep-Dive paths).
+    """
+    from argos.config import settings as _settings
+
+    if not items:
+        return []
+
+    states = [_make_initial_state(item) for item in items]
+
+    # ── Stage 1: batch triage (8B loaded once) ────────────────────────────
+    triaged_states = await batch_triage_states(states)
+
+    # ── Stage 2: batch embed + similarity search ──────────────────────────
+    embedded_states = await batch_embed_and_search_node(triaged_states, session)
+
+    # ── Stage 3: trust-score gate + batch genealogy (32B loaded once) ─────
+    threshold = _settings.user.genealogist.trust_skip_threshold
+    genealogy_candidates: list[int] = []
+    for i, s in enumerate(embedded_states):
+        if not s.get("is_valid"):
+            continue
+        if s.get("genealogy_skipped"):
+            continue
+        trust = s.get("trust_score")
+        if trust is not None and trust < threshold:
+            embedded_states[i] = {
+                **s,
+                "genealogy_skipped": True,
+                "genealogy_skip_reason": "low_trust",
+            }
+            continue
+        genealogy_candidates.append(i)
+
+    if genealogy_candidates:
+        prewarm_task = asyncio.create_task(get_llm_client().prewarm("large"))
+        try:
+            for i in genealogy_candidates:
+                embedded_states[i] = await genealogist_node(
+                    embedded_states[i], prewarm_task=prewarm_task
+                )
+                prewarm_task = None  # only await once
+        finally:
+            if prewarm_task is not None and not prewarm_task.done():
+                prewarm_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await prewarm_task
+        # Unload 32B after all genealogy work is done.
+        try:
+            await get_llm_client().unload("large")
+        except Exception:
+            pass
+
+    # ── Stage 4: per-item save (with savepoint per item) ──────────────────
+    results: list[BrainState] = []
+    for s in embedded_states:
+        if not s.get("source_url"):
+            logger.warning("run_batch_brain_pipeline: state missing source_url, skipping")
+            results.append(s)
+            continue
+        try:
+            async with session.begin_nested():
+                saved = await save_node(s, session=session)
+            results.append(saved)
+        except Exception as exc:
+            logger.warning(
+                "run_batch_brain_pipeline: save failed for %s: %r",
+                s.get("source_url"),
+                exc,
+            )
+            results.append(s)
+    return results

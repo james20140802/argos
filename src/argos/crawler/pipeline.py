@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from argos.brain import run_brain_pipeline
+from argos.brain import run_batch_brain_pipeline
 from argos.brain.graph_state import BrainState
 from argos.brain.preflight import is_preflight_reject
 from argos.config import settings
@@ -162,40 +162,18 @@ async def run_full_pipeline(
                 filtered_items.append(item)
         crawl_items = filtered_items
 
-    results: list[BrainState] = []
-    for item in crawl_items:
-        source_url = item.get("source_url", "").strip()
-        if not source_url:
-            logger.warning(
-                "run_full_pipeline: crawled item missing source_url, skipping: %r",
-                item.get("title", "unknown"),
-            )
-            continue
-        try:
-            async with session.begin_nested():
-                # RSS (ARG-52) and arXiv (ARG-53) fetchers stamp a
-                # "_source_category" key on their item dicts to hint triage.
-                # GitHub/HN items carry no such key, so source_category
-                # defaults to None — leaving the LLM to decide without a hint.
-                source_category = item.get("_source_category")
-                if source_category is not None:
-                    state = await run_brain_pipeline(
-                        raw_text=item.get("raw_content") or "",
-                        source_url=source_url,
-                        session=session,
-                        source_category=source_category,
-                    )
-                else:
-                    state = await run_brain_pipeline(
-                        raw_text=item.get("raw_content") or "",
-                        source_url=source_url,
-                        session=session,
-                    )
-            results.append(state)
-        except Exception as exc:
-            logger.warning(
-                "run_full_pipeline: brain pipeline failed for %s: %r", source_url, exc
-            )
+    # Drop items with no source_url before handing off to the batch pipeline.
+    valid_items = [
+        item for item in crawl_items if item.get("source_url", "").strip()
+    ]
+    skipped_no_url = len(crawl_items) - len(valid_items)
+    if skipped_no_url:
+        logger.warning(
+            "run_full_pipeline: %d crawled item(s) missing source_url, skipping",
+            skipped_no_url,
+        )
+
+    results: list[BrainState] = await run_batch_brain_pipeline(valid_items, session)
     await session.commit()
 
     duration = time.monotonic() - start

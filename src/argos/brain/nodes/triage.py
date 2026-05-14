@@ -190,7 +190,8 @@ def _apply_interest_rules(
     return (result.is_valid, result.trust_score, summary)
 
 
-async def triage_node(state: BrainState) -> BrainState:
+async def _triage_one(state: BrainState, client, keep_alive) -> BrainState:
+    """Run triage for a single state without managing model load/unload."""
     topics = _normalize_terms(settings.user.interests.topics)
     exclusions = _normalize_terms(settings.user.interests.exclusions)
     interests_block = _build_interests_block(topics, exclusions)
@@ -204,10 +205,9 @@ async def triage_node(state: BrainState) -> BrainState:
         source_hint_block=source_hint_block,
         schema=schema,
     )
-    client = get_llm_client()
     try:
         raw = await client.query(
-            "small", prompt, keep_alive=0, num_ctx=settings.user.triage.num_ctx
+            "small", prompt, keep_alive=keep_alive, num_ctx=settings.user.triage.num_ctx
         )
         start = raw.find("{")
         end = raw.rfind("}") + 1
@@ -251,8 +251,36 @@ async def triage_node(state: BrainState) -> BrainState:
             "summary": None,
             "category": None,
         }
+
+
+async def triage_node(state: BrainState) -> BrainState:
+    client = get_llm_client()
+    try:
+        return await _triage_one(state, client, keep_alive=0)
     finally:
         try:
             await client.unload("small")
         except Exception:
             pass
+
+
+async def batch_triage_states(states: list[BrainState]) -> list[BrainState]:
+    """Triage all states with the 8B model loaded once across all items.
+
+    The model is kept alive (keep_alive='5m') for every call and unloaded
+    once after all items are processed — reducing N model swaps to 1.
+    """
+    if not states:
+        return []
+    client = get_llm_client()
+    results: list[BrainState] = []
+    try:
+        for state in states:
+            result = await _triage_one(state, client, keep_alive="5m")
+            results.append(result)
+    finally:
+        try:
+            await client.unload("small")
+        except Exception:
+            pass
+    return results
