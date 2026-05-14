@@ -13,6 +13,7 @@ Public API
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 from urllib.parse import urlsplit
 
@@ -57,11 +58,20 @@ def _entry_to_dict(entry: object, category: CategoryType) -> dict | None:
 
     raw_content = _truncate(f"{title}\n\n{body}")
 
+    published_parsed = getattr(entry, "published_parsed", None)
+    published_at: dt.datetime | None = None
+    if published_parsed is not None:
+        try:
+            published_at = dt.datetime(*published_parsed[:6], tzinfo=dt.timezone.utc)
+        except (TypeError, ValueError):
+            pass
+
     return {
         "title": title,
         "source_url": link,
         "raw_content": raw_content,
         "_source_category": category,
+        "_published_at": published_at,
     }
 
 
