@@ -215,29 +215,53 @@ async def test_run_static_pipeline_returns_empty_when_both_sources_fail(mocker) 
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_run_full_pipeline_preflight_filter_disabled_passes_all_items(mocker) -> None:
+    """When triage.preflight_filter is False, all items reach the batch pipeline."""
+    crawl_items = [
+        {"title": "job ad", "source_url": "https://a.com", "raw_content": "We're hiring"},
+        {"title": "tech", "source_url": "https://b.com", "raw_content": "LangGraph 0.2"},
+    ]
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
+    batch_mock = mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
+    # Disable the preflight filter via settings
+    mocker.patch(
+        "argos.crawler.pipeline.settings",
+        **{"user.triage.preflight_filter": False},
+    )
+
+    _, summary = await pipeline.run_full_pipeline(AsyncMock())
+
+    passed_items = batch_mock.call_args.args[0]
+    assert len(passed_items) == 2
+    assert summary.preflight_filtered == 0
+
+
+@pytest.mark.asyncio
 async def test_run_full_pipeline_calls_brain_for_each_item(mocker) -> None:
     crawl_items = [
         {"title": "t1", "source_url": "https://a.com", "raw_content": "content a"},
         {"title": "t2", "source_url": "https://b.com", "raw_content": "content b"},
     ]
-    mock_state = {
-        "is_valid": True, "source_url": "https://a.com", "raw_text": "",
-        "extracted_info": None, "related_tech_ids": [], "succession_result": None,
-        "saved": False,
-    }
+    states = [
+        {"is_valid": True, "source_url": "https://a.com", "raw_text": "",
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+         "saved": False, "genealogy_skipped": False, "genealogy_skip_reason": None},
+        {"is_valid": True, "source_url": "https://b.com", "raw_text": "",
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+         "saved": False, "genealogy_skipped": False, "genealogy_skip_reason": None},
+    ]
     mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
-    mocker.patch("argos.crawler.pipeline.run_brain_pipeline", new=AsyncMock(return_value=mock_state))
+    batch_mock = mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=states),
+    )
 
-    session = AsyncMock()
-    nested_cm = AsyncMock()
-    nested_cm.__aenter__ = AsyncMock(return_value=None)
-    nested_cm.__aexit__ = AsyncMock(return_value=False)
-    session.begin_nested = MagicMock(return_value=nested_cm)
-
-    results, summary = await pipeline.run_full_pipeline(session)
+    results, summary = await pipeline.run_full_pipeline(AsyncMock())
     assert len(results) == 2
-    from argos.crawler import pipeline as _p
-    assert _p.run_brain_pipeline.call_count == 2
+    batch_mock.assert_called_once()
     assert isinstance(summary, PipelineSummary)
     assert summary.crawled_total == 2
 
@@ -245,10 +269,14 @@ async def test_run_full_pipeline_calls_brain_for_each_item(mocker) -> None:
 @pytest.mark.asyncio
 async def test_run_full_pipeline_returns_empty_on_empty_crawl(mocker) -> None:
     mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=[]))
-    brain_mock = mocker.patch("argos.crawler.pipeline.run_brain_pipeline", new=AsyncMock())
+    batch_mock = mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
     results, summary = await pipeline.run_full_pipeline(AsyncMock())
     assert results == []
-    brain_mock.assert_not_called()
+    # batch pipeline is called with an empty list, not skipped
+    batch_mock.assert_called_once_with([], mocker.ANY)
     assert isinstance(summary, PipelineSummary)
     assert summary.crawled_total == 0
     assert summary.saved_new == 0
@@ -260,60 +288,47 @@ async def test_run_full_pipeline_skips_items_with_empty_source_url(mocker) -> No
         {"title": "no-url", "source_url": "", "raw_content": "x"},
         {"title": "has-url", "source_url": "https://good.com", "raw_content": "y"},
     ]
-    mock_state = {
+    good_state = {
         "is_valid": True, "source_url": "https://good.com", "raw_text": "",
         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
-        "saved": False,
+        "saved": False, "genealogy_skipped": False, "genealogy_skip_reason": None,
     }
     mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
-    brain_mock = mocker.patch("argos.crawler.pipeline.run_brain_pipeline",
-                              new=AsyncMock(return_value=mock_state))
+    batch_mock = mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=[good_state]),
+    )
 
-    session = AsyncMock()
-    nested_cm = AsyncMock()
-    nested_cm.__aenter__ = AsyncMock(return_value=None)
-    nested_cm.__aexit__ = AsyncMock(return_value=False)
-    session.begin_nested = MagicMock(return_value=nested_cm)
-
-    results, summary = await pipeline.run_full_pipeline(session)
+    results, summary = await pipeline.run_full_pipeline(AsyncMock())
     assert len(results) == 1
-    brain_mock.assert_called_once()
+    # Only the item with a valid URL should reach the batch pipeline
+    passed_items = batch_mock.call_args.args[0]
+    assert len(passed_items) == 1
+    assert passed_items[0]["source_url"] == "https://good.com"
 
 
 @pytest.mark.asyncio
 async def test_run_full_pipeline_continues_after_brain_failure(mocker) -> None:
+    """Batch pipeline handling partial failures returns partial results."""
     crawl_items = [
-        {"title": "bad", "source_url": "https://bad.com", "raw_content": "bad"},
-        {"title": "good", "source_url": "https://good.com", "raw_content": "good"},
+        {"title": "item1", "source_url": "https://a.com", "raw_content": "a"},
+        {"title": "item2", "source_url": "https://b.com", "raw_content": "b"},
     ]
-    good_state = {
-        "is_valid": True, "source_url": "https://good.com", "raw_text": "",
-        "extracted_info": None, "related_tech_ids": [], "succession_result": None,
-        "saved": False,
-    }
-    call_count = 0
-
-    async def brain_side_effect(raw_text, source_url, session):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise RuntimeError("DB flush failed")
-        return good_state
-
+    # Batch pipeline handles failures internally and returns what it could process
+    partial_result = [
+        {"is_valid": True, "source_url": "https://b.com", "raw_text": "",
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+         "saved": True, "genealogy_skipped": False, "genealogy_skip_reason": None},
+    ]
     mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
-    mocker.patch("argos.crawler.pipeline.run_brain_pipeline",
-                 new=AsyncMock(side_effect=brain_side_effect))
+    mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=partial_result),
+    )
 
-    class FakeNested:
-        async def __aenter__(self): return self
-        async def __aexit__(self, exc_type, exc, tb): return False
-
-    session = AsyncMock()
-    session.begin_nested = MagicMock(return_value=FakeNested())
-
-    results, summary = await pipeline.run_full_pipeline(session)
+    results, summary = await pipeline.run_full_pipeline(AsyncMock())
     assert len(results) == 1
-    assert call_count == 2
+    assert results[0]["saved"] is True
 
 
 @pytest.mark.asyncio
@@ -325,26 +340,22 @@ async def test_run_full_pipeline_summary_counts_saved_and_triage(mocker) -> None
     ]
     states = [
         {"is_valid": True, "saved": True, "source_url": "https://a.com", "raw_text": "",
-         "extracted_info": None, "related_tech_ids": [], "succession_result": None},
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+         "genealogy_skipped": False, "genealogy_skip_reason": None},
         {"is_valid": True, "saved": False, "source_url": "https://b.com", "raw_text": "",
-         "extracted_info": None, "related_tech_ids": [], "succession_result": None},
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+         "genealogy_skipped": False, "genealogy_skip_reason": None},
         {"is_valid": False, "saved": False, "source_url": "https://c.com", "raw_text": "",
-         "extracted_info": None, "related_tech_ids": [], "succession_result": None},
+         "extracted_info": None, "related_tech_ids": [], "succession_result": None,
+         "genealogy_skipped": False, "genealogy_skip_reason": None},
     ]
-    state_iter = iter(states)
     mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
     mocker.patch(
-        "argos.crawler.pipeline.run_brain_pipeline",
-        new=AsyncMock(side_effect=lambda **_kw: next(state_iter)),
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=states),
     )
 
-    session = AsyncMock()
-    nested_cm = AsyncMock()
-    nested_cm.__aenter__ = AsyncMock(return_value=None)
-    nested_cm.__aexit__ = AsyncMock(return_value=False)
-    session.begin_nested = MagicMock(return_value=nested_cm)
-
-    results, summary = await pipeline.run_full_pipeline(session)
+    results, summary = await pipeline.run_full_pipeline(AsyncMock())
     assert summary.crawled_total == 3
     assert summary.per_source["github_trending"] == 1
     assert summary.per_source["hackernews"] == 2
@@ -382,8 +393,7 @@ async def test_run_static_pipeline_tags_items_with_source(mocker) -> None:
 
 @pytest.mark.asyncio
 async def test_run_full_pipeline_counts_genealogy_skipped(mocker) -> None:
-    """summary.genealogy_skipped should equal the number of BrainStates
-    whose genealogy_skipped flag is True (ARG-39)."""
+    """summary.genealogy_skipped should equal cold-start skips; trust skips tracked separately (ARG-39, ARG-87)."""
     crawl_items = [
         {"title": "t1", "source_url": "https://a.com", "raw_content": "a", "_source": "github_trending"},
         {"title": "t2", "source_url": "https://b.com", "raw_content": "b", "_source": "hackernews"},
@@ -400,20 +410,13 @@ async def test_run_full_pipeline_counts_genealogy_skipped(mocker) -> None:
          "extracted_info": None, "related_tech_ids": [], "succession_result": None,
          "genealogy_skipped": False, "genealogy_skip_reason": None},
     ]
-    state_iter = iter(states)
     mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
     mocker.patch(
-        "argos.crawler.pipeline.run_brain_pipeline",
-        new=AsyncMock(side_effect=lambda **_kw: next(state_iter)),
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=states),
     )
 
-    session = AsyncMock()
-    nested_cm = AsyncMock()
-    nested_cm.__aenter__ = AsyncMock(return_value=None)
-    nested_cm.__aexit__ = AsyncMock(return_value=False)
-    session.begin_nested = MagicMock(return_value=nested_cm)
-
-    _, summary = await pipeline.run_full_pipeline(session)
+    _, summary = await pipeline.run_full_pipeline(AsyncMock())
     assert summary.genealogy_skipped == 2
 
 
@@ -424,8 +427,8 @@ async def test_run_full_pipeline_counts_genealogy_skipped(mocker) -> None:
 
 @pytest.mark.asyncio
 async def test_run_full_pipeline_forwards_source_category_from_rss_item(mocker) -> None:
-    """RSS items with _source_category must forward that hint into run_brain_pipeline
-    as source_category=; GitHub/HN items without the key must call without it."""
+    """RSS items with _source_category must be passed to run_batch_brain_pipeline
+    with the key intact; GitHub/HN items without it also pass through unchanged."""
     rss_item = {
         "title": "RSS post",
         "source_url": "https://openai.com/blog/post",
@@ -438,44 +441,23 @@ async def test_run_full_pipeline_forwards_source_category_from_rss_item(mocker) 
         "source_url": "https://github.com/a/b",
         "raw_content": "github content",
         "_source": "github_trending",
-        # no _source_category key
     }
     crawl_items = [rss_item, static_item]
 
-    good_state = {
-        "is_valid": True,
-        "saved": False,
-        "source_url": "",
-        "raw_text": "",
-        "extracted_info": None,
-        "related_tech_ids": [],
-        "succession_result": None,
-        "genealogy_skipped": False,
-        "genealogy_skip_reason": None,
-    }
     mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
-    brain_mock = mocker.patch(
-        "argos.crawler.pipeline.run_brain_pipeline",
-        new=AsyncMock(return_value=good_state),
+    batch_mock = mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=[]),
     )
 
-    session = AsyncMock()
-    nested_cm = AsyncMock()
-    nested_cm.__aenter__ = AsyncMock(return_value=None)
-    nested_cm.__aexit__ = AsyncMock(return_value=False)
-    session.begin_nested = MagicMock(return_value=nested_cm)
+    await pipeline.run_full_pipeline(AsyncMock())
 
-    await pipeline.run_full_pipeline(session)
-
-    assert brain_mock.call_count == 2
-    rss_call, static_call = brain_mock.call_args_list
-
-    # RSS item: source_category kwarg must be forwarded
-    assert rss_call.kwargs.get("source_category") is CategoryType.MAINSTREAM
-
-    # Static item: source_category kwarg must NOT be present (to avoid
-    # breaking existing call signatures that don't accept the kwarg)
-    assert "source_category" not in static_call.kwargs
+    batch_mock.assert_called_once()
+    passed_items = batch_mock.call_args.args[0]
+    assert len(passed_items) == 2
+    rss, static = passed_items
+    assert rss["_source_category"] is CategoryType.MAINSTREAM
+    assert "_source_category" not in static
 
 
 # ---------------------------------------------------------------------------
@@ -531,8 +513,8 @@ async def test_run_full_crawl_includes_arxiv_items(patched_static_with_arxiv) ->
 
 @pytest.mark.asyncio
 async def test_run_full_pipeline_forwards_source_category_from_arxiv_item(mocker) -> None:
-    """arXiv items with _source_category must forward that hint into
-    run_brain_pipeline as source_category=CategoryType.ALPHA."""
+    """arXiv items with _source_category must be passed to run_batch_brain_pipeline
+    with the key intact so _make_initial_state can seed BrainState.source_category."""
     arxiv_item = {
         "title": "Arxiv Paper",
         "source_url": "https://arxiv.org/abs/2401.11111",
@@ -544,33 +526,17 @@ async def test_run_full_pipeline_forwards_source_category_from_arxiv_item(mocker
         "argos.crawler.pipeline.run_full_crawl",
         new=AsyncMock(return_value=[arxiv_item]),
     )
-    good_state = {
-        "is_valid": True,
-        "saved": False,
-        "source_url": "https://arxiv.org/abs/2401.11111",
-        "raw_text": "",
-        "extracted_info": None,
-        "related_tech_ids": [],
-        "succession_result": None,
-        "genealogy_skipped": False,
-        "genealogy_skip_reason": None,
-    }
-    brain_mock = mocker.patch(
-        "argos.crawler.pipeline.run_brain_pipeline",
-        new=AsyncMock(return_value=good_state),
+    batch_mock = mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=[]),
     )
 
-    session = AsyncMock()
-    nested_cm = AsyncMock()
-    nested_cm.__aenter__ = AsyncMock(return_value=None)
-    nested_cm.__aexit__ = AsyncMock(return_value=False)
-    session.begin_nested = MagicMock(return_value=nested_cm)
+    await pipeline.run_full_pipeline(AsyncMock())
 
-    await pipeline.run_full_pipeline(session)
-
-    brain_mock.assert_called_once()
-    call_kwargs = brain_mock.call_args.kwargs
-    assert call_kwargs.get("source_category") is CategoryType.ALPHA
+    batch_mock.assert_called_once()
+    passed_items = batch_mock.call_args.args[0]
+    assert len(passed_items) == 1
+    assert passed_items[0]["_source_category"] is CategoryType.ALPHA
 
 
 @pytest.mark.asyncio

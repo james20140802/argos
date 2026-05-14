@@ -36,13 +36,9 @@ def _format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
-async def _run(dynamic_urls: list[str] | None) -> int:
-    start = time.monotonic()
-    async with AsyncSessionLocal() as session:
-        results, summary = await run_full_pipeline(session, dynamic_urls=dynamic_urls or None)
-    elapsed = time.monotonic() - start
+def _print_run_summary(summary, elapsed: float) -> None:
+    import sys
 
-    # Build per-source breakdown string
     source_parts = []
     if "github_trending" in summary.per_source:
         source_parts.append(f"GitHub: {summary.per_source['github_trending']}")
@@ -53,14 +49,55 @@ async def _run(dynamic_urls: list[str] | None) -> int:
             source_parts.append(f"{src}: {cnt}")
     source_detail = f" ({', '.join(source_parts)})" if source_parts else ""
 
+    if sys.stdout.isatty():
+        try:
+            from rich.console import Console
+            from rich.table import Table
+
+            console = Console()
+            table = Table(show_header=False, box=None, padding=(0, 1))
+            table.add_column(style="bold cyan", no_wrap=True)
+            table.add_column()
+
+            table.add_row("크롤링", f"{summary.crawled_total}개{source_detail}")
+            if summary.preflight_filtered:
+                table.add_row("사전 필터 제거", f"{summary.preflight_filtered}개")
+            table.add_row("트리아지 통과", f"{summary.triage_pass}개")
+            table.add_row("신규 저장", f"{summary.saved_new}개")
+            if summary.trust_skipped:
+                table.add_row("신뢰도 낮음 스킵", f"{summary.trust_skipped}개")
+            if summary.genealogy_skipped:
+                table.add_row("족보 분석 스킵", f"{summary.genealogy_skipped}개 (DB 부족)")
+            table.add_row("소요 시간", _format_duration(elapsed))
+
+            console.print()
+            console.print("✅ [bold green]argos run 완료[/bold green]")
+            console.print(table)
+            return
+        except ImportError:
+            pass
+
+    # Non-TTY / Rich unavailable fallback
     print("✅ argos run 완료")
     print("─────────────────────────────")
     print(f"크롤링: {summary.crawled_total}개{source_detail}")
+    if summary.preflight_filtered:
+        print(f"사전 필터 제거: {summary.preflight_filtered}개")
     print(f"트리아지 통과: {summary.triage_pass}개")
     print(f"신규 저장: {summary.saved_new}개")
-    if summary.genealogy_skipped > 0:
+    if summary.trust_skipped:
+        print(f"신뢰도 낮음 스킵: {summary.trust_skipped}개")
+    if summary.genealogy_skipped:
         print(f"족보 분석 스킵: {summary.genealogy_skipped}개 (DB 부족)")
     print(f"소요 시간: {_format_duration(elapsed)}")
+
+
+async def _run(dynamic_urls: list[str] | None) -> int:
+    start = time.monotonic()
+    async with AsyncSessionLocal() as session:
+        results, summary = await run_full_pipeline(session, dynamic_urls=dynamic_urls or None)
+    elapsed = time.monotonic() - start
+    _print_run_summary(summary, elapsed)
     return 0
 
 

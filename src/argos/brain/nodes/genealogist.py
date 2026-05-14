@@ -53,14 +53,20 @@ async def genealogist_node(
     similar_items = (state.get("extracted_info") or {}).get("similar_items", [])
     if not similar_items:
         return state
+
+    from argos.config import settings as _settings_g
+
+    max_chars = _settings_g.user.genealogist.context_max_chars
     existing_techs = "\n".join(
-        f"- ID: {item['id']}, Title: {item['title']}: {item['raw_content'][:300]}"
+        f"- ID: {item['id']}, Title: {item['title']}: {item['raw_content'][:max_chars]}"
         for item in similar_items
     )
     prompt = _GENEALOGIST_PROMPT.format(
         new_tech=state["raw_text"][:1000],
         existing_techs=existing_techs,
     )
+    from argos.config import settings as _settings
+
     client = get_llm_client()
     try:
         if prewarm_task is not None:
@@ -71,6 +77,7 @@ async def genealogist_node(
             prompt,
             keep_alive="5m",
             timeout=LARGE_MODEL_TIMEOUT,
+            num_ctx=_settings.user.genealogist.num_ctx,
             think=False,
         )
         start = raw.find("{")

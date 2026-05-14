@@ -99,6 +99,15 @@ async def query_with_swap(
         return small_result, large_result
 
 
+async def batch_embed(texts: list[str], model: str = "nomic-embed-text") -> list[list[float]]:
+    """Embed multiple texts in a single HTTP round-trip via /api/embed."""
+    payload = {"model": model, "input": texts, "keep_alive": 0}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10)) as client:
+        resp = await client.post(f"{_base_url()}/api/embed", json=payload)
+        resp.raise_for_status()
+        return resp.json()["embeddings"]
+
+
 async def unload_then_query(
     unload: str,
     model: str,

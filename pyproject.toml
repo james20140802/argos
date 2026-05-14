@@ -38,6 +38,7 @@ dependencies = [
     "tomli-w>=1.0",
     "questionary>=2.0",
     "feedparser>=6.0",
+    "rich>=13.0",
 ]
 
 [project.urls]

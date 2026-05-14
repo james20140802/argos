@@ -7,6 +7,7 @@ from argos.brain.ollama_client import (
     LARGE_MODEL_TIMEOUT,
     OLLAMA_BASE_URL,
     _MODEL_LOCK,
+    batch_embed,
     prewarm_model,
     query_ollama,
     unload_model,
@@ -155,6 +156,35 @@ async def test_large_model_timeout_constant_is_generous():
     # Sanity: the qwen3:32b cold-load + generate budget needs to clearly exceed
     # the 120s default that was triggering ReadTimeout warnings.
     assert LARGE_MODEL_TIMEOUT >= 300
+
+
+@pytest.mark.asyncio
+async def test_batch_embed_sends_input_array_and_returns_embeddings():
+    import json
+
+    fake_embeddings = [[0.1, 0.2], [0.3, 0.4]]
+
+    with respx.mock:
+        route = respx.post(f"{OLLAMA_BASE_URL}/api/embed").mock(
+            return_value=httpx.Response(200, json={"embeddings": fake_embeddings})
+        )
+        result = await batch_embed(["hello", "world"])
+
+    assert result == fake_embeddings
+    body = json.loads(route.calls[0].request.content)
+    assert body["model"] == "nomic-embed-text"
+    assert body["input"] == ["hello", "world"]
+    assert body["keep_alive"] == 0
+
+
+@pytest.mark.asyncio
+async def test_batch_embed_raises_on_http_error():
+    with respx.mock:
+        respx.post(f"{OLLAMA_BASE_URL}/api/embed").mock(
+            return_value=httpx.Response(500, json={"error": "server error"})
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            await batch_embed(["text"])
 
 
 @pytest.mark.asyncio

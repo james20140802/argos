@@ -9,8 +9,9 @@ from urllib.parse import urlsplit
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from argos.brain import run_brain_pipeline
+from argos.brain import run_batch_brain_pipeline
 from argos.brain.graph_state import BrainState
+from argos.brain.preflight import is_preflight_reject
 from argos.config import settings
 from argos.crawler.arxiv_fetcher import fetch_arxiv_recent
 from argos.crawler.dynamic_fetcher import fetch_dynamic_page
@@ -33,6 +34,8 @@ class PipelineSummary:
     triage_pass: int = 0
     saved_new: int = 0
     genealogy_skipped: int = 0
+    trust_skipped: int = 0
+    preflight_filtered: int = 0
     duration_seconds: float = 0.0
 
 
@@ -146,53 +149,53 @@ async def run_full_pipeline(
         src = item.get("_source", "unknown")
         per_source[src] = per_source.get(src, 0) + 1
 
-    results: list[BrainState] = []
-    for item in crawl_items:
-        source_url = item.get("source_url", "").strip()
-        if not source_url:
-            logger.warning(
-                "run_full_pipeline: crawled item missing source_url, skipping: %r",
-                item.get("title", "unknown"),
-            )
-            continue
-        try:
-            async with session.begin_nested():
-                # RSS (ARG-52) and arXiv (ARG-53) fetchers stamp a
-                # "_source_category" key on their item dicts to hint triage.
-                # GitHub/HN items carry no such key, so source_category
-                # defaults to None — leaving the LLM to decide without a hint.
-                source_category = item.get("_source_category")
-                if source_category is not None:
-                    state = await run_brain_pipeline(
-                        raw_text=item.get("raw_content") or "",
-                        source_url=source_url,
-                        session=session,
-                        source_category=source_category,
-                    )
-                else:
-                    state = await run_brain_pipeline(
-                        raw_text=item.get("raw_content") or "",
-                        source_url=source_url,
-                        session=session,
-                    )
-            results.append(state)
-        except Exception as exc:
-            logger.warning(
-                "run_full_pipeline: brain pipeline failed for %s: %r", source_url, exc
-            )
+    preflight_filtered = 0
+    if settings.user.triage.preflight_filter:
+        filtered_items: list[dict] = []
+        for item in crawl_items:
+            if is_preflight_reject(item.get("raw_content") or ""):
+                logger.info(
+                    "preflight rejected: %s", item.get("source_url", "unknown")
+                )
+                preflight_filtered += 1
+            else:
+                filtered_items.append(item)
+        crawl_items = filtered_items
+
+    # Drop items with no source_url before handing off to the batch pipeline.
+    valid_items = [
+        item for item in crawl_items if item.get("source_url", "").strip()
+    ]
+    skipped_no_url = len(crawl_items) - len(valid_items)
+    if skipped_no_url:
+        logger.warning(
+            "run_full_pipeline: %d crawled item(s) missing source_url, skipping",
+            skipped_no_url,
+        )
+
+    results: list[BrainState] = await run_batch_brain_pipeline(valid_items, session)
     await session.commit()
 
     duration = time.monotonic() - start
     triage_pass = sum(1 for s in results if s.get("is_valid", False))
     saved_new = sum(1 for s in results if s.get("saved", False))
-    genealogy_skipped = sum(1 for s in results if s.get("genealogy_skipped", False))
+    genealogy_skipped = sum(
+        1 for s in results
+        if s.get("genealogy_skipped") and s.get("genealogy_skip_reason") != "low_trust"
+    )
+    trust_skipped = sum(
+        1 for s in results
+        if s.get("genealogy_skip_reason") == "low_trust"
+    )
 
     summary = PipelineSummary(
-        crawled_total=len(crawl_items),
+        crawled_total=len(crawl_items) + preflight_filtered,
         per_source=per_source,
         triage_pass=triage_pass,
         saved_new=saved_new,
         genealogy_skipped=genealogy_skipped,
+        trust_skipped=trust_skipped,
+        preflight_filtered=preflight_filtered,
         duration_seconds=duration,
     )
     return results, summary
