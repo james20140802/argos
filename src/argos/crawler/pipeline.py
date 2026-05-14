@@ -33,6 +33,8 @@ class PipelineSummary:
     triage_pass: int = 0
     saved_new: int = 0
     genealogy_skipped: int = 0
+    trust_skipped: int = 0
+    preflight_filtered: int = 0
     duration_seconds: float = 0.0
 
 
@@ -185,7 +187,14 @@ async def run_full_pipeline(
     duration = time.monotonic() - start
     triage_pass = sum(1 for s in results if s.get("is_valid", False))
     saved_new = sum(1 for s in results if s.get("saved", False))
-    genealogy_skipped = sum(1 for s in results if s.get("genealogy_skipped", False))
+    genealogy_skipped = sum(
+        1 for s in results
+        if s.get("genealogy_skipped") and s.get("genealogy_skip_reason") != "low_trust"
+    )
+    trust_skipped = sum(
+        1 for s in results
+        if s.get("genealogy_skip_reason") == "low_trust"
+    )
 
     summary = PipelineSummary(
         crawled_total=len(crawl_items),
@@ -193,6 +202,7 @@ async def run_full_pipeline(
         triage_pass=triage_pass,
         saved_new=saved_new,
         genealogy_skipped=genealogy_skipped,
+        trust_skipped=trust_skipped,
         duration_seconds=duration,
     )
     return results, summary

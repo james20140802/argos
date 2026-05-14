@@ -50,6 +50,17 @@ async def run_brain_pipeline(
     if embedded.get("genealogy_skipped"):
         return await save_node(embedded, session=session)
 
+    trust_score = triaged.get("trust_score")
+    from argos.config import settings as _settings
+    threshold = _settings.user.genealogist.trust_skip_threshold
+    if trust_score is not None and trust_score < threshold:
+        skipped: BrainState = {
+            **embedded,
+            "genealogy_skipped": True,
+            "genealogy_skip_reason": "low_trust",
+        }
+        return await save_node(skipped, session=session)
+
     prewarm_task = asyncio.create_task(get_llm_client().prewarm("large"))
     try:
         genealogized = await genealogist_node(embedded, prewarm_task=prewarm_task)
