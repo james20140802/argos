@@ -206,7 +206,9 @@ async def triage_node(state: BrainState) -> BrainState:
     )
     client = get_llm_client()
     try:
-        raw = await client.query("small", prompt, keep_alive=0)
+        raw = await client.query(
+            "small", prompt, keep_alive=0, num_ctx=settings.user.triage.num_ctx
+        )
         start = raw.find("{")
         end = raw.rfind("}") + 1
         if start == -1 or end == 0:

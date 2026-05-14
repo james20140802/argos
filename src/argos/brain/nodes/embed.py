@@ -46,26 +46,28 @@ async def embed_and_search_node(state: BrainState, session: AsyncSession) -> Bra
                 "genealogy_skip_reason": "cold_start",
             }
 
+        top_n = settings.user.genealogist.context_top_n
+        max_chars = settings.user.genealogist.context_max_chars
+
         embedding = await get_embedding(state["raw_text"][:3000])
         embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
         stmt = text(
-            "SELECT id, title, raw_content FROM tech_items "
-            "WHERE embedding IS NOT NULL "
-            "ORDER BY embedding <=> CAST(:emb AS vector) LIMIT 5"
+            f"SELECT id, title, raw_content FROM tech_items "
+            f"WHERE embedding IS NOT NULL "
+            f"ORDER BY embedding <=> CAST(:emb AS vector) LIMIT {top_n}"
         )
         result = await session.execute(stmt, {"emb": embedding_str})
         rows = result.fetchall()
         related_ids = [str(r.id) for r in rows]
         similar_items = [
-            {"id": str(r.id), "title": r.title, "raw_content": r.raw_content[:500]}
+            {"id": str(r.id), "title": r.title, "raw_content": r.raw_content[:max_chars]}
             for r in rows
         ]
-        # Defensive: if the Top-5 query returns nothing despite the count check,
-        # treat this run as a cold start too — genealogist has nothing to compare.
         if not rows:
             logger.info(
-                "Top-5 similarity search returned no rows despite %d embedded items; "
+                "Top-%d similarity search returned no rows despite %d embedded items; "
                 "skipping genealogy",
+                top_n,
                 embedded_count,
             )
             return {
