@@ -41,3 +41,5 @@ docs/superpowers/
 
 # Local workspace (used by other tooling, not part of this repo)
 .uncommitted/
+.gemini/
+gha-creds-*.json
