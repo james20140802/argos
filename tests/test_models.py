@@ -7,7 +7,7 @@ import uuid
 
 from sqlalchemy import inspect
 
-from argos.models import Base, TechItem, TechSuccession, TrackHistory, UserAsset
+from argos.models import Base, CrawlQueue, TechItem, TechSuccession, TrackHistory, UserAsset
 from argos.models.tech_item import CategoryType
 from argos.models.tech_succession import RelationType
 from argos.models.user_asset import AssetStatus
@@ -18,15 +18,58 @@ from argos.models.user_asset import AssetStatus
 # ──────────────────────────────────────────
 
 class TestBaseMetadata:
-    """Base.metadata에 4개 테이블이 정상 등록되었는지 검증."""
+    """Base.metadata에 5개 테이블이 정상 등록되었는지 검증."""
 
     def test_all_tables_registered(self):
         table_names = set(Base.metadata.tables.keys())
-        expected = {"tech_items", "tech_succession", "user_assets", "track_history"}
+        expected = {"crawl_queue", "tech_items", "tech_succession", "user_assets", "track_history"}
         assert expected == table_names
 
     def test_metadata_is_not_empty(self):
-        assert len(Base.metadata.tables) == 4
+        assert len(Base.metadata.tables) == 5
+
+
+# ──────────────────────────────────────────
+# CrawlQueue 모델 테스트
+# ──────────────────────────────────────────
+
+class TestCrawlQueueModel:
+    """crawl_queue 스테이징 테이블 ORM 모델 검증."""
+
+    def test_tablename(self):
+        assert CrawlQueue.__tablename__ == "crawl_queue"
+
+    def test_required_columns_exist(self):
+        mapper = inspect(CrawlQueue)
+        column_names = {col.key for col in mapper.columns}
+        required = {"id", "source_url", "raw_content", "source", "source_category",
+                    "published_at", "queued_at"}
+        assert required.issubset(column_names)
+
+    def test_id_is_uuid_primary_key(self):
+        mapper = inspect(CrawlQueue)
+        pk_cols = [col.name for col in mapper.columns if col.primary_key]
+        assert "id" in pk_cols
+
+    def test_source_url_is_unique(self):
+        mapper = inspect(CrawlQueue)
+        col = mapper.columns["source_url"]
+        assert col.unique is True
+
+    def test_published_at_is_nullable(self):
+        mapper = inspect(CrawlQueue)
+        col = mapper.columns["published_at"]
+        assert col.nullable is True
+
+    def test_raw_content_is_nullable(self):
+        mapper = inspect(CrawlQueue)
+        col = mapper.columns["raw_content"]
+        assert col.nullable is True
+
+    def test_queued_at_is_not_nullable(self):
+        mapper = inspect(CrawlQueue)
+        col = mapper.columns["queued_at"]
+        assert col.nullable is False
 
 
 # ──────────────────────────────────────────
