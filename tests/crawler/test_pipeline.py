@@ -78,6 +78,12 @@ def patched_static(mocker):
         "argos.crawler.pipeline.run_arxiv_pipeline",
         new=AsyncMock(return_value=[]),
     )
+    # Stub out the SPA pipeline so tests that only care about static sources
+    # don't make real network requests.
+    mocker.patch(
+        "argos.crawler.pipeline.run_spa_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
     return gh, hn
 
 
@@ -529,6 +535,10 @@ def patched_static_with_arxiv(mocker):
         "argos.crawler.pipeline.run_arxiv_pipeline",
         new=AsyncMock(return_value=[arxiv_item]),
     )
+    mocker.patch(
+        "argos.crawler.pipeline.run_spa_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
     return arxiv_item
 
 
@@ -594,6 +604,10 @@ async def test_run_full_crawl_arxiv_failure_does_not_abort_static_rss(mocker) ->
     mocker.patch(
         "argos.crawler.pipeline.run_arxiv_pipeline",
         new=AsyncMock(side_effect=RuntimeError("arXiv API down")),
+    )
+    mocker.patch(
+        "argos.crawler.pipeline.run_spa_pipeline",
+        new=AsyncMock(return_value=[]),
     )
     mocker.patch(
         "argos.crawler.pipeline.filter_duplicate_urls",
@@ -680,6 +694,26 @@ async def test_run_full_pipeline_daily_limit_caps_brain_items(mocker) -> None:
     assert len(passed) == 2
     assert summary.queue_selected == 2
     assert summary.queue_remaining == 3
+
+
+@pytest.mark.asyncio
+async def test_run_full_crawl_includes_spa_items(monkeypatch):
+    from argos.crawler import pipeline
+
+    monkeypatch.setattr(pipeline, "run_static_pipeline", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline, "run_rss_pipeline", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline, "run_arxiv_pipeline", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        pipeline,
+        "run_spa_pipeline",
+        AsyncMock(return_value=[{"source_url": "https://anthropic.com/news/test", "raw_content": "x", "_source": "spa:anthropic"}]),
+    )
+    monkeypatch.setattr(pipeline, "filter_duplicate_urls", AsyncMock(side_effect=lambda s, items: items))
+
+    mock_session = AsyncMock()
+    result = await pipeline.run_full_crawl(mock_session)
+
+    assert any("anthropic" in (r.get("_source") or "") for r in result)
 
 
 @pytest.mark.asyncio

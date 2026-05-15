@@ -315,3 +315,47 @@ def test_resolve_env_file_returns_none_when_nothing_exists(tmp_path, monkeypatch
 
     resolved = _resolve_env_file()
     assert resolved is None
+
+
+def test_spa_config_default_contains_anthropic():
+    from argos.config import UserConfig
+    cfg = UserConfig()
+    assert len(cfg.spa.sources) >= 1
+    names = [s.name for s in cfg.spa.sources]
+    assert "anthropic" in names
+
+
+def test_spa_config_anthropic_entry():
+    from argos.config import UserConfig
+    cfg = UserConfig()
+    anthropic = next(s for s in cfg.spa.sources if s.name == "anthropic")
+    assert anthropic.listing_url == "https://www.anthropic.com/news"
+    assert anthropic.category == "Mainstream"
+    assert anthropic.link_pattern == r"^/news/[^/]+$"
+    assert anthropic.base_url == "https://www.anthropic.com"
+    assert anthropic.max_items == 10
+
+
+def test_rss_defaults_do_not_contain_anthropic():
+    from argos.config import UserConfig
+    cfg = UserConfig()
+    rss_urls = [f.url for f in cfg.rss.feeds]
+    assert not any("anthropic" in u for u in rss_urls)
+
+
+def test_spa_config_loads_from_toml(tmp_path):
+    from argos.config import UserConfig
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        "[[spa.sources]]\n"
+        'listing_url = "https://example.com/blog"\n'
+        'category = "Alpha"\n'
+        'link_pattern = "^/blog/[^/]+$"\n'
+        'base_url = "https://example.com"\n'
+        "max_items = 5\n"
+        'name = "example"\n'
+    )
+    cfg = UserConfig.load(path=cfg_file)
+    assert len(cfg.spa.sources) == 1
+    assert cfg.spa.sources[0].name == "example"
+    assert cfg.spa.sources[0].category == "Alpha"

@@ -6,16 +6,26 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
-# RSS feed defaults — 6 AI-company mainstream blogs + 2 Reddit subs (Alpha)
+# RSS feed defaults — 5 AI-company mainstream blogs + 2 Reddit subs (Alpha)
 _DEFAULT_RSS_FEEDS: list[dict[str, str]] = [
     {"url": "https://openai.com/blog/rss.xml", "category": "Mainstream"},
-    {"url": "https://www.anthropic.com/rss.xml", "category": "Mainstream"},
     {"url": "https://blog.google/technology/ai/rss/", "category": "Mainstream"},
     {"url": "https://ai.meta.com/blog/rss/", "category": "Mainstream"},
     {"url": "https://mistral.ai/rss", "category": "Mainstream"},
     {"url": "https://huggingface.co/blog/feed.xml", "category": "Mainstream"},
     {"url": "https://www.reddit.com/r/MachineLearning/.rss", "category": "Alpha"},
     {"url": "https://www.reddit.com/r/LocalLLaMA/.rss", "category": "Alpha"},
+]
+
+_DEFAULT_SPA_SOURCES: list[dict[str, Any]] = [
+    {
+        "listing_url": "https://www.anthropic.com/news",
+        "category": "Mainstream",
+        "link_pattern": r"^/news/[^/]+$",
+        "base_url": "https://www.anthropic.com",
+        "max_items": 10,
+        "name": "anthropic",
+    }
 ]
 
 try:
@@ -149,6 +159,21 @@ class RSSConfig(BaseModel):
     )
 
 
+class SPASourceConfig(BaseModel):
+    listing_url: str
+    category: Literal["Mainstream", "Alpha"] = "Mainstream"
+    link_pattern: str
+    base_url: str
+    max_items: int = Field(default=10, ge=1)
+    name: str = ""
+
+
+class SPAConfig(BaseModel):
+    sources: list[SPASourceConfig] = Field(
+        default_factory=lambda: [SPASourceConfig(**s) for s in _DEFAULT_SPA_SOURCES]
+    )
+
+
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
@@ -159,6 +184,7 @@ class UserConfig(BaseModel):
     triage: TriageConfig = TriageConfig()
     genealogist: GenealogistConfig = GenealogistConfig()
     rss: RSSConfig = Field(default_factory=RSSConfig)
+    spa: SPAConfig = Field(default_factory=SPAConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:

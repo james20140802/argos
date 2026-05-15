@@ -18,6 +18,7 @@ from argos.config import settings
 from argos.crawler.arxiv_fetcher import fetch_arxiv_recent
 from argos.crawler.dynamic_fetcher import fetch_dynamic_page
 from argos.crawler.rss_fetcher import run_rss_fetchers
+from argos.crawler.spa_fetcher import run_spa_fetchers
 from argos.crawler.static_fetcher import (
     fetch_github_trending,
     fetch_hackernews_top,
@@ -85,6 +86,13 @@ async def run_arxiv_pipeline(session: AsyncSession) -> list[dict]:
     return await filter_duplicate_urls(session, items)
 
 
+async def run_spa_pipeline(session: AsyncSession) -> list[dict]:
+    """Fetch all configured SPA sources and return deduplicated item dicts."""
+    sources = settings.user.spa.sources
+    items = await run_spa_fetchers(sources)
+    return await filter_duplicate_urls(session, items)
+
+
 async def run_full_crawl(
     session: AsyncSession,
     dynamic_urls: list[str] | None = None,
@@ -116,8 +124,16 @@ async def run_full_crawl(
     except Exception as exc:
         logger.warning("run_full_crawl: arxiv pipeline failed: %r", exc)
 
+    spa_items: list[dict] = []
+    try:
+        spa_items = await run_spa_pipeline(session)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("run_full_crawl: spa pipeline failed: %r", exc)
+
     if not dynamic_urls:
-        return await filter_duplicate_urls(session, [*static_items, *rss_items, *arxiv_items])
+        return await filter_duplicate_urls(session, [*static_items, *rss_items, *arxiv_items, *spa_items])
 
     semaphore = asyncio.Semaphore(_DYNAMIC_CONCURRENCY)
 
@@ -139,7 +155,7 @@ async def run_full_crawl(
         elif isinstance(result, Exception):
             logger.warning("dynamic fetch failed for %s: %r", url, result)
 
-    return await filter_duplicate_urls(session, [*static_items, *rss_items, *arxiv_items, *dynamic_items])
+    return await filter_duplicate_urls(session, [*static_items, *rss_items, *arxiv_items, *spa_items, *dynamic_items])
 
 
 async def _upsert_crawl_queue(session: AsyncSession, items: list[dict]) -> int:
