@@ -1,6 +1,6 @@
 [project]
 name = "argos-scout"
-version = "0.2.2"
+version = "0.2.3"
 description = "Omni-Lens: Tech Scout - AI 기술 동향 자동 추적 슬랙봇"
 readme = "README.md"
 license = { text = "MIT" }
