@@ -108,6 +108,12 @@ async def batch_embed(texts: list[str], model: str = "nomic-embed-text") -> list
         return resp.json()["embeddings"]
 
 
+async def embed(text: str, model: str = "nomic-embed-text") -> list[float]:
+    """Embed a single text string and return the 768-dim vector."""
+    results = await batch_embed([text], model=model)
+    return results[0]
+
+
 async def unload_then_query(
     unload: str,
     model: str,

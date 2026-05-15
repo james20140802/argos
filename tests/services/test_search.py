@@ -1,10 +1,9 @@
 """Tests for search_tech_items — pgvector cosine similarity query with filters."""
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

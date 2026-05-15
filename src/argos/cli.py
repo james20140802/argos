@@ -437,6 +437,101 @@ def _build_config_parser(sub: argparse._SubParsersAction) -> None:
     )
 
 
+def _build_search_parser(sub: argparse._SubParsersAction) -> None:
+    """Wire the ``argos search`` subcommand."""
+    search_p = sub.add_parser(
+        "search",
+        help="Search collected tech_items by semantic similarity",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Embeds the query via nomic-embed-text and returns the most similar\n"
+            "tech_items ranked by cosine distance.\n\n"
+            "Example:\n  argos search \"RAG\" --category alpha --status keep"
+        ),
+    )
+    search_p.add_argument("query", help="Natural-language search query")
+    search_p.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Max results to return (default: 10, max: 50)",
+    )
+    search_p.add_argument(
+        "--category",
+        choices=["alpha", "mainstream"],
+        default=None,
+        help="Filter to a specific category",
+    )
+    search_p.add_argument(
+        "--status",
+        choices=["keep", "all"],
+        default="all",
+        help="Filter by asset status: keep|all (default: all)",
+    )
+
+
+async def _search(query: str, limit: int, category: str | None, status: str) -> int:
+    from argos.brain.ollama_client import embed as ollama_embed
+    from argos.services.search import search_tech_items
+
+    try:
+        embedding = await ollama_embed(query)
+    except Exception as e:
+        print(f"❌ Ollama 연결 실패: {e}", file=sys.stderr)
+        print("Ollama가 실행 중인지 확인하세요: ollama serve", file=sys.stderr)
+        return 1
+
+    async with AsyncSessionLocal() as session:
+        results = await search_tech_items(
+            session,
+            embedding,
+            limit=limit,
+            category=category,
+            status=status,
+        )
+
+    if not results:
+        print("검색 결과 없음.")
+        return 0
+
+    try:
+        from rich.console import Console
+        from rich.table import Table
+
+        console = Console()
+        table = Table(show_header=True)
+        table.add_column("title", max_width=40, no_wrap=False)
+        table.add_column("trust", justify="right")
+        table.add_column("category")
+        table.add_column("status")
+        table.add_column("date")
+
+        for r in results:
+            trust_str = f"{r.trust_score:.2f}" if r.trust_score is not None else "—"
+            table.add_row(
+                r.title,
+                trust_str,
+                r.category or "—",
+                r.status or "—",
+                r.created_at.strftime("%Y-%m-%d"),
+            )
+
+        console.print(table)
+    except ImportError:
+        print(f"{'title':<40} {'trust':>5}  {'category':<12}  {'status':<10}  date")
+        print("─" * 80)
+        for r in results:
+            trust_str = f"{r.trust_score:.2f}" if r.trust_score is not None else "—"
+            print(
+                f"{r.title[:38]:<40} {trust_str:>5}  "
+                f"{(r.category or '—'):<12}  {(r.status or '—'):<10}  "
+                f"{r.created_at.strftime('%Y-%m-%d')}"
+            )
+
+    return 0
+
+
 def _build_schedule_parser(sub: argparse._SubParsersAction) -> None:
     schedule_p = sub.add_parser(
         "schedule",
@@ -650,6 +745,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_doctor_parser(sub)
     _build_init_parser(sub)
     _build_schedule_parser(sub)
+    _build_search_parser(sub)
 
     args = parser.parse_args(argv)
 
@@ -691,6 +787,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_init(args)
     if args.command == "schedule":
         return _dispatch_schedule(args)
+    if args.command == "search":
+        return asyncio.run(_search(args.query, args.limit, args.category, args.status))
     return 1
 
 
