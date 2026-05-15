@@ -157,7 +157,7 @@ def run_reconfigure(
         elif section == "schedule":
             run_schedule_step(_user_config(cfg_path))
         elif section == "advanced":
-            run_advanced_step(cfg_path)
+            run_advanced_step(config_path=cfg_path)
 
         # Always rebuild the DB engine with the correct env_path before the
         # healthcheck — even for non-infra sections.  Without this, db_ping()

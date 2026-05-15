@@ -38,10 +38,8 @@ def test_advanced_step_writes_all_three_keys_when_changed(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(advanced.prompts, "ask_confirm", lambda *a, **kw: True)
     monkeypatch.setattr(advanced.prompts, "ask_select", lambda *a, **kw: "Off")
-    call_count = {"n": 0}
 
     def fake_text(message, default=None):
-        call_count["n"] += 1
         if "category" in message.lower():
             return "5"
         return "100"
@@ -60,8 +58,11 @@ def test_advanced_step_writes_all_three_keys_when_changed(tmp_path, monkeypatch)
     advanced.run_advanced_step(config_path=cfg)
 
     assert "triage.preflight_filter" in write_calls
+    assert write_calls["triage.preflight_filter"] == "false"  # "Off" was selected
     assert "briefing.limit_per_category" in write_calls
+    assert write_calls["briefing.limit_per_category"] == "5"   # "5" was returned for category question
     assert "run.daily_limit" in write_calls
+    assert write_calls["run.daily_limit"] == "100"              # "100" was returned for limit question
 
 
 def test_advanced_step_rejects_negative_limit(tmp_path, monkeypatch):
