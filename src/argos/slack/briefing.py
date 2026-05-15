@@ -26,6 +26,7 @@ async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
             session,
             now_utc=now_utc,
             limit_per_category=settings.user.briefing.limit_per_category,
+            topics=settings.user.interests.topics,
         )
 
     if all(not items for items in items_by_category.values()):

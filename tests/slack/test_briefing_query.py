@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 
 from argos.models.tech_item import CategoryType
@@ -17,6 +18,8 @@ def _make_tech_item(category: CategoryType, trust_score: float | None, created_a
     item.category = category
     item.trust_score = trust_score
     item.created_at = created_at
+    item.source_url = f"https://example-{uuid.uuid4()}.com/article"
+    item.embedding = None
     return item
 
 
@@ -199,3 +202,175 @@ async def test_fetch_user_portfolio_query_filters_keep_and_orders_by_updated_at(
     compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
     assert "user_assets" in compiled
     assert "Keep" in compiled
+
+
+# ---------------------------------------------------------------------------
+# _cosine_sim
+# ---------------------------------------------------------------------------
+
+
+def test_cosine_sim_identical_vectors():
+    from argos.slack.services.briefing_query import _cosine_sim
+    v = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    assert abs(_cosine_sim(v, v) - 1.0) < 1e-6
+
+
+def test_cosine_sim_orthogonal_vectors():
+    from argos.slack.services.briefing_query import _cosine_sim
+    a = np.array([1.0, 0.0], dtype=np.float32)
+    b = np.array([0.0, 1.0], dtype=np.float32)
+    assert abs(_cosine_sim(a, b)) < 1e-6
+
+
+def test_cosine_sim_zero_vector_returns_zero():
+    from argos.slack.services.briefing_query import _cosine_sim
+    a = np.array([1.0, 0.0], dtype=np.float32)
+    zero = np.zeros(2, dtype=np.float32)
+    assert _cosine_sim(a, zero) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _kmeans
+# ---------------------------------------------------------------------------
+
+def test_kmeans_k1_returns_centroid():
+    from argos.slack.services.briefing_query import _kmeans
+    vecs = [np.array([1.0, 0.0]), np.array([1.0, 0.0]), np.array([1.0, 0.0])]
+    centroids = _kmeans(vecs, k=1)
+    assert len(centroids) == 1
+    np.testing.assert_allclose(centroids[0], [1.0, 0.0], atol=1e-5)
+
+
+def test_kmeans_k2_separates_clusters():
+    from argos.slack.services.briefing_query import _kmeans
+    np.random.seed(42)
+    cluster_a = [np.array([10.0, 0.0]) + np.random.randn(2) * 0.01 for _ in range(5)]
+    cluster_b = [np.array([0.0, 10.0]) + np.random.randn(2) * 0.01 for _ in range(5)]
+    vecs = cluster_a + cluster_b
+    centroids = _kmeans(vecs, k=2)
+    assert len(centroids) == 2
+    centroid_coords = sorted([tuple(c.tolist()) for c in centroids])
+    assert centroid_coords[0][0] < 1.0
+    assert centroid_coords[1][1] < 1.0
+
+
+# ---------------------------------------------------------------------------
+# _keep_centroids k selection
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_keep_centroids_returns_empty_when_no_keeps():
+    from argos.slack.services.briefing_query import _keep_centroids
+
+    async def fake_execute(stmt):
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    result = await _keep_centroids(mock_session)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_keep_centroids_k1_for_two_items():
+    from argos.slack.services.briefing_query import _keep_centroids
+
+    embs = [
+        [1.0] + [0.0] * 767,
+        [0.0, 1.0] + [0.0] * 766,
+    ]
+    rows = [(e,) for e in embs]
+
+    async def fake_execute(stmt):
+        mock_result = MagicMock()
+        mock_result.all.return_value = rows
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    centroids = await _keep_centroids(mock_session)
+    assert len(centroids) == 1
+
+
+@pytest.mark.asyncio
+async def test_keep_centroids_k2_for_five_items():
+    from argos.slack.services.briefing_query import _keep_centroids
+
+    embs = [[float(i)] + [0.0] * 767 for i in range(5)]
+    rows = [(e,) for e in embs]
+
+    async def fake_execute(stmt):
+        mock_result = MagicMock()
+        mock_result.all.return_value = rows
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    centroids = await _keep_centroids(mock_session)
+    assert len(centroids) == 2
+
+
+# ---------------------------------------------------------------------------
+# _score_and_select
+# ---------------------------------------------------------------------------
+
+def _make_item_with_embedding(source_url: str, trust_score: float, embedding: list[float]):
+    item = MagicMock()
+    item.source_url = source_url
+    item.trust_score = trust_score
+    item.embedding = embedding
+    return item
+
+
+def test_score_and_select_no_data_uses_trust_score():
+    from argos.slack.services.briefing_query import _score_and_select
+
+    items = [
+        _make_item_with_embedding("https://a.com/1", 0.9, [1.0] + [0.0] * 767),
+        _make_item_with_embedding("https://b.com/2", 0.1, [0.0, 1.0] + [0.0] * 766),
+    ]
+    result = _score_and_select(items, topic_vec=None, centroids=[], limit=2)
+    assert len(result) == 2
+    assert result[0].trust_score == 0.9
+
+
+def test_score_and_select_applies_domain_cap():
+    from argos.slack.services.briefing_query import _score_and_select
+
+    items = [
+        _make_item_with_embedding("https://openai.com/1", 0.9, [1.0] + [0.0] * 767),
+        _make_item_with_embedding("https://openai.com/2", 0.85, [1.0] + [0.0] * 767),
+        _make_item_with_embedding("https://openai.com/3", 0.8, [1.0] + [0.0] * 767),
+        _make_item_with_embedding("https://anthropic.com/1", 0.5, [0.0, 1.0] + [0.0] * 766),
+    ]
+    result = _score_and_select(items, topic_vec=None, centroids=[], limit=4)
+    openai_count = sum(1 for r in result if "openai.com" in r.source_url)
+    assert openai_count <= 2
+    assert any("anthropic.com" in r.source_url for r in result)
+
+
+def test_score_and_select_respects_limit():
+    from argos.slack.services.briefing_query import _score_and_select
+
+    items = [
+        _make_item_with_embedding(f"https://site{i}.com/article", 1.0 - i * 0.1, [1.0] + [0.0] * 767)
+        for i in range(10)
+    ]
+    result = _score_and_select(items, topic_vec=None, centroids=[], limit=3)
+    assert len(result) == 3
+
+
+def test_score_and_select_topic_boosts_matching_items():
+    from argos.slack.services.briefing_query import _score_and_select
+
+    topic_vec = np.array([1.0] + [0.0] * 767, dtype=np.float32)
+    item_a = _make_item_with_embedding("https://a.com/1", 0.5, [1.0] + [0.0] * 767)
+    item_b = _make_item_with_embedding("https://b.com/1", 0.6, [0.0] + [1.0] + [0.0] * 766)
+
+    result = _score_and_select([item_a, item_b], topic_vec=topic_vec, centroids=[], limit=2)
+    assert result[0].source_url == "https://a.com/1"
