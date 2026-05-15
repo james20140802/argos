@@ -43,3 +43,8 @@ docs/superpowers/
 .uncommitted/
 .gemini/
 gha-creds-*.json
+
+# AI tooling
+.agents/
+.codex/
+.linear-prism-manifest.json
