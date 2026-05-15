@@ -30,9 +30,9 @@ def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom)
 
 
-def _kmeans(vecs: list[np.ndarray], k: int, max_iter: int = 20) -> list[np.ndarray]:
+def _kmeans(vecs: list[np.ndarray], k: int, max_iter: int = 20, seed: int | None = None) -> list[np.ndarray]:
     data = np.stack(vecs)  # (n, d)
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     indices = rng.choice(len(data), size=k, replace=False)
     centroids = data[indices].copy()
 
@@ -44,6 +44,7 @@ def _kmeans(vecs: list[np.ndarray], k: int, max_iter: int = 20) -> list[np.ndarr
         new_centroids = np.zeros_like(centroids)
         for i in range(k):
             mask = labels == i
+            # TODO: reseed empty cluster to farthest point for better convergence
             new_centroids[i] = data[mask].mean(axis=0) if mask.any() else centroids[i]
 
         if np.allclose(centroids, new_centroids, atol=1e-6):

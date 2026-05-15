@@ -243,11 +243,10 @@ def test_kmeans_k1_returns_centroid():
 
 def test_kmeans_k2_separates_clusters():
     from argos.slack.services.briefing_query import _kmeans
-    np.random.seed(42)
-    cluster_a = [np.array([10.0, 0.0]) + np.random.randn(2) * 0.01 for _ in range(5)]
-    cluster_b = [np.array([0.0, 10.0]) + np.random.randn(2) * 0.01 for _ in range(5)]
+    cluster_a = [np.array([10.0, 0.0]) + np.array([0.0, 0.0]) for _ in range(5)]  # deterministic
+    cluster_b = [np.array([0.0, 10.0]) + np.array([0.0, 0.0]) for _ in range(5)]  # deterministic
     vecs = cluster_a + cluster_b
-    centroids = _kmeans(vecs, k=2)
+    centroids = _kmeans(vecs, k=2, seed=42)
     assert len(centroids) == 2
     centroid_coords = sorted([tuple(c.tolist()) for c in centroids])
     assert centroid_coords[0][0] < 1.0
@@ -374,3 +373,37 @@ def test_score_and_select_topic_boosts_matching_items():
 
     result = _score_and_select([item_a, item_b], topic_vec=topic_vec, centroids=[], limit=2)
     assert result[0].source_url == "https://a.com/1"
+
+
+def test_score_and_select_item_without_embedding_uses_zero_scores():
+    from argos.slack.services.briefing_query import _score_and_select
+
+    topic_vec = np.array([1.0] + [0.0] * 767, dtype=np.float32)
+    centroid = np.array([1.0] + [0.0] * 767, dtype=np.float32)
+
+    item_no_emb = _make_item_with_embedding("https://a.com/1", 0.5, None)
+    item_no_emb.embedding = None
+    result = _score_and_select([item_no_emb], topic_vec=topic_vec, centroids=[centroid], limit=1)
+    assert len(result) == 1  # item is still scored (with 0 topic/keep scores)
+
+
+@pytest.mark.asyncio
+async def test_embed_topics_returns_none_when_empty():
+    from argos.slack.services.briefing_query import _embed_topics
+    result = await _embed_topics([])
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_embed_topics_returns_none_on_ollama_failure(monkeypatch):
+    import argos.brain.ollama_client as oc
+
+    # Patch batch_embed inside the function's import namespace
+    async def failing_embed(topics):
+        raise RuntimeError("Ollama not available")
+
+    monkeypatch.setattr(oc, "batch_embed", failing_embed)
+
+    from argos.slack.services.briefing_query import _embed_topics
+    result = await _embed_topics(["LLM", "transformer"])
+    assert result is None
