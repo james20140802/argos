@@ -430,3 +430,94 @@ async def test_untrack_commits_session(tech_id, mock_ack, mock_respond):
         await handle_untrack(mock_ack, _make_untrack_body(tech_id), mock_respond)
 
     mock_session.commit.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# deep_dive prompt and _run_and_reply tests
+# ---------------------------------------------------------------------------
+
+
+def test_deep_dive_prompt_contains_language_placeholder():
+    from argos.slack.handlers.deep_dive import _DEEP_DIVE_PROMPT
+    assert "{language}" in _DEEP_DIVE_PROMPT
+
+
+def test_deep_dive_prompt_forbids_markdown_headers():
+    from argos.slack.handlers.deep_dive import _DEEP_DIVE_PROMPT
+    # The prompt must not use ## as heading syntax in its own structure,
+    # but it may reference ## inside a prohibition instruction to the LLM.
+    # Check that no line *starts* with ## (which would be a markdown heading).
+    lines = _DEEP_DIVE_PROMPT.splitlines()
+    assert not any(line.lstrip().startswith("##") for line in lines)
+    assert "*bold*" in _DEEP_DIVE_PROMPT or "mrkdwn" in _DEEP_DIVE_PROMPT.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_and_reply_posts_to_channel_not_thread():
+    from argos.slack.handlers.deep_dive import _run_and_reply
+
+    tech_id = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    mock_item = MagicMock()
+    mock_item.title = "Test Tech"
+    mock_item.source_url = "https://example.com"
+    mock_item.raw_content = "Test content"
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_item
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    mock_llm = AsyncMock()
+    mock_llm.unload_then_query = AsyncMock(return_value="Analysis result")
+    mock_client = AsyncMock()
+    mock_respond = AsyncMock()
+
+    with patch("argos.slack.handlers.deep_dive.AsyncSessionLocal", return_value=mock_ctx):
+        with patch("argos.slack.handlers.deep_dive.get_llm_client", return_value=mock_llm):
+            with patch("argos.slack.handlers.deep_dive.settings") as mock_settings:
+                mock_settings.user.slack.summary_language = "Korean"
+                await _run_and_reply(mock_client, "C123", "1234.567", mock_respond, tech_id)
+
+    mock_client.chat_postMessage.assert_awaited_once()
+    call_kwargs = mock_client.chat_postMessage.call_args.kwargs
+    assert call_kwargs["channel"] == "C123"
+    assert "thread_ts" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_run_and_reply_injects_language_into_prompt():
+    from argos.slack.handlers.deep_dive import _run_and_reply
+
+    tech_id = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    mock_item = MagicMock()
+    mock_item.title = "Test"
+    mock_item.source_url = "https://example.com"
+    mock_item.raw_content = "content"
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_item
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    captured_prompt = {}
+    mock_llm = AsyncMock()
+    async def capture_query(unload, model, prompt, **kwargs):
+        captured_prompt["prompt"] = prompt
+        return "result"
+    mock_llm.unload_then_query = capture_query
+    mock_client = AsyncMock()
+
+    with patch("argos.slack.handlers.deep_dive.AsyncSessionLocal", return_value=mock_ctx):
+        with patch("argos.slack.handlers.deep_dive.get_llm_client", return_value=mock_llm):
+            with patch("argos.slack.handlers.deep_dive.settings") as mock_settings:
+                mock_settings.user.slack.summary_language = "Japanese"
+                await _run_and_reply(mock_client, "C123", None, AsyncMock(), tech_id)
+
+    assert "Japanese" in captured_prompt["prompt"]

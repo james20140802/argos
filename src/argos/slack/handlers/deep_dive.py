@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from argos.brain.llm_client import get_llm_client
 from argos.brain.ollama_client import LARGE_MODEL_TIMEOUT
+from argos.config import settings
 from argos.database import AsyncSessionLocal
 from argos.models.tech_item import TechItem
 
@@ -27,7 +28,12 @@ Analyze:
 4. Risks and limitations
 5. Verdict: Should this be tracked or adopted?
 
-Be concise but substantive."""
+Format your response for Slack mrkdwn:
+- Use *bold* for section headers (do NOT use ##, ###, or any markdown heading syntax)
+- Write in plain prose paragraphs
+- Use line breaks naturally between sections
+
+Respond in {language}. Be concise but substantive."""
 
 
 async def _run_and_reply(
@@ -52,10 +58,12 @@ async def _run_and_reply(
             )
             return
 
+        language = settings.user.slack.summary_language
         prompt = _DEEP_DIVE_PROMPT.format(
             title=item.title,
             source_url=item.source_url,
             raw_content=item.raw_content[:3000],
+            language=language,
         )
 
         llm = get_llm_client()
@@ -69,10 +77,9 @@ async def _run_and_reply(
         )
 
         text = f"*Deep Dive: {item.title}*\n\n{analysis}"
-        if client is not None and channel_id and thread_ts:
+        if client is not None and channel_id:
             await client.chat_postMessage(
                 channel=channel_id,
-                thread_ts=thread_ts,
                 text=text,
             )
         else:
