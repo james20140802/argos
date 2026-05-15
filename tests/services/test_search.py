@@ -119,6 +119,24 @@ async def test_search_limit_capped_at_50():
 
 
 @pytest.mark.asyncio
+async def test_search_limit_negative_clamped_to_1():
+    session = _make_session([])
+    await search_tech_items(session, _EMBEDDING, limit=-5)
+
+    params = session.execute.await_args.args[1]
+    assert params["limit"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_limit_zero_clamped_to_1():
+    session = _make_session([])
+    await search_tech_items(session, _EMBEDDING, limit=0)
+
+    params = session.execute.await_args.args[1]
+    assert params["limit"] == 1
+
+
+@pytest.mark.asyncio
 async def test_search_no_category_filter_by_default():
     session = _make_session([])
     await search_tech_items(session, _EMBEDDING)

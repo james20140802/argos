@@ -115,6 +115,22 @@ def test_search_custom_limit():
     assert search_mock.await_args.kwargs["limit"] == 5
 
 
+def test_search_negative_limit_rejected_by_cli():
+    import pytest
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["search", "RAG", "--limit", "-1"])
+    assert exc_info.value.code != 0
+
+
+def test_search_zero_limit_rejected_by_cli():
+    import pytest
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["search", "RAG", "--limit", "0"])
+    assert exc_info.value.code != 0
+
+
 def test_search_category_flag():
     embed_mock, session, session_ctx, search_mock = _patch_search_stack([])
 

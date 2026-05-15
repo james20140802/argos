@@ -37,7 +37,7 @@ async def search_tech_items(
     Returns:
         List of SearchResult ordered by cosine similarity descending.
     """
-    limit = min(limit, 50)
+    limit = max(1, min(limit, 50))
 
     where_clauses = ["t.embedding IS NOT NULL"]
     params: dict = {

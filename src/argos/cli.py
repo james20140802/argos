@@ -437,6 +437,17 @@ def _build_config_parser(sub: argparse._SubParsersAction) -> None:
     )
 
 
+def _positive_int(value: str) -> int:
+    """Argparse type that rejects non-positive integers."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not an integer")
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"--limit must be ≥ 1, got {n}")
+    return n
+
+
 def _build_search_parser(sub: argparse._SubParsersAction) -> None:
     """Wire the ``argos search`` subcommand."""
     search_p = sub.add_parser(
@@ -452,10 +463,10 @@ def _build_search_parser(sub: argparse._SubParsersAction) -> None:
     search_p.add_argument("query", help="Natural-language search query")
     search_p.add_argument(
         "--limit",
-        type=int,
+        type=_positive_int,
         default=10,
         metavar="N",
-        help="Max results to return (default: 10, max: 50)",
+        help="Max results to return, must be ≥ 1 (default: 10, max: 50)",
     )
     search_p.add_argument(
         "--category",
