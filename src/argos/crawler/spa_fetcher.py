@@ -42,6 +42,9 @@ async def fetch_spa_source(config: SPASourceConfig) -> list[dict]:
         if not pattern.search(href):
             continue
         abs_url = urljoin(config.base_url, href) if not href.startswith("http") else href
+        expected_netloc = urlsplit(config.base_url).netloc
+        if urlsplit(abs_url).netloc != expected_netloc:
+            continue
         abs_url = abs_url.split("#")[0]
         parts = urlsplit(abs_url)
         if not parts.scheme or not parts.netloc:
@@ -83,6 +86,7 @@ async def fetch_spa_source(config: SPASourceConfig) -> list[dict]:
             logger.warning("spa_fetcher: failed to fetch %s: %r", url, result)
             continue
         if result is None:
+            logger.info("spa_fetcher: fetch_dynamic_page returned None for %s", url)
             continue
         result["_source"] = source_tag
         result["_source_category"] = category
