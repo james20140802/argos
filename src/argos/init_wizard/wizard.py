@@ -15,6 +15,7 @@ from pathlib import Path
 
 from argos import config_store
 from argos.init_wizard import WizardAbort, WizardCancel, WizardStepError
+from argos.init_wizard.steps.advanced import run_advanced_step
 from argos.init_wizard.steps.healthcheck import run_healthcheck_step
 from argos.init_wizard.steps.infra import run_infra_step
 from argos.init_wizard.steps.interests import run_interests_step
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Each runner factory takes (repo_root, env_path, config_path) and returns a
 # zero-arg callable so we can pass extra state in without leaking it into the
 # public signature of each step.
-RECONFIGURE_SECTIONS: tuple[str, ...] = ("infra", "slack", "interests", "schedule")
+RECONFIGURE_SECTIONS: tuple[str, ...] = ("infra", "slack", "interests", "schedule", "advanced")
 
 
 def _repo_root() -> Path:
@@ -98,7 +99,7 @@ def run_full(
     root = repo_root or _repo_root()
     cfg_path = config_path or config_store.default_config_path()
 
-    total = 6
+    total = 7
     try:
         _print_header(1, total, "Precheck — verifying required binaries")
         run_precheck_step()
@@ -121,6 +122,10 @@ def run_full(
         if failures:
             print(f"\n{failures} healthcheck probe(s) failed — see above")
             return 1
+
+        _print_header(7, total, "Advanced Settings (optional)")
+        run_advanced_step(config_path=cfg_path)
+
         print("\n✓ argos init complete")
         return 0
     except (WizardAbort, WizardStepError) as exc:
@@ -151,6 +156,8 @@ def run_reconfigure(
             run_interests_step(config_path=cfg_path)
         elif section == "schedule":
             run_schedule_step(_user_config(cfg_path))
+        elif section == "advanced":
+            run_advanced_step(cfg_path)
 
         # Always rebuild the DB engine with the correct env_path before the
         # healthcheck — even for non-infra sections.  Without this, db_ping()

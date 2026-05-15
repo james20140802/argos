@@ -12,7 +12,7 @@ def _noninteractive(monkeypatch):
     monkeypatch.setenv("ARGOS_INIT_NONINTERACTIVE", "1")
 
 
-def test_run_full_invokes_all_six_steps_in_order(tmp_path, monkeypatch):
+def test_run_full_invokes_all_seven_steps_in_order(tmp_path, monkeypatch):
     order = []
     monkeypatch.setattr(wizard, "run_precheck_step", lambda: order.append("precheck"))
     monkeypatch.setattr(
@@ -36,13 +36,18 @@ def test_run_full_invokes_all_six_steps_in_order(tmp_path, monkeypatch):
         "run_healthcheck_step",
         lambda repo, env_path=None: (order.append("healthcheck"), 0)[1],
     )
+    monkeypatch.setattr(
+        wizard,
+        "run_advanced_step",
+        lambda config_path=None: order.append("advanced"),
+    )
     # Avoid loading the real UserConfig — accept optional path kwarg.
     monkeypatch.setattr(wizard, "_user_config", lambda path=None: {})
 
     rc = wizard.run_full(repo_root=tmp_path, env_path=tmp_path / ".env", config_path=tmp_path / "config.toml")
 
     assert rc == 0
-    assert order == ["precheck", "infra", "slack", "interests", "schedule", "healthcheck"]
+    assert order == ["precheck", "infra", "slack", "interests", "schedule", "healthcheck", "advanced"]
 
 
 def test_run_full_returns_one_when_healthcheck_fails(tmp_path, monkeypatch):
@@ -214,6 +219,25 @@ def test_run_full_threads_config_path_to_schedule_step(tmp_path, monkeypatch):
 # Regression: Finding 2 — run_reconfigure rebuilds DB engine before healthcheck
 # for non-infra sections when a non-default env_path is supplied
 # ---------------------------------------------------------------------------
+
+def test_reconfigure_sections_includes_advanced():
+    from argos.init_wizard.wizard import RECONFIGURE_SECTIONS
+    assert "advanced" in RECONFIGURE_SECTIONS
+
+
+def test_run_reconfigure_dispatches_to_advanced(tmp_path, monkeypatch):
+    order = []
+    monkeypatch.setattr(wizard, "run_advanced_step", lambda config_path=None: order.append("advanced"))
+    monkeypatch.setattr(
+        wizard,
+        "run_healthcheck_step",
+        lambda repo, env_path=None: (order.append("healthcheck"), 0)[1],
+    )
+
+    rc = wizard.run_reconfigure("advanced", repo_root=tmp_path)
+    assert rc == 0
+    assert order == ["advanced", "healthcheck"]
+
 
 def test_run_reconfigure_slack_rebuilds_db_engine_from_env_path(tmp_path, monkeypatch):
     """run_reconfigure('slack', env_path=tmp_env) must refresh the DB engine
