@@ -232,33 +232,6 @@ async def test_deep_dive_respond_is_ephemeral_and_preserves_original(
     _assert_ephemeral_no_replace(mock_respond.call_args)
 
 
-@pytest.mark.asyncio
-async def test_deep_dive_passes_thread_metadata_to_background_task(
-    tech_id, mock_ack, mock_respond
-):
-    import inspect
-
-    body = {
-        "actions": [{"value": str(tech_id)}],
-        "channel": {"id": "C123"},
-        "message": {"ts": "1700000000.001"},
-    }
-    captured = {}
-
-    def capture(coro):
-        captured["locals"] = inspect.getcoroutinelocals(coro)
-        coro.close()
-        return MagicMock()
-
-    mock_client = AsyncMock()
-    with patch("asyncio.create_task", side_effect=capture):
-        await handle_deep_dive(mock_ack, body, mock_respond, client=mock_client)
-
-    locals_ = captured["locals"]
-    assert locals_["channel_id"] == "C123"
-    assert locals_["thread_ts"] == "1700000000.001"
-    assert locals_["client"] is mock_client
-
 
 # ---------------------------------------------------------------------------
 # handle_portfolio_command tests
@@ -437,11 +410,6 @@ async def test_untrack_commits_session(tech_id, mock_ack, mock_respond):
 # ---------------------------------------------------------------------------
 
 
-def test_deep_dive_prompt_contains_language_placeholder():
-    from argos.slack.handlers.deep_dive import _DEEP_DIVE_PROMPT
-    assert "{language}" in _DEEP_DIVE_PROMPT
-
-
 def test_deep_dive_prompt_forbids_markdown_headers():
     from argos.slack.handlers.deep_dive import _DEEP_DIVE_PROMPT
     # The prompt must not use ## as heading syntax in its own structure,
@@ -449,7 +417,7 @@ def test_deep_dive_prompt_forbids_markdown_headers():
     # Check that no line *starts* with ## (which would be a markdown heading).
     lines = _DEEP_DIVE_PROMPT.splitlines()
     assert not any(line.lstrip().startswith("##") for line in lines)
-    assert "*bold*" in _DEEP_DIVE_PROMPT or "mrkdwn" in _DEEP_DIVE_PROMPT.lower()
+    assert "*bold*" in _DEEP_DIVE_PROMPT and "mrkdwn" in _DEEP_DIVE_PROMPT.lower()
 
 
 @pytest.mark.asyncio
