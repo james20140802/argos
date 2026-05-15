@@ -448,7 +448,10 @@ def _positive_int(value: str) -> int:
     return n
 
 
-def _build_search_parser(sub: argparse._SubParsersAction) -> None:
+def _build_search_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
     """Wire the ``argos search`` subcommand."""
     search_p = sub.add_parser(
         "search",
@@ -459,6 +462,7 @@ def _build_search_parser(sub: argparse._SubParsersAction) -> None:
             "tech_items ranked by cosine distance.\n\n"
             "Example:\n  argos search \"RAG\" --category alpha --status keep"
         ),
+        parents=[common],
     )
     search_p.add_argument("query", help="Natural-language search query")
     search_p.add_argument(
@@ -756,7 +760,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_doctor_parser(sub)
     _build_init_parser(sub)
     _build_schedule_parser(sub)
-    _build_search_parser(sub)
+    _build_search_parser(sub, common)
 
     args = parser.parse_args(argv)
 
@@ -799,6 +803,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "schedule":
         return _dispatch_schedule(args)
     if args.command == "search":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
         return asyncio.run(_search(args.query, args.limit, args.category, args.status))
     return 1
 

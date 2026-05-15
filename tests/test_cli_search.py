@@ -59,6 +59,29 @@ def test_search_command_returns_zero_on_success(capsys):
     assert rc == 0
 
 
+def test_search_accepts_config_flag():
+    embed_mock, session, session_ctx, search_mock = _patch_search_stack([_make_result()])
+
+    with (
+        patch("argos.brain.ollama_client.embed", embed_mock),
+        patch("argos.cli.AsyncSessionLocal", return_value=session_ctx),
+        patch("argos.services.search.search_tech_items", search_mock),
+        patch("argos.cli._apply_config_override", return_value=None) as mock_override,
+    ):
+        rc = main(["search", "RAG", "--config", "/some/path.toml"])
+
+    assert rc == 0
+    mock_override.assert_called_once()
+    assert mock_override.call_args.args[0].config == "/some/path.toml"
+
+
+def test_search_config_override_error_propagates():
+    with patch("argos.cli._apply_config_override", return_value=3):
+        rc = main(["search", "RAG", "--config", "/bad/path.toml"])
+
+    assert rc == 3
+
+
 def test_search_calls_embed_with_query():
     embed_mock, session, session_ctx, search_mock = _patch_search_stack([_make_result()])
 
