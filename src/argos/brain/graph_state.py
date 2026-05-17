@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from argos.models.tech_item import CategoryType
 
 
-class BrainState(TypedDict, total=False):
+class BrainState(TypedDict):
     raw_text: str
     source_url: str
     is_valid: bool
@@ -28,4 +28,4 @@ class BrainState(TypedDict, total=False):
     # Downstream consumers (succession alert post-processing) use this to
     # collect the freshly-saved item IDs and call check_succession.
     # None when the item already existed (duplicate URL) or save was skipped.
-    saved_item_id: uuid.UUID | None
+    saved_item_id: NotRequired[uuid.UUID | None]
