@@ -617,6 +617,114 @@ async def _search(query: str, limit: int, category: str | None, status: str) -> 
     return 0
 
 
+def _build_portfolio_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos portfolio`` subcommand (ARG-113)."""
+    portfolio_p = sub.add_parser(
+        "portfolio",
+        help="Display your Keep portfolio",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "List all tech_items you have marked Keep, grouped by category.\n\n"
+            "Example:\n"
+            "  argos portfolio\n"
+            "  argos portfolio --category alpha\n"
+            "  argos portfolio --sort trust"
+        ),
+        parents=[common],
+    )
+    portfolio_p.add_argument(
+        "--category",
+        choices=["alpha", "mainstream"],
+        default=None,
+        help="Filter to a specific category: alpha|mainstream",
+    )
+    portfolio_p.add_argument(
+        "--sort",
+        choices=["date", "trust"],
+        default="date",
+        dest="sort",
+        help="Sort order: date (default, newest first) | trust (highest trust first)",
+    )
+
+
+async def _portfolio(category: str | None, sort: str) -> int:
+    from argos.models.tech_item import CategoryType
+    from argos.slack.services.briefing_query import fetch_user_portfolio
+
+    category_enum: CategoryType | None = None
+    if category is not None:
+        if category.lower() == "alpha":
+            category_enum = CategoryType.ALPHA
+        else:
+            category_enum = CategoryType.MAINSTREAM
+
+    async with AsyncSessionLocal() as session:
+        results = await fetch_user_portfolio(
+            session,
+            category=category_enum,
+            sort_by=sort,  # type: ignore[arg-type]
+        )
+
+    if not results:
+        print("Keep된 자산이 없습니다. Slack에서 항목을 Keep해 포트폴리오를 만들어보세요.")
+        return 0
+
+    # Group by category
+    from argos.models.tech_item import CategoryType as CT
+
+    grouped: dict[CT, list] = {CT.MAINSTREAM: [], CT.ALPHA: []}
+    for asset, item in results:
+        cat = item.category if item.category in grouped else CT.MAINSTREAM
+        grouped[cat].append((asset, item))
+
+    total = len(results)
+
+    try:
+        from rich.console import Console
+
+        console = Console()
+        console.print(f"\n[bold]# Keep 포트폴리오 (총 {total}개)[/bold]\n")
+
+        for cat in (CT.MAINSTREAM, CT.ALPHA):
+            items = grouped[cat]
+            if not items:
+                continue
+            label = "Mainstream" if cat == CT.MAINSTREAM else "Alpha"
+            console.print(f"[bold cyan][{label}][/bold cyan]")
+            for asset, item in items:
+                kept_date = asset.created_at.strftime("%Y-%m-%d")
+                last_signal = (
+                    asset.last_monitored_at.strftime("%Y-%m-%d")
+                    if asset.last_monitored_at
+                    else "—"
+                )
+                console.print(f"• {item.title:<30}  kept {kept_date}  last_signal {last_signal}")
+            console.print()
+
+    except ImportError:
+        print(f"\n# Keep 포트폴리오 (총 {total}개)\n")
+        for cat in (CT.MAINSTREAM, CT.ALPHA):
+            items = grouped[cat]
+            if not items:
+                continue
+            label = "Mainstream" if cat == CT.MAINSTREAM else "Alpha"
+            print(f"[{label}]")
+            for asset, item in items:
+                kept_date = asset.created_at.strftime("%Y-%m-%d")
+                last_signal = (
+                    asset.last_monitored_at.strftime("%Y-%m-%d")
+                    if asset.last_monitored_at
+                    else "—"
+                )
+                print(f"• {item.title:<30}  kept {kept_date}  last_signal {last_signal}")
+            print()
+
+    return 0
+
+
 def _build_add_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -950,6 +1058,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_config_parser(sub)
     _build_doctor_parser(sub)
     _build_init_parser(sub)
+    _build_portfolio_parser(sub, common)
     _build_schedule_parser(sub)
     _build_search_parser(sub, common)
 
@@ -1011,6 +1120,11 @@ def main(argv: list[str] | None = None) -> int:
             seen.add(u)
             all_urls.append(u)
         return asyncio.run(_add(all_urls))
+    if args.command == "portfolio":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return asyncio.run(_portfolio(args.category, args.sort))
     return 1
 
 
