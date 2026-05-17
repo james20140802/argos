@@ -265,7 +265,7 @@ async def test_triage_rejected_returns_rejected_status() -> None:
 
 
 async def test_save_failed_returns_error_status() -> None:
-    """is_valid=True but saved=False indicates save_node failed."""
+    """is_valid=True + saved=False AND no row in DB => true save failure."""
     session = _make_session()
     brain_state = {
         "is_valid": True,
@@ -275,7 +275,8 @@ async def test_save_failed_returns_error_status() -> None:
     with (
         _patch_safe_url(True),
         _patch_robots(True),
-        _patch_dedup_lookup(None),
+        # Pre-fetch dedup: None. Post-save re-check: None (still no row) => ERROR.
+        _patch_dedup_lookup(None, None),
         _patch_fetch(
             {
                 "title": "t",
@@ -288,6 +289,40 @@ async def test_save_failed_returns_error_status() -> None:
         r = await add_url("https://example.com/page", session)
 
     assert r.status is AddUrlStatus.ERROR
+
+
+async def test_save_skipped_with_existing_row_returns_duplicate() -> None:
+    """is_valid=True + saved=False BUT the URL is now present in tech_items =>
+    benign race (another worker inserted the same source_url between our
+    pre-fetch dedup check and save_node's lookup). Must surface as DUPLICATE,
+    not ERROR (otherwise /argos add exits non-zero on a benign duplicate).
+    """
+    session = _make_session()
+    race_winner_id = uuid.uuid4()
+    brain_state = {
+        "is_valid": True,
+        "saved": False,
+        "source_url": "https://example.com/page",
+    }
+    with (
+        _patch_safe_url(True),
+        _patch_robots(True),
+        # Pre-fetch dedup: None. Post-save re-check: race winner's UUID.
+        _patch_dedup_lookup(None, race_winner_id),
+        _patch_fetch(
+            {
+                "title": "t",
+                "raw_content": "body",
+                "source_url": "https://example.com/page",
+            }
+        ),
+        _patch_brain(brain_state),
+    ):
+        r = await add_url("https://example.com/page", session)
+
+    assert r.status is AddUrlStatus.DUPLICATE
+    assert r.tech_item_id == race_winner_id
+    assert r.reason and "race" in r.reason.lower()
 
 
 async def test_brain_exception_returns_error_status() -> None:

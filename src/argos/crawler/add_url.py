@@ -422,7 +422,19 @@ async def add_url(url: str, session: AsyncSession) -> AddUrlResult:
         )
 
     if not state.get("saved"):
-        # is_valid=True but save_node didn't write — this is a hard error.
+        # save_node returns saved=False when the URL already exists in
+        # tech_items (race: another worker inserted the same source_url
+        # between our early dedup check and save_node's lookup). Re-check
+        # before declaring ERROR so the benign duplicate doesn't surface
+        # as a CLI exit-1 failure.
+        existing_id = await _find_existing_tech_item_id(session, final_url)
+        if existing_id is not None:
+            return AddUrlResult(
+                url=final_url,
+                status=AddUrlStatus.DUPLICATE,
+                tech_item_id=existing_id,
+                reason="tech_items already contained this URL at save time (race)",
+            )
         return AddUrlResult(
             url=final_url,
             status=AddUrlStatus.ERROR,
