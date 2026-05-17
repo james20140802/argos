@@ -41,6 +41,13 @@ def patched_queue(mocker):
     mocker.patch("argos.crawler.pipeline._pop_from_queue", side_effect=_fake_pop)
     mocker.patch("argos.crawler.pipeline._delete_from_queue", new=AsyncMock())
     mocker.patch("argos.crawler.pipeline._queue_count", new=AsyncMock(return_value=0))
+    # Stub the succession check so the bare AsyncMock() sessions used here
+    # don't trip over the savepoint-scoped DB call.  Tests that exercise the
+    # succession path live in test_pipeline_succession.py.
+    mocker.patch(
+        "argos.crawler.pipeline.check_succession",
+        new=AsyncMock(return_value=[]),
+    )
     return _stored
 
 

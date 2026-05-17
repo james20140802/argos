@@ -53,6 +53,13 @@ def _mk_session(queue_rows=None) -> AsyncMock:
     # Default execute behavior: return a permissive Mock so unmocked stages
     # don't crash.
     session.execute = AsyncMock(return_value=MagicMock())
+    # begin_nested() returns an async context manager (SAVEPOINT).  AsyncMock
+    # would return a bare coroutine for an unconfigured attribute call, which
+    # breaks ``async with``.  Wire up a real async-CM object instead.
+    nested_ctx = AsyncMock()
+    nested_ctx.__aenter__ = AsyncMock(return_value=nested_ctx)
+    nested_ctx.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=nested_ctx)
     return session
 
 
@@ -201,12 +208,14 @@ async def test_run_full_pipeline_swallows_check_succession_exception(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_rolls_back_after_check_succession_failure(monkeypatch):
-    """When check_succession raises (typical case: a DB/statement error),
-    the session is left in a failed-transaction state in SQLAlchemy.  The
-    pipeline must call ``session.rollback()`` before issuing further DB
-    calls (_delete_from_queue, _queue_count, commit) — otherwise those
-    calls would themselves raise and abort the run."""
+async def test_run_full_pipeline_isolates_check_succession_in_savepoint(monkeypatch):
+    """When check_succession raises (typical case: a DB/statement error), the
+    failure must be contained in a SAVEPOINT so the parent transaction — and
+    any tech_items / tech_succession rows saved in earlier stages — stays
+    intact.  Calling session.rollback() on the parent would discard the saved
+    work while Stage 6 still deletes the matching queue_rows and commits,
+    permanently losing the items.  Stage 6 must still run; commit must still
+    succeed."""
     saved_id = uuid.uuid4()
 
     monkeypatch.setattr(crawler_pipeline, "run_full_crawl", AsyncMock(return_value=[]))
@@ -233,17 +242,92 @@ async def test_run_full_pipeline_rolls_back_after_check_succession_failure(monke
     )
 
     session = _mk_session(queue_rows)
-    # Explicit rollback mock so we can assert it was awaited before commit.
+    # Track parent rollback to assert it is NOT called — that would discard
+    # the items saved in earlier stages and cause the data-loss bug.
     session.rollback = AsyncMock()
+    # begin_nested returns an async context manager; track that it was used.
+    nested_ctx = AsyncMock()
+    nested_ctx.__aenter__ = AsyncMock(return_value=nested_ctx)
+    nested_ctx.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=nested_ctx)
 
     _, summary = await run_full_pipeline(session)
 
-    # Rollback was issued.
-    session.rollback.assert_awaited_once()
-    # Stage 6 still ran on a clean session.
+    # Savepoint was opened around the succession check.
+    session.begin_nested.assert_called_once()
+    # Parent rollback was NEVER issued — saved tech_items must survive.
+    session.rollback.assert_not_awaited()
+    # Stage 6 still ran on the intact parent transaction.
     delete_mock.assert_awaited()
     queue_count_mock.assert_awaited()
     session.commit.assert_awaited_once()
+    assert summary.succession_alerts == []
+
+
+@pytest.mark.asyncio
+async def test_run_full_pipeline_does_not_lose_queued_work_on_check_failure(
+    monkeypatch,
+):
+    """Regression for the data-loss bug introduced by an unconditional
+    session.rollback() on check_succession failure.
+
+    Setup: queue row processed → saved in earlier stage → check_succession
+    raises.  The processed queue row must be deleted (Stage 6) AND the parent
+    transaction must commit so the saved tech_item is durable.  The previous
+    fix rolled the parent transaction back, which discarded the saved item
+    while Stage 6 still deleted the queue row, dropping the work permanently.
+    The savepoint approach must call commit() exactly once after Stage 6 and
+    must NOT issue a parent rollback that would undo the saved item.
+    """
+    saved_id = uuid.uuid4()
+
+    monkeypatch.setattr(crawler_pipeline, "run_full_crawl", AsyncMock(return_value=[]))
+    monkeypatch.setattr(crawler_pipeline, "_upsert_crawl_queue", AsyncMock(return_value=0))
+    queue_rows = [
+        MagicMock(
+            source_url="https://saved.example",
+            raw_content="content",
+            source="rss",
+            source_category=None,
+        )
+    ]
+    monkeypatch.setattr(crawler_pipeline, "_pop_from_queue", AsyncMock(return_value=queue_rows))
+    delete_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(crawler_pipeline, "_delete_from_queue", delete_mock)
+    monkeypatch.setattr(crawler_pipeline, "_queue_count", AsyncMock(return_value=0))
+    monkeypatch.setattr(crawler_pipeline, "is_preflight_reject", lambda _txt: False)
+    monkeypatch.setattr(
+        crawler_pipeline,
+        "run_batch_brain_pipeline",
+        AsyncMock(
+            return_value=[_saved_state(saved_id, "https://saved.example")]
+        ),
+    )
+    monkeypatch.setattr(
+        crawler_pipeline,
+        "check_succession",
+        AsyncMock(side_effect=RuntimeError("simulated DB statement error")),
+    )
+
+    session = _mk_session(queue_rows)
+    session.rollback = AsyncMock()
+    nested_ctx = AsyncMock()
+    nested_ctx.__aenter__ = AsyncMock(return_value=nested_ctx)
+    nested_ctx.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=nested_ctx)
+
+    _, summary = await run_full_pipeline(session)
+
+    # Queue cleanup ran — the saved item's source_url is removed from queue.
+    delete_mock.assert_awaited_once()
+    deleted_urls = delete_mock.await_args.args[1]
+    assert "https://saved.example" in deleted_urls
+    # Final commit ran exactly once so the saved tech_item becomes durable
+    # alongside the queue cleanup.
+    session.commit.assert_awaited_once()
+    # Critically: parent transaction was not rolled back — that would have
+    # discarded the saved tech_item even though Stage 6 deleted the queue row.
+    session.rollback.assert_not_awaited()
     assert summary.succession_alerts == []
 
 

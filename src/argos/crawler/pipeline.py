@@ -286,26 +286,25 @@ async def run_full_pipeline(
     # dedup for successful sends.  Alerts ride out on PipelineSummary for
     # the CLI / Slack dispatcher (ARG-104) to consume.
     succession_alerts: list[SuccessionAlert] = []
+    # Run check_succession inside a SAVEPOINT so a DB error in the read-only
+    # succession query only rolls back the savepoint — not the parent
+    # transaction.  Earlier stages (save_node) may have inserted new
+    # tech_items / tech_succession rows in this same transaction; calling
+    # session.rollback() on the parent here would discard that work while
+    # Stage 6 below still deletes the corresponding queue_rows and commits,
+    # permanently losing the processed items.  The savepoint isolates the
+    # failure: saved items stay durable, Stage 6 proceeds normally, and the
+    # parent transaction is left in a usable state.
     try:
-        succession_alerts = await check_succession(session)
+        async with session.begin_nested():
+            succession_alerts = await check_succession(session)
     except Exception as exc:  # noqa: BLE001
         # Succession alerts are advisory — never let them break the run.
-        # A failed SELECT inside SQLAlchemy leaves the session in a failed
-        # transaction state ("InFailedSqlTransaction"); without an explicit
-        # rollback here, the Stage 6 DB calls below (_delete_from_queue,
-        # _queue_count, commit) would all raise and abort the run.  Roll
-        # back so the queue-cleanup transaction starts clean.
+        # The nested begin() context manager has already rolled the savepoint
+        # back on exception, leaving the parent transaction intact.
         logger.warning(
             "run_full_pipeline: check_succession failed: %r", exc
         )
-        try:
-            await session.rollback()
-        except Exception as rb_exc:  # noqa: BLE001
-            logger.warning(
-                "run_full_pipeline: rollback after check_succession failure "
-                "raised: %r",
-                rb_exc,
-            )
 
     # ── Stage 6: remove processed rows from queue ─────────────────────────
     # Items where save_node raised (is_valid=True, saved=False) stay in the
