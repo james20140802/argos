@@ -23,7 +23,7 @@ import enum
 import logging
 import uuid
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from sqlalchemy import select
@@ -49,6 +49,28 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 _FETCH_TIMEOUT_SECONDS = 20.0
+# Match httpx's default max_redirects so behavior is comparable to the previous
+# `follow_redirects=True` flow, just with per-hop safety validation.
+_MAX_REDIRECT_HOPS = 20
+_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+
+
+class _UnsafeRedirectTarget(Exception):
+    """Raised when a redirect Location fails SSRF / scheme validation.
+
+    Distinct from :class:`RobotsDisallowed` so the caller can map it to a
+    REJECTED outcome with an SSRF-specific reason rather than silently
+    falling through to the dynamic fetcher (which would just re-encounter
+    the same redirect).
+    """
+
+    def __init__(self, original: str, target: str, reason: str) -> None:
+        super().__init__(
+            f"unsafe redirect target {target!r} from {original!r}: {reason}"
+        )
+        self.original = original
+        self.target = target
+        self.reason = reason
 
 
 class AddUrlStatus(str, enum.Enum):
@@ -97,29 +119,126 @@ async def _find_existing_tech_item_id(
 # ---------------------------------------------------------------------------
 
 
+async def _safe_static_fetch(url: str) -> httpx.Response | None:
+    """Fetch ``url`` via httpx with auto-redirects DISABLED, validating each
+    hop before issuing the next request.
+
+    Returning the network request to a private/link-local host before the
+    SSRF gate runs would leave an SSRF primitive intact even if ingestion is
+    later refused. So this helper:
+
+      1. Creates a client with ``follow_redirects=False``.
+      2. On each 3xx response, resolves the ``Location`` header (relative URLs
+         via :func:`urljoin`), re-validates the scheme + SSRF safety
+         (``_is_safe_url``) BEFORE issuing the next request. ``_get_with_retry``
+         already calls ``is_robots_allowed`` per hop, so robots is covered.
+      3. Caps the chain at :data:`_MAX_REDIRECT_HOPS` (matches httpx default).
+
+    Raises:
+        RobotsDisallowed: if the original URL or any redirect hop is
+            disallowed by robots.txt.
+        _UnsafeRedirectTarget: if a redirect ``Location`` points at a
+            private/link-local/loopback/metadata host or a disallowed scheme.
+        httpx.HTTPError: transport-level failure (returned as ``None`` to the
+            caller after logging).
+
+    Returns the final non-3xx response, or ``None`` if the chain failed at
+    the transport layer (caller will fall back to the dynamic fetcher).
+    """
+    current_url = url
+    async with httpx.AsyncClient(
+        timeout=_FETCH_TIMEOUT_SECONDS,
+        follow_redirects=False,
+    ) as client:
+        for _hop in range(_MAX_REDIRECT_HOPS + 1):
+            try:
+                response = await _get_with_retry(client, current_url)
+            except RobotsDisallowed:
+                # Surface robots blocks to the caller — no fallback to dynamic.
+                raise
+            except httpx.HTTPError as exc:
+                logger.info(
+                    "add_url static fetch failed for %s: %r; trying dynamic",
+                    current_url,
+                    exc,
+                )
+                return None
+
+            if response.status_code not in _REDIRECT_STATUS_CODES:
+                return response
+
+            location = response.headers.get("location")
+            if not location:
+                logger.info(
+                    "add_url: %s returned status %d with no Location; trying dynamic",
+                    current_url,
+                    response.status_code,
+                )
+                return None
+
+            # Resolve relative Locations against the current URL.
+            next_url = urljoin(current_url, location)
+
+            # Re-validate the scheme on each hop — reject `file://`,
+            # `javascript:`, etc. before the SSRF host check runs.
+            try:
+                parts = urlsplit(next_url)
+            except ValueError as exc:
+                raise _UnsafeRedirectTarget(
+                    current_url, next_url, f"unparseable: {exc}"
+                ) from None
+            if parts.scheme.lower() not in _ALLOWED_SCHEMES:
+                raise _UnsafeRedirectTarget(
+                    current_url,
+                    next_url,
+                    f"disallowed scheme {parts.scheme!r}",
+                )
+
+            # SSRF check happens BEFORE any further network request.
+            if not await _is_safe_url(next_url):
+                raise _UnsafeRedirectTarget(
+                    current_url,
+                    next_url,
+                    "host failed SSRF safety check (private/link-local/loopback)",
+                )
+
+            logger.debug(
+                "add_url: following redirect %s -> %s (status=%d)",
+                current_url,
+                next_url,
+                response.status_code,
+            )
+            current_url = next_url
+
+    logger.info(
+        "add_url: exceeded %d redirect hops starting from %s; trying dynamic",
+        _MAX_REDIRECT_HOPS,
+        url,
+    )
+    return None
+
+
 async def _fetch_url_content(url: str) -> dict | None:
     """Fetch a URL and extract main content.
 
-    Tries the lightweight static (httpx + readability) path first.  If that
-    yields no usable content (empty body, non-HTML response, or transport
-    error other than RobotsDisallowed), falls back to Playwright via
-    :func:`fetch_dynamic_page` which handles JS-rendered SPAs.
+    Tries the lightweight static (httpx + readability) path first via
+    :func:`_safe_static_fetch`, which validates each redirect hop *before*
+    issuing the next request (closing an SSRF primitive that
+    ``follow_redirects=True`` would otherwise leave open). If that yields no
+    usable content (empty body, non-HTML response, transport error), falls
+    back to Playwright via :func:`fetch_dynamic_page` which has its own
+    per-hop validation for JS-rendered SPAs.
 
     Returns ``{"title": str, "raw_content": str, "source_url": final_url}``
     or ``None`` if both paths fail.
+
+    Raises:
+        RobotsDisallowed: if the original URL or any redirect hop is
+            disallowed by robots.txt.
+        _UnsafeRedirectTarget: if a redirect hop fails the SSRF / scheme
+            check. Caller maps this to a REJECTED result.
     """
-    async with httpx.AsyncClient(
-        timeout=_FETCH_TIMEOUT_SECONDS,
-        follow_redirects=True,
-    ) as client:
-        try:
-            response = await _get_with_retry(client, url)
-        except RobotsDisallowed:
-            # Surface robots blocks to the caller — no fallback to dynamic.
-            raise
-        except httpx.HTTPError as exc:
-            logger.info("add_url static fetch failed for %s: %r; trying dynamic", url, exc)
-            response = None
+    response = await _safe_static_fetch(url)
 
     if response is not None:
         content_type = response.headers.get("content-type", "").lower()
@@ -132,25 +251,6 @@ async def _fetch_url_content(url: str) -> dict | None:
         else:
             title, body = extract_main_content(response.text)
             final_url = str(response.url) or url
-            # Re-validate the post-redirect URL: httpx follows redirects
-            # transparently, so the original SSRF + robots checks only cover
-            # the user-supplied URL. A 30x to a private/link-local host or a
-            # robots-disallowed target would otherwise slip through.
-            if final_url != url:
-                if not await _is_safe_url(final_url):
-                    logger.warning(
-                        "add_url: SSRF redirect blocked %s -> %s (failed _is_safe_url)",
-                        url,
-                        final_url,
-                    )
-                    return None
-                if not await is_robots_allowed(final_url):
-                    logger.warning(
-                        "add_url: robots-disallowed redirect %s -> %s",
-                        url,
-                        final_url,
-                    )
-                    raise RobotsDisallowed(final_url)
             if body.strip():
                 return {
                     "title": title or "",
@@ -242,6 +342,21 @@ async def add_url(url: str, session: AsyncSession) -> AddUrlResult:
             url=cleaned,
             status=AddUrlStatus.REJECTED,
             reason="robots.txt disallows fetching this URL",
+        )
+    except _UnsafeRedirectTarget as exc:
+        logger.warning(
+            "add_url: SSRF redirect blocked %s -> %s (%s)",
+            exc.original,
+            exc.target,
+            exc.reason,
+        )
+        return AddUrlResult(
+            url=cleaned,
+            status=AddUrlStatus.REJECTED,
+            reason=(
+                "redirect target failed SSRF safety check "
+                f"({exc.target}): {exc.reason}"
+            ),
         )
     except Exception as exc:  # noqa: BLE001 — fetch path covers many exception types
         logger.warning("add_url fetch raised for %s: %r", cleaned, exc)

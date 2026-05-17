@@ -378,87 +378,184 @@ async def test_find_existing_returns_none_when_absent() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SSRF: redirect re-validation (Codex review on PR #67)
+# SSRF: per-hop redirect validation (Codex review on PR #67, follow-up)
 #
-# httpx in add_url follows redirects transparently, so the SSRF + robots
-# checks at the entry of add_url cover only the user-supplied URL. The
-# static fetch path must re-validate response.url before trusting the body.
+# Previous fix only blocked ingestion of post-redirect bodies, leaving the
+# network request to the private host as an SSRF primitive. The current
+# implementation MUST disable httpx auto-redirect and validate each
+# `Location` target via `_is_safe_url` BEFORE issuing the next request.
 # ---------------------------------------------------------------------------
 
 
-def _patch_get_with_retry(response: MagicMock):
-    return patch(
-        "argos.crawler.add_url._get_with_retry",
-        new=AsyncMock(return_value=response),
-    )
+def _patch_get_with_retry_sequence(*responses):
+    """Patch ``_get_with_retry`` with a sequenced AsyncMock so each successive
+    call returns the next response. Returns the mock so tests can assert on
+    ``.call_args_list`` / ``.await_count``."""
+    mock = AsyncMock(side_effect=list(responses))
+    return mock, patch("argos.crawler.add_url._get_with_retry", new=mock)
 
 
-def _make_html_response(final_url: str, body: str = "<html><body><p>x</p></body></html>") -> MagicMock:
+def _make_html_response(
+    final_url: str, body: str = "<html><body><p>x</p></body></html>"
+) -> MagicMock:
     response = MagicMock()
     response.url = final_url
     response.text = body
+    response.status_code = 200
     response.headers = {"content-type": "text/html"}
     return response
 
 
+def _make_redirect_response(
+    location: str, status_code: int = 302
+) -> MagicMock:
+    """A bare 3xx whose Location header points at ``location``. The body /
+    content-type / .url are irrelevant — the safe-fetch loop only reads
+    status_code + Location."""
+    response = MagicMock()
+    response.status_code = status_code
+    response.headers = {"location": location}
+    response.text = ""
+    return response
+
+
 async def test_static_fetch_revalidates_redirect_blocks_private_target() -> None:
-    """If the static fetcher's response.url resolves to a private host, add_url
-    must reject the fetch rather than trust the body — even though the original
-    URL passed SSRF.
+    """A redirect Location pointing at a private host MUST NOT trigger a second
+    network request. The SSRF check has to run BEFORE the next GET.
     """
     session = _make_session()
-    safe_url = AsyncMock(side_effect=[True, False])  # original ok, redirect blocked
-    response = _make_html_response("http://10.0.0.1/internal")
+    # First _is_safe_url is the add_url entry-point check (ok).
+    # Second is the per-hop check on the redirect target (blocked).
+    safe_url = AsyncMock(side_effect=[True, False])
+    redirect = _make_redirect_response("http://10.0.0.1/internal")
+    # Only ONE response should ever be consumed — if the SSRF gate fails open
+    # and a second request is issued, side_effect=[redirect] will raise
+    # StopAsyncIteration and the test will fail loudly.
+    get_mock, get_patch = _patch_get_with_retry_sequence(redirect)
     extract = MagicMock(return_value=("Title", "Lots of body text"))
     fetch_dynamic = AsyncMock(return_value=None)
     with (
         patch("argos.crawler.add_url._is_safe_url", new=safe_url),
         _patch_robots(True),
         _patch_dedup_lookup(None),
-        _patch_get_with_retry(response),
+        get_patch,
         patch("argos.crawler.add_url.extract_main_content", new=extract),
         patch("argos.crawler.add_url.fetch_dynamic_page", new=fetch_dynamic),
     ):
         r = await add_url("https://example.com/start", session)
 
-    # The fetch path must fall back / fail without persisting anything.
-    assert r.status is AddUrlStatus.ERROR
-    # Both safe_url calls happened: pre-fetch + post-redirect.
-    assert safe_url.await_count >= 2
+    # Outcome: REJECTED with an SSRF-specific reason, NO fallback to dynamic.
+    assert r.status is AddUrlStatus.REJECTED
+    assert r.reason and "ssrf" in r.reason.lower()
+    fetch_dynamic.assert_not_awaited()
+    # CRITICAL: only the initial request was issued. The private host was
+    # never requested.
+    assert get_mock.await_count == 1
+    called_urls = [call.args[1] for call in get_mock.await_args_list]
+    assert "10.0.0.1" not in " ".join(called_urls)
 
 
 async def test_static_fetch_revalidates_redirect_blocks_robots_disallowed_target() -> None:
-    """A redirect target that is robots-disallowed must also be rejected after
-    fetch, not just at the original URL.
+    """A redirect to a robots-disallowed host is rejected by ``_get_with_retry``
+    on the second hop (it calls ``is_robots_allowed`` before issuing the GET).
     """
     session = _make_session()
-    # robots: original allowed, redirected target disallowed.
-    robots = AsyncMock(side_effect=[True, False])
+    # robots-allowed at the entry point (initial GET succeeds), then the
+    # second invocation of _get_with_retry (against the redirect target)
+    # raises RobotsDisallowed before issuing any network request.
+    from argos.crawler.add_url import RobotsDisallowed as _Robots
+
+    redirect = _make_redirect_response("https://forbidden.example.com/blocked")
+    get_mock = AsyncMock(
+        side_effect=[redirect, _Robots("https://forbidden.example.com/blocked")]
+    )
     safe_url = AsyncMock(return_value=True)
-    response = _make_html_response("https://forbidden.example.com/blocked")
     extract = MagicMock(return_value=("Title", "Body"))
     fetch_dynamic = AsyncMock(return_value=None)
     with (
         patch("argos.crawler.add_url._is_safe_url", new=safe_url),
-        patch("argos.crawler.add_url.is_robots_allowed", new=robots),
+        _patch_robots(True),
         _patch_dedup_lookup(None),
-        _patch_get_with_retry(response),
+        patch("argos.crawler.add_url._get_with_retry", new=get_mock),
         patch("argos.crawler.add_url.extract_main_content", new=extract),
         patch("argos.crawler.add_url.fetch_dynamic_page", new=fetch_dynamic),
     ):
         r = await add_url("https://example.com/start", session)
 
-    # Redirected to a robots-disallowed URL — surface as REJECTED.
+    # Surface as REJECTED with a robots-flavored reason.
     assert r.status is AddUrlStatus.REJECTED
     assert r.reason and "robots" in r.reason.lower()
+    fetch_dynamic.assert_not_awaited()
 
 
-async def test_static_fetch_no_redirect_does_not_double_validate() -> None:
-    """If response.url == original URL, no extra _is_safe_url call is needed."""
+async def test_static_fetch_relative_redirect_resolves_and_validates() -> None:
+    """A relative Location like ``/internal`` resolves against the current URL
+    and is then SSRF-validated. If the resolved URL is on the same (safe) host
+    the chain proceeds; the test asserts the second GET targets the resolved
+    absolute URL.
+    """
+    session = _make_session()
+    new_id = uuid.uuid4()
+    # First two calls to _is_safe_url: entry-point (ok), per-hop (ok).
+    safe_url = AsyncMock(return_value=True)
+    redirect = _make_redirect_response("/page")  # relative
+    final = _make_html_response("https://example.com/page")
+    get_mock = AsyncMock(side_effect=[redirect, final])
+    extract = MagicMock(return_value=("Title", "Lots of body text"))
+    brain_state = {
+        "is_valid": True,
+        "saved": True,
+        "source_url": "https://example.com/page",
+    }
+    with (
+        patch("argos.crawler.add_url._is_safe_url", new=safe_url),
+        _patch_robots(True),
+        _patch_dedup_lookup(None, None, new_id),
+        patch("argos.crawler.add_url._get_with_retry", new=get_mock),
+        patch("argos.crawler.add_url.extract_main_content", new=extract),
+        _patch_brain(brain_state),
+    ):
+        r = await add_url("https://example.com/start", session)
+
+    assert r.status is AddUrlStatus.CREATED
+    # Two GETs: original then resolved absolute redirect target.
+    assert get_mock.await_count == 2
+    called_urls = [call.args[1] for call in get_mock.await_args_list]
+    assert called_urls[0] == "https://example.com/start"
+    assert called_urls[1] == "https://example.com/page"
+
+
+async def test_static_fetch_rejects_disallowed_scheme_in_redirect() -> None:
+    """A redirect to ``file://`` or similar non-http(s) scheme is rejected by
+    the scheme check before SSRF resolution and before any further request.
+    """
+    session = _make_session()
+    safe_url = AsyncMock(return_value=True)
+    redirect = _make_redirect_response("file:///etc/passwd")
+    get_mock = AsyncMock(side_effect=[redirect])
+    fetch_dynamic = AsyncMock(return_value=None)
+    with (
+        patch("argos.crawler.add_url._is_safe_url", new=safe_url),
+        _patch_robots(True),
+        _patch_dedup_lookup(None),
+        patch("argos.crawler.add_url._get_with_retry", new=get_mock),
+        patch("argos.crawler.add_url.fetch_dynamic_page", new=fetch_dynamic),
+    ):
+        r = await add_url("https://example.com/start", session)
+
+    assert r.status is AddUrlStatus.REJECTED
+    assert r.reason and "scheme" in r.reason.lower()
+    assert get_mock.await_count == 1
+    fetch_dynamic.assert_not_awaited()
+
+
+async def test_static_fetch_no_redirect_issues_single_request() -> None:
+    """A 200 OK response is returned directly with no follow-up GET."""
     session = _make_session()
     new_id = uuid.uuid4()
     safe_url = AsyncMock(return_value=True)
     response = _make_html_response("https://example.com/page")
+    get_mock = AsyncMock(side_effect=[response])
     extract = MagicMock(return_value=("Title", "Lots of body text"))
     brain_state = {
         "is_valid": True,
@@ -469,7 +566,7 @@ async def test_static_fetch_no_redirect_does_not_double_validate() -> None:
         patch("argos.crawler.add_url._is_safe_url", new=safe_url),
         _patch_robots(True),
         _patch_dedup_lookup(None, new_id),
-        _patch_get_with_retry(response),
+        patch("argos.crawler.add_url._get_with_retry", new=get_mock),
         patch("argos.crawler.add_url.extract_main_content", new=extract),
         _patch_brain(brain_state),
     ):
@@ -478,3 +575,4 @@ async def test_static_fetch_no_redirect_does_not_double_validate() -> None:
     assert r.status is AddUrlStatus.CREATED
     # Only the entry-point SSRF check should have run when there's no redirect.
     assert safe_url.await_count == 1
+    assert get_mock.await_count == 1
