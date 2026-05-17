@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import logging
 from typing import Callable
 import httpx
@@ -94,13 +95,65 @@ async def embed_and_search_node(state: BrainState, session: AsyncSession) -> Bra
         return {**state, "related_tech_ids": [], "extracted_info": None}
 
 
+async def _similarity_search(
+    state: BrainState,
+    embedding: list[float],
+    session: AsyncSession,
+    top_n: int,
+    max_chars: int,
+) -> BrainState:
+    """Run a single pgvector similarity search for *state* using *embedding*.
+
+    Returns an updated copy of *state* with ``related_tech_ids`` and
+    ``extracted_info`` populated, or with ``genealogy_skipped=True`` when the
+    search returns no rows.
+
+    This helper is intentionally kept pure (no side-effects beyond the DB
+    read) so it can be called concurrently from ``batch_embed_and_search_node``
+    via ``asyncio.gather`` + ``asyncio.Semaphore``.
+    """
+    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+    stmt = text(
+        f"SELECT id, title, raw_content FROM tech_items "
+        f"WHERE embedding IS NOT NULL "
+        f"ORDER BY embedding <=> CAST(:emb AS vector) LIMIT {top_n}"
+    )
+    result = await session.execute(stmt, {"emb": embedding_str})
+    rows = result.fetchall()
+
+    if not rows:
+        return {
+            **state,
+            "related_tech_ids": [],
+            "extracted_info": {"embedding": embedding, "similar_items": []},
+            "genealogy_skipped": True,
+            "genealogy_skip_reason": "cold_start",
+        }
+    return {
+        **state,
+        "related_tech_ids": [str(r.id) for r in rows],
+        "extracted_info": {
+            "embedding": embedding,
+            "similar_items": [
+                {
+                    "id": str(r.id),
+                    "title": r.title,
+                    "raw_content": r.raw_content[:max_chars],
+                }
+                for r in rows
+            ],
+        },
+    }
+
+
 async def batch_embed_and_search_node(
     states: list[BrainState],
     session: AsyncSession,
     *,
     on_item_done: Callable[[], None] | None = None,
 ) -> list[BrainState]:
-    """Embed all valid states in a single /api/embed call, then run similarity search per item.
+    """Embed all valid states in a single /api/embed call, then run similarity
+    searches concurrently (bounded by ``genealogist.embed_search_concurrency``).
 
     Returns a parallel list of states; invalid states are passed through unchanged.
 
@@ -109,7 +162,12 @@ async def batch_embed_and_search_node(
     states:
         Input batch of brain states.
     session:
-        Active async SQLAlchemy session.
+        Active async SQLAlchemy session.  Concurrent coroutines share this
+        session; SQLAlchemy's asyncio implementation serialises access to the
+        underlying connection internally, so no session-safety regression is
+        introduced.  The semaphore bounds the fan-out to
+        ``settings.user.genealogist.embed_search_concurrency`` (default 4) so
+        the asyncpg pool is never overwhelmed.
     on_item_done:
         Optional zero-arg callback invoked once per *valid* state after its
         embedding + similarity search slot completes (i.e., the number of
@@ -123,6 +181,7 @@ async def batch_embed_and_search_node(
     top_n = _settings.user.genealogist.context_top_n
     max_chars = _settings.user.genealogist.context_max_chars
     threshold = _settings.user.genealogist.min_db_items
+    concurrency = _settings.user.genealogist.embed_search_concurrency
 
     valid_indices = [i for i, s in enumerate(states) if s.get("is_valid")]
     if not valid_indices:
@@ -155,66 +214,52 @@ async def batch_embed_and_search_node(
             logger.debug("batch_embed_and_search_node on_item_done raised: %r", exc)
 
     out = list(states)
-    for pos, idx in enumerate(valid_indices):
-        try:
+
+    if cold_start:
+        # Cold-start path: no similarity searches needed; populate embeddings only.
+        for pos, idx in enumerate(valid_indices):
             state = states[idx]
             embedding = embeddings[pos]
-
-            if cold_start:
-                logger.info(
-                    "DB items insufficient for genealogy (%d items, threshold=%d), skipping",
-                    embedded_count,
-                    threshold,
-                )
-                out[idx] = {
-                    **state,
-                    "related_tech_ids": [],
-                    "extracted_info": {"embedding": embedding, "similar_items": []},
-                    "genealogy_skipped": True,
-                    "genealogy_skip_reason": "cold_start",
-                }
-                continue
-
-            try:
-                embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-                stmt = text(
-                    f"SELECT id, title, raw_content FROM tech_items "
-                    f"WHERE embedding IS NOT NULL "
-                    f"ORDER BY embedding <=> CAST(:emb AS vector) LIMIT {top_n}"
-                )
-                result = await session.execute(stmt, {"emb": embedding_str})
-                rows = result.fetchall()
-            except Exception as exc:
-                logger.warning("batch_embed_and_search_node: similarity search failed: %r", exc)
-                out[idx] = {**state, "related_tech_ids": [], "extracted_info": None}
-                continue
-
-            if not rows:
-                out[idx] = {
-                    **state,
-                    "related_tech_ids": [],
-                    "extracted_info": {"embedding": embedding, "similar_items": []},
-                    "genealogy_skipped": True,
-                    "genealogy_skip_reason": "cold_start",
-                }
-            else:
-                out[idx] = {
-                    **state,
-                    "related_tech_ids": [str(r.id) for r in rows],
-                    "extracted_info": {
-                        "embedding": embedding,
-                        "similar_items": [
-                            {
-                                "id": str(r.id),
-                                "title": r.title,
-                                "raw_content": r.raw_content[:max_chars],
-                            }
-                            for r in rows
-                        ],
-                    },
-                }
-        finally:
-            # Tick exactly once per valid item processed, regardless of which
-            # branch (cold_start / similarity / failure) handled this slot.
+            logger.info(
+                "DB items insufficient for genealogy (%d items, threshold=%d), skipping",
+                embedded_count,
+                threshold,
+            )
+            out[idx] = {
+                **state,
+                "related_tech_ids": [],
+                "extracted_info": {"embedding": embedding, "similar_items": []},
+                "genealogy_skipped": True,
+                "genealogy_skip_reason": "cold_start",
+            }
             _tick()
+        return out
+
+    # Warm path: run similarity searches concurrently, bounded by semaphore.
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _search_one(pos: int, idx: int) -> tuple[int, BrainState]:
+        """Run one similarity search and return (idx, updated_state)."""
+        state = states[idx]
+        embedding = embeddings[pos]
+        try:
+            async with sem:
+                updated = await _similarity_search(
+                    state, embedding, session, top_n, max_chars
+                )
+        except Exception as exc:
+            logger.warning(
+                "batch_embed_and_search_node: similarity search failed: %r", exc
+            )
+            updated = {**state, "related_tech_ids": [], "extracted_info": None}
+        finally:
+            _tick()
+        return idx, updated
+
+    results = await asyncio.gather(
+        *(_search_one(pos, idx) for pos, idx in enumerate(valid_indices))
+    )
+    for idx, updated_state in results:
+        out[idx] = updated_state
+
     return out
