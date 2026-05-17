@@ -290,9 +290,22 @@ async def run_full_pipeline(
         succession_alerts = await check_succession(session)
     except Exception as exc:  # noqa: BLE001
         # Succession alerts are advisory — never let them break the run.
+        # A failed SELECT inside SQLAlchemy leaves the session in a failed
+        # transaction state ("InFailedSqlTransaction"); without an explicit
+        # rollback here, the Stage 6 DB calls below (_delete_from_queue,
+        # _queue_count, commit) would all raise and abort the run.  Roll
+        # back so the queue-cleanup transaction starts clean.
         logger.warning(
             "run_full_pipeline: check_succession failed: %r", exc
         )
+        try:
+            await session.rollback()
+        except Exception as rb_exc:  # noqa: BLE001
+            logger.warning(
+                "run_full_pipeline: rollback after check_succession failure "
+                "raised: %r",
+                rb_exc,
+            )
 
     # ── Stage 6: remove processed rows from queue ─────────────────────────
     # Items where save_node raised (is_valid=True, saved=False) stay in the

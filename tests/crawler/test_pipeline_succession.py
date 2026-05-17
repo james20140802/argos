@@ -201,6 +201,53 @@ async def test_run_full_pipeline_swallows_check_succession_exception(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_run_full_pipeline_rolls_back_after_check_succession_failure(monkeypatch):
+    """When check_succession raises (typical case: a DB/statement error),
+    the session is left in a failed-transaction state in SQLAlchemy.  The
+    pipeline must call ``session.rollback()`` before issuing further DB
+    calls (_delete_from_queue, _queue_count, commit) — otherwise those
+    calls would themselves raise and abort the run."""
+    saved_id = uuid.uuid4()
+
+    monkeypatch.setattr(crawler_pipeline, "run_full_crawl", AsyncMock(return_value=[]))
+    monkeypatch.setattr(crawler_pipeline, "_upsert_crawl_queue", AsyncMock(return_value=0))
+    queue_rows = [
+        MagicMock(source_url="https://a.example", raw_content="A", source="rss", source_category=None)
+    ]
+    monkeypatch.setattr(crawler_pipeline, "_pop_from_queue", AsyncMock(return_value=queue_rows))
+    delete_mock = AsyncMock(return_value=None)
+    queue_count_mock = AsyncMock(return_value=0)
+    monkeypatch.setattr(crawler_pipeline, "_delete_from_queue", delete_mock)
+    monkeypatch.setattr(crawler_pipeline, "_queue_count", queue_count_mock)
+    monkeypatch.setattr(crawler_pipeline, "is_preflight_reject", lambda _txt: False)
+    monkeypatch.setattr(
+        crawler_pipeline,
+        "run_batch_brain_pipeline",
+        AsyncMock(return_value=[_saved_state(saved_id, "https://a.example")]),
+    )
+
+    monkeypatch.setattr(
+        crawler_pipeline,
+        "check_succession",
+        AsyncMock(side_effect=RuntimeError("simulated DB statement error")),
+    )
+
+    session = _mk_session(queue_rows)
+    # Explicit rollback mock so we can assert it was awaited before commit.
+    session.rollback = AsyncMock()
+
+    _, summary = await run_full_pipeline(session)
+
+    # Rollback was issued.
+    session.rollback.assert_awaited_once()
+    # Stage 6 still ran on a clean session.
+    delete_mock.assert_awaited()
+    queue_count_mock.assert_awaited()
+    session.commit.assert_awaited_once()
+    assert summary.succession_alerts == []
+
+
+@pytest.mark.asyncio
 async def test_save_node_populates_saved_item_id():
     """save_node must surface the new item's PK so the post-save hook can use it."""
     from argos.brain.nodes.save import save_node
