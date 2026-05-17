@@ -375,3 +375,106 @@ async def test_find_existing_returns_none_when_absent() -> None:
     got = await _find_existing_tech_item_id(session, "https://example.com/page")
 
     assert got is None
+
+
+# ---------------------------------------------------------------------------
+# SSRF: redirect re-validation (Codex review on PR #67)
+#
+# httpx in add_url follows redirects transparently, so the SSRF + robots
+# checks at the entry of add_url cover only the user-supplied URL. The
+# static fetch path must re-validate response.url before trusting the body.
+# ---------------------------------------------------------------------------
+
+
+def _patch_get_with_retry(response: MagicMock):
+    return patch(
+        "argos.crawler.add_url._get_with_retry",
+        new=AsyncMock(return_value=response),
+    )
+
+
+def _make_html_response(final_url: str, body: str = "<html><body><p>x</p></body></html>") -> MagicMock:
+    response = MagicMock()
+    response.url = final_url
+    response.text = body
+    response.headers = {"content-type": "text/html"}
+    return response
+
+
+async def test_static_fetch_revalidates_redirect_blocks_private_target() -> None:
+    """If the static fetcher's response.url resolves to a private host, add_url
+    must reject the fetch rather than trust the body — even though the original
+    URL passed SSRF.
+    """
+    session = _make_session()
+    safe_url = AsyncMock(side_effect=[True, False])  # original ok, redirect blocked
+    response = _make_html_response("http://10.0.0.1/internal")
+    extract = MagicMock(return_value=("Title", "Lots of body text"))
+    fetch_dynamic = AsyncMock(return_value=None)
+    with (
+        patch("argos.crawler.add_url._is_safe_url", new=safe_url),
+        _patch_robots(True),
+        _patch_dedup_lookup(None),
+        _patch_get_with_retry(response),
+        patch("argos.crawler.add_url.extract_main_content", new=extract),
+        patch("argos.crawler.add_url.fetch_dynamic_page", new=fetch_dynamic),
+    ):
+        r = await add_url("https://example.com/start", session)
+
+    # The fetch path must fall back / fail without persisting anything.
+    assert r.status is AddUrlStatus.ERROR
+    # Both safe_url calls happened: pre-fetch + post-redirect.
+    assert safe_url.await_count >= 2
+
+
+async def test_static_fetch_revalidates_redirect_blocks_robots_disallowed_target() -> None:
+    """A redirect target that is robots-disallowed must also be rejected after
+    fetch, not just at the original URL.
+    """
+    session = _make_session()
+    # robots: original allowed, redirected target disallowed.
+    robots = AsyncMock(side_effect=[True, False])
+    safe_url = AsyncMock(return_value=True)
+    response = _make_html_response("https://forbidden.example.com/blocked")
+    extract = MagicMock(return_value=("Title", "Body"))
+    fetch_dynamic = AsyncMock(return_value=None)
+    with (
+        patch("argos.crawler.add_url._is_safe_url", new=safe_url),
+        patch("argos.crawler.add_url.is_robots_allowed", new=robots),
+        _patch_dedup_lookup(None),
+        _patch_get_with_retry(response),
+        patch("argos.crawler.add_url.extract_main_content", new=extract),
+        patch("argos.crawler.add_url.fetch_dynamic_page", new=fetch_dynamic),
+    ):
+        r = await add_url("https://example.com/start", session)
+
+    # Redirected to a robots-disallowed URL — surface as REJECTED.
+    assert r.status is AddUrlStatus.REJECTED
+    assert r.reason and "robots" in r.reason.lower()
+
+
+async def test_static_fetch_no_redirect_does_not_double_validate() -> None:
+    """If response.url == original URL, no extra _is_safe_url call is needed."""
+    session = _make_session()
+    new_id = uuid.uuid4()
+    safe_url = AsyncMock(return_value=True)
+    response = _make_html_response("https://example.com/page")
+    extract = MagicMock(return_value=("Title", "Lots of body text"))
+    brain_state = {
+        "is_valid": True,
+        "saved": True,
+        "source_url": "https://example.com/page",
+    }
+    with (
+        patch("argos.crawler.add_url._is_safe_url", new=safe_url),
+        _patch_robots(True),
+        _patch_dedup_lookup(None, new_id),
+        _patch_get_with_retry(response),
+        patch("argos.crawler.add_url.extract_main_content", new=extract),
+        _patch_brain(brain_state),
+    ):
+        r = await add_url("https://example.com/page", session)
+
+    assert r.status is AddUrlStatus.CREATED
+    # Only the entry-point SSRF check should have run when there's no redirect.
+    assert safe_url.await_count == 1

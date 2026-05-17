@@ -132,6 +132,25 @@ async def _fetch_url_content(url: str) -> dict | None:
         else:
             title, body = extract_main_content(response.text)
             final_url = str(response.url) or url
+            # Re-validate the post-redirect URL: httpx follows redirects
+            # transparently, so the original SSRF + robots checks only cover
+            # the user-supplied URL. A 30x to a private/link-local host or a
+            # robots-disallowed target would otherwise slip through.
+            if final_url != url:
+                if not await _is_safe_url(final_url):
+                    logger.warning(
+                        "add_url: SSRF redirect blocked %s -> %s (failed _is_safe_url)",
+                        url,
+                        final_url,
+                    )
+                    return None
+                if not await is_robots_allowed(final_url):
+                    logger.warning(
+                        "add_url: robots-disallowed redirect %s -> %s",
+                        url,
+                        final_url,
+                    )
+                    raise RobotsDisallowed(final_url)
             if body.strip():
                 return {
                     "title": title or "",
