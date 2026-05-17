@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from typing import Callable
 from pydantic import BaseModel, StrictBool, field_validator
 from argos.brain.graph_state import BrainState
 from argos.brain.llm_client import get_llm_client
@@ -264,11 +265,27 @@ async def triage_node(state: BrainState) -> BrainState:
             pass
 
 
-async def batch_triage_states(states: list[BrainState]) -> list[BrainState]:
+async def batch_triage_states(
+    states: list[BrainState],
+    *,
+    on_item_done: Callable[[], None] | None = None,
+) -> list[BrainState]:
     """Triage all states with the 8B model loaded once across all items.
 
     The model is kept alive (keep_alive='5m') for every call and unloaded
     once after all items are processed — reducing N model swaps to 1.
+
+    Parameters
+    ----------
+    states:
+        Input batch of brain states to triage.
+    on_item_done:
+        Optional zero-arg callback invoked once after each state finishes
+        triage (success or failure). Provided so the CLI can drive a Rich
+        progress bar (ARG-92/ARG-101) without leaking UI concerns into the
+        brain module. Defaults to ``None`` (no-op), keeping existing callers
+        unaffected. Exceptions raised by the callback are swallowed so a
+        broken UI cannot abort the pipeline.
     """
     if not states:
         return []
@@ -278,6 +295,11 @@ async def batch_triage_states(states: list[BrainState]) -> list[BrainState]:
         for state in states:
             result = await _triage_one(state, client, keep_alive="5m")
             results.append(result)
+            if on_item_done is not None:
+                try:
+                    on_item_done()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("batch_triage_states on_item_done raised: %r", exc)
     finally:
         try:
             await client.unload("small")
