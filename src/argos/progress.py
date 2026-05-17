@@ -177,6 +177,18 @@ class ProgressReporter:
                     # Snap the bar to 100% so a stage that under-ticked still
                     # renders as completed.
                     self._progress.update(task_id, completed=float(total))
+                else:
+                    # Indeterminate stages (started with total=None) never get
+                    # a numeric total, so the spinner would keep animating
+                    # forever otherwise. Pin a total of 1 and mark it complete
+                    # so Rich flips ``task.finished`` to True and stops the
+                    # spinner.
+                    done = self._completed.get(name, 0)
+                    final = float(max(done, 1))
+                    self._progress.update(
+                        task_id, total=final, completed=final
+                    )
+                    self._progress.stop_task(task_id)
         else:
             done = self._completed.get(name, 0)
             total = self._totals.get(name)

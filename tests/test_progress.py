@@ -133,6 +133,55 @@ def test_tty_reporter_advance_is_reflected_in_completed_count():
         assert reporter.completed("embed") == 2
 
 
+def test_tty_finish_stage_stops_indeterminate_task():
+    """finish_stage on a stage started with total=None must stop the spinner.
+
+    Regression for PR #68 review: ``run_full_pipeline`` starts ``embed`` and
+    ``genealogy`` with ``total=None``. Previously ``finish_stage`` only
+    updated completion when a total was known, so the indeterminate spinner
+    kept running for the rest of the progress context.
+    """
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+    reporter = ProgressReporter(tty=True, console=console)
+
+    with reporter:
+        reporter.start_stage("embed", total=None)
+        reporter.advance("embed")
+        reporter.advance("embed")
+
+        progress = reporter._progress
+        assert progress is not None
+        task_id = reporter._tasks["embed"]
+        # Sanity: indeterminate task is not finished mid-flight.
+        task = next(t for t in progress.tasks if t.id == task_id)
+        assert task.finished is False
+
+        reporter.finish_stage("embed")
+
+        task = next(t for t in progress.tasks if t.id == task_id)
+        assert task.finished is True, (
+            "indeterminate stage should be marked finished after finish_stage"
+        )
+
+
+def test_tty_finish_stage_stops_indeterminate_task_with_no_advances():
+    """finish_stage must stop an indeterminate stage even with zero advances."""
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+    reporter = ProgressReporter(tty=True, console=console)
+
+    with reporter:
+        reporter.start_stage("genealogy", total=None)
+        reporter.finish_stage("genealogy")
+
+        progress = reporter._progress
+        assert progress is not None
+        task_id = reporter._tasks["genealogy"]
+        task = next(t for t in progress.tasks if t.id == task_id)
+        assert task.finished is True
+
+
 def test_tty_reporter_update_total_after_start():
     """Stage total can be updated after it was started."""
     buf = io.StringIO()
