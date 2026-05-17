@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import httpx
@@ -26,6 +27,9 @@ from argos.crawler.static_fetcher import (
 )
 from argos.models.crawl_queue import CrawlQueue
 from argos.models.tech_item import CategoryType
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from argos.progress import ProgressReporter
 
 logger = logging.getLogger(__name__)
 
@@ -216,12 +220,53 @@ async def _queue_count(session: AsyncSession) -> int:
 async def run_full_pipeline(
     session: AsyncSession,
     dynamic_urls: list[str] | None = None,
+    *,
+    progress: "ProgressReporter | None" = None,
 ) -> tuple[list[BrainState], PipelineSummary]:
+    """Drive crawl → preflight → brain → save end to end.
+
+    Parameters
+    ----------
+    session:
+        Active async SQLAlchemy session.
+    dynamic_urls:
+        Optional list of ad-hoc URLs (``argos run --url ...``) fed through
+        the dynamic Playwright fetcher in addition to the static / RSS /
+        arXiv / SPA sources.
+    progress:
+        Optional :class:`argos.progress.ProgressReporter`. When provided,
+        each pipeline stage drives ``start_stage`` / ``advance`` /
+        ``finish_stage`` calls so the CLI can render a live progress bar.
+        ``None`` (default) keeps the previous behavior (no progress
+        reporting at all) so callers that don't need a UI are unaffected.
+    """
+
+    def _ps(name: str, total: int | None = None) -> None:
+        if progress is not None:
+            progress.start_stage(name, total=total)
+
+    def _pa(name: str) -> None:
+        if progress is not None:
+            progress.advance(name)
+
+    def _pf(name: str) -> None:
+        if progress is not None:
+            progress.finish_stage(name)
+
+    def _pt(name: str, total: int) -> None:
+        if progress is not None:
+            progress.update_total(name, total)
+
     start = time.monotonic()
     daily_limit = settings.user.run.daily_limit
 
     # ── Stage 1: crawl all sources, dedup against tech_items + crawl_queue ──
+    _ps("crawl")
     crawl_items = await run_full_crawl(session, dynamic_urls)
+    _pt("crawl", len(crawl_items))
+    for _ in crawl_items:
+        _pa("crawl")
+    _pf("crawl")
 
     per_source: dict[str, int] = {}
     for item in crawl_items:
@@ -249,6 +294,7 @@ async def run_full_pipeline(
     # ── Stage 4: preflight filter ─────────────────────────────────────────
     preflight_filtered = 0
     if settings.user.triage.preflight_filter:
+        _ps("preflight", total=len(selected_items))
         filtered: list[dict] = []
         for item in selected_items:
             if is_preflight_reject(item.get("raw_content") or ""):
@@ -256,7 +302,9 @@ async def run_full_pipeline(
                 preflight_filtered += 1
             else:
                 filtered.append(item)
+            _pa("preflight")
         selected_items = filtered
+        _pf("preflight")
 
     valid_items = [item for item in selected_items if item.get("source_url", "").strip()]
     skipped_no_url = len(selected_items) - len(valid_items)
@@ -267,7 +315,29 @@ async def run_full_pipeline(
         )
 
     # ── Stage 5: brain pipeline ───────────────────────────────────────────
-    results: list[BrainState] = await run_batch_brain_pipeline(valid_items, session)
+    # The genealogy stage's total is only known after the trust-gate inside
+    # run_batch_brain_pipeline runs, so we start it indeterminate. Embed total
+    # equals the count of valid post-triage items, which we also can't know
+    # up front — Rich handles None gracefully as a spinner-only bar.
+    if progress is not None:
+        _ps("triage", total=len(valid_items))
+        _ps("embed")
+        _ps("genealogy")
+        _ps("save", total=len(valid_items))
+        results: list[BrainState] = await run_batch_brain_pipeline(
+            valid_items,
+            session,
+            on_triage_item_done=progress.callback_for("triage"),
+            on_embed_item_done=progress.callback_for("embed"),
+            on_genealogy_item_done=progress.callback_for("genealogy"),
+            on_save_item_done=progress.callback_for("save"),
+        )
+        _pf("triage")
+        _pf("embed")
+        _pf("genealogy")
+        _pf("save")
+    else:
+        results = await run_batch_brain_pipeline(valid_items, session)
 
     # ── Stage 6: remove processed rows from queue ─────────────────────────
     # Items where save_node raised (is_valid=True, saved=False) stay in the

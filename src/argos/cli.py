@@ -102,9 +102,17 @@ def _print_run_summary(summary, elapsed: float) -> None:
 
 
 async def _run(dynamic_urls: list[str] | None) -> int:
+    from argos.progress import ProgressReporter
+
     start = time.monotonic()
-    async with AsyncSessionLocal() as session:
-        results, summary = await run_full_pipeline(session, dynamic_urls=dynamic_urls or None)
+    progress = ProgressReporter()
+    with progress:
+        async with AsyncSessionLocal() as session:
+            results, summary = await run_full_pipeline(
+                session,
+                dynamic_urls=dynamic_urls or None,
+                progress=progress,
+            )
     elapsed = time.monotonic() - start
     _print_run_summary(summary, elapsed)
     return 0
