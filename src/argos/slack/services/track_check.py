@@ -15,6 +15,7 @@ the ``track_history`` row that marks an alert as delivered.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 
@@ -26,6 +27,8 @@ from argos.models.tech_item import TechItem
 from argos.models.tech_succession import RelationType, TechSuccession
 from argos.models.track_history import TrackHistory
 from argos.models.user_asset import AssetStatus, UserAsset
+
+logger = logging.getLogger(__name__)
 
 # Sentinel string written to ``track_history.changed_to`` to mark that a
 # succession alert has been delivered for a Keep-ed asset.  Kept module-local
@@ -144,3 +147,77 @@ async def check_succession(
         )
         for row in result.all()
     ]
+
+
+async def post_track_update(
+    app,
+    channel: str,
+    alerts: list[SuccessionAlert],
+    session: AsyncSession,
+) -> None:
+    """Post each succession alert to Slack and record a track_history row.
+
+    Per ARG-104, one ``chat_postMessage`` call is issued per alert.  After a
+    successful post, a ``TrackHistory`` row is added with
+    ``changed_to = 'succession_alerted'`` so that ``check_succession`` skips
+    the same Keep-ed asset on subsequent runs.  The session is not committed
+    here — the caller (CLI ``_run``) owns the commit lifecycle.
+
+    If Slack fails on a single alert (network error, rate limit, etc.), the
+    failure is logged and the remaining alerts are still attempted.  No
+    history row is written for a failed send, so the alert remains eligible
+    on the next run.
+
+    Parameters
+    ----------
+    app:
+        ``slack_bolt.async_app.AsyncApp`` (or any object with an
+        ``.client.chat_postMessage`` async method).  Duck-typed to keep the
+        unit tests free of a real Slack dependency.
+    channel:
+        Slack channel ID (typically ``settings.user.slack.channel_id``).
+    alerts:
+        Alerts produced by :func:`check_succession`.  Empty list is a no-op.
+    session:
+        Active async SQLAlchemy session.  ``TrackHistory`` rows are added but
+        not committed; the caller commits.
+    """
+    # Imported lazily to avoid a circular import (blocks.py is small but is
+    # imported by briefing.py which transitively pulls in track_check via
+    # potential future re-export paths).
+    from argos.slack.blocks import build_succession_alert_blocks
+
+    if not alerts:
+        return
+
+    for alert in alerts:
+        blocks = build_succession_alert_blocks(alert)
+        fallback = (
+            f"⚠️ Keep한 {alert.predecessor_title}을 대체하는 "
+            f"{alert.successor_title}이 등장했습니다"
+        )
+        try:
+            await app.client.chat_postMessage(
+                channel=channel,
+                blocks=blocks,
+                text=fallback,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "post_track_update: chat_postMessage failed for asset %s: %r",
+                alert.user_asset_id, exc,
+            )
+            continue
+
+        # Mark the alert as delivered so future runs skip it.
+        # ``changed_from='Keep'`` — only Keep-ed assets trigger succession
+        # alerts, so the previous status is always Keep.  ``changed_to`` is
+        # the sentinel string that the check_succession NOT EXISTS predicate
+        # looks for.
+        session.add(
+            TrackHistory(
+                user_asset_id=alert.user_asset_id,
+                changed_from=AssetStatus.KEEP.value,
+                changed_to=SUCCESSION_ALERTED,
+            )
+        )

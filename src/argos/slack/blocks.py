@@ -286,6 +286,39 @@ def build_portfolio_blocks(assets: list[tuple[UserAsset, TechItem]]) -> list[dic
     return blocks
 
 
+def build_succession_alert_blocks(alert) -> list[dict]:
+    """ARG-104 Block Kit blocks for a single succession alert.
+
+    Format (per ARG-104 spec):
+        ⚠️ Keep한 *<predecessor_title>*을 대체하는 *<successor_title>*이
+        등장했습니다 (<relation_type>)
+
+    The ``alert`` argument is a ``SuccessionAlert`` from
+    ``argos.slack.services.track_check`` but is intentionally not type-hinted
+    here to avoid a circular import (track_check → blocks would create a
+    cycle via the dispatcher).  Duck-typed access on ``.predecessor_title``,
+    ``.successor_title``, ``.relation_type`` only.
+    """
+    # ``relation_type`` is the RelationType enum; surface its string value.
+    relation_label = getattr(
+        alert.relation_type, "value", str(alert.relation_type)
+    )
+    text = (
+        f"⚠️ Keep한 *{alert.predecessor_title}*을 대체하는 "
+        f"*{alert.successor_title}*이 등장했습니다 ({relation_label})"
+    )
+    # Defensive clamp — predecessor/successor titles can be up to 500 chars,
+    # so combined output can exceed Slack's per-section 3000-char limit.
+    if len(text) > SLACK_SECTION_TEXT_LIMIT:
+        text = text[: SLACK_SECTION_TEXT_LIMIT - 1] + "…"
+    return [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": text},
+        }
+    ]
+
+
 def build_briefing_blocks(
     items_by_category: dict[CategoryType, list[TechItem]],
     *,
