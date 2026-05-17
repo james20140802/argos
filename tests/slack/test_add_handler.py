@@ -123,6 +123,67 @@ def test_build_add_url_result_blocks_empty_list_renders_message():
     assert len(blocks) >= 1
 
 
+def test_build_add_url_result_blocks_respects_slack_50_block_cap():
+    """Large `/argos add` inputs must never exceed Slack's 50-block limit
+    (Codex review on PR #67). 30 URL results would naïvely emit
+    1 header + 30 * 2 = 61 blocks.
+    """
+    from argos.slack.blocks import SLACK_MAX_BLOCKS
+
+    results = [
+        AddUrlResult(
+            url=f"https://example.com/{i}",
+            status=AddUrlStatus.CREATED,
+            tech_item_id=uuid.uuid4(),
+        )
+        for i in range(30)
+    ]
+    blocks = build_add_url_result_blocks(results)
+    assert len(blocks) <= SLACK_MAX_BLOCKS
+
+
+def test_build_add_url_result_blocks_appends_truncation_notice_when_over_cap():
+    """When the result list overflows the block cap, the last block should be
+    a context block noting how many results were omitted.
+    """
+    from argos.slack.blocks import SLACK_MAX_BLOCKS
+
+    total = 40
+    results = [
+        AddUrlResult(
+            url=f"https://example.com/{i}",
+            status=AddUrlStatus.CREATED,
+            tech_item_id=uuid.uuid4(),
+        )
+        for i in range(total)
+    ]
+    blocks = build_add_url_result_blocks(results)
+    assert len(blocks) <= SLACK_MAX_BLOCKS
+    assert blocks[-1]["type"] == "context"
+    notice_text = blocks[-1]["elements"][0]["text"]
+    # Notice should reference the hidden count explicitly. Visible result
+    # blocks each take 2 blocks (section + divider) minus the trailing
+    # divider drop, so we recompute the expected hidden count.
+    visible_sections = sum(1 for b in blocks if b.get("type") == "section")
+    expected_hidden = total - visible_sections
+    assert expected_hidden >= 1
+    assert str(expected_hidden) in notice_text
+
+
+def test_build_add_url_result_blocks_no_truncation_notice_under_cap():
+    """A handful of results should render without any truncation notice."""
+    results = [
+        AddUrlResult(
+            url=f"https://example.com/{i}",
+            status=AddUrlStatus.CREATED,
+            tech_item_id=uuid.uuid4(),
+        )
+        for i in range(3)
+    ]
+    blocks = build_add_url_result_blocks(results)
+    assert all(b.get("type") != "context" for b in blocks)
+
+
 # ---------------------------------------------------------------------------
 # Slash command handler — ack + dispatch
 # ---------------------------------------------------------------------------

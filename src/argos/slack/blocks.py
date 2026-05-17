@@ -277,7 +277,22 @@ def build_add_url_result_blocks(results: list) -> list[dict]:
         }
     ]
 
-    for result in results:
+    # Each result emits 2 blocks (section + divider). Slack rejects payloads
+    # over SLACK_MAX_BLOCKS (50), so cap visible results and append a context
+    # block noting how many were omitted. Reserve 1 block for the header (used
+    # above) and 1 block for the truncation notice when we need it.
+    total = len(results)
+    overhead_with_notice = 2  # header + truncation context
+    max_visible_if_truncated = (SLACK_MAX_BLOCKS - overhead_with_notice) // 2
+    overhead_without_notice = 1  # header only; trailing divider is popped below
+    max_visible_if_not_truncated = (SLACK_MAX_BLOCKS - overhead_without_notice) // 2
+    if total > max_visible_if_not_truncated:
+        visible_count = max_visible_if_truncated
+    else:
+        visible_count = total
+    hidden_count = total - visible_count
+
+    for result in results[:visible_count]:
         status_value = (
             result.status.value
             if hasattr(result.status, "value")
@@ -309,6 +324,22 @@ def build_add_url_result_blocks(results: list) -> list[dict]:
     # Drop trailing divider for a cleaner look.
     if blocks and blocks[-1].get("type") == "divider":
         blocks.pop()
+
+    if hidden_count > 0:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"_…외 {hidden_count}개 결과는 표시되지 않았습니다 "
+                            f"(최대 {visible_count}개까지 표시)._"
+                        ),
+                    }
+                ],
+            }
+        )
     return blocks
 
 
