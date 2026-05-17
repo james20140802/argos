@@ -77,6 +77,7 @@ uv run argos doctor                               # Pre-flight health check (Doc
 uv run argos init                                 # Interactive 6-step bootstrap wizard (installs Playwright Chromium automatically)
 uv run argos init --reconfigure slack             # Re-run one section: infra/slack/interests/schedule
 uv run argos run [--url URL]...                   # Crawl → brain → save pipeline
+uv run argos add <URL> [URL ...]                  # Manually inject URL(s) into the brain pipeline
 uv run argos slack                                # Start Slack bot in Socket Mode
 uv run argos brief [--channel CID]                # Dispatch today's briefing
 
