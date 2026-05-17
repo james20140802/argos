@@ -8,7 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from argos.crawler.add_url import AddUrlResult, AddUrlStatus
-from argos.slack.blocks import build_add_url_result_blocks
+from argos.slack.blocks import (
+    build_add_url_processing_blocks,
+    build_add_url_result_blocks,
+)
 from argos.slack.handlers.add_url import (
     handle_argos_slash_command,
     parse_add_command,
@@ -197,6 +200,25 @@ def test_build_add_url_result_blocks_long_url_stays_under_section_limit():
         assert len(text) <= SLACK_SECTION_TEXT_LIMIT, (
             f"section text exceeds Slack limit: {len(text)} > {SLACK_SECTION_TEXT_LIMIT}"
         )
+
+
+def test_build_add_url_processing_blocks_clamps_long_single_url():
+    """A pathologically long single URL must not push the interim
+    'processing…' section text past Slack's 3000-char limit; otherwise
+    /argos add fails with invalid_blocks before the background task runs.
+    """
+    from argos.slack.blocks import SLACK_SECTION_TEXT_LIMIT
+
+    long_url = "https://example.com/?" + ("q=" + "a" * 50 + "&") * 100
+    assert len(long_url) > SLACK_SECTION_TEXT_LIMIT
+
+    blocks = build_add_url_processing_blocks([long_url])
+
+    assert len(blocks) == 1
+    text = blocks[0]["text"]["text"]
+    assert len(text) <= SLACK_SECTION_TEXT_LIMIT, (
+        f"processing section text exceeds Slack limit: {len(text)} > {SLACK_SECTION_TEXT_LIMIT}"
+    )
 
 
 def test_build_add_url_result_blocks_no_truncation_notice_under_cap():

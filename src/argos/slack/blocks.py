@@ -239,6 +239,8 @@ def build_add_url_processing_blocks(urls: list[str]) -> list[dict]:
         text = f"⏳ URL 처리 중...\n`{urls[0]}`"
     else:
         text = f"⏳ {len(urls)}개 URL 처리 중..."
+    if len(text) > SLACK_SECTION_TEXT_LIMIT:
+        text = text[: SLACK_SECTION_TEXT_LIMIT - 1] + "…"
     return [
         {
             "type": "section",
