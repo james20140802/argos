@@ -303,8 +303,15 @@ def build_add_url_result_blocks(results: list) -> list[dict]:
         id_str = _short_id(result.tech_item_id)
         reason = (result.reason or "").strip()
 
+        # Render the URL as a single, bare auto-linked string instead of
+        # `<url|url>` which would duplicate the full URL. Long tracking-heavy
+        # URLs (2k+ chars) doubled in `<url|url>` form can blow past Slack's
+        # 3000-char section limit and trigger `invalid_blocks`. A bare URL is
+        # auto-linked by Slack and only appears once. As a defense in depth
+        # we still clamp the resulting section text below the limit.
+        url_str = result.url or ""
         lines = [
-            f"{emoji} *{label}* — <{result.url}|{result.url}>",
+            f"{emoji} *{label}* — {url_str}",
             f"`tech_item_id`: `{id_str}`",
         ]
         if reason:
@@ -313,10 +320,18 @@ def build_add_url_result_blocks(results: list) -> list[dict]:
                 reason = reason[: SLACK_SECTION_TEXT_LIMIT - 203] + "..."
             lines.append(f"_사유: {reason}_")
 
+        section_text = "\n".join(lines)
+        # Final guard: if the URL itself is pathologically long (>3000 chars),
+        # the section is still over budget. Clamp the trailing portion so the
+        # block stays valid; the URL will be truncated with an ellipsis rather
+        # than dropping the entire response.
+        if len(section_text) > SLACK_SECTION_TEXT_LIMIT:
+            section_text = section_text[: SLACK_SECTION_TEXT_LIMIT - 1] + "…"
+
         blocks.append(
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+                "text": {"type": "mrkdwn", "text": section_text},
             }
         )
         blocks.append({"type": "divider"})

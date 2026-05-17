@@ -170,6 +170,35 @@ def test_build_add_url_result_blocks_appends_truncation_notice_when_over_cap():
     assert str(expected_hidden) in notice_text
 
 
+def test_build_add_url_result_blocks_long_url_stays_under_section_limit():
+    """A pathologically long but valid URL (e.g., tracking-heavy link) must
+    not blow past Slack's 3000-char section text limit (Codex review on
+    PR #67 follow-up). Previously the URL was duplicated as `<url|url>`,
+    which trivially exceeded the cap for any URL longer than ~1500 chars
+    and triggered `invalid_blocks`.
+    """
+    from argos.slack.blocks import SLACK_SECTION_TEXT_LIMIT
+
+    long_url = "https://example.com/?" + ("q=" + "a" * 50 + "&") * 100  # >2500 chars
+    assert len(long_url) > 2000
+    result = AddUrlResult(
+        url=long_url,
+        status=AddUrlStatus.CREATED,
+        tech_item_id=uuid.uuid4(),
+    )
+
+    blocks = build_add_url_result_blocks([result])
+
+    # Find the section block carrying the URL.
+    section_blocks = [b for b in blocks if b.get("type") == "section"]
+    assert section_blocks, "expected at least one section block"
+    for block in section_blocks:
+        text = block["text"]["text"]
+        assert len(text) <= SLACK_SECTION_TEXT_LIMIT, (
+            f"section text exceeds Slack limit: {len(text)} > {SLACK_SECTION_TEXT_LIMIT}"
+        )
+
+
 def test_build_add_url_result_blocks_no_truncation_notice_under_cap():
     """A handful of results should render without any truncation notice."""
     results = [
