@@ -102,6 +102,7 @@ async def run_batch_brain_pipeline(
     on_triage_item_done: Callable[[], None] | None = None,
     on_embed_item_done: Callable[[], None] | None = None,
     on_genealogy_item_done: Callable[[], None] | None = None,
+    on_save_item_done: Callable[[], None] | None = None,
 ) -> list[BrainState]:
     """Process N items through the brain pipeline with 3 model swaps total.
 
@@ -115,14 +116,18 @@ async def run_batch_brain_pipeline(
     ----------
     items, session:
         See module-level usage.
-    on_triage_item_done, on_embed_item_done, on_genealogy_item_done:
+    on_triage_item_done, on_embed_item_done, on_genealogy_item_done,
+    on_save_item_done:
         Optional zero-arg callbacks for per-item progress reporting in each
-        stage. Forwarded to ``batch_triage_states`` / ``batch_embed_and_search_node``
-        and fired inside the genealogy loop once per candidate. Default ``None``
-        preserves existing behavior — they are the UI-injection point used by
-        the CLI to drive a Rich progress bar (ARG-92/ARG-101). Exceptions
-        raised by callbacks are swallowed so a broken UI cannot abort the
-        pipeline.
+        stage. ``on_triage_item_done`` / ``on_embed_item_done`` are forwarded
+        to ``batch_triage_states`` / ``batch_embed_and_search_node``;
+        ``on_genealogy_item_done`` fires inside the genealogy loop once per
+        candidate; ``on_save_item_done`` fires once per state in the save
+        loop (including invalid states that are skipped, so the bar reflects
+        every queue slot). Default ``None`` preserves existing behavior —
+        they are the UI-injection point used by the CLI to drive a Rich
+        progress bar (ARG-92/ARG-101). Exceptions raised by callbacks are
+        swallowed so a broken UI cannot abort the pipeline.
     """
     from argos.config import settings as _settings
 
@@ -193,19 +198,29 @@ async def run_batch_brain_pipeline(
     # ── Stage 4: per-item save (with savepoint per item) ──────────────────
     results: list[BrainState] = []
     for s in embedded_states:
-        if not s.get("source_url"):
-            logger.warning("run_batch_brain_pipeline: state missing source_url, skipping")
-            results.append(s)
-            continue
         try:
-            async with session.begin_nested():
-                saved = await save_node(s, session=session)
-            results.append(saved)
-        except Exception as exc:
-            logger.warning(
-                "run_batch_brain_pipeline: save failed for %s: %r",
-                s.get("source_url"),
-                exc,
-            )
-            results.append(s)
+            if not s.get("source_url"):
+                logger.warning("run_batch_brain_pipeline: state missing source_url, skipping")
+                results.append(s)
+                continue
+            try:
+                async with session.begin_nested():
+                    saved = await save_node(s, session=session)
+                results.append(saved)
+            except Exception as exc:
+                logger.warning(
+                    "run_batch_brain_pipeline: save failed for %s: %r",
+                    s.get("source_url"),
+                    exc,
+                )
+                results.append(s)
+        finally:
+            if on_save_item_done is not None:
+                try:
+                    on_save_item_done()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "run_batch_brain_pipeline on_save_item_done raised: %r",
+                        exc,
+                    )
     return results

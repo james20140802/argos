@@ -297,6 +297,56 @@ async def test_run_batch_brain_pipeline_forwards_triage_and_embed_callbacks(monk
 
 
 @pytest.mark.asyncio
+async def test_save_loop_invokes_callback_per_state(monkeypatch):
+    """on_save_item_done fires once per state in the save loop (ARG-101 wiring).
+
+    The save loop already iterates every brain state — invalid ones skip the
+    actual save_node call but still represent a slot in the bar.
+    """
+    # Cold-start both items so the genealogy branch (and 32B prewarm) is
+    # short-circuited — keeps this focused on the save loop.
+    high = _state(
+        trust_score=0.8,
+        related_tech_ids=[],
+        genealogy_skipped=True,
+        genealogy_skip_reason="cold_start",
+    )
+    invalid = _state(is_valid=False, source_url="https://e.com/bad")
+
+    monkeypatch.setattr(
+        brain_pipeline,
+        "batch_triage_states",
+        AsyncMock(return_value=[high, invalid]),
+    )
+    monkeypatch.setattr(
+        brain_pipeline,
+        "batch_embed_and_search_node",
+        AsyncMock(return_value=[high, invalid]),
+    )
+    monkeypatch.setattr(brain_pipeline, "genealogist_node", AsyncMock(return_value=high))
+
+    async def _fake_save(state, *, session):  # noqa: ARG001
+        return {**state, "saved": True}
+
+    monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
+    monkeypatch.setattr(brain_pipeline, "get_llm_client", lambda: MagicMock())
+
+    session = MagicMock()
+    session.begin_nested = _nested_cm()
+
+    calls = {"n": 0}
+
+    await brain_pipeline.run_batch_brain_pipeline(
+        [_item("https://e.com/a"), _item("https://e.com/b")],
+        session,
+        on_save_item_done=lambda: calls.__setitem__("n", calls["n"] + 1),
+    )
+
+    # Save loop iterates 2 states (high, invalid).
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
 async def test_run_batch_brain_pipeline_no_callbacks_default_none(monkeypatch):
     """Calling without callback kwargs keeps the original behavior unchanged."""
     captured = {"triage": "<unset>", "embed": "<unset>"}
