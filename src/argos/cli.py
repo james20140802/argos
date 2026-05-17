@@ -547,6 +547,126 @@ async def _search(query: str, limit: int, category: str | None, status: str) -> 
     return 0
 
 
+def _build_add_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos add <URL>`` subcommand (ARG-107)."""
+    add_p = sub.add_parser(
+        "add",
+        help="Manually add a URL to the brain pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Fetch a URL and feed it through the same brain pipeline (triage →\n"
+            "embed → genealogist → save) used by the daily crawler.  Useful as an\n"
+            "escape hatch for items the automated crawler missed.\n\n"
+            "Multiple URLs can be supplied positionally or via repeated --url.\n"
+            "Each URL is validated (scheme/SSRF/robots) and deduplicated against\n"
+            "tech_items before fetching.\n\n"
+            "Examples:\n"
+            "  argos add https://example.com/post\n"
+            "  argos add https://a.test/1 https://a.test/2\n"
+            "  argos add --url https://a.test/1 --url https://a.test/2\n\n"
+            "Exit codes:\n"
+            "  0  every URL ended up created or duplicate (idempotent success)\n"
+            "  1  at least one URL was rejected or errored"
+        ),
+        parents=[common],
+    )
+    add_p.add_argument(
+        "urls",
+        nargs="*",
+        metavar="URL",
+        help="URL(s) to add (also accepts --url; positional and --url may be combined)",
+    )
+    add_p.add_argument(
+        "--url",
+        dest="extra_urls",
+        action="append",
+        default=[],
+        metavar="URL",
+        help="Additional URL to add (repeatable)",
+    )
+
+
+async def _add(urls: list[str]) -> int:
+    from argos.crawler import add_url as add_url_module
+    from argos.crawler.add_url import AddUrlStatus
+
+    if not urls:
+        # argparse with nargs='*' allows zero positionals; we want at least one.
+        print("argos add: at least one URL is required", file=sys.stderr)
+        return EXIT_GENERIC
+
+    async with AsyncSessionLocal() as session:
+        results = []
+        for url in urls:
+            result = await add_url_module.add_url(url, session)
+            results.append(result)
+
+    _print_add_results(results)
+
+    failure = any(
+        r.status in (AddUrlStatus.REJECTED, AddUrlStatus.ERROR) for r in results
+    )
+    return EXIT_GENERIC if failure else EXIT_OK
+
+
+def _print_add_results(results: list) -> None:
+    """Render the per-URL result table to stdout."""
+    from argos.crawler.add_url import AddUrlStatus
+
+    _STATUS_STYLE: dict[AddUrlStatus, str] = {
+        AddUrlStatus.CREATED: "green",
+        AddUrlStatus.DUPLICATE: "cyan",
+        AddUrlStatus.REJECTED: "yellow",
+        AddUrlStatus.ERROR: "red",
+    }
+
+    def _fmt_id(tid) -> str:
+        if tid is None:
+            return "—"
+        s = str(tid)
+        return s[:8] + "…" if len(s) > 9 else s
+
+    if sys.stdout.isatty():
+        try:
+            from rich.console import Console
+            from rich.table import Table
+
+            console = Console()
+            table = Table(show_header=True)
+            table.add_column("URL", max_width=60, no_wrap=False)
+            table.add_column("status")
+            table.add_column("tech_item_id")
+            table.add_column("reason", max_width=40, no_wrap=False)
+
+            for r in results:
+                style = _STATUS_STYLE.get(r.status, "")
+                status_cell = (
+                    f"[{style}]{r.status.value}[/{style}]" if style else r.status.value
+                )
+                table.add_row(
+                    r.url,
+                    status_cell,
+                    _fmt_id(r.tech_item_id),
+                    r.reason or "",
+                )
+            console.print(table)
+            return
+        except ImportError:
+            pass
+
+    # Plain fallback (non-TTY or Rich unavailable).
+    print(f"{'URL':<60} {'status':<10} {'tech_item_id':<10} reason")
+    print("─" * 110)
+    for r in results:
+        print(
+            f"{r.url[:58]:<60} {r.status.value:<10} {_fmt_id(r.tech_item_id):<10} "
+            f"{r.reason or ''}"
+        )
+
+
 def _build_schedule_parser(sub: argparse._SubParsersAction) -> None:
     schedule_p = sub.add_parser(
         "schedule",
@@ -756,6 +876,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     brief_p.add_argument("--channel", default=None, help="Override target Slack channel ID")
 
+    _build_add_parser(sub, common)
     _build_config_parser(sub)
     _build_doctor_parser(sub)
     _build_init_parser(sub)
@@ -807,6 +928,19 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return asyncio.run(_search(args.query, args.limit, args.category, args.status))
+    if args.command == "add":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        # Combine positional URLs and --url options, preserving order, dedup.
+        all_urls: list[str] = []
+        seen: set[str] = set()
+        for u in [*args.urls, *args.extra_urls]:
+            if u in seen:
+                continue
+            seen.add(u)
+            all_urls.append(u)
+        return asyncio.run(_add(all_urls))
     return 1
 
 
