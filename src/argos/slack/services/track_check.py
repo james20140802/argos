@@ -158,15 +158,35 @@ async def check_succession(
         stmt = stmt.where(TechSuccession.successor_id.in_(new_item_ids))
 
     result = await session.execute(stmt)
-    return [
-        SuccessionAlert(
-            user_asset_id=row[0],
-            predecessor_title=row[1],
-            successor_title=row[2],
-            relation_type=row[3],
+
+    # In-batch dedup: the track_history NOT EXISTS predicate above only
+    # filters assets that were alerted in *prior committed* runs.  Within a
+    # single query result, a Keep-ed asset with multiple unalerted
+    # successors would otherwise yield one row per successor — and because
+    # ``post_track_update`` writes its dedup ``track_history`` row only
+    # after each Slack send (within the same un-committed session), the
+    # NOT EXISTS predicate can't see those in-flight markers either.
+    # Collapse to one alert per user_asset_id here.  Representative rule:
+    # **first encountered**, which — given the ``ORDER BY
+    # TechSuccession.created_at ASC`` above — is the earliest-created
+    # succession row.  This is deterministic and matches the
+    # per-user_asset dedup contract documented in the Notes section above.
+    seen_asset_ids: set[uuid.UUID] = set()
+    alerts: list[SuccessionAlert] = []
+    for row in result.all():
+        asset_id = row[0]
+        if asset_id in seen_asset_ids:
+            continue
+        seen_asset_ids.add(asset_id)
+        alerts.append(
+            SuccessionAlert(
+                user_asset_id=asset_id,
+                predecessor_title=row[1],
+                successor_title=row[2],
+                relation_type=row[3],
+            )
         )
-        for row in result.all()
-    ]
+    return alerts
 
 
 async def post_track_update(

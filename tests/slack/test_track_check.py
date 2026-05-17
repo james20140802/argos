@@ -144,3 +144,49 @@ async def test_check_succession_multiple_alerts_preserves_order():
         RelationType.ENHANCE,
         RelationType.FORK,
     ]
+
+
+@pytest.mark.asyncio
+async def test_check_succession_dedupes_multiple_successors_for_same_asset():
+    """Two ``tech_succession`` rows sharing the same Keep-ed predecessor
+    (so the same ``user_asset_id``) must collapse to a single alert.  The
+    SQL's track_history NOT EXISTS predicate only covers prior committed
+    runs, so without in-batch dedup ``post_track_update`` would fire one
+    Slack message per successor.  Representative = first encountered
+    (the query is ORDER BY succession created_at ASC)."""
+    asset_id = uuid.uuid4()
+    rows = [
+        # Earliest succession first — this should win.
+        (asset_id, "Old Tech", "Newer Tech", RelationType.REPLACE),
+        # Later succession for the same Keep-ed asset — must be dropped.
+        (asset_id, "Old Tech", "Even Newer Tech", RelationType.ENHANCE),
+    ]
+    session = _make_session(rows)
+
+    alerts = await check_succession(session)
+
+    assert len(alerts) == 1
+    assert alerts[0].user_asset_id == asset_id
+    # First-encountered representative is preserved.
+    assert alerts[0].successor_title == "Newer Tech"
+    assert alerts[0].relation_type is RelationType.REPLACE
+
+
+@pytest.mark.asyncio
+async def test_check_succession_dedupes_per_asset_across_distinct_assets():
+    """Dedup is per-asset: two distinct Keep-ed assets each with multiple
+    successors should yield exactly two alerts, one per asset."""
+    asset_a = uuid.uuid4()
+    asset_b = uuid.uuid4()
+    rows = [
+        (asset_a, "A old", "A new 1", RelationType.REPLACE),
+        (asset_a, "A old", "A new 2", RelationType.ENHANCE),
+        (asset_b, "B old", "B new 1", RelationType.FORK),
+        (asset_b, "B old", "B new 2", RelationType.REPLACE),
+    ]
+    session = _make_session(rows)
+
+    alerts = await check_succession(session)
+
+    assert [a.user_asset_id for a in alerts] == [asset_a, asset_b]
+    assert [a.successor_title for a in alerts] == ["A new 1", "B new 1"]
