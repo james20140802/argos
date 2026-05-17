@@ -104,6 +104,28 @@ uv run argos run --url https://example.com/article --url https://example.com/ano
 uv run argos run -v
 ```
 
+### 수동 URL 투입 — `argos add`
+
+크롤러가 자동으로 잡지 못한 URL을 직접 brain 파이프라인에 넣을 수 있습니다. 각 URL은 스킴 화이트리스트 / SSRF 가드 / robots.txt / 중복 검사를 거친 뒤 fetch → triage → embed → genealogist → save 단계를 통과합니다.
+
+```bash
+# 한 개
+uv run argos add https://example.com/post
+
+# 여러 개 (positional 또는 --url 반복)
+uv run argos add https://a.test/1 https://a.test/2
+uv run argos add --url https://a.test/1 --url https://a.test/2
+```
+
+Slack에서도 동일한 동작을 지원합니다:
+
+```
+/argos add https://example.com/post
+/argos add https://a.test/1 https://a.test/2
+```
+
+> Slack 앱 manifest에 `/argos` 슬래시 커맨드가 이미 등록되어 있다면 추가 설정 없이 동작합니다. 새로 만든다면 `Slash Commands → /argos` 에 Request URL을 등록하세요 (`add <URL>` 부분은 클라이언트가 자유 입력합니다).
+
 ### Brain 파이프라인만 단독 실행
 
 ```python

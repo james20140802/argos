@@ -185,6 +185,181 @@ def build_portfolio_empty_blocks() -> list[dict]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# `/argos add` slash command (ARG-110) blocks
+# ---------------------------------------------------------------------------
+
+
+_ADD_STATUS_EMOJI: dict[str, str] = {
+    "created": "✅",
+    "duplicate": "♻️",
+    "rejected": "🚫",
+    "error": "⚠️",
+}
+
+
+_ADD_STATUS_LABEL_KO: dict[str, str] = {
+    "created": "추가됨",
+    "duplicate": "중복",
+    "rejected": "거부됨",
+    "error": "오류",
+}
+
+
+def _short_id(tid) -> str:
+    if tid is None:
+        return "—"
+    s = str(tid)
+    return s[:8] + "…" if len(s) > 9 else s
+
+
+def build_add_url_help_blocks() -> list[dict]:
+    """Help/usage hint shown when `/argos add` is invoked without URLs."""
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*사용법:* `/argos add <URL> [URL ...]`\n"
+                    "여러 URL은 공백으로 구분해 입력하세요."
+                ),
+            },
+        }
+    ]
+
+
+def build_add_url_processing_blocks(urls: list[str]) -> list[dict]:
+    """Interim 'processing…' message shown immediately after ack().
+
+    Slack-rendered before the brain pipeline finishes — the actual results
+    arrive in a follow-up message built by :func:`build_add_url_result_blocks`.
+    """
+    if len(urls) == 1:
+        text = f"⏳ URL 처리 중...\n`{urls[0]}`"
+    else:
+        text = f"⏳ {len(urls)}개 URL 처리 중..."
+    if len(text) > SLACK_SECTION_TEXT_LIMIT:
+        text = text[: SLACK_SECTION_TEXT_LIMIT - 1] + "…"
+    return [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": text},
+        }
+    ]
+
+
+def build_add_url_result_blocks(results: list) -> list[dict]:
+    """Render the per-URL outcome of ``/argos add`` as Block Kit sections.
+
+    Accepts a list of ``AddUrlResult``-like objects (must have ``url``,
+    ``status``, ``tech_item_id``, ``reason`` attributes).  Each result is a
+    section block followed by a divider; an empty list yields a single
+    informational block.
+    """
+    if not results:
+        return [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "처리할 URL이 없습니다.",
+                },
+            }
+        ]
+
+    blocks: list[dict] = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "URL 추가 결과",
+                "emoji": True,
+            },
+        }
+    ]
+
+    # Each result emits 2 blocks (section + divider). Slack rejects payloads
+    # over SLACK_MAX_BLOCKS (50), so cap visible results and append a context
+    # block noting how many were omitted. Reserve 1 block for the header (used
+    # above) and 1 block for the truncation notice when we need it.
+    total = len(results)
+    overhead_with_notice = 2  # header + truncation context
+    max_visible_if_truncated = (SLACK_MAX_BLOCKS - overhead_with_notice) // 2
+    overhead_without_notice = 1  # header only; trailing divider is popped below
+    max_visible_if_not_truncated = (SLACK_MAX_BLOCKS - overhead_without_notice) // 2
+    if total > max_visible_if_not_truncated:
+        visible_count = max_visible_if_truncated
+    else:
+        visible_count = total
+    hidden_count = total - visible_count
+
+    for result in results[:visible_count]:
+        status_value = (
+            result.status.value
+            if hasattr(result.status, "value")
+            else str(result.status)
+        )
+        emoji = _ADD_STATUS_EMOJI.get(status_value, "•")
+        label = _ADD_STATUS_LABEL_KO.get(status_value, status_value)
+        id_str = _short_id(result.tech_item_id)
+        reason = (result.reason or "").strip()
+
+        # Render the URL as a single, bare auto-linked string instead of
+        # `<url|url>` which would duplicate the full URL. Long tracking-heavy
+        # URLs (2k+ chars) doubled in `<url|url>` form can blow past Slack's
+        # 3000-char section limit and trigger `invalid_blocks`. A bare URL is
+        # auto-linked by Slack and only appears once. As a defense in depth
+        # we still clamp the resulting section text below the limit.
+        url_str = result.url or ""
+        lines = [
+            f"{emoji} *{label}* — {url_str}",
+            f"`tech_item_id`: `{id_str}`",
+        ]
+        if reason:
+            # Truncate long reasons to keep the block under SLACK_SECTION_TEXT_LIMIT.
+            if len(reason) > SLACK_SECTION_TEXT_LIMIT - 200:
+                reason = reason[: SLACK_SECTION_TEXT_LIMIT - 203] + "..."
+            lines.append(f"_사유: {reason}_")
+
+        section_text = "\n".join(lines)
+        # Final guard: if the URL itself is pathologically long (>3000 chars),
+        # the section is still over budget. Clamp the trailing portion so the
+        # block stays valid; the URL will be truncated with an ellipsis rather
+        # than dropping the entire response.
+        if len(section_text) > SLACK_SECTION_TEXT_LIMIT:
+            section_text = section_text[: SLACK_SECTION_TEXT_LIMIT - 1] + "…"
+
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": section_text},
+            }
+        )
+        blocks.append({"type": "divider"})
+
+    # Drop trailing divider for a cleaner look.
+    if blocks and blocks[-1].get("type") == "divider":
+        blocks.pop()
+
+    if hidden_count > 0:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"_…외 {hidden_count}개 결과는 표시되지 않았습니다 "
+                            f"(최대 {visible_count}개까지 표시)._"
+                        ),
+                    }
+                ],
+            }
+        )
+    return blocks
+
+
 def build_portfolio_blocks(assets: list[tuple[UserAsset, TechItem]]) -> list[dict]:
     """Keep 상태 자산 목록을 Block Kit 카드로 렌더링한다.
 
