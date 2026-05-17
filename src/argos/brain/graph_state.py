@@ -1,10 +1,12 @@
 from __future__ import annotations
+
+import uuid
 from typing import TypedDict
 
 from argos.models.tech_item import CategoryType
 
 
-class BrainState(TypedDict):
+class BrainState(TypedDict, total=False):
     raw_text: str
     source_url: str
     is_valid: bool
@@ -22,3 +24,8 @@ class BrainState(TypedDict):
     # Decided by triage_node via LLM; falls back to ALPHA if LLM omits the
     # field or returns an unrecognised value.
     category: CategoryType | None
+    # Populated by save_node when a new TechItem row is inserted (ARG-103).
+    # Downstream consumers (succession alert post-processing) use this to
+    # collect the freshly-saved item IDs and call check_succession.
+    # None when the item already existed (duplicate URL) or save was skipped.
+    saved_item_id: uuid.UUID | None

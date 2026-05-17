@@ -101,10 +101,72 @@ def _print_run_summary(summary, elapsed: float) -> None:
     print(f"소요 시간: {_format_duration(elapsed)}")
 
 
+async def _dispatch_succession_alerts(alerts: list, session) -> None:
+    """Forward succession alerts to the Slack dispatcher (ARG-104).
+
+    Defined as a thin indirection so callers (and unit tests) have a single
+    seam to patch.  The full Slack implementation lives in ARG-104; this
+    placeholder only logs in environments where Slack creds are not wired up,
+    which keeps `argos run` working out-of-the-box.
+    """
+    if not alerts:
+        return
+    try:
+        from argos.slack.app import build_app
+        from argos.slack.services.track_check import post_track_update
+    except ImportError as exc:
+        logging.getLogger(__name__).warning(
+            "succession alerts (%d) skipped — Slack layer unavailable: %r",
+            len(alerts), exc,
+        )
+        return
+
+    try:
+        app = build_app()
+    except Exception as exc:  # noqa: BLE001
+        # build_app() raises when Slack tokens / signing secret are absent.
+        # Surface a single warning and move on — succession alerts are
+        # advisory and must never block `argos run`.
+        logging.getLogger(__name__).warning(
+            "succession alerts (%d) skipped — Slack app build failed: %r",
+            len(alerts), exc,
+        )
+        return
+
+    channel = settings.user.slack.channel_id
+    if not channel:
+        logging.getLogger(__name__).warning(
+            "succession alerts (%d) skipped — no Slack channel configured",
+            len(alerts),
+        )
+        return
+
+    try:
+        await post_track_update(app, channel, alerts, session)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "succession alert dispatch failed: %r", exc
+        )
+
+
 async def _run(dynamic_urls: list[str] | None) -> int:
     start = time.monotonic()
     async with AsyncSessionLocal() as session:
         results, summary = await run_full_pipeline(session, dynamic_urls=dynamic_urls or None)
+        # ARG-103: forward succession alerts to the Slack dispatcher (ARG-104).
+        # Pass the same session so post_track_update can write track_history
+        # rows transactionally with the rest of the run.
+        alerts = getattr(summary, "succession_alerts", None) or []
+        if alerts:
+            await _dispatch_succession_alerts(alerts, session)
+            # commit any track_history rows written by the dispatcher
+            try:
+                await session.commit()
+            except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "commit after succession alert dispatch failed",
+                    exc_info=True,
+                )
     elapsed = time.monotonic() - start
     _print_run_summary(summary, elapsed)
     return 0

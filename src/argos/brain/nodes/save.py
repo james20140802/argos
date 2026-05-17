@@ -56,6 +56,9 @@ async def save_node(state: BrainState, session: AsyncSession) -> BrainState:
     session.add(item)
     await session.flush()
     state["saved"] = True
+    # Surface the new item's PK so downstream stages (ARG-103: succession
+    # alerts) can collect just the freshly-saved IDs without re-querying.
+    state["saved_item_id"] = item.id
 
     succession_result = state.get("succession_result")
     if succession_result is not None and succession_result.get("replace_target_id") is not None:
