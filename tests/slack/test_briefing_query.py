@@ -205,6 +205,153 @@ async def test_fetch_user_portfolio_query_filters_keep_and_orders_by_updated_at(
 
 
 # ---------------------------------------------------------------------------
+# fetch_user_portfolio — ARG-112: category filter & sort_by options
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_user_portfolio_no_args_parity():
+    """Calling with no args must behave identically to the pre-ARG-112 baseline."""
+    asset, item = _make_asset_and_item(AssetStatus.KEEP)
+    rows = [(asset, item)]
+
+    async def fake_execute(stmt):
+        mock_result = MagicMock()
+        mock_result.all.return_value = rows
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    result = await fetch_user_portfolio(mock_session)
+    assert result == [(asset, item)]
+
+
+@pytest.mark.asyncio
+async def test_fetch_user_portfolio_category_filter_emits_category_clause():
+    """category=CategoryType.ALPHA must inject a category filter into the SQL."""
+    captured = {}
+
+    async def fake_execute(stmt):
+        captured["stmt"] = stmt
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    await fetch_user_portfolio(mock_session, category=CategoryType.ALPHA)
+
+    stmt = captured["stmt"]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "Alpha" in compiled
+
+
+@pytest.mark.asyncio
+async def test_fetch_user_portfolio_no_category_filter_omits_category_clause():
+    """Without category kwarg, the query must NOT contain a category WHERE clause."""
+    captured = {}
+
+    async def fake_execute(stmt):
+        captured["stmt"] = stmt
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    await fetch_user_portfolio(mock_session)
+
+    stmt = captured["stmt"]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    # Neither 'Alpha' nor 'Mainstream' should appear as a filter value.
+    # The compiled output for category=None should not have either literal.
+    assert "Alpha" not in compiled
+    assert "Mainstream" not in compiled
+
+
+@pytest.mark.asyncio
+async def test_fetch_user_portfolio_sort_by_trust_emits_trust_score_order():
+    """sort_by='trust' must produce an ORDER BY trust_score DESC NULLS LAST clause."""
+    captured = {}
+
+    async def fake_execute(stmt):
+        captured["stmt"] = stmt
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    await fetch_user_portfolio(mock_session, sort_by="trust")
+
+    stmt = captured["stmt"]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    # Extract the ORDER BY portion (everything after "ORDER BY")
+    order_by_idx = compiled.upper().rfind("ORDER BY")
+    assert order_by_idx != -1, "Expected ORDER BY clause"
+    order_by_section = compiled[order_by_idx:]
+    assert "trust_score" in order_by_section
+    assert "updated_at" in order_by_section
+    # trust_score must appear before updated_at in the ORDER BY clause
+    ts_pos = order_by_section.find("trust_score")
+    ua_pos = order_by_section.find("updated_at")
+    assert ts_pos < ua_pos, "trust_score ORDER BY must precede updated_at"
+
+
+@pytest.mark.asyncio
+async def test_fetch_user_portfolio_sort_by_date_default_uses_updated_at():
+    """Default sort (sort_by='date') must produce ORDER BY updated_at DESC only."""
+    captured = {}
+
+    async def fake_execute(stmt):
+        captured["stmt"] = stmt
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    await fetch_user_portfolio(mock_session)
+
+    stmt = captured["stmt"]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    # Extract the ORDER BY portion (everything after "ORDER BY")
+    order_by_idx = compiled.upper().rfind("ORDER BY")
+    assert order_by_idx != -1, "Expected ORDER BY clause"
+    order_by_section = compiled[order_by_idx:]
+    assert "updated_at" in order_by_section
+    # trust_score must NOT appear in the ORDER BY clause for date sort
+    assert "trust_score" not in order_by_section
+
+
+@pytest.mark.asyncio
+async def test_fetch_user_portfolio_returns_filtered_results():
+    """Results returned by the session are forwarded as-is (filter is DB-side)."""
+    asset_ms, item_ms = _make_asset_and_item(AssetStatus.KEEP)
+    item_ms.category = CategoryType.MAINSTREAM
+    # Simulate DB already returning only ALPHA items (the DB does the filtering)
+    asset_al, item_al = _make_asset_and_item(AssetStatus.KEEP)
+    item_al.category = CategoryType.ALPHA
+
+    async def fake_execute(stmt):
+        mock_result = MagicMock()
+        mock_result.all.return_value = [(asset_al, item_al)]
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    result = await fetch_user_portfolio(mock_session, category=CategoryType.ALPHA)
+    assert len(result) == 1
+    assert result[0][1].category == CategoryType.ALPHA
+
+
+# ---------------------------------------------------------------------------
 # _cosine_sim
 # ---------------------------------------------------------------------------
 
