@@ -321,7 +321,7 @@ async def test_run_full_pipeline_does_not_lose_queued_work_on_check_failure(
     # Queue cleanup ran — the saved item's source_url is removed from queue.
     delete_mock.assert_awaited_once()
     deleted_urls = delete_mock.await_args.args[1]
-    assert "https://saved.example" in deleted_urls
+    assert deleted_urls == ["https://saved.example"]
     # Final commit ran exactly once so the saved tech_item becomes durable
     # alongside the queue cleanup.
     session.commit.assert_awaited_once()
