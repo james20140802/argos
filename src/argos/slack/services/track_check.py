@@ -1,9 +1,16 @@
 """Succession alert checks (ARG-56).
 
-Given a list of newly-saved tech_item IDs, find succession records whose
-predecessor is currently held as a Keep-ed user_asset, skipping any Keep-ed
-asset that has already received a succession alert (recorded in ``track_history``
-with ``changed_to = 'succession_alerted'``).
+Find succession records whose predecessor is currently held as a Keep-ed
+user_asset, skipping any Keep-ed asset that has already received a succession
+alert (recorded in ``track_history`` with ``changed_to = 'succession_alerted'``).
+
+By default, all ``tech_succession`` rows are scanned — not just those whose
+successor was saved in the current pipeline run.  This is intentional: if
+``post_track_update`` fails to deliver an alert (transient Slack outage, rate
+limit, etc.), no ``track_history`` row is written, and on the next run the
+same successor will already exist in ``tech_items`` (deduplicated by
+``source_url`` in ``save_node``) so it would never re-enter a "new this run"
+candidate set.  Scanning all unalerted rows guarantees the alert is retried.
 
 Public surface:
 - :class:`SuccessionAlert` — value object handed to the Slack layer.
@@ -61,17 +68,22 @@ class SuccessionAlert:
 
 async def check_succession(
     session: AsyncSession,
-    new_item_ids: list[uuid.UUID],
+    new_item_ids: list[uuid.UUID] | None = None,
 ) -> list[SuccessionAlert]:
-    """Return succession alerts for newly-saved items whose predecessor is Keep-ed.
+    """Return succession alerts for Keep-ed predecessors with un-alerted successors.
 
     Parameters
     ----------
     session:
         Async SQLAlchemy session bound to the Argos DB.
     new_item_ids:
-        UUIDs of tech_items that were just saved by ``save_node``.  These are
-        candidate ``successor_id`` values to look up in ``tech_succession``.
+        Optional list of tech_item UUIDs to narrow the candidate
+        ``successor_id`` set to.  When ``None`` (default), **all**
+        ``tech_succession`` rows are considered — this is the correct mode
+        for the periodic pipeline because it lets failed Slack sends from
+        previous runs be retried.  When an explicit list is supplied, only
+        successors in that list are considered (useful for tests or
+        targeted re-checks).  An empty list short-circuits to ``[]``.
 
     Returns
     -------
@@ -82,15 +94,19 @@ async def check_succession(
 
     Notes
     -----
-    Empty input short-circuits to ``[]`` without issuing a query.
-
     Dedup granularity: alerts are deduplicated per ``user_asset_id``.  Once any
     succession alert has been recorded for a Keep-ed asset, subsequent alerts
     for the *same* Keep-ed asset are suppressed — even if the new alert is
     about a different successor.  This matches the spec in ARG-104 and avoids
     schema changes to ``track_history``.
+
+    Retry semantics: alerts that were generated but failed to post (no
+    ``track_history`` row written by :func:`post_track_update`) will reappear
+    in subsequent calls until a successful post records them.  See module
+    docstring for the full rationale.
     """
-    if not new_item_ids:
+    # Explicit empty list = caller asked us to look at nothing.
+    if new_item_ids is not None and len(new_item_ids) == 0:
         return []
 
     Predecessor = aliased(TechItem)
@@ -130,12 +146,16 @@ async def check_succession(
             Successor.id == TechSuccession.successor_id,
         )
         .where(
-            TechSuccession.successor_id.in_(new_item_ids),
             UserAsset.status == AssetStatus.KEEP,
             ~already_alerted,
         )
         .order_by(TechSuccession.created_at.asc())
     )
+
+    # Optional narrowing for callers (e.g. tests) that want to restrict the
+    # scan to a known set of successor IDs.  Production pipeline passes None.
+    if new_item_ids is not None:
+        stmt = stmt.where(TechSuccession.successor_id.in_(new_item_ids))
 
     result = await session.execute(stmt)
     return [

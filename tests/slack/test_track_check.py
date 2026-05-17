@@ -19,12 +19,52 @@ def _make_session(rows: list[tuple]) -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_check_succession_empty_input_returns_empty():
+async def test_check_succession_explicit_empty_list_returns_empty():
+    """An explicit empty list means "look at nothing" — short-circuit."""
     session = AsyncMock()
     alerts = await check_succession(session, [])
     assert alerts == []
-    # No query should be issued when there are no candidate IDs.
+    # No query should be issued when the caller explicitly passed [].
     session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_check_succession_none_scans_all_unalerted_rows():
+    """new_item_ids=None (the default) issues a query without an
+    ``IN (...)`` clause on ``successor_id``.  This is the retry path: any
+    succession whose alert failed to post on a previous run remains
+    eligible until track_history records a successful send."""
+    asset_id = uuid.uuid4()
+    rows = [(asset_id, "Old", "New", RelationType.REPLACE)]
+    session = _make_session(rows)
+
+    alerts = await check_succession(session)  # no new_item_ids → None default
+
+    assert len(alerts) == 1
+    assert alerts[0].user_asset_id == asset_id
+
+    # A query was issued, and it does NOT narrow by tech_succession.successor_id.
+    session.execute.assert_awaited()
+    executed_stmt = session.execute.await_args.args[0]
+    rendered = str(executed_stmt.compile(compile_kwargs={"literal_binds": False}))
+    # Track_history dedup must still be present.
+    assert "track_history" in rendered
+    # No IN-list on successor_id when scanning all rows.
+    assert "successor_id IN" not in rendered.replace("\n", " ")
+
+
+@pytest.mark.asyncio
+async def test_check_succession_none_still_filters_already_alerted():
+    """Even when scanning all succession rows, the track_history NOT EXISTS
+    predicate still keeps the dedup of successful sends in place."""
+    session = _make_session([])  # DB filtered them all out
+
+    alerts = await check_succession(session, None)
+    assert alerts == []
+
+    executed_stmt = session.execute.await_args.args[0]
+    rendered = str(executed_stmt.compile(compile_kwargs={"literal_binds": False}))
+    assert "track_history" in rendered
 
 
 @pytest.mark.asyncio

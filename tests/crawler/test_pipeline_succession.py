@@ -57,7 +57,10 @@ def _mk_session(queue_rows=None) -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_calls_check_succession_with_saved_ids(monkeypatch):
+async def test_run_full_pipeline_scans_all_succession_rows(monkeypatch):
+    """check_succession is called without a successor-ID filter so failed
+    sends from prior runs can be retried (the in-query track_history
+    NOT EXISTS predicate handles dedup of successful sends)."""
     saved_id_a = uuid.uuid4()
     saved_id_b = uuid.uuid4()
     user_asset_id = uuid.uuid4()
@@ -110,11 +113,15 @@ async def test_run_full_pipeline_calls_check_succession_with_saved_ids(monkeypat
     session = _mk_session(queue_rows)
     _, summary = await run_full_pipeline(session)
 
-    # check_succession was called once with both saved IDs (order-preserved).
+    # check_succession was called with the session only — no successor-ID
+    # narrowing, so previously-failed alerts have a chance to re-fire.
     check_mock.assert_awaited_once()
-    args = check_mock.await_args.args
-    assert args[0] is session
-    assert list(args[1]) == [saved_id_a, saved_id_b]
+    call = check_mock.await_args
+    assert call.args[0] is session
+    # Either positional only (len==1) or new_item_ids explicitly None.
+    if len(call.args) > 1:
+        assert call.args[1] is None
+    assert call.kwargs.get("new_item_ids", None) is None
 
     # Alerts surface on the summary.
     assert isinstance(summary, PipelineSummary)
@@ -122,8 +129,9 @@ async def test_run_full_pipeline_calls_check_succession_with_saved_ids(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_run_full_pipeline_skips_check_when_nothing_saved(monkeypatch):
-    """No saved items → no DB round-trip to check_succession."""
+async def test_run_full_pipeline_still_checks_when_nothing_saved(monkeypatch):
+    """Even with no newly-saved items, check_succession must still run so
+    that any alert that failed to post on a previous run gets retried."""
     monkeypatch.setattr(
         crawler_pipeline, "run_full_crawl", AsyncMock(return_value=[])
     )
@@ -143,14 +151,21 @@ async def test_run_full_pipeline_skips_check_when_nothing_saved(monkeypatch):
         crawler_pipeline, "run_batch_brain_pipeline", AsyncMock(return_value=[])
     )
 
-    check_mock = AsyncMock(return_value=[])
+    retried_alert = SuccessionAlert(
+        user_asset_id=uuid.uuid4(),
+        predecessor_title="Previously-failed predecessor",
+        successor_title="Previously-failed successor",
+        relation_type=RelationType.ENHANCE,
+    )
+    check_mock = AsyncMock(return_value=[retried_alert])
     monkeypatch.setattr(crawler_pipeline, "check_succession", check_mock)
 
     session = _mk_session()
     _, summary = await run_full_pipeline(session)
 
-    check_mock.assert_not_awaited()
-    assert summary.succession_alerts == []
+    # The check still runs and surfaces the retried alert.
+    check_mock.assert_awaited_once()
+    assert summary.succession_alerts == [retried_alert]
 
 
 @pytest.mark.asyncio

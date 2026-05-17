@@ -275,24 +275,24 @@ async def run_full_pipeline(
     results: list[BrainState] = await run_batch_brain_pipeline(valid_items, session)
 
     # ── Stage 5b: succession alert check (ARG-103) ────────────────────────
-    # Collect the IDs of items that save_node actually inserted (skips
-    # duplicates and triage rejects).  If nothing new was saved, skip the
-    # query.  Alerts ride out on PipelineSummary for the CLI / Slack
-    # dispatcher (ARG-104) to consume.
-    new_item_ids = [
-        s["saved_item_id"]
-        for s in results
-        if s.get("saved") and s.get("saved_item_id") is not None
-    ]
+    # Scan ALL un-alerted tech_succession rows (not just successors saved in
+    # this run).  Why: ``post_track_update`` only writes a track_history row
+    # on a successful Slack post, so an alert that fails to send leaves no
+    # dedup marker.  On the next run the successor is already in tech_items
+    # (deduplicated by source_url in save_node), so a "new this run only"
+    # filter would silently drop the retry forever.  Letting check_succession
+    # see the full set keeps failed sends eligible until they succeed; the
+    # track_history NOT EXISTS predicate inside the query takes care of
+    # dedup for successful sends.  Alerts ride out on PipelineSummary for
+    # the CLI / Slack dispatcher (ARG-104) to consume.
     succession_alerts: list[SuccessionAlert] = []
-    if new_item_ids:
-        try:
-            succession_alerts = await check_succession(session, new_item_ids)
-        except Exception as exc:  # noqa: BLE001
-            # Succession alerts are advisory — never let them break the run.
-            logger.warning(
-                "run_full_pipeline: check_succession failed: %r", exc
-            )
+    try:
+        succession_alerts = await check_succession(session)
+    except Exception as exc:  # noqa: BLE001
+        # Succession alerts are advisory — never let them break the run.
+        logger.warning(
+            "run_full_pipeline: check_succession failed: %r", exc
+        )
 
     # ── Stage 6: remove processed rows from queue ─────────────────────────
     # Items where save_node raised (is_valid=True, saved=False) stay in the
