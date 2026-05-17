@@ -27,6 +27,7 @@ from argos.crawler.static_fetcher import (
 )
 from argos.models.crawl_queue import CrawlQueue
 from argos.models.tech_item import CategoryType
+from argos.slack.services.track_check import SuccessionAlert, check_succession
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from argos.progress import ProgressReporter
@@ -48,6 +49,10 @@ class PipelineSummary:
     preflight_filtered: int = 0
     duration_seconds: float = 0.0
     queue_remaining: int = 0
+    # ARG-103: succession alerts produced by the post-save check.  Empty by
+    # default to keep existing test fixtures (PipelineSummary(crawled_total=…))
+    # working without modification.
+    succession_alerts: list[SuccessionAlert] = field(default_factory=list)
 
 
 async def run_static_pipeline(session: AsyncSession) -> list[dict]:
@@ -339,6 +344,38 @@ async def run_full_pipeline(
     else:
         results = await run_batch_brain_pipeline(valid_items, session)
 
+    # ── Stage 5b: succession alert check (ARG-103) ────────────────────────
+    # Scan ALL un-alerted tech_succession rows (not just successors saved in
+    # this run).  Why: ``post_track_update`` only writes a track_history row
+    # on a successful Slack post, so an alert that fails to send leaves no
+    # dedup marker.  On the next run the successor is already in tech_items
+    # (deduplicated by source_url in save_node), so a "new this run only"
+    # filter would silently drop the retry forever.  Letting check_succession
+    # see the full set keeps failed sends eligible until they succeed; the
+    # track_history NOT EXISTS predicate inside the query takes care of
+    # dedup for successful sends.  Alerts ride out on PipelineSummary for
+    # the CLI / Slack dispatcher (ARG-104) to consume.
+    succession_alerts: list[SuccessionAlert] = []
+    # Run check_succession inside a SAVEPOINT so a DB error in the read-only
+    # succession query only rolls back the savepoint — not the parent
+    # transaction.  Earlier stages (save_node) may have inserted new
+    # tech_items / tech_succession rows in this same transaction; calling
+    # session.rollback() on the parent here would discard that work while
+    # Stage 6 below still deletes the corresponding queue_rows and commits,
+    # permanently losing the processed items.  The savepoint isolates the
+    # failure: saved items stay durable, Stage 6 proceeds normally, and the
+    # parent transaction is left in a usable state.
+    try:
+        async with session.begin_nested():
+            succession_alerts = await check_succession(session)
+    except Exception as exc:  # noqa: BLE001
+        # Succession alerts are advisory — never let them break the run.
+        # The nested begin() context manager has already rolled the savepoint
+        # back on exception, leaving the parent transaction intact.
+        logger.warning(
+            "run_full_pipeline: check_succession failed: %r", exc
+        )
+
     # ── Stage 6: remove processed rows from queue ─────────────────────────
     # Items where save_node raised (is_valid=True, saved=False) stay in the
     # queue so a transient DB error triggers a retry on the next run.
@@ -382,5 +419,6 @@ async def run_full_pipeline(
         preflight_filtered=preflight_filtered,
         duration_seconds=duration,
         queue_remaining=queue_remaining,
+        succession_alerts=succession_alerts,
     )
     return results, summary
