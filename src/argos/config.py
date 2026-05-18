@@ -146,6 +146,7 @@ class GenealogistConfig(BaseModel):
     num_ctx: int = Field(default=3072, ge=512)
     context_top_n: int = Field(default=3, ge=1, le=10)
     context_max_chars: int = Field(default=300, ge=50)
+    embed_search_concurrency: int = Field(default=4, ge=1)
 
 
 class RSSFeedConfig(BaseModel):
