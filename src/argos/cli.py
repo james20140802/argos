@@ -149,6 +149,69 @@ async def _dispatch_succession_alerts(alerts: list, session) -> None:
         )
 
 
+async def _dispatch_signal_matches(new_item_ids: list, session) -> None:
+    """Forward signal matches to the Slack dispatcher (ARG-117).
+
+    Calls ``match_signals`` to find Keep-ed assets similar to the newly-saved
+    TechItems, then dispatches Slack messages via ``post_signal_update``.
+    Mirrors the pattern of :func:`_dispatch_succession_alerts`:
+
+    - ``build_app()`` failure → warning log, skip (no Slack creds).
+    - Empty channel → warning log, skip.
+    - Dispatcher exception → warning log, skip (never blocks the run).
+    """
+    if not new_item_ids:
+        return
+    try:
+        from argos.slack.app import build_app
+        from argos.slack.services.track_check import match_signals, post_signal_update
+    except ImportError as exc:
+        logging.getLogger(__name__).warning(
+            "signal match dispatch skipped — Slack layer unavailable: %r", exc
+        )
+        return
+
+    try:
+        matches = await match_signals(session, new_item_ids)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "signal match query failed: %r", exc
+        )
+        return
+
+    if not matches:
+        return
+
+    logging.getLogger(__name__).info(
+        "signal match: %d match(es) found for %d new item(s)",
+        len(matches), len(new_item_ids),
+    )
+
+    try:
+        app = build_app()
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "signal match dispatch (%d) skipped — Slack app build failed: %r",
+            len(matches), exc,
+        )
+        return
+
+    channel = settings.user.slack.channel_id
+    if not channel:
+        logging.getLogger(__name__).warning(
+            "signal match dispatch (%d) skipped — no Slack channel configured",
+            len(matches),
+        )
+        return
+
+    try:
+        await post_signal_update(app, channel, matches, session)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "signal match dispatch failed: %r", exc
+        )
+
+
 async def _run(dynamic_urls: list[str] | None) -> int:
     from argos.progress import ProgressReporter
 
@@ -173,6 +236,23 @@ async def _run(dynamic_urls: list[str] | None) -> int:
                 except Exception:  # noqa: BLE001
                     logging.getLogger(__name__).warning(
                         "commit after succession alert dispatch failed",
+                        exc_info=True,
+                    )
+
+            # ARG-117: signal-match dispatch — compare newly-saved items against
+            # Keep-ed assets using pgvector cosine similarity.
+            new_item_ids = [
+                s["saved_item_id"]
+                for s in results
+                if s.get("saved") and s.get("saved_item_id")
+            ]
+            if new_item_ids:
+                await _dispatch_signal_matches(new_item_ids, session)
+                try:
+                    await session.commit()
+                except Exception:  # noqa: BLE001
+                    logging.getLogger(__name__).warning(
+                        "commit after signal match dispatch failed",
                         exc_info=True,
                     )
     elapsed = time.monotonic() - start
