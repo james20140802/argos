@@ -252,3 +252,169 @@ def test_reporter_is_reusable_after_exit():
     # After exit, further calls should not raise.
     reporter.advance("crawl")
     reporter.finish_stage("crawl")
+
+
+# ---------------------------------------------------------------------------
+# ARG-121: Single-bar progress invariant and log-routing regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_single_task_per_stage_crawl():
+    """Crawl stage: exactly one Rich task created regardless of advance count.
+
+    Regression guard for ARG-114: the original bug created a new progress bar
+    line on every advance/log write.  ProgressReporter must add one task per
+    stage, not one per update.
+    """
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+    reporter = ProgressReporter(tty=True, console=console)
+
+    with reporter:
+        reporter.start_stage("crawl", total=10)
+        for _ in range(10):
+            reporter.advance("crawl")
+        reporter.finish_stage("crawl")
+
+        progress = reporter._progress
+        assert progress is not None
+        crawl_tasks = [t for t in progress.tasks if "Crawling" in t.description]
+        assert len(crawl_tasks) == 1, (
+            f"Expected exactly 1 Crawling task, got {len(crawl_tasks)}"
+        )
+
+
+def test_single_task_per_stage_triage():
+    """Triage (8B) stage: exactly one Rich task created across its lifecycle."""
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+    reporter = ProgressReporter(tty=True, console=console)
+
+    with reporter:
+        reporter.start_stage("triage", total=5)
+        for _ in range(5):
+            reporter.advance("triage")
+        reporter.finish_stage("triage")
+
+        progress = reporter._progress
+        assert progress is not None
+        triage_tasks = [t for t in progress.tasks if "Triage" in t.description]
+        assert len(triage_tasks) == 1, (
+            f"Expected exactly 1 Triage task, got {len(triage_tasks)}"
+        )
+
+
+def test_single_task_per_stage_embedding():
+    """Embedding stage: exactly one Rich task created (indeterminate start)."""
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+    reporter = ProgressReporter(tty=True, console=console)
+
+    with reporter:
+        reporter.start_stage("embed", total=None)
+        reporter.advance("embed")
+        reporter.advance("embed")
+        reporter.finish_stage("embed")
+
+        progress = reporter._progress
+        assert progress is not None
+        embed_tasks = [t for t in progress.tasks if "Embedding" in t.description]
+        assert len(embed_tasks) == 1, (
+            f"Expected exactly 1 Embedding task, got {len(embed_tasks)}"
+        )
+
+
+def test_multiple_stages_produce_one_task_each():
+    """Running several stages in sequence yields exactly one task per stage."""
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+    reporter = ProgressReporter(tty=True, console=console)
+
+    stages = [
+        ("crawl", 3),
+        ("triage", 3),
+        ("embed", None),
+        ("genealogy", None),
+        ("save", 3),
+    ]
+    with reporter:
+        for name, total in stages:
+            reporter.start_stage(name, total=total)
+            reporter.advance(name)
+            reporter.finish_stage(name)
+
+        progress = reporter._progress
+        assert progress is not None
+        # Exactly as many tasks as stages — no duplicates.
+        assert len(progress.tasks) == len(stages), (
+            f"Expected {len(stages)} tasks, got {len(progress.tasks)}: "
+            f"{[t.description for t in progress.tasks]}"
+        )
+
+
+def test_log_line_via_shared_console_does_not_add_progress_task():
+    """Emitting a log record through a RichHandler sharing the console must
+    not create a new progress task.
+
+    Regression guard for ARG-114 problem 1: httpx INFO lines caused new bars
+    to appear because logging wrote directly to stdout outside Rich's Live
+    region, triggering a redraw that printed the bar again below.
+
+    When RichHandler and ProgressReporter share the same Console, Rich routes
+    the log line above the bar via the Live context — the task count stays
+    constant.
+    """
+    from rich.logging import RichHandler
+
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+
+    # Wire up the handler exactly as _configure_logging does on TTY.
+    test_logger = logging.getLogger("test.arg121.shared_console")
+    test_logger.setLevel(logging.DEBUG)
+    handler = RichHandler(console=console, show_path=False, markup=False)
+    test_logger.addHandler(handler)
+    try:
+        reporter = ProgressReporter(tty=True, console=console)
+        with reporter:
+            reporter.start_stage("crawl", total=5)
+            reporter.advance("crawl")
+            # Simulate an httpx-style INFO log while the bar is active.
+            test_logger.info("HTTP Request: GET https://example.com 200 OK")
+            reporter.advance("crawl")
+            reporter.finish_stage("crawl")
+
+            progress = reporter._progress
+            assert progress is not None
+            # Still exactly one task — the log did NOT add another.
+            assert len(progress.tasks) == 1, (
+                f"Log line added a spurious task; tasks={[t.description for t in progress.tasks]}"
+            )
+    finally:
+        test_logger.removeHandler(handler)
+
+
+def test_verbose_false_httpx_level_is_warning():
+    """_configure_logging(verbose=False) clamps httpx to WARNING.
+
+    Regression guard for ARG-118: without this helper, httpx INFO logs flood
+    stdout and break the progress bar.
+    """
+    from argos.cli import _configure_logging
+
+    _configure_logging(verbose=False, tty=False)
+    assert logging.getLogger("httpx").getEffectiveLevel() == logging.WARNING
+    assert logging.getLogger("httpcore").getEffectiveLevel() == logging.WARNING
+
+
+def test_verbose_true_httpx_level_is_info():
+    """_configure_logging(verbose=True) restores httpx to INFO.
+
+    Regression guard for ARG-118: verbose mode must re-enable the log output
+    the user explicitly requested.
+    """
+    from argos.cli import _configure_logging
+
+    _configure_logging(verbose=True, tty=False)
+    assert logging.getLogger("httpx").getEffectiveLevel() == logging.INFO
+    assert logging.getLogger("httpcore").getEffectiveLevel() == logging.INFO
