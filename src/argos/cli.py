@@ -684,6 +684,7 @@ async def _portfolio(category: str | None, sort: str) -> int:
 
     try:
         from rich.console import Console
+        from rich.markup import escape
 
         console = Console()
         console.print(f"\n[bold]# Keep 포트폴리오 (총 {total}개)[/bold]\n")
@@ -693,7 +694,7 @@ async def _portfolio(category: str | None, sort: str) -> int:
             if not items:
                 continue
             label = "Mainstream" if cat == CT.MAINSTREAM else "Alpha"
-            console.print(f"[bold cyan][{label}][/bold cyan]")
+            console.print(f"[bold cyan]\\[{label}][/bold cyan]")
             for asset, item in items:
                 kept_date = asset.created_at.strftime("%Y-%m-%d")
                 last_signal = (
@@ -701,7 +702,7 @@ async def _portfolio(category: str | None, sort: str) -> int:
                     if asset.last_monitored_at
                     else "—"
                 )
-                console.print(f"• {item.title:<30}  kept {kept_date}  last_signal {last_signal}")
+                console.print(f"• {escape(item.title):<30}  kept {kept_date}  last_signal {last_signal}")
             console.print()
 
     except ImportError:
