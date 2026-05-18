@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import random
 from datetime import datetime, timezone, timedelta
+from typing import Literal
 from urllib.parse import urlsplit
 
 import numpy as np
@@ -199,12 +200,23 @@ async def fetch_today_briefing(
 
 async def fetch_user_portfolio(
     session: AsyncSession,
+    *,
+    category: CategoryType | None = None,
+    sort_by: Literal["date", "trust"] = "date",
 ) -> list[tuple[UserAsset, TechItem]]:
     stmt = (
         select(UserAsset, TechItem)
         .join(TechItem, UserAsset.tech_id == TechItem.id)
         .where(UserAsset.status == AssetStatus.KEEP)
-        .order_by(UserAsset.updated_at.desc())
     )
+    if category is not None:
+        stmt = stmt.where(TechItem.category == category)
+    if sort_by == "trust":
+        stmt = stmt.order_by(
+            TechItem.trust_score.desc().nulls_last(),
+            UserAsset.updated_at.desc(),
+        )
+    else:
+        stmt = stmt.order_by(UserAsset.updated_at.desc())
     rows = await session.execute(stmt)
     return [(row[0], row[1]) for row in rows.all()]
