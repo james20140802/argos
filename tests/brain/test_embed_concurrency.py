@@ -97,7 +97,7 @@ async def test_batch_embed_searches_run_concurrently(monkeypatch):
     intervals: list[tuple[float, float]] = []
     lock = asyncio.Lock()
 
-    async def _fake_search(state, embedding, session, top_n, max_chars):
+    async def _fake_search(state, embedding, session_factory, top_n, max_chars):
         start = time.monotonic()
         await asyncio.sleep(0.05)  # 50 ms artificial latency
         end = time.monotonic()
@@ -172,7 +172,7 @@ async def test_batch_embed_semaphore_limits_concurrency(monkeypatch):
     active = {"count": 0, "peak": 0}
     lock = asyncio.Lock()
 
-    async def _fake_search(state, embedding, session, top_n, max_chars):
+    async def _fake_search(state, embedding, session_factory, top_n, max_chars):
         async with lock:
             active["count"] += 1
             if active["count"] > active["peak"]:
@@ -222,7 +222,7 @@ async def test_batch_embed_order_preserved_under_concurrency(monkeypatch):
         for i in range(n_items)
     ]
 
-    async def _fake_search(state, embedding, session, top_n, max_chars):
+    async def _fake_search(state, embedding, session_factory, top_n, max_chars):
         # Stagger completion: last item finishes first.
         idx = int(state["raw_text"].split()[-1])
         delay = 0.05 * (n_items - idx)
@@ -268,7 +268,7 @@ async def test_batch_embed_on_item_done_fires_per_valid_item_under_concurrency(m
     n_items = 3
     states = [_state(raw_text=f"item {i}", source_url=f"https://e.com/{i}") for i in range(n_items)]
 
-    async def _fake_search(state, embedding, session, top_n, max_chars):
+    async def _fake_search(state, embedding, session_factory, top_n, max_chars):
         await asyncio.sleep(0.01)
         return {
             **state,

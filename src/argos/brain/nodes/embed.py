@@ -4,10 +4,11 @@ import logging
 from typing import Callable
 import httpx
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from argos.brain.graph_state import BrainState
 from argos.brain.ollama_client import _base_url, batch_embed
 from argos.config import settings
+from argos.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ async def embed_and_search_node(state: BrainState, session: AsyncSession) -> Bra
 async def _similarity_search(
     state: BrainState,
     embedding: list[float],
-    session: AsyncSession,
+    session_factory: async_sessionmaker,
     top_n: int,
     max_chars: int,
 ) -> BrainState:
@@ -108,9 +109,11 @@ async def _similarity_search(
     ``extracted_info`` populated, or with ``genealogy_skipped=True`` when the
     search returns no rows.
 
-    This helper is intentionally kept pure (no side-effects beyond the DB
-    read) so it can be called concurrently from ``batch_embed_and_search_node``
-    via ``asyncio.gather`` + ``asyncio.Semaphore``.
+    Each concurrent invocation creates its own ``AsyncSession`` via
+    ``session_factory`` so that concurrent tasks never share session state.
+    ``AsyncSession`` is not safe for concurrent task use (SQLAlchemy docs);
+    sharing one session across ``asyncio.gather`` tasks can corrupt transaction
+    state even for read-only queries.
     """
     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
     stmt = text(
@@ -118,8 +121,9 @@ async def _similarity_search(
         f"WHERE embedding IS NOT NULL "
         f"ORDER BY embedding <=> CAST(:emb AS vector) LIMIT {top_n}"
     )
-    result = await session.execute(stmt, {"emb": embedding_str})
-    rows = result.fetchall()
+    async with session_factory() as session:
+        result = await session.execute(stmt, {"emb": embedding_str})
+        rows = result.fetchall()
 
     if not rows:
         return {
@@ -162,10 +166,11 @@ async def batch_embed_and_search_node(
     states:
         Input batch of brain states.
     session:
-        Active async SQLAlchemy session.  Concurrent coroutines share this
-        session; SQLAlchemy's asyncio implementation serialises access to the
-        underlying connection internally, so no session-safety regression is
-        introduced.  The semaphore bounds the fan-out to
+        Active async SQLAlchemy session used for the initial DB item count.
+        Concurrent similarity searches each open their own session via
+        ``AsyncSessionLocal`` to comply with SQLAlchemy's requirement that
+        ``AsyncSession`` instances are not shared across concurrent tasks.
+        The semaphore bounds the fan-out to
         ``settings.user.genealogist.embed_search_concurrency`` (default 4) so
         the asyncpg pool is never overwhelmed.
     on_item_done:
@@ -245,7 +250,7 @@ async def batch_embed_and_search_node(
         try:
             async with sem:
                 updated = await _similarity_search(
-                    state, embedding, session, top_n, max_chars
+                    state, embedding, AsyncSessionLocal, top_n, max_chars
                 )
         except Exception as exc:
             logger.warning(
