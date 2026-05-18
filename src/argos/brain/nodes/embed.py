@@ -210,6 +210,14 @@ async def batch_embed_and_search_node(
         logger.warning("batch_embed_and_search_node: batch_embed failed: %r", exc)
         return list(states)
 
+    if len(embeddings) != len(valid_indices):
+        logger.warning(
+            "batch_embed_and_search_node: expected %d embeddings, got %d; aborting batch",
+            len(valid_indices),
+            len(embeddings),
+        )
+        return list(states)
+
     def _tick() -> None:
         if on_item_done is None:
             return
