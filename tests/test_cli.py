@@ -27,42 +27,79 @@ def test_format_duration_zero():
 
 
 # ---------------------------------------------------------------------------
-# _configure_logging helper (ARG-118)
+# _configure_logging helper (ARG-118 / ARG-120)
 # ---------------------------------------------------------------------------
 
 
 def test_configure_logging_non_verbose_quiets_httpx():
     """Non-verbose mode clamps httpx and httpcore to WARNING."""
-    _configure_logging(verbose=False)
+    _configure_logging(verbose=False, tty=False)
     assert logging.getLogger("httpx").getEffectiveLevel() == logging.WARNING
     assert logging.getLogger("httpcore").getEffectiveLevel() == logging.WARNING
 
 
 def test_configure_logging_verbose_allows_httpx_info():
     """Verbose mode sets httpx and httpcore back to INFO."""
-    _configure_logging(verbose=True)
+    _configure_logging(verbose=True, tty=False)
     assert logging.getLogger("httpx").getEffectiveLevel() == logging.INFO
     assert logging.getLogger("httpcore").getEffectiveLevel() == logging.INFO
 
 
 def test_configure_logging_non_verbose_root_is_info():
     """Non-verbose root logger level is INFO."""
-    _configure_logging(verbose=False)
+    _configure_logging(verbose=False, tty=False)
     assert logging.getLogger().level == logging.INFO
 
 
 def test_configure_logging_verbose_root_is_debug():
     """Verbose root logger level is DEBUG."""
-    _configure_logging(verbose=True)
+    _configure_logging(verbose=True, tty=False)
     assert logging.getLogger().level == logging.DEBUG
 
 
 def test_configure_logging_urllib3_always_warning():
     """urllib3 stays at WARNING regardless of verbose flag."""
-    _configure_logging(verbose=True)
+    _configure_logging(verbose=True, tty=False)
     assert logging.getLogger("urllib3").getEffectiveLevel() == logging.WARNING
-    _configure_logging(verbose=False)
+    _configure_logging(verbose=False, tty=False)
     assert logging.getLogger("urllib3").getEffectiveLevel() == logging.WARNING
+
+
+def test_configure_logging_non_tty_returns_none():
+    """Non-TTY path returns None (no shared console)."""
+    result = _configure_logging(verbose=False, tty=False)
+    assert result is None
+
+
+def test_configure_logging_tty_returns_console():
+    """TTY path returns a rich Console instance."""
+    from rich.console import Console
+
+    result = _configure_logging(verbose=False, tty=True)
+    assert isinstance(result, Console)
+
+
+def test_configure_logging_tty_installs_rich_handler():
+    """TTY path installs a RichHandler on the root logger."""
+    from rich.logging import RichHandler
+
+    _configure_logging(verbose=False, tty=True)
+    root = logging.getLogger()
+    handler_types = [type(h) for h in root.handlers]
+    assert RichHandler in handler_types, f"Expected RichHandler among {handler_types}"
+
+
+def test_configure_logging_tty_rich_handler_uses_shared_console():
+    """The RichHandler and the returned Console must be the same object."""
+    from rich.console import Console
+    from rich.logging import RichHandler
+
+    returned_console = _configure_logging(verbose=False, tty=True)
+    assert isinstance(returned_console, Console)
+    root = logging.getLogger()
+    rich_handlers = [h for h in root.handlers if isinstance(h, RichHandler)]
+    assert rich_handlers, "No RichHandler found"
+    assert rich_handlers[0].console is returned_console
 
 
 # ---------------------------------------------------------------------------

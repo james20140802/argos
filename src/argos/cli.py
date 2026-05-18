@@ -7,6 +7,10 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rich.console import Console
 
 try:
     import tomllib
@@ -149,11 +153,18 @@ async def _dispatch_succession_alerts(alerts: list, session) -> None:
         )
 
 
-async def _run(dynamic_urls: list[str] | None) -> int:
+async def _run(
+    dynamic_urls: list[str] | None,
+    console: "Console | None" = None,
+) -> int:
     from argos.progress import ProgressReporter
 
     start = time.monotonic()
-    progress = ProgressReporter()
+    # Pass the shared console so ProgressReporter's Rich Live region and the
+    # RichHandler installed by _configure_logging share the same output stream.
+    # Rich then automatically routes log lines above the live bar so the bar
+    # stays in place instead of being re-drawn below each log line.
+    progress = ProgressReporter(console=console)
     with progress:
         async with AsyncSessionLocal() as session:
             results, summary = await run_full_pipeline(
@@ -995,10 +1006,21 @@ def _dispatch_config(args: argparse.Namespace) -> int:
     return EXIT_GENERIC
 
 
-def _configure_logging(verbose: bool) -> None:
+def _configure_logging(
+    verbose: bool,
+    *,
+    tty: bool | None = None,
+) -> "Console | None":
     """Configure root logging and quiet chatty third-party libraries.
 
     Extracted so it can be unit-tested independently of :func:`main`.
+
+    On a real TTY this function constructs a shared :class:`rich.console.Console`
+    and installs a :class:`rich.logging.RichHandler` on the root logger so that
+    log records flow through the same Rich rendering pipeline as the progress bar.
+    When ``ProgressReporter`` receives the same console instance it can use Rich's
+    Live-region management to print log lines *above* the progress bar without
+    spawning new bars.
 
     In non-verbose mode ``httpx`` and ``httpcore`` (which emit an INFO line per
     HTTP request) are clamped to WARNING so they don't interfere with the Rich
@@ -1015,13 +1037,57 @@ def _configure_logging(verbose: bool) -> None:
         When True the root logger is set to DEBUG and httpx/httpcore are
         allowed to emit INFO records. When False the root logger is set to
         INFO and third-party chatty loggers are clamped to WARNING.
+    tty:
+        Force TTY (Rich handler) or non-TTY (plain stream handler) mode.
+        ``None`` auto-detects via ``sys.stdout.isatty()``. Tests inject
+        ``False`` to exercise the non-TTY path without a real terminal.
+
+    Returns
+    -------
+    Console | None
+        The shared ``rich.console.Console`` when running on a TTY (so callers
+        can pass it to ``ProgressReporter``), or ``None`` on non-TTY streams.
     """
     root_level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=root_level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        force=True,
-    )
+    is_tty = tty if tty is not None else sys.stdout.isatty()
+
+    root_logger = logging.getLogger()
+    # Remove all existing handlers to avoid double-logging when main() is
+    # called multiple times in the same process (e.g. in pytest).
+    for _h in root_logger.handlers[:]:
+        root_logger.removeHandler(_h)
+
+    shared_console: Console | None = None
+
+    if is_tty:
+        try:
+            from rich.console import Console as _Console
+            from rich.logging import RichHandler
+
+            shared_console = _Console()
+            _handler = RichHandler(
+                console=shared_console,
+                show_path=False,
+                markup=False,
+                rich_tracebacks=False,
+            )
+            _handler.setLevel(logging.DEBUG)
+            root_logger.addHandler(_handler)
+            root_logger.setLevel(root_level)
+        except ImportError:
+            # Rich not available — fall back to plain handler.
+            shared_console = None
+            logging.basicConfig(
+                level=root_level,
+                format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                force=True,
+            )
+    else:
+        logging.basicConfig(
+            level=root_level,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            force=True,
+        )
 
     # Quiet chatty HTTP libraries that spam one INFO line per request.
     third_party_level = logging.INFO if verbose else logging.WARNING
@@ -1030,6 +1096,8 @@ def _configure_logging(verbose: bool) -> None:
 
     # urllib3 INFO is rarely useful even in verbose mode — keep it at WARNING.
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+    return shared_console
 
 
 def _resolve_version() -> str:
@@ -1102,13 +1170,13 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    _configure_logging(verbose=getattr(args, "verbose", False))
+    _shared_console = _configure_logging(verbose=getattr(args, "verbose", False))
 
     if args.command == "run":
         rc = _apply_config_override(args)
         if rc is not None:
             return rc
-        return asyncio.run(_run(args.url))
+        return asyncio.run(_run(args.url, console=_shared_console))
     if args.command == "slack":
         rc = _apply_config_override(args)
         if rc is not None:
