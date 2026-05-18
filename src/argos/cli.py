@@ -995,6 +995,43 @@ def _dispatch_config(args: argparse.Namespace) -> int:
     return EXIT_GENERIC
 
 
+def _configure_logging(verbose: bool) -> None:
+    """Configure root logging and quiet chatty third-party libraries.
+
+    Extracted so it can be unit-tested independently of :func:`main`.
+
+    In non-verbose mode ``httpx`` and ``httpcore`` (which emit an INFO line per
+    HTTP request) are clamped to WARNING so they don't interfere with the Rich
+    progress bar.  In verbose mode the user explicitly opted in, so those loggers
+    are restored to INFO.
+
+    ``urllib3`` is also silenced to WARNING regardless of *verbose*; it only
+    appears in edge-case fallback paths and its INFO output is almost never
+    useful interactively.
+
+    Parameters
+    ----------
+    verbose:
+        When True the root logger is set to DEBUG and httpx/httpcore are
+        allowed to emit INFO records. When False the root logger is set to
+        INFO and third-party chatty loggers are clamped to WARNING.
+    """
+    root_level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=root_level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+
+    # Quiet chatty HTTP libraries that spam one INFO line per request.
+    third_party_level = logging.INFO if verbose else logging.WARNING
+    for _name in ("httpx", "httpcore"):
+        logging.getLogger(_name).setLevel(third_party_level)
+
+    # urllib3 INFO is rarely useful even in verbose mode — keep it at WARNING.
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
 def _resolve_version() -> str:
     """Return the installed package version, falling back gracefully for dev installs."""
     import importlib.metadata
@@ -1065,10 +1102,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    _configure_logging(verbose=getattr(args, "verbose", False))
 
     if args.command == "run":
         rc = _apply_config_override(args)

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import logging
 import plistlib
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from argos.cli import _format_duration, main
+from argos.cli import _configure_logging, _format_duration, main
 from argos.crawler.pipeline import PipelineSummary
 
 
@@ -23,6 +24,45 @@ def test_format_duration_minutes_and_seconds():
 
 def test_format_duration_zero():
     assert _format_duration(0) == "0s"
+
+
+# ---------------------------------------------------------------------------
+# _configure_logging helper (ARG-118)
+# ---------------------------------------------------------------------------
+
+
+def test_configure_logging_non_verbose_quiets_httpx():
+    """Non-verbose mode clamps httpx and httpcore to WARNING."""
+    _configure_logging(verbose=False)
+    assert logging.getLogger("httpx").getEffectiveLevel() == logging.WARNING
+    assert logging.getLogger("httpcore").getEffectiveLevel() == logging.WARNING
+
+
+def test_configure_logging_verbose_allows_httpx_info():
+    """Verbose mode sets httpx and httpcore back to INFO."""
+    _configure_logging(verbose=True)
+    assert logging.getLogger("httpx").getEffectiveLevel() == logging.INFO
+    assert logging.getLogger("httpcore").getEffectiveLevel() == logging.INFO
+
+
+def test_configure_logging_non_verbose_root_is_info():
+    """Non-verbose root logger level is INFO."""
+    _configure_logging(verbose=False)
+    assert logging.getLogger().level == logging.INFO
+
+
+def test_configure_logging_verbose_root_is_debug():
+    """Verbose root logger level is DEBUG."""
+    _configure_logging(verbose=True)
+    assert logging.getLogger().level == logging.DEBUG
+
+
+def test_configure_logging_urllib3_always_warning():
+    """urllib3 stays at WARNING regardless of verbose flag."""
+    _configure_logging(verbose=True)
+    assert logging.getLogger("urllib3").getEffectiveLevel() == logging.WARNING
+    _configure_logging(verbose=False)
+    assert logging.getLogger("urllib3").getEffectiveLevel() == logging.WARNING
 
 
 # ---------------------------------------------------------------------------
