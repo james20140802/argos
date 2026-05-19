@@ -77,5 +77,58 @@ async def build_weekly_keep_report(
             window_end=window_end,
         )
 
-    # Q2/Q3 filled in Task 3.
-    raise NotImplementedError
+    # Q2: signals_7d - track_history rows in window, grouped by user_asset_id.
+    signal_stmt = (
+        select(
+            TrackHistory.user_asset_id.label("user_asset_id"),
+            func.count(TrackHistory.id).label("count"),
+        )
+        .where(TrackHistory.changed_at >= window_start)
+        .where(TrackHistory.changed_at < window_end)
+        .group_by(TrackHistory.user_asset_id)
+    )
+    signal_rows = (await session.execute(signal_stmt)).all()
+    signals_by_asset: dict[uuid.UUID, int] = {row[0]: row[1] for row in signal_rows}
+
+    # Q3: successions_7d - tech_succession rows in window, grouped by predecessor_id.
+    succession_stmt = (
+        select(
+            TechSuccession.predecessor_id.label("tech_id"),
+            func.count(TechSuccession.id).label("count"),
+        )
+        .where(TechSuccession.created_at >= window_start)
+        .where(TechSuccession.created_at < window_end)
+        .group_by(TechSuccession.predecessor_id)
+    )
+    succession_rows = (await session.execute(succession_stmt)).all()
+    successions_by_tech: dict[uuid.UUID, int] = {
+        row[0]: row[1] for row in succession_rows
+    }
+
+    items: list[WeeklyKeepItem] = []
+    for row in keep_rows:
+        # Real Rows expose .user_asset_id / .tech_id / .last_monitored_at / .title;
+        # the mocked tests deliver plain tuples in the same column order.
+        if hasattr(row, "tech_id"):
+            user_asset_id = row.user_asset_id
+            tech_id = row.tech_id
+            last_monitored_at = row.last_monitored_at
+            title = row.title
+        else:
+            user_asset_id, tech_id, last_monitored_at, title = row
+        items.append(
+            WeeklyKeepItem(
+                tech_id=tech_id,
+                title=title,
+                signals_7d=signals_by_asset.get(user_asset_id, 0),
+                successions_7d=successions_by_tech.get(tech_id, 0),
+                last_monitored_at=last_monitored_at,
+            )
+        )
+
+    return WeeklyKeepReport(
+        total_keep_count=len(items),
+        items=items,
+        window_start=window_start,
+        window_end=window_end,
+    )
