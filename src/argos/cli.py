@@ -171,6 +171,23 @@ async def _dispatch_signal_matches(new_item_ids: list, session) -> None:
         )
         return
 
+    # Validate Slack readiness before the expensive pgvector scan so we skip
+    # the DB work entirely when dispatch is impossible.
+    try:
+        app = build_app()
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "signal match dispatch skipped — Slack app build failed: %r", exc,
+        )
+        return
+
+    channel = settings.user.slack.channel_id
+    if not channel:
+        logging.getLogger(__name__).warning(
+            "signal match dispatch skipped — no Slack channel configured",
+        )
+        return
+
     try:
         matches = await match_signals(session, new_item_ids)
     except Exception as exc:  # noqa: BLE001
@@ -186,23 +203,6 @@ async def _dispatch_signal_matches(new_item_ids: list, session) -> None:
         "signal match: %d match(es) found for %d new item(s)",
         len(matches), len(new_item_ids),
     )
-
-    try:
-        app = build_app()
-    except Exception as exc:  # noqa: BLE001
-        logging.getLogger(__name__).warning(
-            "signal match dispatch (%d) skipped — Slack app build failed: %r",
-            len(matches), exc,
-        )
-        return
-
-    channel = settings.user.slack.channel_id
-    if not channel:
-        logging.getLogger(__name__).warning(
-            "signal match dispatch (%d) skipped — no Slack channel configured",
-            len(matches),
-        )
-        return
 
     try:
         await post_signal_update(app, channel, matches, session)
