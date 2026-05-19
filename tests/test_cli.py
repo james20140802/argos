@@ -875,3 +875,100 @@ def test_run_no_config_flag_no_file_uses_defaults(tmp_path, monkeypatch) -> None
         rc = main(["run"])
 
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# ARG-117: signal match dispatch in _run
+# ---------------------------------------------------------------------------
+
+
+def _make_saved_state(item_id=None):
+    import uuid as _uuid
+    return {
+        "is_valid": True,
+        "saved": True,
+        "saved_item_id": item_id or _uuid.uuid4(),
+        "source_url": "https://example.com/item",
+        "raw_text": "",
+        "extracted_info": None,
+        "related_tech_ids": [],
+        "succession_result": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_calls_dispatch_signal_matches_with_saved_ids() -> None:
+    """_run must call _dispatch_signal_matches with the saved_item_ids from results."""
+    import uuid as _uuid
+
+    item_id = _uuid.uuid4()
+    states = [_make_saved_state(item_id)]
+    summary = _make_summary(saved_new=1)
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.commit = AsyncMock()
+
+    dispatched_ids = []
+
+    async def fake_dispatch_signal_matches(new_item_ids, session):
+        dispatched_ids.extend(new_item_ids)
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
+        patch("argos.cli.run_full_pipeline", new=AsyncMock(return_value=(states, summary))),
+        patch("argos.cli._dispatch_signal_matches", side_effect=fake_dispatch_signal_matches),
+    ):
+        from argos.cli import _run
+        rc = await _run([])
+
+    assert rc == 0
+    assert dispatched_ids == [item_id]
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_call_dispatch_signal_when_no_saved_items() -> None:
+    """When no new items are saved, _dispatch_signal_matches must not be called."""
+    states = [
+        {
+            "is_valid": True,
+            "saved": False,
+            "source_url": "https://example.com/item",
+            "raw_text": "",
+            "extracted_info": None,
+            "related_tech_ids": [],
+            "succession_result": None,
+        }
+    ]
+    summary = _make_summary(saved_new=0)
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    dispatch_called = []
+
+    async def fake_dispatch_signal_matches(new_item_ids, session):
+        dispatch_called.append(new_item_ids)
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
+        patch("argos.cli.run_full_pipeline", new=AsyncMock(return_value=(states, summary))),
+        patch("argos.cli._dispatch_signal_matches", side_effect=fake_dispatch_signal_matches),
+    ):
+        from argos.cli import _run
+        rc = await _run([])
+
+    assert rc == 0
+    assert dispatch_called == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_signal_matches_noop_on_empty_ids() -> None:
+    """_dispatch_signal_matches with empty list is a no-op."""
+    from argos.cli import _dispatch_signal_matches
+
+    session = AsyncMock()
+    await _dispatch_signal_matches([], session)
+    session.execute.assert_not_awaited()

@@ -1,8 +1,16 @@
-"""Succession alert checks (ARG-56).
+"""Succession alert checks (ARG-56) and signal-match checks (ARG-115).
 
-Find succession records whose predecessor is currently held as a Keep-ed
-user_asset, skipping any Keep-ed asset that has already received a succession
-alert (recorded in ``track_history`` with ``changed_to = 'succession_alerted'``).
+**Succession alerts** find succession records whose predecessor is currently
+held as a Keep-ed user_asset, skipping any Keep-ed asset that has already
+received a succession alert (recorded in ``track_history`` with
+``changed_to = 'succession_alerted'``).
+
+**Signal match** (ARG-115) compares the embeddings of newly-saved TechItems
+against Keep-ed assets using pgvector cosine similarity, reporting matches
+above the 0.85 threshold that have not yet been notified (i.e. no
+``track_history`` row with ``changed_to = SIGNAL_MATCHED`` and
+``changed_from = str(new_item_id)`` for the (user_asset_id, new_item_id)
+pair).
 
 By default, all ``tech_succession`` rows are scanned — not just those whose
 successor was saved in the current pipeline run.  This is intentional: if
@@ -15,6 +23,9 @@ candidate set.  Scanning all unalerted rows guarantees the alert is retried.
 Public surface:
 - :class:`SuccessionAlert` — value object handed to the Slack layer.
 - :func:`check_succession` — pure async DB query, no side effects.
+- :class:`SignalMatch` — value object for signal-match results (ARG-115).
+- :func:`match_signals` — pgvector cosine similarity query (ARG-115).
+- :func:`post_signal_update` — Slack dispatcher + track_history logger (ARG-116).
 
 The Slack dispatcher (ARG-104) is responsible for posting messages and writing
 the ``track_history`` row that marks an alert as delivered.
@@ -25,8 +36,9 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import timezone
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -41,6 +53,17 @@ logger = logging.getLogger(__name__)
 # succession alert has been delivered for a Keep-ed asset.  Kept module-local
 # so the Slack dispatcher (ARG-104) and the dedup predicate stay in sync.
 SUCCESSION_ALERTED = "succession_alerted"
+
+# Sentinel written to ``track_history.changed_to`` when a signal-match alert
+# is delivered.  Kept module-local to keep the query predicate and the writer
+# in sync.  ``changed_from`` stores ``str(new_item_id)`` (36 chars, UUID hex)
+# so the dedup predicate can target the exact (user_asset_id, new_item_id) pair
+# without exceeding the String(50) column limit on either field.
+SIGNAL_MATCHED = "signal_matched"
+
+# Cosine similarity threshold above which a new TechItem is considered a
+# "follow-up signal" for a Keep-ed asset.  1 − cosine_distance > threshold.
+SIGNAL_SIMILARITY_THRESHOLD = 0.85
 
 
 @dataclass(frozen=True)
@@ -260,4 +283,226 @@ async def post_track_update(
                 changed_from=AssetStatus.KEEP.value,
                 changed_to=SUCCESSION_ALERTED,
             )
+        )
+
+
+# ---------------------------------------------------------------------------
+# Signal-match — ARG-115 / ARG-116
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SignalMatch:
+    """A single signal-match result ready for Slack dispatch.
+
+    Attributes
+    ----------
+    user_asset_id:
+        ID of the Keep-ed user_asset whose tech item matched.
+    keep_item_id:
+        tech_item.id of the Keep-ed asset.
+    keep_item_title:
+        Title of the Keep-ed tech item.
+    new_item_id:
+        tech_item.id of the newly-saved item that matched.
+    new_item_title:
+        Title of the new tech item.
+    new_item_url:
+        Source URL of the new tech item (for Slack linking).
+    similarity_score:
+        1 − cosine_distance; value in (0, 1].
+    """
+
+    user_asset_id: uuid.UUID
+    keep_item_id: uuid.UUID
+    keep_item_title: str
+    new_item_id: uuid.UUID
+    new_item_title: str
+    new_item_url: str
+    similarity_score: float
+
+
+async def match_signals(
+    session: AsyncSession,
+    new_item_ids: list[uuid.UUID] | None = None,
+) -> list[SignalMatch]:
+    """Return signal matches: new TechItems similar to Keep-ed assets.
+
+    Uses pgvector cosine distance (``<=>``) to compare embeddings.
+    Similarity is defined as ``1 − cosine_distance``; only pairs above
+    :data:`SIGNAL_SIMILARITY_THRESHOLD` (0.85) are returned.
+
+    Dedup granularity is per ``(user_asset_id, new_item_id)`` pair — the
+    same Keep-ed asset can re-alert for different new items.  A pair is
+    suppressed only when ``track_history`` already contains a row with
+    ``user_asset_id = <asset_id>``, ``changed_to = SIGNAL_MATCHED``, and
+    ``changed_from = str(new_item_id)`` (the UUID written by
+    :func:`post_signal_update` after a successful Slack send).
+
+    Parameters
+    ----------
+    session:
+        Async SQLAlchemy session bound to the Argos DB.
+    new_item_ids:
+        Optional list of tech_item UUIDs to consider as candidates.
+        When ``None``, *all* tech_items are candidates (full retry scan).
+        When an explicit list is given, only those items are compared.
+        An empty list short-circuits to ``[]``.
+
+    Returns
+    -------
+    list[SignalMatch]
+        One entry per (Keep-ed asset, new item) pair that passes the
+        threshold and has not yet been notified.  No ordering guarantee.
+    """
+    if new_item_ids is not None and len(new_item_ids) == 0:
+        return []
+
+    # Build the NOT-ALREADY-NOTIFIED filter as a SQL fragment.
+    # dedup key: (user_asset_id, changed_to='signal_matched', changed_from=str(new_item_id))
+    # We use a NOT EXISTS subquery correlated on both user_asset_id and new_item_id.
+    #
+    # Using raw SQL (same as search.py) for the pgvector <=> operator because
+    # SQLAlchemy's type system does not natively expose the pgvector operators.
+
+    base_sql = """
+        SELECT
+            ua.id          AS user_asset_id,
+            ki.id          AS keep_item_id,
+            ki.title       AS keep_item_title,
+            ni.id          AS new_item_id,
+            ni.title       AS new_item_title,
+            ni.source_url  AS new_item_url,
+            1.0 - (ki.embedding <=> ni.embedding) AS similarity_score
+        FROM user_assets ua
+        JOIN tech_items ki ON ki.id = ua.tech_id
+        CROSS JOIN tech_items ni
+        WHERE
+            ua.status = 'Keep'
+            AND ki.embedding IS NOT NULL
+            AND ni.embedding IS NOT NULL
+            AND ki.id != ni.id
+            AND (1.0 - (ki.embedding <=> ni.embedding)) > :threshold
+            AND NOT EXISTS (
+                SELECT 1 FROM track_history th
+                WHERE th.user_asset_id = ua.id
+                  AND th.changed_to    = :sentinel
+                  AND th.changed_from  = CAST(ni.id AS text)
+            )
+    """
+
+    params: dict = {
+        "threshold": SIGNAL_SIMILARITY_THRESHOLD,
+        "sentinel": SIGNAL_MATCHED,
+    }
+
+    if new_item_ids is not None:
+        # Build a parameterised IN-list.
+        placeholders = ", ".join(
+            f":nid_{i}" for i in range(len(new_item_ids))
+        )
+        base_sql += f"  AND ni.id IN ({placeholders})\n"
+        for i, nid in enumerate(new_item_ids):
+            params[f"nid_{i}"] = str(nid)
+
+    result = await session.execute(text(base_sql), params)
+    rows = result.fetchall()
+
+    return [
+        SignalMatch(
+            user_asset_id=uuid.UUID(str(row.user_asset_id)),
+            keep_item_id=uuid.UUID(str(row.keep_item_id)),
+            keep_item_title=row.keep_item_title,
+            new_item_id=uuid.UUID(str(row.new_item_id)),
+            new_item_title=row.new_item_title,
+            new_item_url=row.new_item_url,
+            similarity_score=float(row.similarity_score),
+        )
+        for row in rows
+    ]
+
+
+async def post_signal_update(
+    app,
+    channel: str,
+    matches: list[SignalMatch],
+    session: AsyncSession,
+) -> None:
+    """Post each signal match to Slack and record a track_history sentinel row.
+
+    One ``chat_postMessage`` is issued per match.  After a successful post,
+    a ``TrackHistory`` row is added with:
+    - ``user_asset_id``: the Keep-ed asset
+    - ``changed_to   ``: ``SIGNAL_MATCHED`` (14 chars)
+    - ``changed_from ``: ``str(new_item_id)`` (36 chars UUID)
+
+    This encoding keeps both columns within the ``String(50)`` limit and
+    lets the NOT EXISTS predicate in :func:`match_signals` target the exact
+    ``(user_asset_id, new_item_id)`` pair.
+
+    If Slack fails for a single match, the failure is logged, no history
+    row is written (so the match is retried next run), and processing
+    continues with the remaining matches.  ``user_assets.last_monitored_at``
+    is updated only for successfully-notified assets.
+
+    The session is **not** committed here; the caller (CLI ``_run``) owns
+    the commit lifecycle.
+
+    Parameters
+    ----------
+    app:
+        ``slack_bolt.async_app.AsyncApp`` (or any object with an
+        ``.client.chat_postMessage`` async method).  Duck-typed for tests.
+    channel:
+        Slack channel ID.
+    matches:
+        Results from :func:`match_signals`.  Empty list is a no-op.
+    session:
+        Active async SQLAlchemy session.
+    """
+    from datetime import datetime
+
+    from argos.slack.blocks import build_signal_match_blocks
+
+    if not matches:
+        return
+
+    for match in matches:
+        blocks = build_signal_match_blocks(match)
+        fallback = (
+            f"🔭 Keep한 {match.keep_item_title}과 유사한 신호: "
+            f"{match.new_item_title} (유사도 {match.similarity_score:.0%})"
+        )
+        try:
+            await app.client.chat_postMessage(
+                channel=channel,
+                blocks=blocks,
+                text=fallback,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "post_signal_update: chat_postMessage failed for asset %s / new_item %s: %r",
+                match.user_asset_id, match.new_item_id, exc,
+            )
+            continue
+
+        # Mark this (user_asset_id, new_item_id) pair as notified.
+        # changed_from = str(new_item_id) (36 chars)
+        # changed_to   = SIGNAL_MATCHED   (14 chars)
+        session.add(
+            TrackHistory(
+                user_asset_id=match.user_asset_id,
+                changed_from=str(match.new_item_id),
+                changed_to=SIGNAL_MATCHED,
+            )
+        )
+
+        # Update last_monitored_at on the UserAsset.
+        from sqlalchemy import update as sa_update
+
+        now = datetime.now(tz=timezone.utc)
+        await session.execute(
+            sa_update(UserAsset)
+            .where(UserAsset.id == match.user_asset_id)
+            .values(last_monitored_at=now),
         )

@@ -494,6 +494,36 @@ def build_succession_alert_blocks(alert) -> list[dict]:
     ]
 
 
+def build_signal_match_blocks(match) -> list[dict]:
+    """ARG-116 Block Kit blocks for a single signal-match alert.
+
+    Format:
+        🔭 Keep한 *<keep_item_title>*과 유사한 신호가 감지됐습니다
+        *<new_item_title>* — <new_item_url>
+        유사도: <similarity_score as %)
+
+    The ``match`` argument is a ``SignalMatch`` from
+    ``argos.slack.services.track_check`` but is intentionally not
+    type-hinted here to avoid a circular import.  Duck-typed access on
+    ``.keep_item_title``, ``.new_item_title``, ``.new_item_url``,
+    ``.similarity_score`` only.
+    """
+    pct = f"{match.similarity_score:.0%}"
+    text = (
+        f"🔭 Keep한 *{match.keep_item_title}*과 유사한 신호가 감지됐습니다\n"
+        f"*{match.new_item_title}* — {match.new_item_url}\n"
+        f"유사도: {pct}"
+    )
+    if len(text) > SLACK_SECTION_TEXT_LIMIT:
+        text = text[: SLACK_SECTION_TEXT_LIMIT - 1] + "…"
+    return [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": text},
+        }
+    ]
+
+
 def build_briefing_blocks(
     items_by_category: dict[CategoryType, list[TechItem]],
     *,
