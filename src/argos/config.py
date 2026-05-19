@@ -113,6 +113,13 @@ class BriefingConfig(BaseModel):
         min_length=1,
     )
     limit_per_category: int = Field(default=10, ge=1)
+    # ARG-124: weekly Keep summary scheduling. weekly_time defaults to the
+    # same value as `time` so most users only set one knob. weekly_weekday
+    # uses 3-letter names (Sun..Sat) matching `weekdays` and the scheduler's
+    # _weekday_to_launchd mapping (Sun=0..Sat=6).
+    weekly_enabled: bool = True
+    weekly_time: str = "07:00"
+    weekly_weekday: str = "Mon"
 
 
 class RunConfig(BaseModel):

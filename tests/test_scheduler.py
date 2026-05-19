@@ -1411,3 +1411,235 @@ def test_cli_schedule_install_accepts_valid_config(
     assert rc == 0
     assert (isolated_paths["launch_agents"] / "com.argos.run.plist").exists()
     assert (isolated_paths["launch_agents"] / "com.argos.brief.plist").exists()
+
+
+# ---------------------------------------------------------------------------
+# Weekly briefing plist (ARG-124)
+# ---------------------------------------------------------------------------
+
+
+def test_render_brief_weekly_plist_round_trip(
+    fake_argos_binary: Path, tmp_path: Path
+) -> None:
+    """The weekly plist must run `argos brief --weekly` and use Sun=0..Sat=6
+    convention. Mon = 1 by default per spec."""
+    from argos.scheduler import render_brief_weekly_plist
+
+    log_dir = tmp_path / "logs"
+    xml = render_brief_weekly_plist(
+        time="09:00", weekday="Mon", log_dir=log_dir
+    )
+    data = plistlib.loads(xml.encode("utf-8"))
+    assert data["Label"] == "com.argos.brief-weekly"
+    assert data["ProgramArguments"][0] == str(fake_argos_binary)
+    assert data["ProgramArguments"][1] == "brief"
+    assert "--weekly" in data["ProgramArguments"]
+    intervals = data["StartCalendarInterval"]
+    # A single weekday must expand to a list-of-dicts entry carrying Weekday.
+    # (Or a single dict if our renderer normalizes — accept either form.)
+    if isinstance(intervals, list):
+        assert len(intervals) == 1
+        assert intervals[0]["Weekday"] == 1
+        assert intervals[0]["Hour"] == 9
+        assert intervals[0]["Minute"] == 0
+    else:
+        assert intervals["Weekday"] == 1
+        assert intervals["Hour"] == 9
+        assert intervals["Minute"] == 0
+    assert data["StandardOutPath"].endswith("brief-weekly.log")
+    assert data["StandardErrorPath"].endswith("brief-weekly.log")
+
+
+def test_render_brief_weekly_plist_weekday_mapping(
+    fake_argos_binary: Path, tmp_path: Path
+) -> None:
+    """Verify Sun=0..Sat=6 mapping is honored for weekly_weekday."""
+    from argos.scheduler import render_brief_weekly_plist
+
+    expected = {"Sun": 0, "Mon": 1, "Tue": 2, "Wed": 3, "Thu": 4, "Fri": 5, "Sat": 6}
+    for name, wd in expected.items():
+        xml = render_brief_weekly_plist(
+            time="07:00", weekday=name, log_dir=tmp_path
+        )
+        data = plistlib.loads(xml.encode("utf-8"))
+        intervals = data["StartCalendarInterval"]
+        weekday_val = (
+            intervals[0]["Weekday"]
+            if isinstance(intervals, list)
+            else intervals["Weekday"]
+        )
+        assert weekday_val == wd, f"{name} expected {wd}, got {weekday_val}"
+
+
+def test_render_brief_weekly_plist_with_config_path(
+    fake_argos_binary: Path, tmp_path: Path
+) -> None:
+    from argos.scheduler import render_brief_weekly_plist
+
+    cfg = tmp_path / "config.toml"
+    xml = render_brief_weekly_plist(
+        time="07:00", weekday="Mon", config_path=cfg, log_dir=tmp_path
+    )
+    data = plistlib.loads(xml.encode("utf-8"))
+    args = data["ProgramArguments"]
+    assert "--weekly" in args
+    assert "--config" in args
+    assert str(cfg) in args
+
+
+def test_reload_schedule_writes_weekly_plist(
+    monkeypatch,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+) -> None:
+    """reload_schedule must also write + bootstrap the brief-weekly plist."""
+    user_config = SimpleNamespace(
+        run=SimpleNamespace(time="06:00"),
+        briefing=SimpleNamespace(
+            time="07:00",
+            weekdays=["Mon", "Tue", "Wed", "Thu", "Fri"],
+            weekly_time="09:00",
+            weekly_weekday="Mon",
+            weekly_enabled=True,
+        ),
+    )
+
+    bootstrap_calls: list[str] = []
+
+    def fake(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "bootstrap":
+            bootstrap_calls.append(args[2])
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout="", stderr=""
+            )
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake)
+    reload_schedule(user_config)
+
+    weekly_plist = isolated_paths["launch_agents"] / "com.argos.brief-weekly.plist"
+    assert weekly_plist.exists()
+    assert str(weekly_plist) in bootstrap_calls
+
+
+def test_reload_schedule_skips_weekly_when_disabled(
+    monkeypatch,
+    fake_argos_binary: Path,
+    fake_uid: int,
+    isolated_paths: dict[str, Path],
+) -> None:
+    """When weekly_enabled=False, the weekly plist is NOT installed and any
+    previously-loaded weekly job is best-effort booted out."""
+    user_config = SimpleNamespace(
+        run=SimpleNamespace(time="06:00"),
+        briefing=SimpleNamespace(
+            time="07:00",
+            weekdays=["Mon", "Tue", "Wed", "Thu", "Fri"],
+            weekly_time="09:00",
+            weekly_weekday="Mon",
+            weekly_enabled=False,
+        ),
+    )
+
+    def fake(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake)
+    reload_schedule(user_config)
+
+    weekly_plist = isolated_paths["launch_agents"] / "com.argos.brief-weekly.plist"
+    assert not weekly_plist.exists(), (
+        "weekly plist must NOT be installed when weekly_enabled=False"
+    )
+
+
+def test_cli_schedule_status_includes_weekly(
+    monkeypatch, capsys, fake_uid: int
+) -> None:
+    from argos.cli import main
+
+    state: dict[str, bool] = {
+        "com.argos.run": True,
+        "com.argos.brief": True,
+        "com.argos.brief-weekly": True,
+    }
+
+    def fake(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            if state.get(label):
+                return subprocess.CompletedProcess(
+                    ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+                )
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 1, stdout="", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake)
+    rc = main(["schedule", "status"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "com.argos.brief-weekly: loaded" in out
+
+
+def test_cli_schedule_uninstall_removes_weekly_idempotent(
+    monkeypatch, capsys, fake_uid: int
+) -> None:
+    """uninstall must boot out the weekly label too, tolerating not-loaded."""
+    from argos.cli import main
+
+    bootout_args: list[str] = []
+
+    def fake(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] == "bootout":
+            bootout_args.append(args[1])
+            # Simulate "not loaded" (exit 36) for ALL labels to test idempotence.
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 36, stdout="",
+                stderr="Could not find specified service",
+            )
+        return subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake)
+    rc = main(["schedule", "uninstall"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    # All three labels were attempted (idempotent: exit 36 treated as success).
+    targets = [a.rsplit("/", 1)[-1] for a in bootout_args]
+    assert "com.argos.run" in targets
+    assert "com.argos.brief" in targets
+    assert "com.argos.brief-weekly" in targets
+    assert "Unloaded: com.argos.brief-weekly" in out
+
+
+def test_briefing_config_defaults_for_weekly() -> None:
+    """BriefingConfig must expose weekly_time, weekly_weekday, weekly_enabled
+    with sane defaults so existing configs continue to work."""
+    from argos.config import BriefingConfig
+
+    cfg = BriefingConfig()
+    # Sensible defaults: enabled, Monday at the same time as daily briefing.
+    assert cfg.weekly_enabled is True
+    assert cfg.weekly_weekday == "Mon"
+    # weekly_time default tracks briefing.time when not overridden.
+    assert cfg.weekly_time == cfg.time
