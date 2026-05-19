@@ -129,3 +129,136 @@ async def test_dispatch_item_messages_enable_unfurl():
     item_call = mock_client.chat_postMessage.await_args_list[-1]
     assert item_call.kwargs.get("unfurl_links") is True
     assert item_call.kwargs.get("unfurl_media") is True
+
+
+# ---------------------------------------------------------------------------
+# Weekly briefing dispatch (ARG-123)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_weekly_briefing_posts_single_message():
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    from argos.brain.weekly_report import WeeklyKeepItem, WeeklyKeepReport
+    from argos.slack.briefing import dispatch_weekly_briefing
+
+    monitored = _dt(2026, 5, 18, 10, tzinfo=_tz.utc)
+    item = WeeklyKeepItem(
+        tech_id=uuid.uuid4(),
+        title="Tech A",
+        signals_7d=2,
+        successions_7d=1,
+        last_monitored_at=monitored,
+    )
+    now_utc = _dt(2026, 5, 20, 12, tzinfo=_tz.utc)
+    report = WeeklyKeepReport(
+        total_keep_count=1,
+        items=[item],
+        window_start=now_utc - _td(days=7),
+        window_end=now_utc,
+    )
+
+    mock_client = AsyncMock()
+    mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1700000000.999"})
+    mock_app = MagicMock()
+    mock_app.client = mock_client
+
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=AsyncMock())
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "argos.slack.briefing.AsyncSessionLocal", return_value=session_ctx
+    ), patch(
+        "argos.slack.briefing.build_weekly_keep_report",
+        AsyncMock(return_value=report),
+    ), patch("argos.slack.briefing.build_app", return_value=mock_app):
+        result = await dispatch_weekly_briefing(channel="C999")
+
+    assert result == "1700000000.999"
+    # Exactly ONE chat_postMessage call (single message, NOT threaded).
+    assert len(mock_client.chat_postMessage.await_args_list) == 1
+    call = mock_client.chat_postMessage.await_args_list[0]
+    assert call.kwargs["channel"] == "C999"
+    assert "thread_ts" not in call.kwargs
+    assert call.kwargs["blocks"]  # non-empty
+    assert "Weekly Keep" in call.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_weekly_briefing_sends_placeholder_when_empty():
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    from argos.brain.weekly_report import WeeklyKeepReport
+    from argos.slack.briefing import dispatch_weekly_briefing
+
+    now_utc = _dt(2026, 5, 20, 12, tzinfo=_tz.utc)
+    empty_report = WeeklyKeepReport(
+        total_keep_count=0,
+        items=[],
+        window_start=now_utc - _td(days=7),
+        window_end=now_utc,
+    )
+
+    mock_client = AsyncMock()
+    mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1700.000"})
+    mock_app = MagicMock()
+    mock_app.client = mock_client
+
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=AsyncMock())
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "argos.slack.briefing.AsyncSessionLocal", return_value=session_ctx
+    ), patch(
+        "argos.slack.briefing.build_weekly_keep_report",
+        AsyncMock(return_value=empty_report),
+    ), patch("argos.slack.briefing.build_app", return_value=mock_app):
+        result = await dispatch_weekly_briefing(channel="C999")
+
+    # Empty portfolio MUST still send one message (skip 금지 per spec).
+    assert result == "1700.000"
+    assert len(mock_client.chat_postMessage.await_args_list) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_weekly_briefing_uses_configured_channel_when_none():
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    from argos.brain.weekly_report import WeeklyKeepReport
+    from argos.slack.briefing import dispatch_weekly_briefing
+
+    now_utc = _dt(2026, 5, 20, 12, tzinfo=_tz.utc)
+    empty_report = WeeklyKeepReport(
+        total_keep_count=0,
+        items=[],
+        window_start=now_utc - _td(days=7),
+        window_end=now_utc,
+    )
+
+    mock_client = AsyncMock()
+    mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1700.111"})
+    mock_app = MagicMock()
+    mock_app.client = mock_client
+
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=AsyncMock())
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "argos.slack.briefing.AsyncSessionLocal", return_value=session_ctx
+    ), patch(
+        "argos.slack.briefing.build_weekly_keep_report",
+        AsyncMock(return_value=empty_report),
+    ), patch(
+        "argos.slack.briefing.build_app", return_value=mock_app
+    ), patch(
+        "argos.slack.briefing.settings"
+    ) as mock_settings:
+        mock_settings.user.slack.channel_id = "C_DEFAULT"
+        await dispatch_weekly_briefing()  # no channel override
+
+    call = mock_client.chat_postMessage.await_args_list[0]
+    assert call.kwargs["channel"] == "C_DEFAULT"
