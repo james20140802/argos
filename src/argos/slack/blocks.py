@@ -524,6 +524,123 @@ def build_signal_match_blocks(match) -> list[dict]:
     ]
 
 
+def _escape_mrkdwn(text: str) -> str:
+    """Escape Slack mrkdwn special chars (`&`, `<`, `>`) in user-supplied text.
+
+    Slack auto-links `<...>` and treats `&` as the start of an entity; raw
+    user titles can therefore corrupt the rendered block when they include
+    these characters.  Escape order matters — `&` must be replaced first.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _format_relative_kr(dt: datetime | None, *, now: datetime | None = None) -> str:
+    """Return a Korean relative-time label for ``dt`` (e.g. "3일 전").
+
+    Returns ``"—"`` when ``dt`` is None.  Used by the weekly-summary blocks
+    to render ``last_monitored_at`` in a human-friendly way without depending
+    on a heavyweight library.
+    """
+    if dt is None:
+        return "—"
+    base = now if now is not None else datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    delta = base - dt
+    total_seconds = int(delta.total_seconds())
+    if total_seconds < 60:
+        return "방금 전"
+    minutes = total_seconds // 60
+    if minutes < 60:
+        return f"{minutes}분 전"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}시간 전"
+    days = hours // 24
+    if days < 30:
+        return f"{days}일 전"
+    months = days // 30
+    if months < 12:
+        return f"{months}개월 전"
+    years = months // 12
+    return f"{years}년 전"
+
+
+def build_weekly_keep_summary_blocks(report) -> list[dict]:
+    """Render a ``WeeklyKeepReport`` as a single Slack Block Kit message (ARG-123).
+
+    Layout:
+      * Header — "📊 Weekly Keep 현황 (start ~ end)"
+      * Summary section — total count + window
+      * One section per item with: title, signals_7d, successions_7d,
+        last_monitored_at (Korean relative time)
+      * If the portfolio is empty: a placeholder section instead of items.
+
+    ``report`` is duck-typed against
+    :class:`argos.brain.weekly_report.WeeklyKeepReport` to avoid a hard
+    import-time dependency on the brain module.
+    """
+    start_label = report.window_start.date().isoformat()
+    end_label = report.window_end.date().isoformat()
+    header_text = (
+        f"\U0001f4ca Weekly Keep 현황 ({start_label} ~ {end_label})"
+    )
+    blocks: list[dict] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": header_text, "emoji": True},
+        }
+    ]
+
+    if report.total_keep_count == 0 or not report.items:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "현재 Keep된 기술이 없습니다.",
+                },
+            }
+        )
+        return blocks
+
+    # Summary line: total Keep count.
+    blocks.append(
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*총 보유 기술:* {report.total_keep_count}개",
+            },
+        }
+    )
+
+    now_utc = report.window_end
+    for item in report.items:
+        safe_title = _escape_mrkdwn(item.title)
+        rel_monitored = _format_relative_kr(item.last_monitored_at, now=now_utc)
+        succession_part = (
+            f"⚠️ Succession {item.successions_7d}건"
+            if item.successions_7d > 0
+            else "Succession 없음"
+        )
+        body = (
+            f"*{safe_title}*\n"
+            f"7일 신호: {item.signals_7d}건  ·  {succession_part}  ·  "
+            f"최근 모니터링: {rel_monitored}"
+        )
+        if len(body) > SLACK_SECTION_TEXT_LIMIT:
+            body = body[: SLACK_SECTION_TEXT_LIMIT - 1] + "…"
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": body},
+            }
+        )
+
+    return blocks
+
+
 def build_briefing_blocks(
     items_by_category: dict[CategoryType, list[TechItem]],
     *,

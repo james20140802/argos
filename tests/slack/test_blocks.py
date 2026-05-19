@@ -402,3 +402,150 @@ def test_portfolio_blocks_no_truncation_notice_when_under_cap(tech_id):
     asset, item = _make_portfolio_pair(tech_id)
     blocks = build_portfolio_blocks([(asset, item)])
     assert all(b.get("type") != "context" for b in blocks)
+
+
+# ---------------------------------------------------------------------------
+# Weekly Keep summary blocks (ARG-123)
+# ---------------------------------------------------------------------------
+
+
+def _make_weekly_item(
+    *,
+    title: str,
+    signals_7d: int = 0,
+    successions_7d: int = 0,
+    last_monitored_at: datetime | None = None,
+):
+    from argos.brain.weekly_report import WeeklyKeepItem
+
+    return WeeklyKeepItem(
+        tech_id=uuid.uuid4(),
+        title=title,
+        signals_7d=signals_7d,
+        successions_7d=successions_7d,
+        last_monitored_at=last_monitored_at,
+    )
+
+
+def _make_weekly_report(items, *, now_utc: datetime | None = None):
+    from datetime import timedelta
+
+    from argos.brain.weekly_report import WeeklyKeepReport
+
+    end = now_utc or datetime(2026, 5, 20, 12, tzinfo=timezone.utc)
+    return WeeklyKeepReport(
+        total_keep_count=len(items),
+        items=list(items),
+        window_start=end - timedelta(days=7),
+        window_end=end,
+    )
+
+
+def test_weekly_keep_summary_blocks_empty_portfolio_returns_placeholder():
+    from argos.slack.blocks import build_weekly_keep_summary_blocks
+
+    report = _make_weekly_report([])
+    blocks = build_weekly_keep_summary_blocks(report)
+
+    assert blocks[0]["type"] == "header"
+    header_text = blocks[0]["text"]["text"]
+    assert "Weekly Keep" in header_text
+    # Window dates appear in the header (ISO YYYY-MM-DD).
+    assert "2026-05-13" in header_text
+    assert "2026-05-20" in header_text
+
+    # A placeholder section explaining the empty state must be present.
+    section_texts = [
+        b.get("text", {}).get("text", "")
+        for b in blocks
+        if b.get("type") == "section"
+    ]
+    assert any("Keep" in t for t in section_texts)
+    assert any("없" in t for t in section_texts)
+
+
+def test_weekly_keep_summary_blocks_renders_each_item():
+    from argos.slack.blocks import build_weekly_keep_summary_blocks
+
+    monitored = datetime(2026, 5, 18, 10, tzinfo=timezone.utc)
+    items = [
+        _make_weekly_item(title="Tech A", signals_7d=3, successions_7d=1, last_monitored_at=monitored),
+        _make_weekly_item(title="Tech B", signals_7d=0, successions_7d=0, last_monitored_at=None),
+    ]
+    report = _make_weekly_report(items)
+
+    blocks = build_weekly_keep_summary_blocks(report)
+
+    # Combined text from every block — easier to assert against than walking
+    # the nested Block Kit dict structure.
+    text_blob = "\n".join(
+        b.get("text", {}).get("text", "")
+        for b in blocks
+        if b.get("type") == "section"
+    )
+    for element in blocks:
+        if element.get("type") == "context":
+            for sub in element.get("elements", []):
+                text_blob += "\n" + sub.get("text", "")
+
+    assert "Tech A" in text_blob
+    assert "Tech B" in text_blob
+    # signal count visible somewhere
+    assert "3" in text_blob
+    # total count visible (2 items)
+    assert "2" in text_blob
+
+
+def test_weekly_keep_summary_blocks_total_count_in_header_or_summary():
+    from argos.slack.blocks import build_weekly_keep_summary_blocks
+
+    items = [_make_weekly_item(title=f"T{i}") for i in range(5)]
+    report = _make_weekly_report(items)
+
+    blocks = build_weekly_keep_summary_blocks(report)
+    all_text = " ".join(
+        b.get("text", {}).get("text", "")
+        for b in blocks
+        if isinstance(b.get("text"), dict)
+    )
+    assert "5" in all_text
+
+
+def test_weekly_keep_summary_blocks_escape_user_titles():
+    from argos.slack.blocks import build_weekly_keep_summary_blocks
+
+    # Slack mrkdwn special chars (<, >, &) must be escaped.
+    item = _make_weekly_item(title="A & B <C>")
+    report = _make_weekly_report([item])
+
+    blocks = build_weekly_keep_summary_blocks(report)
+    flat = " ".join(
+        b.get("text", {}).get("text", "")
+        for b in blocks
+        if isinstance(b.get("text"), dict)
+    )
+    assert "&amp;" in flat
+    assert "&lt;C&gt;" in flat
+    assert "<C>" not in flat
+    # The literal ampersand should NOT appear unescaped.
+    assert " & " not in flat
+
+
+def test_weekly_keep_summary_blocks_succession_marker_when_present():
+    from argos.slack.blocks import build_weekly_keep_summary_blocks
+
+    with_succession = _make_weekly_item(title="WithSucc", successions_7d=2)
+    without_succession = _make_weekly_item(title="NoSucc", successions_7d=0)
+    report = _make_weekly_report([with_succession, without_succession])
+
+    blocks = build_weekly_keep_summary_blocks(report)
+    section_texts = [
+        b.get("text", {}).get("text", "")
+        for b in blocks
+        if b.get("type") == "section"
+    ]
+    # Find the section for WithSucc and assert it carries the succession indicator.
+    with_text = next(t for t in section_texts if "WithSucc" in t)
+    no_text = next(t for t in section_texts if "NoSucc" in t)
+    assert "Succession" in with_text or "후속" in with_text or "⚠️" in with_text
+    assert "0" in no_text or "—" in no_text or "없" in no_text
