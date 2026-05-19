@@ -30,3 +30,21 @@ def test_dataclasses_exposed():
     assert rep.total_keep_count == 0
     assert item.signals_7d == 0
     assert callable(build_weekly_keep_report)
+
+
+@pytest.mark.asyncio
+async def test_empty_keep_returns_zero_total():
+    from argos.brain.weekly_report import build_weekly_keep_report
+
+    empty_result = MagicMock()
+    empty_result.all.return_value = []
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=empty_result)
+
+    now_utc = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
+    report = await build_weekly_keep_report(session, now_utc=now_utc)
+
+    assert report.total_keep_count == 0
+    assert report.items == []
+    assert report.window_end == now_utc
+    assert report.window_start == now_utc - timedelta(days=7)
