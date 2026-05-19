@@ -1134,6 +1134,11 @@ def main(argv: list[str] | None = None) -> int:
         parents=[common],
     )
     brief_p.add_argument("--channel", default=None, help="Override target Slack channel ID")
+    brief_p.add_argument(
+        "--weekly",
+        action="store_true",
+        help="Send the weekly Keep portfolio summary instead of the daily briefing",
+    )
 
     _build_add_parser(sub, common)
     _build_config_parser(sub)
@@ -1167,6 +1172,15 @@ def main(argv: list[str] | None = None) -> int:
         rc = _apply_config_override(args)
         if rc is not None:
             return rc
+        if getattr(args, "weekly", False):
+            from argos.slack.briefing import dispatch_weekly_briefing
+
+            ts = asyncio.run(dispatch_weekly_briefing(channel=args.channel))
+            if ts:
+                print(f"Weekly briefing sent: ts={ts}")
+            else:
+                print("Weekly briefing dispatch returned no ts")
+            return 0
         from argos.slack.briefing import dispatch_daily_briefing
 
         ts = asyncio.run(dispatch_daily_briefing(channel=args.channel))
