@@ -156,6 +156,11 @@ class TriageConfig(BaseModel):
 class GenealogistConfig(BaseModel):
     min_db_items: int = Field(default=50, ge=0)
     trust_skip_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    # Model and context window for the genealogist node.
+    # Defaults preserve the pre-ARG-91 behaviour (qwen3:32b, 3072 tokens).
+    # Switch to qwen3:32b-q4_K_M + num_ctx=6144 once the benchmark in
+    # docs/benchmarks/genealogist-quantized.md confirms acceptable quality.
+    model: str = Field(default="qwen3:32b")
     num_ctx: int = Field(default=3072, ge=512)
     context_top_n: int = Field(default=3, ge=1, le=10)
     context_max_chars: int = Field(default=300, ge=50)
