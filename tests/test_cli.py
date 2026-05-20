@@ -972,3 +972,53 @@ async def test_dispatch_signal_matches_noop_on_empty_ids() -> None:
     session = AsyncMock()
     await _dispatch_signal_matches([], session)
     session.execute.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# `argos brief --weekly` flag (ARG-123)
+# ---------------------------------------------------------------------------
+
+
+def test_brief_weekly_flag_dispatches_weekly_briefing() -> None:
+    """`argos brief --weekly` must call dispatch_weekly_briefing, not the daily one."""
+    daily = AsyncMock(return_value=None)
+    weekly = AsyncMock(return_value="1700.222")
+
+    with patch("argos.slack.briefing.dispatch_daily_briefing", new=daily), patch(
+        "argos.slack.briefing.dispatch_weekly_briefing", new=weekly
+    ):
+        rc = main(["brief", "--weekly"])
+
+    assert rc == 0
+    daily.assert_not_awaited()
+    weekly.assert_awaited_once()
+
+
+def test_brief_without_weekly_dispatches_daily() -> None:
+    """`argos brief` (no flag) must still call the daily dispatcher."""
+    daily = AsyncMock(return_value="1700.daily")
+    weekly = AsyncMock(return_value=None)
+
+    with patch("argos.slack.briefing.dispatch_daily_briefing", new=daily), patch(
+        "argos.slack.briefing.dispatch_weekly_briefing", new=weekly
+    ):
+        rc = main(["brief"])
+
+    assert rc == 0
+    daily.assert_awaited_once()
+    weekly.assert_not_awaited()
+
+
+def test_brief_weekly_with_channel_override() -> None:
+    """`argos brief --weekly --channel C123` must forward the channel."""
+    weekly = AsyncMock(return_value="1700.333")
+
+    with patch("argos.slack.briefing.dispatch_weekly_briefing", new=weekly), patch(
+        "argos.slack.briefing.dispatch_daily_briefing", new=AsyncMock()
+    ):
+        rc = main(["brief", "--weekly", "--channel", "C123"])
+
+    assert rc == 0
+    weekly.assert_awaited_once()
+    call_kwargs = weekly.await_args.kwargs
+    assert call_kwargs.get("channel") == "C123"

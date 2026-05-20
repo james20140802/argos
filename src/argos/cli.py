@@ -1022,7 +1022,7 @@ def _cmd_schedule_install(args: argparse.Namespace) -> int:
     except SchedulerError as exc:
         print(f"Scheduler error: {exc}", file=sys.stderr)
         return EXIT_GENERIC
-    print("Scheduled: com.argos.run, com.argos.brief")
+    print("Scheduled: com.argos.run, com.argos.brief, com.argos.brief-weekly")
     return EXIT_OK
 
 
@@ -1030,7 +1030,7 @@ def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
     from argos.scheduler import SchedulerError, bootout_plist
 
     failures: list[str] = []
-    for label in ("com.argos.run", "com.argos.brief"):
+    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly"):
         try:
             bootout_plist(label)
             print(f"Unloaded: {label}")
@@ -1043,7 +1043,7 @@ def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
 def _cmd_schedule_status(_args: argparse.Namespace) -> int:
     from argos.scheduler import is_loaded
 
-    for label in ("com.argos.run", "com.argos.brief"):
+    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly"):
         state = "loaded" if is_loaded(label) else "not loaded"
         print(f"{label}: {state}")
     return EXIT_OK
@@ -1134,6 +1134,11 @@ def main(argv: list[str] | None = None) -> int:
         parents=[common],
     )
     brief_p.add_argument("--channel", default=None, help="Override target Slack channel ID")
+    brief_p.add_argument(
+        "--weekly",
+        action="store_true",
+        help="Send the weekly Keep portfolio summary instead of the daily briefing",
+    )
 
     _build_add_parser(sub, common)
     _build_config_parser(sub)
@@ -1167,6 +1172,15 @@ def main(argv: list[str] | None = None) -> int:
         rc = _apply_config_override(args)
         if rc is not None:
             return rc
+        if getattr(args, "weekly", False):
+            from argos.slack.briefing import dispatch_weekly_briefing
+
+            ts = asyncio.run(dispatch_weekly_briefing(channel=args.channel))
+            if ts:
+                print(f"Weekly briefing sent: ts={ts}")
+            else:
+                print("Weekly briefing dispatch returned no ts")
+            return 0
         from argos.slack.briefing import dispatch_daily_briefing
 
         ts = asyncio.run(dispatch_daily_briefing(channel=args.channel))

@@ -279,6 +279,51 @@ def render_run_plist(
     )
 
 
+def render_brief_weekly_plist(
+    *,
+    time: str,
+    weekday: str = "Mon",
+    label: str = "com.argos.brief-weekly",
+    config_path: Path | None = None,
+    log_dir: Path | None = None,
+    working_directory: Path | None = None,
+) -> str:
+    """Render the ``argos brief --weekly`` plist as XML text (ARG-124).
+
+    Schedules a single weekly run at ``time`` on ``weekday`` (3-letter
+    day-name; mapped to Sun=0..Sat=6 via :func:`_weekday_to_launchd`).
+    ``ProgramArguments`` includes the ``--weekly`` flag so the scheduled
+    invocation dispatches the Keep portfolio summary instead of the daily
+    briefing.
+
+    Log path is ``brief-weekly.log`` under ``log_dir`` (or
+    ``~/Library/Logs/argos`` by default).
+    """
+    hour, minute = _parse_hhmm(time)
+    argos_bin = _resolve_argos_binary()
+    program_args: list[str] = [str(argos_bin), "brief", "--weekly"]
+    if config_path is not None:
+        program_args.extend(["--config", str(config_path)])
+    # Weekly = one launch per week → list-of-dicts with a single Weekday entry.
+    wd = _weekday_to_launchd(weekday)
+    calendar: list[dict[str, int]] = [
+        {"Hour": hour, "Minute": minute, "Weekday": wd}
+    ]
+    resolved_log_dir = log_dir if log_dir is not None else _DEFAULT_LOG_DIR
+    resolved_cwd = (
+        working_directory if working_directory is not None else Path.cwd()
+    )
+    payload = _build_plist_dict(
+        label=label,
+        program_args=program_args,
+        calendar=calendar,
+        log_dir=resolved_log_dir,
+        log_basename="brief-weekly",
+        working_directory=resolved_cwd,
+    )
+    return plistlib.dumps(payload, fmt=plistlib.FMT_XML).decode("utf-8")
+
+
 def render_brief_plist(
     *,
     time: str,
@@ -436,14 +481,24 @@ def reload_schedule(
     brief_time = user_config.briefing.time
     brief_weekdays = list(user_config.briefing.weekdays)
 
+    # ARG-124: weekly Keep summary scheduling. The weekly knobs are optional
+    # so callers passing a stripped-down SimpleNamespace (tests, legacy
+    # configs) keep working — getattr falls back to spec defaults.
+    weekly_enabled = bool(getattr(user_config.briefing, "weekly_enabled", True))
+    weekly_time = getattr(user_config.briefing, "weekly_time", brief_time)
+    weekly_weekday = getattr(user_config.briefing, "weekly_weekday", "Mon")
+
     _DEFAULT_LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
     _DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     run_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.run.plist"
     brief_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.brief.plist"
+    brief_weekly_plist_path = (
+        _DEFAULT_LAUNCH_AGENTS / "com.argos.brief-weekly.plist"
+    )
 
-    # Capture cwd once so both plists agree on the same WorkingDirectory,
-    # even if some caller mutates cwd between the two render calls.
+    # Capture cwd once so all plists agree on the same WorkingDirectory,
+    # even if some caller mutates cwd between the render calls.
     install_cwd = Path.cwd()
 
     try:
@@ -458,11 +513,34 @@ def reload_schedule(
             config_path=config_path,
             working_directory=install_cwd,
         )
+        brief_weekly_xml: str | None = None
+        if weekly_enabled:
+            brief_weekly_xml = render_brief_weekly_plist(
+                time=weekly_time,
+                weekday=weekly_weekday,
+                config_path=config_path,
+                working_directory=install_cwd,
+            )
     except ValueError as exc:
         raise SchedulerError(f"invalid time format: {exc}") from exc
 
     install_plist(run_plist_path, run_xml)
     install_plist(brief_plist_path, brief_xml)
+    if brief_weekly_xml is not None:
+        install_plist(brief_weekly_plist_path, brief_weekly_xml)
+    else:
+        # Weekly disabled — best-effort bootout in case it was loaded by a
+        # previous install. We don't try to delete the plist file (operators
+        # might keep it for inspection) but we DO remove any loaded job.
+        try:
+            bootout_plist("com.argos.brief-weekly")
+        except SchedulerError:
+            # Tolerate cleanup failures — not enabling weekly should never
+            # break daily/run scheduling.
+            logger.warning(
+                "weekly briefing disabled; bootout of com.argos.brief-weekly failed",
+                exc_info=True,
+            )
 
     bootstrap_plist(run_plist_path)
     try:
@@ -473,6 +551,15 @@ def reload_schedule(
             f"(com.argos.brief) failed: {exc}. "
             f"To clean up, run: argos schedule uninstall && argos schedule install"
         ) from exc
+    if brief_weekly_xml is not None:
+        try:
+            bootstrap_plist(brief_weekly_plist_path)
+        except SchedulerError as exc:
+            raise SchedulerError(
+                f"run and brief jobs bootstrapped successfully but brief-weekly "
+                f"job (com.argos.brief-weekly) failed: {exc}. "
+                f"To clean up, run: argos schedule uninstall && argos schedule install"
+            ) from exc
 
 
 __all__ = [
@@ -483,5 +570,6 @@ __all__ = [
     "is_loaded",
     "reload_schedule",
     "render_brief_plist",
+    "render_brief_weekly_plist",
     "render_run_plist",
 ]

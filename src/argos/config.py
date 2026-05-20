@@ -33,7 +33,7 @@ try:
 except ImportError:
     import tomli as tomllib  # type: ignore[no-reuse-import]
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -113,6 +113,19 @@ class BriefingConfig(BaseModel):
         min_length=1,
     )
     limit_per_category: int = Field(default=10, ge=1)
+    # ARG-124: weekly Keep summary scheduling. weekly_time defaults to the
+    # same value as `time` so most users only set one knob. weekly_weekday
+    # uses 3-letter names (Sun..Sat) matching `weekdays` and the scheduler's
+    # _weekday_to_launchd mapping (Sun=0..Sat=6).
+    weekly_enabled: bool = True
+    weekly_time: str | None = None  # None → derived from `time` by validator
+    weekly_weekday: str = "Mon"
+
+    @model_validator(mode="after")
+    def _derive_weekly_time(self) -> BriefingConfig:
+        if self.weekly_time is None:
+            self.weekly_time = self.time
+        return self
 
 
 class RunConfig(BaseModel):
