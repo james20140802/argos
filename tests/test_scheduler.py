@@ -1643,3 +1643,15 @@ def test_briefing_config_defaults_for_weekly() -> None:
     assert cfg.weekly_weekday == "Mon"
     # weekly_time default tracks briefing.time when not overridden.
     assert cfg.weekly_time == cfg.time
+
+
+def test_briefing_config_weekly_time_inherits_from_time():
+    """weekly_time must derive from briefing.time when not explicitly set,
+    even when briefing.time is changed from its default."""
+    from argos.config import BriefingConfig
+
+    cfg = BriefingConfig(time="09:00")
+    assert cfg.weekly_time == "09:00"
+
+    cfg_explicit = BriefingConfig(time="09:00", weekly_time="08:00")
+    assert cfg_explicit.weekly_time == "08:00"

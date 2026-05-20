@@ -615,8 +615,22 @@ def build_weekly_keep_summary_blocks(report) -> list[dict]:
         }
     )
 
+    # Fixed overhead: 1 header + 1 summary = 2 blocks. Reserve 1 more for a
+    # truncation notice when needed, leaving 47 slots for items.
+    _FIXED_OVERHEAD = 2
+    _MAX_ITEMS_WITH_NOTICE = SLACK_MAX_BLOCKS - _FIXED_OVERHEAD - 1  # 47
+    _MAX_ITEMS_NO_NOTICE = SLACK_MAX_BLOCKS - _FIXED_OVERHEAD  # 48
+
+    total_items = len(report.items)
+    if total_items > _MAX_ITEMS_NO_NOTICE:
+        visible_items = report.items[:_MAX_ITEMS_WITH_NOTICE]
+        hidden_count = total_items - _MAX_ITEMS_WITH_NOTICE
+    else:
+        visible_items = report.items
+        hidden_count = 0
+
     now_utc = report.window_end
-    for item in report.items:
+    for item in visible_items:
         safe_title = _escape_mrkdwn(item.title)
         rel_monitored = _format_relative_kr(item.last_monitored_at, now=now_utc)
         succession_part = (
@@ -635,6 +649,19 @@ def build_weekly_keep_summary_blocks(report) -> list[dict]:
             {
                 "type": "section",
                 "text": {"type": "mrkdwn", "text": body},
+            }
+        )
+
+    if hidden_count > 0:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"…외 {hidden_count}개 항목 (Slack 블록 한도 초과로 생략)",
+                    }
+                ],
             }
         )
 

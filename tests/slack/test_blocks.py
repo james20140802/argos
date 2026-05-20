@@ -531,6 +531,21 @@ def test_weekly_keep_summary_blocks_escape_user_titles():
     assert " & " not in flat
 
 
+def test_weekly_keep_summary_blocks_caps_at_slack_max():
+    from argos.slack.blocks import SLACK_MAX_BLOCKS, build_weekly_keep_summary_blocks
+
+    # 60 items would produce 62 blocks (header + summary + 60) without a cap.
+    items = [_make_weekly_item(title=f"Tech {i}") for i in range(60)]
+    report = _make_weekly_report(items)
+    blocks = build_weekly_keep_summary_blocks(report)
+
+    assert len(blocks) <= SLACK_MAX_BLOCKS
+    # A truncation context block must appear when items are hidden.
+    context_blocks = [b for b in blocks if b.get("type") == "context"]
+    assert len(context_blocks) == 1
+    assert "13" in context_blocks[0]["elements"][0]["text"]  # 60 - 47 = 13 hidden
+
+
 def test_weekly_keep_summary_blocks_succession_marker_when_present():
     from argos.slack.blocks import build_weekly_keep_summary_blocks
 
