@@ -10,7 +10,7 @@ from argos.brain.nodes.triage import triage_node, batch_triage_states
 from argos.brain.nodes.embed import embed_and_search_node, batch_embed_and_search_node
 from argos.brain.nodes.genealogist import genealogist_node
 from argos.brain.nodes.save import save_node
-from argos.brain.llm_client import get_llm_client
+from argos.brain.llm_client import get_genealogist_llm_client
 from argos.models.tech_item import CategoryType
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ async def run_brain_pipeline(
         }
         return await save_node(skipped, session=session)
 
-    prewarm_task = asyncio.create_task(get_llm_client().prewarm("large"))
+    prewarm_task = asyncio.create_task(get_genealogist_llm_client().prewarm("large"))
     try:
         genealogized = await genealogist_node(embedded, prewarm_task=prewarm_task)
         return await save_node(genealogized, session=session)
@@ -165,7 +165,7 @@ async def run_batch_brain_pipeline(
         genealogy_candidates.append(i)
 
     if genealogy_candidates:
-        prewarm_task = asyncio.create_task(get_llm_client().prewarm("large"))
+        prewarm_task = asyncio.create_task(get_genealogist_llm_client().prewarm("large"))
         try:
             passed_prewarm = False
             for i in genealogy_candidates:
@@ -191,7 +191,7 @@ async def run_batch_brain_pipeline(
                 await prewarm_task
         # Unload 32B after all genealogy work is done.
         try:
-            await get_llm_client().unload("large")
+            await get_genealogist_llm_client().unload("large")
         except Exception:
             pass
 
