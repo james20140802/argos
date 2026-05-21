@@ -195,7 +195,20 @@ async def run_batch_brain_pipeline(
         except Exception:
             pass
 
-    # ── Stage 4: per-item save (with savepoint per item) ──────────────────
+    # ── Stage 4: per-item save (savepoint per item, single flush at end) ────
+    #
+    # Design decision (ARG-90): we keep per-item savepoints to isolate errors
+    # raised *during* save_node logic (e.g. duplicate-URL query failures,
+    # invalid UUID in succession_result).  save_node is called with
+    # flush=False so no per-item round-trip is issued; a single
+    # await session.flush() after the loop reduces DB round-trips from N to 1.
+    #
+    # Trade-off: constraint violations (unique, FK) now surface at the batch
+    # flush rather than per-item, so a single bad row can cause the entire
+    # batch flush to fail.  The savepoints only protect against pre-flush
+    # logic errors, not post-flush constraint errors.  This is an acceptable
+    # trade-off for the throughput gain; callers that need per-row isolation
+    # should use run_brain_pipeline (single-URL path) instead.
     results: list[BrainState] = []
     for s in embedded_states:
         try:
@@ -205,7 +218,7 @@ async def run_batch_brain_pipeline(
                 continue
             try:
                 async with session.begin_nested():
-                    saved = await save_node(s, session=session)
+                    saved = await save_node(s, session=session, flush=False)
                 results.append(saved)
             except Exception as exc:
                 logger.warning(
@@ -223,4 +236,6 @@ async def run_batch_brain_pipeline(
                         "run_batch_brain_pipeline on_save_item_done raised: %r",
                         exc,
                     )
+    # Single flush for the entire batch — reduces DB round-trips from N to 1.
+    await session.flush()
     return results

@@ -19,7 +19,36 @@ _RELATION_MAP: dict[str, RelationType] = {
 }
 
 
-async def save_node(state: BrainState, session: AsyncSession) -> BrainState:
+async def save_node(
+    state: BrainState, session: AsyncSession, *, flush: bool = True
+) -> BrainState:
+    """Persist a BrainState to the database.
+
+    Parameters
+    ----------
+    flush:
+        When ``True`` (default) an explicit ``await session.flush()`` is issued
+        after adding the item so the PK is confirmed and the row is visible to
+        the current transaction.  Pass ``flush=False`` in the batch pipeline to
+        skip per-item flushes; the caller is then responsible for issuing a
+        single ``await session.flush()`` after the save loop.
+
+        Note: TechItem.id is pre-assigned via ``uuid.uuid4()`` in the
+        constructor, so ``saved_item_id`` and succession FKs are available
+        regardless of whether flush was called.
+
+    Autoflush caveat
+    ----------------
+    The session factory (``database.py``) leaves ``autoflush=True`` (SQLAlchemy
+    default).  This means each ``session.execute(SELECT ...)`` call inside this
+    function — e.g. the duplicate-URL check and the predecessor existence check
+    — can still trigger an implicit flush for any pending items.  Passing
+    ``flush=False`` eliminates the *explicit* per-item flush, reducing round-trips
+    from N to 1 at the batch level, but does not suppress autoflush-triggered
+    flushes during in-function SELECT queries.  This is an acceptable trade-off
+    for the batch pipeline; callers that need strict flush control should wrap
+    the session in a ``with session.no_autoflush:`` block.
+    """
     if not state["is_valid"]:
         return state
 
@@ -38,7 +67,11 @@ async def save_node(state: BrainState, session: AsyncSession) -> BrainState:
     if existing.scalar_one_or_none() is not None:
         return state
 
+    # Pre-assign the PK so it is available for saved_item_id and succession FK
+    # even when flush=False (SQLAlchemy populates callable defaults at flush
+    # time, not at object construction, so we assign explicitly here).
     item = TechItem(
+        id=uuid.uuid4(),
         title=title,
         source_url=state["source_url"],
         raw_content=state["raw_text"],
@@ -54,7 +87,8 @@ async def save_node(state: BrainState, session: AsyncSession) -> BrainState:
         item.embedding = extracted_info["embedding"]
 
     session.add(item)
-    await session.flush()
+    if flush:
+        await session.flush()
     state["saved"] = True
     # Surface the new item's PK so downstream stages (ARG-103: succession
     # alerts) can collect just the freshly-saved IDs without re-querying.
