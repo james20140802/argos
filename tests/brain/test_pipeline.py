@@ -60,7 +60,7 @@ async def test_run_brain_pipeline_skips_prewarm_and_genealogist_on_cold_start(
         async def prewarm(self, role):
             prewarm_called["n"] += 1
 
-    monkeypatch.setattr(brain_pipeline, "get_llm_client", lambda: _FakeClient())
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: _FakeClient())
 
     session = MagicMock()
     result = await brain_pipeline.run_brain_pipeline("x", "https://e.com", session)
@@ -111,7 +111,7 @@ async def test_run_brain_pipeline_runs_prewarm_and_genealogist_when_warm(
     monkeypatch.setattr(brain_pipeline, "genealogist_node", _fake_genealogist)
     save_mock = AsyncMock(return_value=saved)
     monkeypatch.setattr(brain_pipeline, "save_node", save_mock)
-    monkeypatch.setattr(brain_pipeline, "get_llm_client", lambda: _FakeClient())
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: _FakeClient())
 
     session = MagicMock()
     result = await brain_pipeline.run_brain_pipeline("x", "https://e.com", session)
@@ -141,7 +141,7 @@ async def test_run_brain_pipeline_returns_early_when_triage_fails(monkeypatch):
         async def prewarm(self, role):  # pragma: no cover - must not run
             raise AssertionError("prewarm must not run when triage rejects")
 
-    monkeypatch.setattr(brain_pipeline, "get_llm_client", lambda: _FakeClient())
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: _FakeClient())
 
     result = await brain_pipeline.run_brain_pipeline("x", "https://e.com", MagicMock())
 
@@ -184,7 +184,7 @@ async def test_run_brain_pipeline_forwards_source_category_into_initial_state(
         brain_pipeline, "save_node", AsyncMock(return_value=saved)
     )
     monkeypatch.setattr(
-        brain_pipeline, "get_llm_client", lambda: MagicMock()
+        brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock()
     )
 
     await brain_pipeline.run_brain_pipeline(
@@ -211,7 +211,7 @@ async def test_run_brain_pipeline_defaults_source_category_to_none(monkeypatch):
     monkeypatch.setattr(brain_pipeline, "genealogist_node", AsyncMock())
     monkeypatch.setattr(brain_pipeline, "save_node", AsyncMock())
     monkeypatch.setattr(
-        brain_pipeline, "get_llm_client", lambda: MagicMock()
+        brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock()
     )
 
     await brain_pipeline.run_brain_pipeline("x", "https://e.com", MagicMock())
@@ -273,7 +273,7 @@ async def test_batch_pipeline_cold_start_skips_genealogy(monkeypatch):
     genealogist_mock = AsyncMock()
     monkeypatch.setattr(brain_pipeline, "genealogist_node", genealogist_mock)
     monkeypatch.setattr(brain_pipeline, "save_node", AsyncMock(return_value=saved))
-    monkeypatch.setattr(brain_pipeline, "get_llm_client", lambda: MagicMock())
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
 
     session = MagicMock()
     session.begin_nested = MagicMock(return_value=AsyncMock(
@@ -307,7 +307,7 @@ async def test_batch_pipeline_trust_gate_skips_genealogy(monkeypatch):
     async def _fake_save(state, *, session):
         return {**state, "saved": True}
     monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
-    monkeypatch.setattr(brain_pipeline, "get_llm_client", lambda: MagicMock())
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
 
     session = MagicMock()
     session.begin_nested = MagicMock(return_value=AsyncMock(
@@ -346,7 +346,7 @@ async def test_batch_pipeline_runs_genealogy_for_high_trust(monkeypatch):
         async def unload(self, role):
             pass
 
-    monkeypatch.setattr(brain_pipeline, "get_llm_client", lambda: _FakeClient())
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: _FakeClient())
 
     session = MagicMock()
     session.begin_nested = MagicMock(return_value=AsyncMock(

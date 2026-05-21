@@ -768,7 +768,7 @@ async def test_genealogist_node_respects_skip_flag(monkeypatch):
             called["count"] += 1
             raise AssertionError("LLM must not be called when skip flag is set")
 
-    monkeypatch.setattr(gen_module, "get_llm_client", lambda: _BoomClient())
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _BoomClient())
 
     state = _genealogist_state(
         genealogy_skipped=True, genealogy_skip_reason="cold_start"
@@ -857,7 +857,7 @@ async def test_genealogist_disables_qwen_thinking_via_api(monkeypatch):
             captured.update(kwargs)
             return '{"replace_target_id": null, "relation_type": null, "reason": "x"}'
 
-    monkeypatch.setattr(gen_module, "get_llm_client", lambda: _FakeClient())
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
     await genealogist_node(_genealogist_state())
 
     assert captured.get("think") is False
@@ -898,7 +898,7 @@ async def test_genealogist_node_uses_large_model_timeout(monkeypatch):
             captured["keep_alive"] = keep_alive
             return '{"replace_target_id": null, "relation_type": null, "reason": "x"}'
 
-    monkeypatch.setattr(gen_module, "get_llm_client", lambda: _FakeClient())
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
     await genealogist_node(_genealogist_state())
 
     assert captured["model_role"] == "large"

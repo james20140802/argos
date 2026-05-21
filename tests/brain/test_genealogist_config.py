@@ -3,9 +3,10 @@
 Covers:
 - GenealogistConfig defaults (model + num_ctx)
 - GenealogistConfig overrides
-- OllamaClient reads genealogist.model for the large role
+- get_genealogist_llm_client() resolves large role to genealogist.model
+- get_llm_client() large role stays bound to ollama.model_deepdive (Deep Dive compat)
 - OllamaClient.prewarm propagates num_ctx from genealogist config
-- genealogist_node uses the configured model
+- genealogist_node uses get_genealogist_llm_client
 """
 from __future__ import annotations
 
@@ -58,25 +59,44 @@ def test_genealogist_config_num_ctx_can_be_set_to_6144():
 
 
 # ---------------------------------------------------------------------------
-# OllamaClient: large role resolves to genealogist.model, not ollama.model_deepdive
+# Model role routing: genealogist vs deep dive stay independently configurable
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ollama_client_large_role_uses_genealogist_model(monkeypatch):
-    """OllamaClient._resolve('large') must return genealogist.model, not ollama.model_deepdive."""
-    from argos.brain.llm_client import OllamaClient
+async def test_get_genealogist_llm_client_large_role_uses_genealogist_model(monkeypatch):
+    """get_genealogist_llm_client()._resolve('large') must return genealogist.model."""
+    import argos.brain.llm_client as llm_module
 
-    # Patch genealogist.model to the quantized variant
     mock_settings = MagicMock()
     mock_settings.user.genealogist.model = "qwen3:32b-q4_K_M"
     mock_settings.user.genealogist.num_ctx = 6144
     mock_settings.user.ollama.model_triage = "qwen3:8b"
-    mock_settings.user.ollama.model_deepdive = "qwen3:32b"  # old value, should not be used
+    mock_settings.user.ollama.model_deepdive = "qwen3:32b"
+    mock_settings.user.llm.backend = "ollama"
 
-    client = OllamaClient(settings=mock_settings)
-    resolved = client._resolve("large")
-    assert resolved == "qwen3:32b-q4_K_M"
+    monkeypatch.setattr(llm_module, "_get_settings", lambda: mock_settings)
+
+    client = llm_module.get_genealogist_llm_client()
+    assert client._resolve("large") == "qwen3:32b-q4_K_M"
+
+
+@pytest.mark.asyncio
+async def test_get_llm_client_large_role_uses_model_deepdive(monkeypatch):
+    """get_llm_client()._resolve('large') must return ollama.model_deepdive (Deep Dive compat)."""
+    import argos.brain.llm_client as llm_module
+
+    mock_settings = MagicMock()
+    mock_settings.user.genealogist.model = "qwen3:32b-q4_K_M"
+    mock_settings.user.genealogist.num_ctx = 6144
+    mock_settings.user.ollama.model_triage = "qwen3:8b"
+    mock_settings.user.ollama.model_deepdive = "qwen3:32b"
+    mock_settings.user.llm.backend = "ollama"
+
+    monkeypatch.setattr(llm_module, "_get_settings", lambda: mock_settings)
+
+    client = llm_module.get_llm_client()
+    assert client._resolve("large") == "qwen3:32b"
 
 
 @pytest.mark.asyncio
@@ -91,8 +111,7 @@ async def test_ollama_client_small_role_still_uses_triage_model(monkeypatch):
     mock_settings.user.ollama.model_deepdive = "qwen3:32b"
 
     client = OllamaClient(settings=mock_settings)
-    resolved = client._resolve("small")
-    assert resolved == "qwen3:8b"
+    assert client._resolve("small") == "qwen3:8b"
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +133,7 @@ async def test_ollama_client_prewarm_propagates_genealogist_num_ctx(monkeypatch)
     mock_settings.user.genealogist.model = "qwen3:32b"
     mock_settings.user.genealogist.num_ctx = 3072
     mock_settings.user.ollama.model_triage = "qwen3:8b"
+    mock_settings.user.ollama.model_deepdive = "qwen3:32b"
 
     captured: dict = {}
 
@@ -141,6 +161,7 @@ async def test_ollama_client_prewarm_uses_configured_num_ctx_6144(monkeypatch):
     mock_settings.user.genealogist.model = "qwen3:32b-q4_K_M"
     mock_settings.user.genealogist.num_ctx = 6144
     mock_settings.user.ollama.model_triage = "qwen3:8b"
+    mock_settings.user.ollama.model_deepdive = "qwen3:32b"
 
     captured: dict = {}
 
@@ -150,7 +171,8 @@ async def test_ollama_client_prewarm_uses_configured_num_ctx_6144(monkeypatch):
 
     monkeypatch.setattr(llm_module, "prewarm_model", _fake_prewarm)
 
-    client = OllamaClient(settings=mock_settings)
+    # Use large_model override to test genealogist-context prewarm
+    client = OllamaClient(settings=mock_settings, large_model="qwen3:32b-q4_K_M")
     await client.prewarm("large")
 
     assert captured["model"] == "qwen3:32b-q4_K_M"
@@ -158,15 +180,13 @@ async def test_ollama_client_prewarm_uses_configured_num_ctx_6144(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# genealogist_node: uses the model from genealogist.model config (via LLMClient.query)
+# genealogist_node: uses get_genealogist_llm_client (not get_llm_client)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_genealogist_node_query_uses_configured_model(monkeypatch):
-    """genealogist_node must call client.query('large', ...) — model resolution
-    happens inside OllamaClient, not in the node itself. Verify that the 'large'
-    role is passed (not a hard-coded model string)."""
+    """genealogist_node must call client.query('large', ...) via get_genealogist_llm_client."""
     from argos.brain.nodes import genealogist as gen_module
 
     captured: dict = {}
@@ -176,7 +196,7 @@ async def test_genealogist_node_query_uses_configured_model(monkeypatch):
             captured["model_role"] = model_role
             return '{"replace_target_id": null, "relation_type": null, "reason": "no relation"}'
 
-    monkeypatch.setattr(gen_module, "get_llm_client", lambda: _FakeClient())
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
 
     from argos.brain.graph_state import BrainState
 
@@ -223,7 +243,7 @@ async def test_genealogist_node_passes_configured_num_ctx(monkeypatch):
             captured.update(kwargs)
             return '{"replace_target_id": null, "relation_type": null, "reason": "ok"}'
 
-    monkeypatch.setattr(gen_module, "get_llm_client", lambda: _FakeClient())
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
 
     from argos.brain.graph_state import BrainState
 
@@ -254,21 +274,22 @@ async def test_genealogist_node_passes_configured_num_ctx(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: OllamaClient query sends the configured model name
+# End-to-end: get_genealogist_llm_client sends configured model name over HTTP
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_ollama_client_query_large_sends_configured_model_name(monkeypatch):
-    """OllamaClient.query('large', ...) must send genealogist.model to /api/generate."""
+    """OllamaClient with large_model override must send that model name to /api/generate."""
     from argos.brain.llm_client import OllamaClient
 
     mock_settings = MagicMock()
     mock_settings.user.genealogist.model = "qwen3:32b-q4_K_M"
     mock_settings.user.genealogist.num_ctx = 6144
     mock_settings.user.ollama.model_triage = "qwen3:8b"
+    mock_settings.user.ollama.model_deepdive = "qwen3:32b"
 
-    client = OllamaClient(settings=mock_settings)
+    client = OllamaClient(settings=mock_settings, large_model="qwen3:32b-q4_K_M")
 
     with respx.mock:
         route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
@@ -283,15 +304,16 @@ async def test_ollama_client_query_large_sends_configured_model_name(monkeypatch
 
 @pytest.mark.asyncio
 async def test_ollama_client_prewarm_http_sends_configured_model(monkeypatch):
-    """OllamaClient.prewarm('large') must send genealogist.model name in HTTP request."""
+    """OllamaClient with large_model override must send that model name in prewarm HTTP request."""
     from argos.brain.llm_client import OllamaClient
 
     mock_settings = MagicMock()
     mock_settings.user.genealogist.model = "qwen3:32b-q4_K_M"
     mock_settings.user.genealogist.num_ctx = 6144
     mock_settings.user.ollama.model_triage = "qwen3:8b"
+    mock_settings.user.ollama.model_deepdive = "qwen3:32b"
 
-    client = OllamaClient(settings=mock_settings)
+    client = OllamaClient(settings=mock_settings, large_model="qwen3:32b-q4_K_M")
 
     with respx.mock:
         route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(

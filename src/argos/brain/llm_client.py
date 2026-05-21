@@ -61,18 +61,15 @@ class LLMClient(Protocol):
 
 
 class OllamaClient:
-    def __init__(self, settings: Any = None) -> None:
+    def __init__(self, settings: Any = None, large_model: str | None = None) -> None:
         if settings is None:
             settings = _get_settings()
         self._small = settings.user.ollama.model_triage
-        # The genealogist model is the authoritative large-model config.
-        # `ollama.model_deepdive` is preserved for legacy references but the
-        # genealogist node drives the actual 32B choice via genealogist.model.
-        self._large = settings.user.genealogist.model
+        # Default large role stays bound to ollama.model_deepdive so Deep Dive
+        # remains independently configurable.  The genealogist pipeline uses
+        # get_genealogist_llm_client() which passes large_model=genealogist.model.
+        self._large = large_model if large_model is not None else settings.user.ollama.model_deepdive
         self._genealogist_num_ctx = settings.user.genealogist.num_ctx
-        # Host is propagated via ollama_client._base_url(), which reads
-        # settings.user.ollama.host at call time, so all inference respects
-        # the configured host rather than the hard-coded default.
 
     def _resolve(self, role: Literal["small", "large"]) -> str:
         return self._small if role == "small" else self._large
@@ -149,4 +146,18 @@ def get_llm_client() -> OllamaClient:
     backend = settings.user.llm.backend
     if backend == "ollama":
         return OllamaClient()
+    raise ValueError(f"Unknown LLM backend: {backend!r}")
+
+
+def get_genealogist_llm_client() -> OllamaClient:
+    """Return an OllamaClient whose large role resolves to genealogist.model.
+
+    Keeps Deep Dive's ``ollama.model_deepdive`` config independent from the
+    genealogist model so operators can benchmark a quantized variant without
+    affecting the interactive Deep Dive quality.
+    """
+    settings = _get_settings()
+    backend = settings.user.llm.backend
+    if backend == "ollama":
+        return OllamaClient(settings=settings, large_model=settings.user.genealogist.model)
     raise ValueError(f"Unknown LLM backend: {backend!r}")

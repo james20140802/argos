@@ -7,7 +7,7 @@ import logging
 from pydantic import BaseModel, field_validator
 
 from argos.brain.graph_state import BrainState
-from argos.brain.llm_client import get_llm_client
+from argos.brain.llm_client import get_genealogist_llm_client
 from argos.brain.ollama_client import LARGE_MODEL_TIMEOUT
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ async def genealogist_node(
     )
     from argos.config import settings as _settings
 
-    client = get_llm_client()
+    client = get_genealogist_llm_client()
     try:
         if prewarm_task is not None:
             with contextlib.suppress(Exception):

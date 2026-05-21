@@ -241,7 +241,7 @@ async def test_genealogy_loop_invokes_callback_per_candidate(monkeypatch):
         async def unload(self, role):  # noqa: ARG002
             return None
 
-    monkeypatch.setattr(brain_pipeline, "get_llm_client", lambda: _FakeClient())
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: _FakeClient())
 
     session = MagicMock()
     session.begin_nested = _nested_cm()
@@ -277,7 +277,7 @@ async def test_run_batch_brain_pipeline_forwards_triage_and_embed_callbacks(monk
     monkeypatch.setattr(brain_pipeline, "batch_triage_states", _fake_triage)
     monkeypatch.setattr(brain_pipeline, "batch_embed_and_search_node", _fake_embed)
     monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
-    monkeypatch.setattr(brain_pipeline, "get_llm_client", lambda: MagicMock())
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
 
     session = MagicMock()
     session.begin_nested = _nested_cm()
@@ -329,7 +329,7 @@ async def test_save_loop_invokes_callback_per_state(monkeypatch):
         return {**state, "saved": True}
 
     monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
-    monkeypatch.setattr(brain_pipeline, "get_llm_client", lambda: MagicMock())
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
 
     session = MagicMock()
     session.begin_nested = _nested_cm()
@@ -365,7 +365,7 @@ async def test_run_batch_brain_pipeline_no_callbacks_default_none(monkeypatch):
     monkeypatch.setattr(brain_pipeline, "batch_triage_states", _fake_triage)
     monkeypatch.setattr(brain_pipeline, "batch_embed_and_search_node", _fake_embed)
     monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
-    monkeypatch.setattr(brain_pipeline, "get_llm_client", lambda: MagicMock())
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
 
     session = MagicMock()
     session.begin_nested = _nested_cm()
