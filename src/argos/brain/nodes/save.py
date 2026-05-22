@@ -29,9 +29,9 @@ async def save_node(
     flush:
         When ``True`` (default) an explicit ``await session.flush()`` is issued
         after adding the item so the PK is confirmed and the row is visible to
-        the current transaction.  Pass ``flush=False`` in the batch pipeline to
-        skip per-item flushes; the caller is then responsible for issuing a
-        single ``await session.flush()`` after the save loop.
+        the current transaction.  Pass ``flush=False`` in the batch pipeline so
+        save_node itself does not flush; the caller flushes inside each
+        per-item savepoint so constraint violations are isolated per item.
 
         Note: TechItem.id is pre-assigned via ``uuid.uuid4()`` in the
         constructor, so ``saved_item_id`` and succession FKs are available

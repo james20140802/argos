@@ -379,9 +379,9 @@ def _fake_genealogist_client():
 
 
 @pytest.mark.asyncio
-async def test_batch_pipeline_calls_session_flush_once_for_n_items(monkeypatch):
-    """Batch pipeline must call session.flush() exactly once after the save loop,
-    regardless of how many valid items are saved — not once-per-item."""
+async def test_batch_pipeline_flushes_once_per_item_inside_savepoint(monkeypatch):
+    """Batch pipeline must call session.flush() once per item (inside each savepoint),
+    so constraint violations are isolated per-item rather than aborting the whole batch."""
     n = 3
     items = [_item(f"https://example.com/{i}") for i in range(n)]
     # Use cold-start states to skip the 32B genealogy branch entirely.
@@ -421,8 +421,8 @@ async def test_batch_pipeline_calls_session_flush_once_for_n_items(monkeypatch):
     results = await brain_pipeline.run_batch_brain_pipeline(items, session)
 
     assert len(results) == n
-    # The critical assertion: exactly 1 flush call for all N items.
-    session.flush.assert_awaited_once()
+    # Each item gets its own flush inside its savepoint — N flushes total.
+    assert session.flush.await_count == n
 
 
 @pytest.mark.asyncio

@@ -195,20 +195,16 @@ async def run_batch_brain_pipeline(
         except Exception:
             pass
 
-    # ── Stage 4: per-item save (savepoint per item, single flush at end) ────
+    # ── Stage 4: per-item save (savepoint + flush per item) ──────────────────
     #
-    # Design decision (ARG-90): we keep per-item savepoints to isolate errors
-    # raised *during* save_node logic (e.g. duplicate-URL query failures,
-    # invalid UUID in succession_result).  save_node is called with
-    # flush=False so no per-item round-trip is issued; a single
-    # await session.flush() after the loop reduces DB round-trips from N to 1.
-    #
-    # Trade-off: constraint violations (unique, FK) now surface at the batch
-    # flush rather than per-item, so a single bad row can cause the entire
-    # batch flush to fail.  The savepoints only protect against pre-flush
-    # logic errors, not post-flush constraint errors.  This is an acceptable
-    # trade-off for the throughput gain; callers that need per-row isolation
-    # should use run_brain_pipeline (single-URL path) instead.
+    # Each item is saved inside a begin_nested() savepoint and flushed within
+    # that savepoint.  Flushing inside the savepoint ensures that DB-deferred
+    # constraint violations (unique, FK, vector) are caught by the surrounding
+    # except block and mark only that item as failed, rather than aborting the
+    # entire batch.  The flush=False flag on save_node means save_node itself
+    # does not issue the flush; the savepoint block does it explicitly after
+    # save_node returns, giving us the same pre-flush logic-error isolation
+    # while also catching post-flush constraint errors per item.
     results: list[BrainState] = []
     for s in embedded_states:
         try:
@@ -219,6 +215,7 @@ async def run_batch_brain_pipeline(
             try:
                 async with session.begin_nested():
                     saved = await save_node(s, session=session, flush=False)
+                    await session.flush()
                 results.append(saved)
             except Exception as exc:
                 logger.warning(
@@ -236,6 +233,4 @@ async def run_batch_brain_pipeline(
                         "run_batch_brain_pipeline on_save_item_done raised: %r",
                         exc,
                     )
-    # Single flush for the entire batch — reduces DB round-trips from N to 1.
-    await session.flush()
     return results
