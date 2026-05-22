@@ -216,6 +216,7 @@ async def run_batch_brain_pipeline(
                 async with session.begin_nested():
                     saved = await save_node(s, session=session, flush=False)
                     await session.flush()
+                    saved["saved"] = True
                 results.append(saved)
             except Exception as exc:
                 logger.warning(

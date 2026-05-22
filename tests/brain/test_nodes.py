@@ -1112,11 +1112,15 @@ async def test_save_node_flush_false_skips_flush():
 
 
 @pytest.mark.asyncio
-async def test_save_node_flush_false_still_sets_saved_item_id():
-    """With flush=False, saved_item_id must still be populated (PK pre-assigned)."""
+async def test_save_node_flush_false_does_not_set_saved_flag():
+    """With flush=False, saved_item_id is populated (PK pre-assigned) but saved stays False.
+
+    The caller is responsible for setting saved=True only after its own flush succeeds,
+    so a failed flush cannot leave the state with a misleading saved=True.
+    """
     session = _mock_session_no_existing()
     result = await save_node(_state(is_valid=True), session=session, flush=False)
-    assert result["saved"] is True
+    assert result["saved"] is False
     assert result["saved_item_id"] is not None
 
 

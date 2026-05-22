@@ -28,10 +28,12 @@ async def save_node(
     ----------
     flush:
         When ``True`` (default) an explicit ``await session.flush()`` is issued
-        after adding the item so the PK is confirmed and the row is visible to
-        the current transaction.  Pass ``flush=False`` in the batch pipeline so
-        save_node itself does not flush; the caller flushes inside each
-        per-item savepoint so constraint violations are isolated per item.
+        after adding the item, and ``state["saved"]`` is set to ``True`` only
+        after that flush succeeds.  Pass ``flush=False`` in the batch pipeline
+        so save_node does not flush and does not set ``saved=True``; the caller
+        must flush inside a savepoint and set ``saved["saved"] = True`` only
+        after the flush succeeds, ensuring a failed flush leaves the state with
+        ``saved=False`` for correct retry handling.
 
         Note: TechItem.id is pre-assigned via ``uuid.uuid4()`` in the
         constructor, so ``saved_item_id`` and succession FKs are available
@@ -89,9 +91,10 @@ async def save_node(
     session.add(item)
     if flush:
         await session.flush()
-    state["saved"] = True
+        state["saved"] = True
     # Surface the new item's PK so downstream stages (ARG-103: succession
     # alerts) can collect just the freshly-saved IDs without re-querying.
+    # Pre-assigned via uuid.uuid4() so this is available regardless of flush.
     state["saved_item_id"] = item.id
 
     succession_result = state.get("succession_result")
