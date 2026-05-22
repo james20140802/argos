@@ -229,7 +229,7 @@ async def test_genealogy_loop_invokes_callback_per_candidate(monkeypatch):
 
     monkeypatch.setattr(brain_pipeline, "genealogist_node", _fake_geno)
 
-    async def _fake_save(state, *, session):  # noqa: ARG001
+    async def _fake_save(state, *, session, flush=True):  # noqa: ARG001
         return {**state, "saved": True}
 
     monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
@@ -245,6 +245,7 @@ async def test_genealogy_loop_invokes_callback_per_candidate(monkeypatch):
 
     session = MagicMock()
     session.begin_nested = _nested_cm()
+    session.flush = AsyncMock()
 
     calls = {"n": 0}
 
@@ -271,7 +272,7 @@ async def test_run_batch_brain_pipeline_forwards_triage_and_embed_callbacks(monk
         captured["embed"] = on_item_done
         return list(states)
 
-    async def _fake_save(state, *, session):  # noqa: ARG001
+    async def _fake_save(state, *, session, flush=True):  # noqa: ARG001
         return {**state, "saved": False}
 
     monkeypatch.setattr(brain_pipeline, "batch_triage_states", _fake_triage)
@@ -281,6 +282,7 @@ async def test_run_batch_brain_pipeline_forwards_triage_and_embed_callbacks(monk
 
     session = MagicMock()
     session.begin_nested = _nested_cm()
+    session.flush = AsyncMock()
 
     triage_cb = lambda: None  # noqa: E731
     embed_cb = lambda: None  # noqa: E731
@@ -325,7 +327,7 @@ async def test_save_loop_invokes_callback_per_state(monkeypatch):
     )
     monkeypatch.setattr(brain_pipeline, "genealogist_node", AsyncMock(return_value=high))
 
-    async def _fake_save(state, *, session):  # noqa: ARG001
+    async def _fake_save(state, *, session, flush=True):  # noqa: ARG001
         return {**state, "saved": True}
 
     monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
@@ -333,6 +335,7 @@ async def test_save_loop_invokes_callback_per_state(monkeypatch):
 
     session = MagicMock()
     session.begin_nested = _nested_cm()
+    session.flush = AsyncMock()
 
     calls = {"n": 0}
 
@@ -359,7 +362,7 @@ async def test_run_batch_brain_pipeline_no_callbacks_default_none(monkeypatch):
         captured["embed"] = on_item_done
         return list(states)
 
-    async def _fake_save(state, *, session):  # noqa: ARG001
+    async def _fake_save(state, *, session, flush=True):  # noqa: ARG001
         return {**state, "saved": False}
 
     monkeypatch.setattr(brain_pipeline, "batch_triage_states", _fake_triage)
@@ -369,6 +372,7 @@ async def test_run_batch_brain_pipeline_no_callbacks_default_none(monkeypatch):
 
     session = MagicMock()
     session.begin_nested = _nested_cm()
+    session.flush = AsyncMock()
 
     await brain_pipeline.run_batch_brain_pipeline(
         [_item("https://e.com/x")], session

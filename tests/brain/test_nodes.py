@@ -1090,6 +1090,51 @@ async def test_save_node_falls_back_to_alpha_when_category_is_none():
 
 
 # ---------------------------------------------------------------------------
+# save_node — flush parameter (ARG-90)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_save_node_flushes_by_default():
+    """save_node(state) with default flush=True must call session.flush() exactly once."""
+    session = _mock_session_no_existing()
+    await save_node(_state(is_valid=True), session=session)
+    session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_save_node_flush_false_skips_flush():
+    """save_node(state, flush=False) must NOT call session.flush() at all."""
+    session = _mock_session_no_existing()
+    await save_node(_state(is_valid=True), session=session, flush=False)
+    session.add.assert_called_once()  # item was still added
+    session.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_save_node_flush_false_does_not_set_saved_flag():
+    """With flush=False, saved_item_id is populated (PK pre-assigned) but saved stays False.
+
+    The caller is responsible for setting saved=True only after its own flush succeeds,
+    so a failed flush cannot leave the state with a misleading saved=True.
+    """
+    session = _mock_session_no_existing()
+    result = await save_node(_state(is_valid=True), session=session, flush=False)
+    assert result["saved"] is False
+    assert result["saved_item_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_save_node_flush_false_skips_invalid():
+    """flush=False on an invalid state must be a no-op (same as default)."""
+    session = AsyncMock()
+    result = await save_node(_state(is_valid=False), session=session, flush=False)
+    session.add.assert_not_called()
+    session.flush.assert_not_awaited()
+    assert result["saved"] is False
+
+
+# ---------------------------------------------------------------------------
 # triage_node — Interests injection (ARG-50)
 # ---------------------------------------------------------------------------
 

@@ -280,6 +280,7 @@ async def test_batch_pipeline_cold_start_skips_genealogy(monkeypatch):
         __aenter__=AsyncMock(return_value=None),
         __aexit__=AsyncMock(return_value=False),
     ))
+    session.flush = AsyncMock()
 
     results = await brain_pipeline.run_batch_brain_pipeline([_item()], session)
 
@@ -304,7 +305,7 @@ async def test_batch_pipeline_trust_gate_skips_genealogy(monkeypatch):
     genealogist_mock = AsyncMock()
     monkeypatch.setattr(brain_pipeline, "genealogist_node", genealogist_mock)
     # save_node returns whatever state it receives, marked saved
-    async def _fake_save(state, *, session):
+    async def _fake_save(state, *, session, flush=True):
         return {**state, "saved": True}
     monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
     monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
@@ -314,6 +315,7 @@ async def test_batch_pipeline_trust_gate_skips_genealogy(monkeypatch):
         __aenter__=AsyncMock(return_value=None),
         __aexit__=AsyncMock(return_value=False),
     ))
+    session.flush = AsyncMock()
 
     results = await brain_pipeline.run_batch_brain_pipeline([_item()], session)
 
@@ -353,8 +355,120 @@ async def test_batch_pipeline_runs_genealogy_for_high_trust(monkeypatch):
         __aenter__=AsyncMock(return_value=None),
         __aexit__=AsyncMock(return_value=False),
     ))
+    session.flush = AsyncMock()
 
     results = await brain_pipeline.run_batch_brain_pipeline([_item()], session)
 
     assert results[0]["saved"] is True
     genealogist_mock.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# run_batch_brain_pipeline — batch flush (ARG-90)
+# ---------------------------------------------------------------------------
+
+
+def _fake_genealogist_client():
+    """Build a fake LLM client with async prewarm/unload so asyncio.create_task doesn't fail."""
+    class _FakeClient:
+        async def prewarm(self, role):
+            pass
+        async def unload(self, role):
+            pass
+    return _FakeClient()
+
+
+@pytest.mark.asyncio
+async def test_batch_pipeline_flushes_once_per_item_inside_savepoint(monkeypatch):
+    """Batch pipeline must call session.flush() once per item (inside each savepoint),
+    so constraint violations are isolated per-item rather than aborting the whole batch."""
+    n = 3
+    items = [_item(f"https://example.com/{i}") for i in range(n)]
+    # Use cold-start states to skip the 32B genealogy branch entirely.
+    states = [
+        _batch_state(
+            source_url=f"https://example.com/{i}",
+            genealogy_skipped=True,
+            genealogy_skip_reason="cold_start",
+        )
+        for i in range(n)
+    ]
+    saved_states = [{**s, "saved": True} for s in states]
+
+    monkeypatch.setattr(
+        brain_pipeline, "batch_triage_states", AsyncMock(return_value=states)
+    )
+    monkeypatch.setattr(
+        brain_pipeline,
+        "batch_embed_and_search_node",
+        AsyncMock(return_value=states),
+    )
+    monkeypatch.setattr(brain_pipeline, "genealogist_node", AsyncMock())
+    monkeypatch.setattr(
+        brain_pipeline, "save_node", AsyncMock(side_effect=saved_states)
+    )
+    monkeypatch.setattr(
+        brain_pipeline, "get_genealogist_llm_client", lambda: _fake_genealogist_client()
+    )
+
+    session = MagicMock()
+    session.begin_nested = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=None),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+    session.flush = AsyncMock()
+
+    results = await brain_pipeline.run_batch_brain_pipeline(items, session)
+
+    assert len(results) == n
+    # Each item gets its own flush inside its savepoint — N flushes total.
+    assert session.flush.await_count == n
+
+
+@pytest.mark.asyncio
+async def test_batch_pipeline_save_node_called_with_flush_false(monkeypatch):
+    """Each save_node call in the batch pipeline must pass flush=False."""
+    items = [_item(f"https://example.com/{i}") for i in range(2)]
+    # Use cold-start states to skip the 32B genealogy branch.
+    states = [
+        _batch_state(
+            source_url=f"https://example.com/{i}",
+            genealogy_skipped=True,
+            genealogy_skip_reason="cold_start",
+        )
+        for i in range(2)
+    ]
+
+    monkeypatch.setattr(
+        brain_pipeline, "batch_triage_states", AsyncMock(return_value=states)
+    )
+    monkeypatch.setattr(
+        brain_pipeline,
+        "batch_embed_and_search_node",
+        AsyncMock(return_value=states),
+    )
+    monkeypatch.setattr(brain_pipeline, "genealogist_node", AsyncMock())
+
+    captured_kwargs: list[dict] = []
+
+    async def _capturing_save(state, *, session, flush=True):
+        captured_kwargs.append({"flush": flush})
+        return {**state, "saved": True}
+
+    monkeypatch.setattr(brain_pipeline, "save_node", _capturing_save)
+    monkeypatch.setattr(
+        brain_pipeline, "get_genealogist_llm_client", lambda: _fake_genealogist_client()
+    )
+
+    session = MagicMock()
+    session.begin_nested = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=None),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+    session.flush = AsyncMock()
+
+    await brain_pipeline.run_batch_brain_pipeline(items, session)
+
+    # All save_node calls must have flush=False.
+    assert len(captured_kwargs) == 2
+    assert all(kw["flush"] is False for kw in captured_kwargs)

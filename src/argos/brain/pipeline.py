@@ -195,7 +195,16 @@ async def run_batch_brain_pipeline(
         except Exception:
             pass
 
-    # ── Stage 4: per-item save (with savepoint per item) ──────────────────
+    # ── Stage 4: per-item save (savepoint + flush per item) ──────────────────
+    #
+    # Each item is saved inside a begin_nested() savepoint and flushed within
+    # that savepoint.  Flushing inside the savepoint ensures that DB-deferred
+    # constraint violations (unique, FK, vector) are caught by the surrounding
+    # except block and mark only that item as failed, rather than aborting the
+    # entire batch.  The flush=False flag on save_node means save_node itself
+    # does not issue the flush; the savepoint block does it explicitly after
+    # save_node returns, giving us the same pre-flush logic-error isolation
+    # while also catching post-flush constraint errors per item.
     results: list[BrainState] = []
     for s in embedded_states:
         try:
@@ -205,7 +214,9 @@ async def run_batch_brain_pipeline(
                 continue
             try:
                 async with session.begin_nested():
-                    saved = await save_node(s, session=session)
+                    saved = await save_node(s, session=session, flush=False)
+                    await session.flush()
+                    saved["saved"] = True
                 results.append(saved)
             except Exception as exc:
                 logger.warning(

@@ -362,10 +362,6 @@ async def test_save_node_populates_saved_item_id():
     captured: list = []
 
     def _capture_add(obj):
-        # Stamp a deterministic UUID onto the TechItem when added so we can
-        # assert against it after flush.
-        if not getattr(obj, "id", None):
-            obj.id = uuid.UUID("11111111-1111-1111-1111-111111111111")
         captured.append(obj)
 
     session.add = _capture_add
@@ -373,9 +369,11 @@ async def test_save_node_populates_saved_item_id():
     result = await save_node(state, session=session)
 
     assert result["saved"] is True
-    assert result["saved_item_id"] == uuid.UUID("11111111-1111-1111-1111-111111111111")
-    # save_node added one TechItem
+    # saved_item_id must be populated (pre-assigned UUID) and match the added item's id.
+    assert result["saved_item_id"] is not None
+    assert isinstance(result["saved_item_id"], uuid.UUID)
     assert len(captured) == 1
+    assert captured[0].id == result["saved_item_id"]
 
 
 @pytest.mark.asyncio
