@@ -806,6 +806,75 @@ async def _portfolio(category: str | None, sort: str) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# argos stats  (ARG-66)
+# ---------------------------------------------------------------------------
+
+
+def _build_stats_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos stats`` subcommand (ARG-66)."""
+    stats_p = sub.add_parser(
+        "stats",
+        help="Show collection-status dashboard",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Display a summary dashboard: collection counts, brain/triage\n"
+            "results, and portfolio + Track-alert statistics.\n\n"
+            "Example:\n"
+            "  argos stats\n"
+            "  argos stats --days 30"
+        ),
+        parents=[common],
+    )
+    stats_p.add_argument(
+        "--days",
+        type=int,
+        default=7,
+        metavar="N",
+        help="Look-back window in days (default: 7; must be a positive integer)",
+    )
+
+
+async def _stats(days: int) -> int:
+    """Render the stats dashboard for the last *days* days."""
+    from argos.slack.services.stats_query import fetch_stats_summary, safe_pct
+
+    async with AsyncSessionLocal() as session:
+        data = await fetch_stats_summary(session, days=days)
+
+    total = data["total_items"]
+    github = data["github_count"]
+    hn = data["hn_count"]
+    rss = data["rss_count"]
+    arxiv = data["arxiv_count"]
+    valid = data["valid_count"]
+    new_saved = data["new_saved_count"]
+    keep = data["keep_count"]
+    pass_ = data["pass_count"]
+    unclassified = data["unclassified_count"]
+    cumulative_keep = data["total_keep_cumulative"]
+    track_alerts = data["track_alert_count"]
+
+    pct = safe_pct(valid, total)
+    pct_str = f"{pct}%" if total > 0 else "0%"
+
+    print(f"📊 Argos 통계 (최근 {days}일)")
+    print()
+    print(f"수집:      {total}개  (GitHub {github} / HN {hn} / RSS {rss} / arXiv {arxiv})")
+    print()
+    print(f"유효:      {valid}개  ({pct_str})")
+    print(f"저장(신규): {new_saved}개")
+    print(f"Keep:      {keep}개  |  Pass: {pass_}개  |  미분류: {unclassified}개")
+    print()
+    print(f"포트폴리오: 총 {cumulative_keep}개 Keep")
+    print(f"Track 알림: 지난 {days}일 {track_alerts}건")
+
+    return 0
+
+
 def _build_add_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -1147,6 +1216,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_portfolio_parser(sub, common)
     _build_schedule_parser(sub)
     _build_search_parser(sub, common)
+    _build_stats_parser(sub, common)
 
     args = parser.parse_args(argv)
 
@@ -1220,6 +1290,14 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return asyncio.run(_portfolio(args.category, args.sort))
+    if args.command == "stats":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        if args.days <= 0:
+            print(f"오류: --days 값은 양의 정수여야 합니다. (입력값: {args.days})", file=sys.stderr)
+            return 1
+        return asyncio.run(_stats(args.days))
     return 1
 
 
