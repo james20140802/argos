@@ -7,6 +7,10 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rich.console import Console
 
 try:
     import tomllib
@@ -212,11 +216,51 @@ async def _dispatch_signal_matches(new_item_ids: list, session) -> None:
         )
 
 
-async def _run(dynamic_urls: list[str] | None) -> int:
+async def _run(
+    dynamic_urls: list[str] | None,
+    *,
+    verbose: bool = False,
+    console: "Console | None" = None,
+) -> int:
+    """Run the full crawl → brain → save pipeline.
+
+    Parameters
+    ----------
+    dynamic_urls:
+        Extra URLs to fetch (forwarded to the crawler).
+    verbose:
+        When True, set root log level to DEBUG (shows httpx INFO etc.).
+        When False (default), set to WARNING so non-critical log noise is
+        hidden — satisfying AC1 of ARG-114.
+    console:
+        Optional Rich Console to use for both the progress bar and the
+        RichHandler. Injection point for tests; production callers leave this
+        as None so a Console is constructed automatically.
+    """
+    from rich.console import Console as _Console
+    from rich.logging import RichHandler
+
     from argos.progress import ProgressReporter
 
+    # Build or reuse a single Rich Console so that RichHandler and Progress
+    # share the same Live display. This is the documented fix for log output
+    # corrupting/duplicating the Rich progress bar (ARG-114).
+    shared_console = console if console is not None else _Console()
+
+    log_level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(
+        level=log_level,
+        format="%(message)s",
+        datefmt="[%X]",
+        handlers=[RichHandler(console=shared_console, show_path=False)],
+        force=True,
+    )
+
     start = time.monotonic()
-    progress = ProgressReporter()
+    # Use the console's own TTY detection rather than sys.stdout.isatty() so
+    # that test-injected force_terminal consoles correctly enable the Rich
+    # progress bar. Production callers with a real Console get the same result.
+    progress = ProgressReporter(tty=shared_console.is_terminal, console=shared_console)
     with progress:
         async with AsyncSessionLocal() as session:
             results, summary = await run_full_pipeline(
@@ -1220,16 +1264,24 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.command == "run":
+        # ARG-114: _run sets up its own shared-Console logging (RichHandler) so
+        # that log output does NOT corrupt the Rich Live progress bar. The global
+        # basicConfig below is intentionally skipped for "run" — _run owns its
+        # own handler configuration.
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return asyncio.run(_run(args.url, verbose=getattr(args, "verbose", False)))
+
+    # For all commands OTHER than "run", use the plain stream-based handler.
+    # The "run" command skips this block entirely (it returns above) and
+    # installs a RichHandler inside _run instead.
     logging.basicConfig(
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if args.command == "run":
-        rc = _apply_config_override(args)
-        if rc is not None:
-            return rc
-        return asyncio.run(_run(args.url))
     if args.command == "slack":
         rc = _apply_config_override(args)
         if rc is not None:
