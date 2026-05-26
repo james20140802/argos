@@ -230,8 +230,9 @@ async def _run(
         Extra URLs to fetch (forwarded to the crawler).
     verbose:
         When True, set root log level to DEBUG (shows httpx INFO etc.).
-        When False (default), set to WARNING so non-critical log noise is
-        hidden — satisfying AC1 of ARG-114.
+        When False (default), TTY runs use WARNING (Rich bar handles feedback)
+        and non-TTY runs use INFO so ProgressReporter._emit lines remain
+        visible in launchd/CI/redirected-stdout contexts.
     console:
         Optional Rich Console to use for both the progress bar and the
         RichHandler. Injection point for tests; production callers leave this
@@ -247,7 +248,15 @@ async def _run(
     # corrupting/duplicating the Rich progress bar (ARG-114).
     shared_console = console if console is not None else _Console()
 
-    log_level = logging.DEBUG if verbose else logging.WARNING
+    # In non-TTY contexts (launchd/CI), ProgressReporter falls back to
+    # logger.info() for in-flight progress. Keep INFO visible there; suppress
+    # to WARNING only when the Rich bar is active so its noise doesn't appear.
+    if verbose:
+        log_level = logging.DEBUG
+    elif shared_console.is_terminal:
+        log_level = logging.WARNING
+    else:
+        log_level = logging.INFO
     logging.basicConfig(
         level=log_level,
         format="%(message)s",

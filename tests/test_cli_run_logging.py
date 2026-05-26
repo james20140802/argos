@@ -75,14 +75,16 @@ def _make_buf_console() -> tuple[io.StringIO, Console]:
 
 
 # ---------------------------------------------------------------------------
-# (a) Without -v: INFO records are suppressed (root level >= WARNING)
+# (a) Without -v: log level depends on TTY mode
+#     non-TTY → INFO  (ProgressReporter._emit lines must survive)
+#     TTY     → WARNING (Rich bar handles feedback; suppress INFO noise)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_run_default_log_level_suppresses_info():
-    """Without verbose, root logger level is WARNING so httpx INFO is hidden."""
-    buf, console = _make_buf_console()
+async def test_run_default_log_level_non_tty_is_info():
+    """Without verbose in non-TTY context, root level is INFO so progress logs survive."""
+    buf, console = _make_buf_console()  # force_terminal=False → non-TTY
 
     async def _fake_pipeline(session, dynamic_urls=None, *, progress=None):
         return [], _make_summary()
@@ -95,19 +97,32 @@ async def test_run_default_log_level_suppresses_info():
 
         await _run([], verbose=False, console=console)
 
-    # After _run configures logging, root level must be WARNING or higher,
-    # meaning an httpx INFO record is suppressed.
     root = logging.getLogger()
-    assert root.level >= logging.WARNING, (
-        f"Expected root log level >= WARNING (30) without -v, got {root.level}"
+    assert root.level == logging.INFO, (
+        f"Expected root log level INFO (20) for non-TTY without -v, got {root.level}"
     )
 
-    # Verify effect: emitting an INFO record produces nothing in the console buf.
-    logging.getLogger("httpx").info("TEST_HTTPX_SHOULD_NOT_APPEAR")
-    buf.seek(0)
-    after = buf.read()
-    assert "TEST_HTTPX_SHOULD_NOT_APPEAR" not in after, (
-        "httpx INFO should be suppressed when verbose=False"
+
+@pytest.mark.asyncio
+async def test_run_default_log_level_tty_suppresses_info():
+    """Without verbose in TTY context, root level is WARNING — Rich bar handles feedback."""
+    buf = io.StringIO()
+    tty_console = Console(file=buf, force_terminal=True, width=120, no_color=True)
+
+    async def _fake_pipeline(session, dynamic_urls=None, *, progress=None):
+        return [], _make_summary()
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=_make_mock_session()),
+        patch("argos.cli.run_full_pipeline", new=_fake_pipeline),
+    ):
+        from argos.cli import _run
+
+        await _run([], verbose=False, console=tty_console)
+
+    root = logging.getLogger()
+    assert root.level >= logging.WARNING, (
+        f"Expected root log level >= WARNING (30) for TTY without -v, got {root.level}"
     )
 
 
