@@ -15,9 +15,26 @@ import re
 from bs4 import BeautifulSoup
 
 _WHITESPACE_RE = re.compile(r"\s+")
-# Matches HTML tags revealed after entity decoding (e.g. <i>, </b>, <!-- -->).
-# Anchored to letter/slash/bang so "3 < 5 > 2" comparisons are not stripped.
-_TAG_RE = re.compile(r"<[a-zA-Z/!][^>]*>")
+
+# Named and numeric HTML character references — their presence signals HTML content.
+_HTML_ENTITY_RE = re.compile(r"&(?:#\d+|#x[0-9a-fA-F]+|[a-z]\w+);", re.IGNORECASE)
+
+# Opening/closing tags whose name is a known HTML element.  Used both to
+# detect whether a title contains HTML markup and to strip tags revealed
+# after entity decoding.  Generic type-parameter syntax such as Vec<T> or
+# Promise<Result<T>> is excluded because "T", "Result", etc. are not in
+# the element list, so the regex never matches them.
+_HTML_TAG_RE = re.compile(
+    r"</?(?:a|abbr|acronym|b|big|br|caption|cite|code|del|dfn|em|"
+    r"h[1-6]|i|img|ins|kbd|mark|p|pre|q|s|samp|small|span|strike|"
+    r"strong|sub|sup|tt|u|ul|var)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def _has_html(text: str) -> bool:
+    """Return True if *text* contains HTML entities or known HTML element tags."""
+    return bool(_HTML_ENTITY_RE.search(text) or _HTML_TAG_RE.search(text))
 
 
 def clean_title(text: str | None) -> str:
@@ -26,29 +43,35 @@ def clean_title(text: str | None) -> str:
     Steps
     -----
     1. Return ``""`` for ``None`` or empty input.
-    2. Use ``BeautifulSoup.get_text()`` with ``html.parser`` to strip actual
+    2. If no HTML markup is detected (no entity references, no known HTML
+       element tags), normalise whitespace and return as-is.  This preserves
+       programming syntax such as ``Vec<T>`` or ``Promise<Result<T>>`` that
+       would otherwise be mangled by an HTML parser.
+    3. Use ``BeautifulSoup.get_text()`` with ``html.parser`` to strip actual
        HTML markup and decode entity references in text nodes
        (e.g. ``&amp;`` → ``&``).  Entity-encoded tags such as
        ``&lt;i&gt;Foo&lt;/i&gt;`` are decoded by the parser to the literal
        characters ``<i>Foo</i>`` inside the text node — they are NOT stripped
        at this step because the parser never saw them as tags.
-    3. Call ``html.unescape()`` to decode any remaining character references.
-    4. Strip any HTML tags now visible in the decoded text with a lightweight
-       regex (avoids re-parsing through BeautifulSoup, which would garble raw
-       ``&`` characters such as those in "AT&T").
-    5. Collapse runs of whitespace and strip leading/trailing space.
+    4. Call ``html.unescape()`` to decode any remaining character references.
+    5. Strip any known-HTML-element tags now visible in the decoded text.
+       Using the same element allowlist as the presence check ensures that
+       ``Vec&lt;T&gt;`` decoded to ``Vec<T>`` is not corrupted because ``T``
+       is not a known HTML element.
+    6. Collapse runs of whitespace and strip leading/trailing space.
 
     This function is intentionally idempotent: calling it on already-clean
     plain text returns the same string unchanged.
     """
     if not text:
         return ""
+    if not _has_html(text):
+        return _WHITESPACE_RE.sub(" ", text).strip()
     # Strip actual HTML markup; html.parser also decodes entity refs in text
     # nodes, so &lt;i&gt; becomes the literal characters <i> in the output.
     stripped = BeautifulSoup(text, "html.parser").get_text()
     # Decode any remaining character references in the plain-text content.
     decoded = html.unescape(stripped)
-    # Strip tags that became visible after entity decoding (second-pass strip).
-    cleaned = _TAG_RE.sub("", decoded)
-    # Normalise whitespace
+    # Strip known-HTML-element tags revealed after entity decoding.
+    cleaned = _HTML_TAG_RE.sub("", decoded)
     return _WHITESPACE_RE.sub(" ", cleaned).strip()

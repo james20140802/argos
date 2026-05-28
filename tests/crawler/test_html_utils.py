@@ -69,3 +69,21 @@ def test_real_hn_example() -> None:
     assert "<i>" not in result
     assert "<a " not in result
     assert "DeepSeek reasonix" in result
+
+
+def test_preserves_generic_type_params_literal() -> None:
+    """Regression: Vec<T> must not be corrupted by the HTML stripper."""
+    assert clean_title("Understanding Vec<T> in Rust") == "Understanding Vec<T> in Rust"
+
+
+def test_preserves_nested_generic_type_params_literal() -> None:
+    assert clean_title("Promise<Result<T, Error>>") == "Promise<Result<T, Error>>"
+
+
+def test_preserves_generic_type_params_escaped() -> None:
+    """Regression: Vec&lt;T&gt; must decode entities but preserve <T> since T is not HTML."""
+    assert clean_title("Vec&lt;T&gt;") == "Vec<T>"
+
+
+def test_preserves_nested_generic_type_params_escaped() -> None:
+    assert clean_title("Promise&lt;Result&lt;T&gt;&gt;") == "Promise<Result<T>>"
