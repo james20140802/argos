@@ -86,6 +86,42 @@ async def test_fetch_today_briefing_lookback_days_default_is_seven():
 
 
 @pytest.mark.asyncio
+async def test_fetch_today_briefing_null_published_at_falls_back_to_created_at():
+    """Items with NULL published_at must still appear when created_at is within the lookback window.
+
+    This covers the 'argos add' / Slack add path: run_brain_pipeline sets published_at=None,
+    so those items must use created_at as the effective date instead of being silently dropped.
+    """
+    now_utc = datetime(2026, 5, 28, 12, 0, 0, tzinfo=timezone.utc)
+    captured_stmts = []
+
+    async def fake_execute(stmt):
+        captured_stmts.append(stmt)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    await fetch_today_briefing(mock_session, now_utc=now_utc, lookback_days=7)
+
+    category_stmts = [
+        stmt for stmt in captured_stmts
+        if "tech_items.category" in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    ]
+    assert len(category_stmts) == 2
+    for stmt in category_stmts:
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        # COALESCE(published_at, created_at) must be used so NULL published_at falls back to created_at
+        assert "coalesce" in compiled.lower()
+        assert "published_at" in compiled
+        assert "created_at" in compiled
+        # Must NOT have a bare published_at IS NOT NULL exclusion
+        assert "published_at IS NOT NULL" not in compiled.upper()
+
+
+@pytest.mark.asyncio
 async def test_briefing_config_has_lookback_days_field():
     """BriefingConfig must expose a lookback_days field defaulting to 7."""
     from argos.config import BriefingConfig

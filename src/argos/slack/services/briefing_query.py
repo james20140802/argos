@@ -7,7 +7,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.models.tech_item import CategoryType, TechItem
@@ -175,17 +175,16 @@ async def fetch_today_briefing(
     }
 
     for category in (CategoryType.MAINSTREAM, CategoryType.ALPHA):
+        effective_date = func.coalesce(TechItem.published_at, TechItem.created_at)
         stmt = (
             select(TechItem)
             .where(
                 TechItem.category == category,
-                TechItem.published_at.is_not(None),
-                TechItem.published_at >= cutoff_utc,
+                effective_date >= cutoff_utc,
             )
             .order_by(
                 TechItem.trust_score.desc().nulls_last(),
-                TechItem.published_at.desc(),
-                TechItem.created_at.desc(),
+                effective_date.desc(),
             )
             .limit(pool_limit)
         )
