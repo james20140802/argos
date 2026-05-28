@@ -266,6 +266,7 @@ async def _fetch_url_content(url: str) -> dict | None:
         "title": dynamic.get("title") or "",
         "raw_content": _truncate_raw_content((dynamic.get("raw_content") or "").strip()),
         "source_url": dynamic.get("source_url") or url,
+        "_published_at": dynamic.get("_published_at"),
     }
 
 
@@ -395,11 +396,13 @@ async def add_url(url: str, session: AsyncSession) -> AddUrlResult:
             )
 
     # ── 6. Brain pipeline ─────────────────────────────────────────────────
+    published_at = fetched.get("_published_at")
     try:
         state = await run_brain_pipeline(
             raw_text=raw_content,
             source_url=final_url,
             session=session,
+            published_at=published_at,
         )
     except Exception as exc:  # noqa: BLE001 — last-resort guard
         logger.warning(

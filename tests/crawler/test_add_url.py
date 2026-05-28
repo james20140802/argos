@@ -584,6 +584,40 @@ async def test_static_fetch_rejects_disallowed_scheme_in_redirect() -> None:
     fetch_dynamic.assert_not_awaited()
 
 
+async def test_add_url_threads_published_at_from_fetch_to_brain() -> None:
+    """_published_at from _fetch_url_content must be forwarded to run_brain_pipeline."""
+    import datetime as _dt
+
+    session = _make_session()
+    new_id = uuid.uuid4()
+    pub = _dt.datetime(2023, 11, 1, 9, 0, 0, tzinfo=_dt.timezone.utc)
+    brain_state = {
+        "is_valid": True,
+        "saved": True,
+        "source_url": "https://example.com/page",
+    }
+    brain_mock = AsyncMock(return_value=brain_state)
+    with (
+        _patch_safe_url(True),
+        _patch_robots(True),
+        _patch_dedup_lookup(None, new_id),
+        _patch_fetch(
+            {
+                "title": "Article",
+                "raw_content": "Substantive body text.",
+                "source_url": "https://example.com/page",
+                "_published_at": pub,
+            }
+        ),
+        patch("argos.crawler.add_url.run_brain_pipeline", new=brain_mock),
+    ):
+        r = await add_url("https://example.com/page", session)
+
+    assert r.status is AddUrlStatus.CREATED
+    brain_mock.assert_awaited_once()
+    assert brain_mock.call_args.kwargs.get("published_at") == pub
+
+
 async def test_static_fetch_no_redirect_issues_single_request() -> None:
     """A 200 OK response is returned directly with no follow-up GET."""
     session = _make_session()

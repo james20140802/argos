@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from datetime import datetime
 from typing import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,7 @@ async def run_brain_pipeline(
     session: AsyncSession,
     *,
     source_category: CategoryType | None = None,
+    published_at: datetime | None = None,
 ) -> BrainState:
     # source_category is an optional hint from the fetcher (e.g. RSS in ARG-52,
     # arXiv in ARG-53) indicating which category the source leans towards.
@@ -42,7 +44,7 @@ async def run_brain_pipeline(
         "genealogy_skip_reason": None,
         "source_category": source_category,
         "category": None,
-        "published_at": None,
+        "published_at": published_at,
     }
     triaged = await triage_node(initial)
     if not triaged["is_valid"]:
