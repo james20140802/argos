@@ -507,6 +507,24 @@ async def test_save_node_persists_null_summary_by_default():
 
 
 @pytest.mark.asyncio
+async def test_save_node_persists_published_at():
+    from datetime import datetime, timezone
+    session = _mock_session_no_existing()
+    pub = datetime(2024, 7, 4, 15, 0, 0, tzinfo=timezone.utc)
+    await save_node(_state(is_valid=True, published_at=pub), session=session)
+    added_item = session.add.call_args[0][0]
+    assert added_item.published_at == pub
+
+
+@pytest.mark.asyncio
+async def test_save_node_persists_null_published_at_by_default():
+    session = _mock_session_no_existing()
+    await save_node(_state(is_valid=True), session=session)
+    added_item = session.add.call_args[0][0]
+    assert added_item.published_at is None
+
+
+@pytest.mark.asyncio
 async def test_save_node_creates_succession():
     # execute is called twice: source_url duplicate check (None) then predecessor existence check (found)
     no_existing = MagicMock()

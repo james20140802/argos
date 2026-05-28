@@ -82,6 +82,7 @@ async def save_node(
         # in case it was not set (e.g. state produced by an older code path).
         category=state.get("category") or CategoryType.ALPHA,
         trust_score=state.get("trust_score"),
+        published_at=state.get("published_at"),
     )
 
     extracted_info = state.get("extracted_info") or {}
