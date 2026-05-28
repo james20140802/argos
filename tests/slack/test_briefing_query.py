@@ -156,6 +156,33 @@ async def test_fetch_today_briefing_excludes_future_dated_items():
 
 
 @pytest.mark.asyncio
+async def test_fetch_today_briefing_excludes_already_briefed_items():
+    """Items with briefed_at set must be excluded so users don't see repeats across days."""
+    now_utc = datetime(2026, 5, 29, 12, 0, 0, tzinfo=timezone.utc)
+    captured_stmts = []
+
+    async def fake_execute(stmt):
+        captured_stmts.append(stmt)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    await fetch_today_briefing(mock_session, now_utc=now_utc, lookback_days=7)
+
+    category_stmts = [
+        stmt for stmt in captured_stmts
+        if "tech_items.category" in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    ]
+    assert len(category_stmts) == 2
+    for stmt in category_stmts:
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "briefed_at IS NULL" in compiled
+
+
+@pytest.mark.asyncio
 async def test_briefing_config_has_lookback_days_field():
     """BriefingConfig must expose a lookback_days field defaulting to 7."""
     from argos.config import BriefingConfig

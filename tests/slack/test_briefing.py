@@ -115,6 +115,53 @@ async def test_dispatch_skips_empty_category_section():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_stamps_briefed_at_after_posting():
+    """dispatch_daily_briefing must commit briefed_at on every posted item."""
+    items_by_category = {
+        CategoryType.MAINSTREAM: [_make_item("M-1"), _make_item("M-2")],
+        CategoryType.ALPHA: [_make_item("A-1")],
+    }
+    mock_client, mock_app, _ = _patch_dispatch(items_by_category)
+
+    mock_session = AsyncMock()
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "argos.slack.briefing.AsyncSessionLocal", return_value=session_ctx
+    ), patch(
+        "argos.slack.briefing.fetch_today_briefing",
+        AsyncMock(return_value=items_by_category),
+    ), patch("argos.slack.briefing.build_app", return_value=mock_app):
+        await dispatch_daily_briefing(channel="C999")
+
+    mock_session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_does_not_stamp_when_no_items_posted():
+    """dispatch_daily_briefing must not issue a DB update when all categories are empty."""
+    items_by_category = {CategoryType.MAINSTREAM: [], CategoryType.ALPHA: []}
+    mock_client, mock_app, _ = _patch_dispatch(items_by_category)
+
+    mock_session = AsyncMock()
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "argos.slack.briefing.AsyncSessionLocal", return_value=session_ctx
+    ), patch(
+        "argos.slack.briefing.fetch_today_briefing",
+        AsyncMock(return_value=items_by_category),
+    ), patch("argos.slack.briefing.build_app", return_value=mock_app):
+        await dispatch_daily_briefing(channel="C999")
+
+    mock_session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_dispatch_item_messages_enable_unfurl():
     items_by_category = {
         CategoryType.MAINSTREAM: [_make_item("M-1")],
