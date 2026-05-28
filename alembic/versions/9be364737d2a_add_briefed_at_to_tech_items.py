@@ -22,6 +22,9 @@ def upgrade() -> None:
     """Upgrade schema."""
     op.add_column('tech_items', sa.Column('briefed_at', sa.DateTime(timezone=True), nullable=True))
     op.create_index(op.f('ix_tech_items_briefed_at'), 'tech_items', ['briefed_at'], unique=False)
+    # Backfill existing rows so the "briefed_at IS NULL" filter in briefing_query
+    # doesn't re-send all pre-migration items on the first run after upgrade.
+    op.execute("UPDATE tech_items SET briefed_at = NOW() WHERE briefed_at IS NULL")
 
 
 def downgrade() -> None:
