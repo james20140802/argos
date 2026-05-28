@@ -71,6 +71,16 @@ def test_real_hn_example() -> None:
     assert "DeepSeek reasonix" in result
 
 
+def test_inserts_space_when_stripping_br_tag() -> None:
+    """Regression: Hello<br>World must not collapse to HelloWorld."""
+    assert clean_title("Hello<br>World") == "Hello World"
+
+
+def test_inserts_space_between_adjacent_block_tags() -> None:
+    """Regression: separator tags used for layout must not merge surrounding words."""
+    assert clean_title("thread:<p>DeepSeek") == "thread: DeepSeek"
+
+
 def test_preserves_generic_type_params_literal() -> None:
     """Regression: Vec<T> must not be corrupted by the HTML stripper."""
     assert clean_title("Understanding Vec<T> in Rust") == "Understanding Vec<T> in Rust"

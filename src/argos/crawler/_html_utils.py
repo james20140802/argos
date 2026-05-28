@@ -69,7 +69,9 @@ def clean_title(text: str | None) -> str:
         return _WHITESPACE_RE.sub(" ", text).strip()
     # Strip actual HTML markup; html.parser also decodes entity refs in text
     # nodes, so &lt;i&gt; becomes the literal characters <i> in the output.
-    stripped = BeautifulSoup(text, "html.parser").get_text()
+    # separator=" " prevents adjacent tags from merging their surrounding text
+    # (e.g. Hello<br>World → "Hello World", not "HelloWorld").
+    stripped = BeautifulSoup(text, "html.parser").get_text(separator=" ")
     # Decode any remaining character references in the plain-text content.
     decoded = html.unescape(stripped)
     # Strip known-HTML-element tags revealed after entity decoding.
