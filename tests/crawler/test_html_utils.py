@@ -1,8 +1,6 @@
 """Unit tests for src/argos/crawler/_html_utils.py (ARG-129)."""
 from __future__ import annotations
 
-import pytest
-
 from argos.crawler._html_utils import clean_title
 
 
