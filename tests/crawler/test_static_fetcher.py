@@ -512,3 +512,43 @@ async def test_fetch_hackernews_top_keeps_text_field_for_ask_hn() -> None:
     assert len(result) == 1
     assert result[0]["source_url"] == "https://news.ycombinator.com/item?id=7"
     assert "Body provided" in result[0]["raw_content"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: _published_at for fetch_github_trending
+# ---------------------------------------------------------------------------
+
+async def test_fetch_github_trending_published_at_is_none(monkeypatch) -> None:
+    """GitHub Trending items always have _published_at=None.
+
+    Trending freshness is the crawl/discovery date, not the repo creation date,
+    so the briefing query's COALESCE fallback to DB created_at is correct.
+    """
+    monkeypatch.setattr(
+        "argos.crawler.static_fetcher.is_robots_allowed",
+        AsyncMock(return_value=True),
+    )
+
+    trending_html = """<html><body>
+    <article class="Box-row">
+      <h2 class="h3 lh-condensed"><a href="/owner/myrepo">owner / myrepo</a></h2>
+      <p class="col-9 color-fg-muted">A cool repo</p>
+    </article>
+    </body></html>"""
+
+    with respx.mock:
+        respx.get("https://github.com/trending").mock(
+            return_value=httpx.Response(200, text=trending_html)
+        )
+        respx.get("https://raw.githubusercontent.com/owner/myrepo/HEAD/README.md").mock(
+            return_value=httpx.Response(200, text="# MyRepo\nA cool project.")
+        )
+        respx.get("https://raw.githubusercontent.com/owner/myrepo/HEAD/README.rst").mock(
+            return_value=httpx.Response(404, text="")
+        )
+
+        async with httpx.AsyncClient() as client:
+            items = await fetch_github_trending(client)
+
+    assert len(items) == 1
+    assert items[0]["_published_at"] is None

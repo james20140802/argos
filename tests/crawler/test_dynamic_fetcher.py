@@ -6,9 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from datetime import datetime, timezone
+
 from argos.crawler.dynamic_fetcher import (
     BLOCKED_RESOURCE_TYPES,
     _is_safe_url,
+    _parse_published_at_from_html,
     extract_main_content,
     fetch_dynamic_page,
 )
@@ -616,3 +619,80 @@ async def test_fetch_dynamic_page_retries_on_playwright_error(_public_dns):
 
     assert result is not None
     assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests: _parse_published_at_from_html
+# ---------------------------------------------------------------------------
+
+def test_parse_published_at_opengraph():
+    html = """<html><head>
+    <meta property="article:published_time" content="2024-03-15T10:30:00Z"/>
+    </head><body></body></html>"""
+    result = _parse_published_at_from_html(html)
+    assert result == datetime(2024, 3, 15, 10, 30, 0, tzinfo=timezone.utc)
+
+
+def test_parse_published_at_time_tag_fallback():
+    html = """<html><head></head><body>
+    <time datetime="2024-06-01T08:00:00+00:00">June 1</time>
+    </body></html>"""
+    result = _parse_published_at_from_html(html)
+    assert result == datetime(2024, 6, 1, 8, 0, 0, tzinfo=timezone.utc)
+
+
+def test_parse_published_at_prefers_opengraph_over_time_tag():
+    html = """<html><head>
+    <meta property="article:published_time" content="2024-03-15T10:30:00Z"/>
+    </head><body>
+    <time datetime="2024-01-01T00:00:00Z">Old date</time>
+    </body></html>"""
+    result = _parse_published_at_from_html(html)
+    # OpenGraph takes priority
+    assert result == datetime(2024, 3, 15, 10, 30, 0, tzinfo=timezone.utc)
+
+
+def test_parse_published_at_returns_none_on_missing():
+    html = "<html><head></head><body><p>No date here</p></body></html>"
+    result = _parse_published_at_from_html(html)
+    assert result is None
+
+
+def test_parse_published_at_returns_none_on_malformed():
+    html = """<html><head>
+    <meta property="article:published_time" content="not-a-date"/>
+    </head></html>"""
+    result = _parse_published_at_from_html(html)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Test: fetch_dynamic_page returns _published_at
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fetch_dynamic_page_includes_published_at(monkeypatch):
+    """fetch_dynamic_page must include _published_at in returned dict."""
+    from argos.crawler import dynamic_fetcher
+
+    og_html = """<html><head>
+    <meta property="article:published_time" content="2024-05-10T09:00:00Z"/>
+    </head><body><article><p>Some content</p></article></body></html>"""
+
+    async def _mock_load(url, timeout_ms):
+        return og_html, url
+
+    async def _mock_safe(url):
+        return True
+
+    async def _mock_robots(url, *args, **kwargs):
+        return True
+
+    monkeypatch.setattr(dynamic_fetcher, "_load_page_html", _mock_load)
+    monkeypatch.setattr(dynamic_fetcher, "_is_safe_url", _mock_safe)
+    monkeypatch.setattr(dynamic_fetcher, "_is_robots_allowed", _mock_robots)
+
+    result = await dynamic_fetcher.fetch_dynamic_page("https://example.com/article")
+    assert result is not None
+    assert "_published_at" in result
+    assert result["_published_at"] == datetime(2024, 5, 10, 9, 0, 0, tzinfo=timezone.utc)

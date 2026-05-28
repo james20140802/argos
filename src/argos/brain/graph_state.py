@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import NotRequired, TypedDict
 
 from argos.models.tech_item import CategoryType
@@ -29,3 +30,7 @@ class BrainState(TypedDict):
     # collect the freshly-saved item IDs and call check_succession.
     # None when the item already existed (duplicate URL) or save was skipped.
     saved_item_id: NotRequired[uuid.UUID | None]
+    # Publication date extracted by the fetcher (HN Unix epoch, RSS published_parsed,
+    # arXiv published_parsed, GitHub API created_at, OpenGraph article:published_time).
+    # None when the source did not provide a date or extraction failed.
+    published_at: NotRequired[datetime | None]

@@ -472,3 +472,86 @@ async def test_batch_pipeline_save_node_called_with_flush_false(monkeypatch):
     # All save_node calls must have flush=False.
     assert len(captured_kwargs) == 2
     assert all(kw["flush"] is False for kw in captured_kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Tests: published_at threading through _make_initial_state
+# ---------------------------------------------------------------------------
+
+def test_make_initial_state_includes_published_at():
+    """_make_initial_state must forward _published_at from item dict."""
+    from datetime import datetime, timezone
+
+    pub = datetime(2024, 5, 1, 10, 0, 0, tzinfo=timezone.utc)
+    item = {
+        "source_url": "https://example.com",
+        "raw_content": "content",
+        "_source_category": None,
+        "_published_at": pub,
+    }
+    state = brain_pipeline._make_initial_state(item)
+    assert state.get("published_at") == pub
+
+
+def test_make_initial_state_published_at_none_when_missing():
+    """_make_initial_state must set published_at=None when _published_at absent."""
+    item = {
+        "source_url": "https://example.com",
+        "raw_content": "content",
+        "_source_category": None,
+    }
+    state = brain_pipeline._make_initial_state(item)
+    assert state.get("published_at") is None
+
+
+@pytest.mark.asyncio
+async def test_run_brain_pipeline_forwards_published_at_into_initial_state(
+    monkeypatch,
+):
+    """published_at kwarg must be seeded into the initial BrainState."""
+    from datetime import datetime, timezone
+
+    pub = datetime(2024, 3, 15, 12, 0, 0, tzinfo=timezone.utc)
+    captured_initial: dict = {}
+    rejected = _triaged_state(is_valid=False)
+
+    async def _fake_triage(state):
+        captured_initial.update(state)
+        return rejected
+
+    monkeypatch.setattr(brain_pipeline, "triage_node", _fake_triage)
+    monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock())
+    monkeypatch.setattr(brain_pipeline, "genealogist_node", AsyncMock())
+    monkeypatch.setattr(brain_pipeline, "save_node", AsyncMock())
+    monkeypatch.setattr(
+        brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock()
+    )
+
+    await brain_pipeline.run_brain_pipeline(
+        "x", "https://e.com", MagicMock(), published_at=pub
+    )
+
+    assert captured_initial["published_at"] == pub
+
+
+@pytest.mark.asyncio
+async def test_run_brain_pipeline_published_at_defaults_to_none(monkeypatch):
+    """When called without published_at, initial state must have None."""
+    captured_initial: dict = {}
+    rejected = _triaged_state(is_valid=False)
+
+    async def _fake_triage(state):
+        captured_initial.update(state)
+        return rejected
+
+    monkeypatch.setattr(brain_pipeline, "triage_node", _fake_triage)
+    monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock())
+    monkeypatch.setattr(brain_pipeline, "genealogist_node", AsyncMock())
+    monkeypatch.setattr(brain_pipeline, "save_node", AsyncMock())
+    monkeypatch.setattr(
+        brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock()
+    )
+
+    await brain_pipeline.run_brain_pipeline("x", "https://e.com", MagicMock())
+
+    assert captured_initial["published_at"] is None

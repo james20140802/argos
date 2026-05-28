@@ -33,6 +33,7 @@ from argos.brain.pipeline import run_brain_pipeline
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
 from argos.crawler.dynamic_fetcher import (
     _is_safe_url,
+    _parse_published_at_from_html,
     extract_main_content,
     fetch_dynamic_page,
 )
@@ -256,6 +257,7 @@ async def _fetch_url_content(url: str) -> dict | None:
                     "title": title or "",
                     "raw_content": _truncate_raw_content(body.strip()),
                     "source_url": final_url,
+                    "_published_at": _parse_published_at_from_html(response.text),
                 }
 
     # Static path returned no usable content — fall back to dynamic.
@@ -266,6 +268,7 @@ async def _fetch_url_content(url: str) -> dict | None:
         "title": dynamic.get("title") or "",
         "raw_content": _truncate_raw_content((dynamic.get("raw_content") or "").strip()),
         "source_url": dynamic.get("source_url") or url,
+        "_published_at": dynamic.get("_published_at"),
     }
 
 
@@ -395,11 +398,13 @@ async def add_url(url: str, session: AsyncSession) -> AddUrlResult:
             )
 
     # ── 6. Brain pipeline ─────────────────────────────────────────────────
+    published_at = fetched.get("_published_at")
     try:
         state = await run_brain_pipeline(
             raw_text=raw_content,
             source_url=final_url,
             session=session,
+            published_at=published_at,
         )
     except Exception as exc:  # noqa: BLE001 — last-resort guard
         logger.warning(

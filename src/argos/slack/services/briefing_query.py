@@ -7,7 +7,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.models.tech_item import CategoryType, TechItem
@@ -157,15 +157,12 @@ async def fetch_today_briefing(
     limit_per_category: int = 5,
     now_utc: datetime | None = None,
     topics: list[str] | None = None,
+    lookback_days: int = 7,
 ) -> dict[CategoryType, list[TechItem]]:
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
 
-    now_kst = now_utc.astimezone(KST)
-    start_kst = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_kst = start_kst + timedelta(days=1)
-    start_utc = start_kst.astimezone(timezone.utc)
-    end_utc = end_kst.astimezone(timezone.utc)
+    cutoff_utc = now_utc - timedelta(days=lookback_days)
 
     topic_vec = await _embed_topics(topics or [])
     centroids = await _keep_centroids(session)
@@ -178,16 +175,18 @@ async def fetch_today_briefing(
     }
 
     for category in (CategoryType.MAINSTREAM, CategoryType.ALPHA):
+        effective_date = func.coalesce(TechItem.published_at, TechItem.created_at)
         stmt = (
             select(TechItem)
             .where(
                 TechItem.category == category,
-                TechItem.created_at >= start_utc,
-                TechItem.created_at < end_utc,
+                effective_date >= cutoff_utc,
+                effective_date <= now_utc,
+                TechItem.briefed_at.is_(None),
             )
             .order_by(
                 TechItem.trust_score.desc().nulls_last(),
-                TechItem.created_at.desc(),
+                effective_date.desc(),
             )
             .limit(pool_limit)
         )

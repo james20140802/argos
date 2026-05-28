@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -769,3 +769,43 @@ async def test_run_full_pipeline_daily_limit_zero_means_unlimited(mocker) -> Non
     passed = batch_mock.call_args.args[0]
     assert len(passed) == 10
     assert summary.queue_selected == 10
+
+
+@pytest.mark.asyncio
+async def test_run_full_pipeline_forwards_published_at(mocker) -> None:
+    """run_full_pipeline must include _published_at in items sent to brain pipeline."""
+    from datetime import datetime, timezone
+
+    pub = datetime(2024, 4, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    # Create a fake queue row with published_at set
+    fake_row = MagicMock()
+    fake_row.source_url = "https://example.com/article"
+    fake_row.raw_content = "Some content"
+    fake_row.source = "hackernews"
+    fake_row.source_category = None
+    fake_row.published_at = pub
+
+    captured_items: list = []
+
+    async def _fake_batch_brain(items, sess, **kwargs):
+        captured_items.extend(items)
+        return []
+
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=[]))
+    mocker.patch("argos.crawler.pipeline._upsert_crawl_queue", new=AsyncMock(return_value=0))
+    mocker.patch(
+        "argos.crawler.pipeline._pop_from_queue", new=AsyncMock(return_value=[fake_row])
+    )
+    mocker.patch("argos.crawler.pipeline._delete_from_queue", new=AsyncMock())
+    mocker.patch("argos.crawler.pipeline._queue_count", new=AsyncMock(return_value=0))
+    mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline", side_effect=_fake_batch_brain
+    )
+    mocker.patch("argos.crawler.pipeline.check_succession", new=AsyncMock(return_value=[]))
+    mocker.patch("argos.crawler.pipeline.is_preflight_reject", return_value=False)
+
+    await pipeline.run_full_pipeline(AsyncMock())
+
+    assert len(captured_items) == 1
+    assert captured_items[0]["_published_at"] == pub

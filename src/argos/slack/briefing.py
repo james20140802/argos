@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timezone
+from uuid import UUID
+
+from sqlalchemy import update
 
 from argos.brain.weekly_report import build_weekly_keep_report
 from argos.config import settings
 from argos.database import AsyncSessionLocal
-from argos.models.tech_item import CategoryType
+from argos.models.tech_item import CategoryType, TechItem
 from argos.slack.app import build_app
 from argos.slack.blocks import (
     build_category_header_blocks,
@@ -29,14 +32,19 @@ async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
             now_utc=now_utc,
             limit_per_category=settings.user.briefing.limit_per_category,
             topics=settings.user.interests.topics,
+            lookback_days=settings.user.briefing.lookback_days,
         )
-
-    if all(not items for items in items_by_category.values()):
-        logger.info("No items today — skipping briefing dispatch")
-        return None
 
     app = build_app()
     target_channel = channel or settings.user.slack.channel_id
+
+    if all(not items for items in items_by_category.values()):
+        logger.info("No items in lookback window — posting empty-state message")
+        response = await app.client.chat_postMessage(
+            channel=target_channel,
+            text="오늘 브리핑할 최신 소식이 없습니다",
+        )
+        return response.get("ts")
 
     header_response = await app.client.chat_postMessage(
         channel=target_channel,
@@ -45,6 +53,7 @@ async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
     )
     header_ts: str = header_response["ts"]
 
+    briefed_ids: list[UUID] = []
     for category in _ORDERED_CATEGORIES:
         items = items_by_category.get(category) or []
         if not items:
@@ -64,6 +73,16 @@ async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
                 unfurl_links=True,
                 unfurl_media=True,
             )
+            briefed_ids.append(item.id)
+
+    if briefed_ids:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                update(TechItem)
+                .where(TechItem.id.in_(briefed_ids))
+                .values(briefed_at=now_utc)
+            )
+            await session.commit()
 
     return header_ts
 

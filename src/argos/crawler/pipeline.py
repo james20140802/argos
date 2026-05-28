@@ -292,6 +292,7 @@ async def run_full_pipeline(
             "_source_category": (
                 CategoryType(row.source_category) if row.source_category else None
             ),
+            "_published_at": row.published_at,
         }
         for row in queue_rows
     ]

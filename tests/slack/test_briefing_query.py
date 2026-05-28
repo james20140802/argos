@@ -23,6 +23,182 @@ def _make_tech_item(category: CategoryType, trust_score: float | None, created_a
     return item
 
 
+# ---------------------------------------------------------------------------
+# ARG-132: published_at lookback filter tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_today_briefing_uses_published_at_lookback_window():
+    """fetch_today_briefing with lookback_days must filter by published_at >= cutoff."""
+    now_utc = datetime(2026, 5, 28, 12, 0, 0, tzinfo=timezone.utc)
+    captured_stmts = []
+
+    async def fake_execute(stmt):
+        captured_stmts.append(stmt)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    await fetch_today_briefing(mock_session, now_utc=now_utc, lookback_days=7)
+
+    # Filter to only the per-category queries (they reference tech_items.category)
+    category_stmts = [
+        stmt for stmt in captured_stmts
+        if "tech_items.category" in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    ]
+    assert len(category_stmts) == 2  # one per category
+    for stmt in category_stmts:
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "published_at" in compiled
+        # Must NOT use old created_at day-window logic
+        assert "created_at >=" not in compiled
+
+
+@pytest.mark.asyncio
+async def test_fetch_today_briefing_lookback_days_default_is_seven():
+    """fetch_today_briefing without explicit lookback_days defaults to 7-day window."""
+    now_utc = datetime(2026, 5, 28, 12, 0, 0, tzinfo=timezone.utc)
+    captured_stmts = []
+
+    async def fake_execute(stmt):
+        captured_stmts.append(stmt)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    await fetch_today_briefing(mock_session, now_utc=now_utc)
+
+    category_stmts = [
+        stmt for stmt in captured_stmts
+        if "tech_items.category" in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    ]
+    assert len(category_stmts) == 2
+    for stmt in category_stmts:
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "published_at" in compiled
+
+
+@pytest.mark.asyncio
+async def test_fetch_today_briefing_null_published_at_falls_back_to_created_at():
+    """Items with NULL published_at must still appear when created_at is within the lookback window.
+
+    This covers the 'argos add' / Slack add path: run_brain_pipeline sets published_at=None,
+    so those items must use created_at as the effective date instead of being silently dropped.
+    """
+    now_utc = datetime(2026, 5, 28, 12, 0, 0, tzinfo=timezone.utc)
+    captured_stmts = []
+
+    async def fake_execute(stmt):
+        captured_stmts.append(stmt)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    await fetch_today_briefing(mock_session, now_utc=now_utc, lookback_days=7)
+
+    category_stmts = [
+        stmt for stmt in captured_stmts
+        if "tech_items.category" in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    ]
+    assert len(category_stmts) == 2
+    for stmt in category_stmts:
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        # COALESCE(published_at, created_at) must be used so NULL published_at falls back to created_at
+        assert "coalesce" in compiled.lower()
+        assert "published_at" in compiled
+        assert "created_at" in compiled
+        # Must NOT have a bare published_at IS NOT NULL exclusion
+        assert "published_at IS NOT NULL" not in compiled.upper()
+
+
+@pytest.mark.asyncio
+async def test_fetch_today_briefing_excludes_future_dated_items():
+    """Items with a future effective_date must be excluded from briefings.
+
+    A fetcher that stores a future published_at (scheduled RSS/Atom entry or
+    malformed article:published_time) would otherwise appear on every daily
+    briefing until lookback_days after the future timestamp.  The query must
+    include an upper bound effective_date <= now_utc.
+    """
+    now_utc = datetime(2026, 5, 28, 12, 0, 0, tzinfo=timezone.utc)
+    captured_stmts = []
+
+    async def fake_execute(stmt):
+        captured_stmts.append(stmt)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    await fetch_today_briefing(mock_session, now_utc=now_utc, lookback_days=7)
+
+    category_stmts = [
+        stmt for stmt in captured_stmts
+        if "tech_items.category" in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    ]
+    assert len(category_stmts) == 2
+    for stmt in category_stmts:
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        # Upper bound must be present so future-dated items are excluded
+        assert "<=" in compiled
+
+
+@pytest.mark.asyncio
+async def test_fetch_today_briefing_excludes_already_briefed_items():
+    """Items with briefed_at set must be excluded so users don't see repeats across days."""
+    now_utc = datetime(2026, 5, 29, 12, 0, 0, tzinfo=timezone.utc)
+    captured_stmts = []
+
+    async def fake_execute(stmt):
+        captured_stmts.append(stmt)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = fake_execute
+
+    await fetch_today_briefing(mock_session, now_utc=now_utc, lookback_days=7)
+
+    category_stmts = [
+        stmt for stmt in captured_stmts
+        if "tech_items.category" in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    ]
+    assert len(category_stmts) == 2
+    for stmt in category_stmts:
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "briefed_at IS NULL" in compiled
+
+
+@pytest.mark.asyncio
+async def test_briefing_config_has_lookback_days_field():
+    """BriefingConfig must expose a lookback_days field defaulting to 7."""
+    from argos.config import BriefingConfig
+    cfg = BriefingConfig(weekdays=["Mon"])
+    assert hasattr(cfg, "lookback_days")
+    assert cfg.lookback_days == 7
+
+
+@pytest.mark.asyncio
+async def test_briefing_config_lookback_days_is_configurable():
+    """BriefingConfig.lookback_days must accept positive integer values."""
+    from argos.config import BriefingConfig
+    cfg = BriefingConfig(weekdays=["Mon"], lookback_days=14)
+    assert cfg.lookback_days == 14
+
+
 @pytest.mark.asyncio
 async def test_kst_window_filters_today_items(now_utc):
     now_kst = now_utc.astimezone(KST)

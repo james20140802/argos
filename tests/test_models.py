@@ -115,6 +115,14 @@ class TestTechItemModel:
         embedding_col = mapper.columns["embedding"]
         assert embedding_col.nullable is True
 
+    def test_published_at_column(self):
+        """published_at은 원문 발행일이며 nullable + timezone-aware + indexed여야 한다."""
+        mapper = inspect(TechItem)
+        published_at_col = mapper.columns["published_at"]
+        assert published_at_col.nullable is True
+        assert published_at_col.type.timezone is True
+        assert published_at_col.index is True
+
     def test_relationships_defined(self):
         mapper = inspect(TechItem)
         relationship_names = {rel.key for rel in mapper.relationships}

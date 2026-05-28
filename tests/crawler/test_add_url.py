@@ -584,6 +584,76 @@ async def test_static_fetch_rejects_disallowed_scheme_in_redirect() -> None:
     fetch_dynamic.assert_not_awaited()
 
 
+async def test_add_url_threads_published_at_from_fetch_to_brain() -> None:
+    """_published_at from _fetch_url_content must be forwarded to run_brain_pipeline."""
+    import datetime as _dt
+
+    session = _make_session()
+    new_id = uuid.uuid4()
+    pub = _dt.datetime(2023, 11, 1, 9, 0, 0, tzinfo=_dt.timezone.utc)
+    brain_state = {
+        "is_valid": True,
+        "saved": True,
+        "source_url": "https://example.com/page",
+    }
+    brain_mock = AsyncMock(return_value=brain_state)
+    with (
+        _patch_safe_url(True),
+        _patch_robots(True),
+        _patch_dedup_lookup(None, new_id),
+        _patch_fetch(
+            {
+                "title": "Article",
+                "raw_content": "Substantive body text.",
+                "source_url": "https://example.com/page",
+                "_published_at": pub,
+            }
+        ),
+        patch("argos.crawler.add_url.run_brain_pipeline", new=brain_mock),
+    ):
+        r = await add_url("https://example.com/page", session)
+
+    assert r.status is AddUrlStatus.CREATED
+    brain_mock.assert_awaited_once()
+    assert brain_mock.call_args.kwargs.get("published_at") == pub
+
+
+async def test_static_fetch_extracts_published_at_from_html() -> None:
+    """Static path must parse _published_at from OpenGraph meta so old articles
+    are not treated as current in the briefing lookback filter."""
+    import datetime as _dt
+
+    session = _make_session()
+    new_id = uuid.uuid4()
+    pub_html = (
+        '<html><head>'
+        '<meta property="article:published_time" content="2022-06-15T10:00:00+00:00"/>'
+        '</head><body><p>article body</p></body></html>'
+    )
+    response = _make_html_response("https://example.com/old-article", body=pub_html)
+    get_mock = AsyncMock(side_effect=[response])
+    extract = MagicMock(return_value=("Old Article", "article body"))
+    brain_state = {
+        "is_valid": True,
+        "saved": True,
+        "source_url": "https://example.com/old-article",
+    }
+    brain_mock = AsyncMock(return_value=brain_state)
+    with (
+        patch("argos.crawler.add_url._is_safe_url", new=AsyncMock(return_value=True)),
+        _patch_robots(True),
+        _patch_dedup_lookup(None, new_id),
+        patch("argos.crawler.add_url._get_with_retry", new=get_mock),
+        patch("argos.crawler.add_url.extract_main_content", new=extract),
+        patch("argos.crawler.add_url.run_brain_pipeline", new=brain_mock),
+    ):
+        r = await add_url("https://example.com/old-article", session)
+
+    assert r.status is AddUrlStatus.CREATED
+    expected = _dt.datetime(2022, 6, 15, 10, 0, 0, tzinfo=_dt.timezone.utc)
+    assert brain_mock.call_args.kwargs.get("published_at") == expected
+
+
 async def test_static_fetch_no_redirect_issues_single_request() -> None:
     """A 200 OK response is returned directly with no follow-up GET."""
     session = _make_session()

@@ -35,7 +35,8 @@ def _patch_dispatch(items_by_category, *, header_ts: str = "1700000000.001"):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_skips_when_all_categories_empty():
+async def test_dispatch_posts_empty_state_when_all_categories_empty():
+    """When no items found, dispatch must post an empty-state message to Slack."""
     items_by_category = {CategoryType.MAINSTREAM: [], CategoryType.ALPHA: []}
     mock_client, mock_app, session_ctx = _patch_dispatch(items_by_category)
 
@@ -45,10 +46,13 @@ async def test_dispatch_skips_when_all_categories_empty():
         "argos.slack.briefing.fetch_today_briefing",
         AsyncMock(return_value=items_by_category),
     ), patch("argos.slack.briefing.build_app", return_value=mock_app):
-        result = await dispatch_daily_briefing(channel="C999")
+        await dispatch_daily_briefing(channel="C999")
 
-    assert result is None
-    mock_client.chat_postMessage.assert_not_awaited()
+    # Must post exactly one message containing the empty-state text
+    mock_client.chat_postMessage.assert_awaited_once()
+    call_kwargs = mock_client.chat_postMessage.call_args.kwargs
+    assert call_kwargs["channel"] == "C999"
+    assert "오늘 브리핑할 최신 소식이 없습니다" in call_kwargs.get("text", "")
 
 
 @pytest.mark.asyncio
@@ -108,6 +112,53 @@ async def test_dispatch_skips_empty_category_section():
     calls = mock_client.chat_postMessage.await_args_list
     # 1 header + 1 mainstream category header + 1 mainstream item; no alpha.
     assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_dispatch_stamps_briefed_at_after_posting():
+    """dispatch_daily_briefing must commit briefed_at on every posted item."""
+    items_by_category = {
+        CategoryType.MAINSTREAM: [_make_item("M-1"), _make_item("M-2")],
+        CategoryType.ALPHA: [_make_item("A-1")],
+    }
+    mock_client, mock_app, _ = _patch_dispatch(items_by_category)
+
+    mock_session = AsyncMock()
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "argos.slack.briefing.AsyncSessionLocal", return_value=session_ctx
+    ), patch(
+        "argos.slack.briefing.fetch_today_briefing",
+        AsyncMock(return_value=items_by_category),
+    ), patch("argos.slack.briefing.build_app", return_value=mock_app):
+        await dispatch_daily_briefing(channel="C999")
+
+    mock_session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_does_not_stamp_when_no_items_posted():
+    """dispatch_daily_briefing must not issue a DB update when all categories are empty."""
+    items_by_category = {CategoryType.MAINSTREAM: [], CategoryType.ALPHA: []}
+    mock_client, mock_app, _ = _patch_dispatch(items_by_category)
+
+    mock_session = AsyncMock()
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "argos.slack.briefing.AsyncSessionLocal", return_value=session_ctx
+    ), patch(
+        "argos.slack.briefing.fetch_today_briefing",
+        AsyncMock(return_value=items_by_category),
+    ), patch("argos.slack.briefing.build_app", return_value=mock_app):
+        await dispatch_daily_briefing(channel="C999")
+
+    mock_session.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

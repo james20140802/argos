@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import ipaddress
 import logging
 import socket
 from urllib.parse import urlsplit
 
+from bs4 import BeautifulSoup
 from lxml import etree
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -25,6 +27,47 @@ _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal")
 _is_robots_allowed = is_robots_allowed
 
 __all__ = ["_robots_cache"]
+
+
+def _parse_published_at_from_html(html: str) -> dt.datetime | None:
+    """Parse article publication date from HTML meta tags.
+
+    Checks (in priority order):
+    1. ``<meta property="article:published_time" content="...">`` (OpenGraph)
+    2. First ``<time datetime="...">`` tag in the document
+
+    Returns a UTC-aware datetime or None if no parseable date is found.
+    """
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return None
+
+    # 1. OpenGraph article:published_time
+    og_tag = soup.find("meta", attrs={"property": "article:published_time"})
+    if og_tag:
+        content = og_tag.get("content", "") if hasattr(og_tag, "get") else ""
+        if content:
+            try:
+                return dt.datetime.fromisoformat(
+                    str(content).replace("Z", "+00:00")
+                ).astimezone(dt.timezone.utc)
+            except (ValueError, TypeError):
+                pass
+
+    # 2. <time datetime="..."> fallback
+    time_tag = soup.find("time", attrs={"datetime": True})
+    if time_tag:
+        datetime_val = time_tag.get("datetime", "") if hasattr(time_tag, "get") else ""
+        if datetime_val:
+            try:
+                return dt.datetime.fromisoformat(
+                    str(datetime_val).replace("Z", "+00:00")
+                ).astimezone(dt.timezone.utc)
+            except (ValueError, TypeError):
+                pass
+
+    return None
 
 
 def _is_unsafe_ip(ip: ipaddress._BaseAddress) -> bool:
@@ -126,7 +169,13 @@ async def fetch_dynamic_page(
                     logger.warning("SSRF redirect blocked: %s -> %s (failed _is_robots_allowed)", url, final_url)
                     return None
             title, raw_content = extract_main_content(html)
-            return {"title": title, "source_url": final_url, "raw_content": raw_content}
+            published_at = _parse_published_at_from_html(html)
+            return {
+                "title": title,
+                "source_url": final_url,
+                "raw_content": raw_content,
+                "_published_at": published_at,
+            }
         except PlaywrightTimeoutError as exc:
             attempt += 1
             if attempt > max_retries:
