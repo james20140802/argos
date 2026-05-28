@@ -182,6 +182,7 @@ async def fetch_today_briefing(
                 TechItem.category == category,
                 effective_date >= cutoff_utc,
                 effective_date <= now_utc,
+                TechItem.briefed_at.is_(None),
             )
             .order_by(
                 TechItem.trust_score.desc().nulls_last(),

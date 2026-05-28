@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timezone
+from uuid import UUID
+
+from sqlalchemy import update
 
 from argos.brain.weekly_report import build_weekly_keep_report
 from argos.config import settings
 from argos.database import AsyncSessionLocal
-from argos.models.tech_item import CategoryType
+from argos.models.tech_item import CategoryType, TechItem
 from argos.slack.app import build_app
 from argos.slack.blocks import (
     build_category_header_blocks,
@@ -50,6 +53,7 @@ async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
     )
     header_ts: str = header_response["ts"]
 
+    briefed_ids: list[UUID] = []
     for category in _ORDERED_CATEGORIES:
         items = items_by_category.get(category) or []
         if not items:
@@ -69,6 +73,16 @@ async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
                 unfurl_links=True,
                 unfurl_media=True,
             )
+            briefed_ids.append(item.id)
+
+    if briefed_ids:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                update(TechItem)
+                .where(TechItem.id.in_(briefed_ids))
+                .values(briefed_at=now_utc)
+            )
+            await session.commit()
 
     return header_ts
 
