@@ -605,3 +605,41 @@ async def test_fetch_hackernews_top_cleans_html_tags_in_title() -> None:
     assert result[0]["title"] == "Ask HN: bold & friends"
     assert "<b>" not in result[0]["title"]
     assert "&amp;" not in result[0]["title"]
+
+
+async def test_fetch_hackernews_top_text_html_does_not_contaminate_derived_title() -> None:
+    """HN text-post HTML must not bleed into the first line of raw_content.
+
+    save_node derives TechItem.title from the first non-empty line of raw_text
+    (= raw_content).  If the HN `text` field contains HTML and is joined onto
+    the same line as title, the stored title picks up the markup.
+    """
+    top_ids = [57]
+    item_payload = {
+        "id": 57,
+        "title": "Ask HN: thoughts on DeepSeek?",
+        "url": None,
+        "text": "<p><i>DeepSeek</i> just released a new model with <b>crazy</b> benchmarks.",
+    }
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/57.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    item = result[0]
+    # The title field must be clean
+    assert item["title"] == "Ask HN: thoughts on DeepSeek?"
+    # The first line of raw_content is what save_node stores as TechItem.title —
+    # it must not contain HTML tags from the text body.
+    first_line = item["raw_content"].splitlines()[0]
+    assert first_line == "Ask HN: thoughts on DeepSeek?"
+    assert "<p>" not in first_line
+    assert "<i>" not in first_line
+    # The text body content should still appear in raw_content (after the newline)
+    assert "DeepSeek" in item["raw_content"]

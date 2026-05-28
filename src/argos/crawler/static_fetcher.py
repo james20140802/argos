@@ -201,7 +201,7 @@ async def fetch_hackernews_top(
                 text = ""
             title = clean_title(title)
             if text:
-                raw_content = f"{title} {text}".strip()
+                raw_content = f"{title}\n\n{clean_title(text)}".strip()
             elif is_external:
                 body = await _fetch_article_body(client, url)
                 raw_content = f"{title}\n\n{body}".strip() if body else title
