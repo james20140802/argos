@@ -29,14 +29,19 @@ async def dispatch_daily_briefing(*, channel: str | None = None) -> str | None:
             now_utc=now_utc,
             limit_per_category=settings.user.briefing.limit_per_category,
             topics=settings.user.interests.topics,
+            lookback_days=settings.user.briefing.lookback_days,
         )
-
-    if all(not items for items in items_by_category.values()):
-        logger.info("No items today — skipping briefing dispatch")
-        return None
 
     app = build_app()
     target_channel = channel or settings.user.slack.channel_id
+
+    if all(not items for items in items_by_category.values()):
+        logger.info("No items in lookback window — posting empty-state message")
+        response = await app.client.chat_postMessage(
+            channel=target_channel,
+            text="오늘 브리핑할 최신 소식이 없습니다",
+        )
+        return response.get("ts")
 
     header_response = await app.client.chat_postMessage(
         channel=target_channel,
