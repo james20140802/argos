@@ -115,21 +115,10 @@ async def fetch_github_trending(
         async with semaphore:
             return await _fetch_github_readme(client, slug[0], slug[1])
 
-    async def _created_at_for(slug: tuple[str, str] | None) -> dt.datetime | None:
-        if slug is None:
-            return None
-        async with semaphore:
-            return await _fetch_github_repo_created_at(client, slug[0], slug[1])
-
-    readmes, created_ats = await asyncio.gather(
-        asyncio.gather(*(_readme_for(slug) for *_, slug in parsed)),
-        asyncio.gather(*(_created_at_for(slug) for *_, slug in parsed)),
-    )
+    readmes = await asyncio.gather(*(_readme_for(slug) for *_, slug in parsed))
 
     items: list[dict] = []
-    for (title, source_url, description, _slug), readme, created_at in zip(
-        parsed, readmes, created_ats
-    ):
+    for (title, source_url, description, _slug), readme in zip(parsed, readmes):
         if readme:
             combined = f"{description}\n\n{readme}" if description else readme
         else:
@@ -139,43 +128,11 @@ async def fetch_github_trending(
                 "title": title,
                 "source_url": source_url,
                 "raw_content": _truncate_raw_content(combined),
-                "_published_at": created_at,
+                "_published_at": None,
             }
         )
 
     return items
-
-
-async def _fetch_github_repo_created_at(
-    client: httpx.AsyncClient,
-    owner: str,
-    repo: str,
-) -> dt.datetime | None:
-    """Call the GitHub REST API to get a repo's created_at timestamp.
-
-    Returns a UTC-aware datetime or None on any error (4xx, 5xx, parse error).
-    Does NOT raise — callers must tolerate None gracefully.
-    """
-    url = f"https://api.github.com/repos/{owner}/{repo}"
-    try:
-        response = await _get_with_retry(client, url)
-    except (httpx.HTTPError, RobotsDisallowed):
-        return None
-    try:
-        data = response.json()
-    except ValueError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    created_str = data.get("created_at")
-    if not isinstance(created_str, str) or not created_str:
-        return None
-    try:
-        return dt.datetime.fromisoformat(
-            created_str.replace("Z", "+00:00")
-        ).astimezone(dt.timezone.utc)
-    except (ValueError, TypeError):
-        return None
 
 
 async def _fetch_article_body(client: httpx.AsyncClient, url: str) -> str:

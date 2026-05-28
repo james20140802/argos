@@ -34,19 +34,6 @@ def _stub_github_readmes_missing() -> None:
     respx.get(url__regex=r"https://raw\.githubusercontent\.com/.*").mock(
         return_value=httpx.Response(404, text="not found")
     )
-    # Also stub GitHub API repo calls so tests that don't care about created_at
-    # don't fail when fetch_github_trending now calls the API per repo.
-    respx.get(url__regex=r"https://api\.github\.com/repos/.*").mock(
-        return_value=httpx.Response(404, text="not found")
-    )
-
-
-def _stub_github_api_missing() -> None:
-    """Register catch-all 404s for GitHub API repo calls in tests that only care
-    about README content and don't need created_at populated."""
-    respx.get(url__regex=r"https://api\.github\.com/repos/.*").mock(
-        return_value=httpx.Response(404, text="not found")
-    )
 
 
 def _stub_external_article_bodies_missing() -> None:
@@ -355,7 +342,6 @@ async def test_fetch_github_trending_merges_readme_into_raw_content() -> None:
         respx.get(
             "https://raw.githubusercontent.com/owner2/repo2/HEAD/README.rst"
         ).mock(return_value=httpx.Response(404, text="not found"))
-        _stub_github_api_missing()
         async with httpx.AsyncClient() as client:
             items = await fetch_github_trending(client)
 
@@ -382,7 +368,6 @@ async def test_fetch_github_trending_falls_back_to_rst_readme() -> None:
         respx.get(
             url__regex=r"https://raw\.githubusercontent\.com/owner2/.*"
         ).mock(return_value=httpx.Response(404, text="not found"))
-        _stub_github_api_missing()
         async with httpx.AsyncClient() as client:
             items = await fetch_github_trending(client)
 
@@ -399,7 +384,6 @@ async def test_fetch_github_trending_truncates_oversized_readme() -> None:
         respx.get(
             url__regex=r"https://raw\.githubusercontent\.com/.*/README\.md"
         ).mock(return_value=httpx.Response(200, text=huge_readme))
-        _stub_github_api_missing()
         async with httpx.AsyncClient() as client:
             items = await fetch_github_trending(client)
 
@@ -531,13 +515,15 @@ async def test_fetch_hackernews_top_keeps_text_field_for_ask_hn() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tests: _published_at extraction in fetch_github_trending
+# Tests: _published_at for fetch_github_trending
 # ---------------------------------------------------------------------------
 
-async def test_fetch_github_trending_published_at_from_api(monkeypatch) -> None:
-    """fetch_github_trending items have _published_at from the GitHub API."""
-    from datetime import datetime, timezone
+async def test_fetch_github_trending_published_at_is_none(monkeypatch) -> None:
+    """GitHub Trending items always have _published_at=None.
 
+    Trending freshness is the crawl/discovery date, not the repo creation date,
+    so the briefing query's COALESCE fallback to DB created_at is correct.
+    """
     monkeypatch.setattr(
         "argos.crawler.static_fetcher.is_robots_allowed",
         AsyncMock(return_value=True),
@@ -559,49 +545,6 @@ async def test_fetch_github_trending_published_at_from_api(monkeypatch) -> None:
         )
         respx.get("https://raw.githubusercontent.com/owner/myrepo/HEAD/README.rst").mock(
             return_value=httpx.Response(404, text="")
-        )
-        respx.get("https://api.github.com/repos/owner/myrepo").mock(
-            return_value=httpx.Response(
-                200,
-                json={"created_at": "2024-02-20T12:00:00Z"},
-                headers={"content-type": "application/json"},
-            )
-        )
-
-        async with httpx.AsyncClient() as client:
-            items = await fetch_github_trending(client)
-
-    assert len(items) == 1
-    assert items[0]["_published_at"] == datetime(2024, 2, 20, 12, 0, 0, tzinfo=timezone.utc)
-
-
-async def test_fetch_github_trending_published_at_none_on_api_failure(monkeypatch) -> None:
-    """_published_at is None when the GitHub API call fails (silent failure)."""
-    monkeypatch.setattr(
-        "argos.crawler.static_fetcher.is_robots_allowed",
-        AsyncMock(return_value=True),
-    )
-
-    trending_html = """<html><body>
-    <article class="Box-row">
-      <h2 class="h3 lh-condensed"><a href="/owner/failrepo">owner / failrepo</a></h2>
-      <p class="col-9 color-fg-muted">Desc</p>
-    </article>
-    </body></html>"""
-
-    with respx.mock:
-        respx.get("https://github.com/trending").mock(
-            return_value=httpx.Response(200, text=trending_html)
-        )
-        respx.get("https://raw.githubusercontent.com/owner/failrepo/HEAD/README.md").mock(
-            return_value=httpx.Response(200, text="# FailRepo")
-        )
-        respx.get("https://raw.githubusercontent.com/owner/failrepo/HEAD/README.rst").mock(
-            return_value=httpx.Response(404, text="")
-        )
-        # GitHub API returns 500 error
-        respx.get("https://api.github.com/repos/owner/failrepo").mock(
-            return_value=httpx.Response(500, text="Internal Server Error")
         )
 
         async with httpx.AsyncClient() as client:
