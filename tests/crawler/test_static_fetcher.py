@@ -552,3 +552,56 @@ async def test_fetch_github_trending_published_at_is_none(monkeypatch) -> None:
 
     assert len(items) == 1
     assert items[0]["_published_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: HTML title cleaning (ARG-129)
+# ---------------------------------------------------------------------------
+
+async def test_fetch_hackernews_top_cleans_html_entities_in_title() -> None:
+    """HN titles with HTML entities must be decoded before storage (ARG-129)."""
+    top_ids = [55]
+    item_payload = {
+        "id": 55,
+        "title": "Ask HN: Is Rust&#x2F;Go the right choice?",
+        "url": None,
+        "text": "",
+    }
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/55.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert result[0]["title"] == "Ask HN: Is Rust/Go the right choice?"
+    assert "&#x2F;" not in result[0]["title"]
+
+
+async def test_fetch_hackernews_top_cleans_html_tags_in_title() -> None:
+    """HN titles with HTML tags must be stripped before storage (ARG-129)."""
+    top_ids = [56]
+    item_payload = {
+        "id": 56,
+        "title": "Ask HN: <b>bold</b> &amp; friends",
+        "url": None,
+        "text": "<p>Some <i>body text</i> here</p>",
+    }
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/56.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert result[0]["title"] == "Ask HN: bold & friends"
+    assert "<b>" not in result[0]["title"]
+    assert "&amp;" not in result[0]["title"]
