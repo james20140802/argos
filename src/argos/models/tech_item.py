@@ -1,6 +1,7 @@
 import enum
+from datetime import datetime
 
-from sqlalchemy import Enum, Float, String, Text
+from sqlalchemy import DateTime, Enum, Float, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
@@ -33,6 +34,9 @@ class TechItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=True,
     )
     trust_score: Mapped[float] = mapped_column(Float, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     # Relationships
     predecessors = relationship(
