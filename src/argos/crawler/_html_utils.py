@@ -15,6 +15,9 @@ import re
 from bs4 import BeautifulSoup
 
 _WHITESPACE_RE = re.compile(r"\s+")
+# Matches HTML tags revealed after entity decoding (e.g. <i>, </b>, <!-- -->).
+# Anchored to letter/slash/bang so "3 < 5 > 2" comparisons are not stripped.
+_TAG_RE = re.compile(r"<[a-zA-Z/!][^>]*>")
 
 
 def clean_title(text: str | None) -> str:
@@ -23,20 +26,29 @@ def clean_title(text: str | None) -> str:
     Steps
     -----
     1. Return ``""`` for ``None`` or empty input.
-    2. Use ``BeautifulSoup.get_text()`` with ``html.parser`` to strip all HTML
-       markup while preserving inner text content.
-    3. Call ``html.unescape()`` to decode any remaining character references
-       (e.g. ``&amp;`` → ``&``, ``&#x2F;`` → ``/``).
-    4. Collapse runs of whitespace and strip leading/trailing space.
+    2. Use ``BeautifulSoup.get_text()`` with ``html.parser`` to strip actual
+       HTML markup and decode entity references in text nodes
+       (e.g. ``&amp;`` → ``&``).  Entity-encoded tags such as
+       ``&lt;i&gt;Foo&lt;/i&gt;`` are decoded by the parser to the literal
+       characters ``<i>Foo</i>`` inside the text node — they are NOT stripped
+       at this step because the parser never saw them as tags.
+    3. Call ``html.unescape()`` to decode any remaining character references.
+    4. Strip any HTML tags now visible in the decoded text with a lightweight
+       regex (avoids re-parsing through BeautifulSoup, which would garble raw
+       ``&`` characters such as those in "AT&T").
+    5. Collapse runs of whitespace and strip leading/trailing space.
 
     This function is intentionally idempotent: calling it on already-clean
     plain text returns the same string unchanged.
     """
     if not text:
         return ""
-    # Strip HTML tags via BeautifulSoup (handles malformed/nested HTML)
+    # Strip actual HTML markup; html.parser also decodes entity refs in text
+    # nodes, so &lt;i&gt; becomes the literal characters <i> in the output.
     stripped = BeautifulSoup(text, "html.parser").get_text()
-    # Decode remaining HTML entities
+    # Decode any remaining character references in the plain-text content.
     decoded = html.unescape(stripped)
+    # Strip tags that became visible after entity decoding (second-pass strip).
+    cleaned = _TAG_RE.sub("", decoded)
     # Normalise whitespace
-    return _WHITESPACE_RE.sub(" ", decoded).strip()
+    return _WHITESPACE_RE.sub(" ", cleaned).strip()

@@ -48,6 +48,15 @@ def test_strips_and_collapses_whitespace() -> None:
     assert clean_title("  hello   world  ") == "hello world"
 
 
+def test_strips_escaped_html_tags() -> None:
+    """Regression: escaped tags like &lt;i&gt; must be stripped, not left as <i>."""
+    assert clean_title("&lt;i&gt;Foo&lt;/i&gt;") == "Foo"
+
+
+def test_strips_escaped_tags_mixed_with_entities() -> None:
+    assert clean_title("&lt;b&gt;Hello&lt;/b&gt; &amp; world") == "Hello & world"
+
+
 def test_real_hn_example() -> None:
     """Regression: actual HN title that triggered ARG-129."""
     raw = (
