@@ -42,6 +42,7 @@ async def run_brain_pipeline(
         "genealogy_skip_reason": None,
         "source_category": source_category,
         "category": None,
+        "published_at": None,
     }
     triaged = await triage_node(initial)
     if not triaged["is_valid"]:
@@ -92,6 +93,7 @@ def _make_initial_state(item: dict) -> BrainState:
         "genealogy_skip_reason": None,
         "source_category": source_category,
         "category": None,
+        "published_at": item.get("_published_at"),
     }
 
 
