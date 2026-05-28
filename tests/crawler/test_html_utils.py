@@ -112,3 +112,13 @@ def test_strips_li_tags() -> None:
 def test_strips_font_tags() -> None:
     """Regression: <font> was missing from allowlist so _has_html() returned False."""
     assert clean_title("<font>Foo</font>") == "Foo"
+
+
+def test_inserts_space_for_escaped_separator_tag() -> None:
+    """Regression: Hello&lt;br&gt;World must decode to 'Hello World', not 'HelloWorld'."""
+    assert clean_title("Hello&lt;br&gt;World") == "Hello World"
+
+
+def test_inserts_space_for_escaped_block_separator() -> None:
+    """Regression: entity-escaped block tags revealed after decode must not merge words."""
+    assert clean_title("thread:&lt;p&gt;&lt;i&gt;DeepSeek") == "thread: DeepSeek"

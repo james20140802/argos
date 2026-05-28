@@ -70,8 +70,9 @@ def clean_title(text: str | None) -> str:
        characters ``<i>Foo</i>`` inside the text node — they are NOT stripped
        at this step because the parser never saw them as tags.
     4. Call ``html.unescape()`` to decode any remaining character references.
-    5. Strip any known-HTML-element tags now visible in the decoded text.
-       Using the same element allowlist as the presence check ensures that
+    5. Replace any known-HTML-element tags now visible in the decoded text
+       with a space (same policy as step 3's ``separator=" "``).  Using the
+       same element allowlist as the presence check ensures that
        ``Vec&lt;T&gt;`` decoded to ``Vec<T>`` is not corrupted because ``T``
        is not a known HTML element.
     6. Collapse runs of whitespace and strip leading/trailing space.
@@ -90,6 +91,8 @@ def clean_title(text: str | None) -> str:
     stripped = BeautifulSoup(text, "html.parser").get_text(separator=" ")
     # Decode any remaining character references in the plain-text content.
     decoded = html.unescape(stripped)
-    # Strip known-HTML-element tags revealed after entity decoding.
-    cleaned = _HTML_TAG_RE.sub("", decoded)
+    # Replace tags revealed after entity decoding with a space — same
+    # separator policy as get_text(separator=" ") above so adjacent words
+    # are not merged (e.g. Hello&lt;br&gt;World → "Hello World").
+    cleaned = _HTML_TAG_RE.sub(" ", decoded)
     return _WHITESPACE_RE.sub(" ", cleaned).strip()
