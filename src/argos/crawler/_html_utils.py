@@ -25,9 +25,25 @@ _HTML_ENTITY_RE = re.compile(r"&(?:#\d+|#x[0-9a-fA-F]+|[a-z]\w+);", re.IGNORECAS
 # Promise<Result<T>> is excluded because "T", "Result", etc. are not in
 # the element list, so the regex never matches them.
 _HTML_TAG_RE = re.compile(
-    r"</?(?:a|abbr|acronym|b|big|br|caption|cite|code|del|dfn|em|"
-    r"h[1-6]|i|img|ins|kbd|mark|p|pre|q|s|samp|small|span|strike|"
-    r"strong|sub|sup|tt|u|ul|var)\b[^>]*>",
+    r"</?(?:a|abbr|acronym|address|article|aside|"
+    r"b|big|blockquote|br|button|"
+    r"caption|center|cite|code|"
+    r"dd|del|details|dfn|div|dl|dt|"
+    r"em|"
+    r"fieldset|figcaption|figure|font|footer|form|"
+    r"h[1-6]|header|hr|"
+    r"i|img|input|ins|"
+    r"kbd|"
+    r"label|legend|li|"
+    r"main|mark|"
+    r"nav|noscript|"
+    r"ol|option|"
+    r"p|pre|"
+    r"q|"
+    r"s|samp|script|section|select|small|span|strike|strong|style|sub|summary|sup|"
+    r"table|tbody|td|textarea|tfoot|th|thead|tr|tt|"
+    r"u|ul|"
+    r"var|wbr)\b[^>]*>",
     re.IGNORECASE,
 )
 

@@ -97,3 +97,18 @@ def test_preserves_generic_type_params_escaped() -> None:
 
 def test_preserves_nested_generic_type_params_escaped() -> None:
     assert clean_title("Promise&lt;Result&lt;T&gt;&gt;") == "Promise<Result<T>>"
+
+
+def test_strips_div_tags() -> None:
+    """Regression: <div> was missing from allowlist so _has_html() returned False."""
+    assert clean_title("<div>Foo</div>") == "Foo"
+
+
+def test_strips_li_tags() -> None:
+    """Regression: <li> was missing from allowlist so _has_html() returned False."""
+    assert clean_title("<li>Foo</li>") == "Foo"
+
+
+def test_strips_font_tags() -> None:
+    """Regression: <font> was missing from allowlist so _has_html() returned False."""
+    assert clean_title("<font>Foo</font>") == "Foo"
