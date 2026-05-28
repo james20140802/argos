@@ -33,6 +33,7 @@ from argos.brain.pipeline import run_brain_pipeline
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
 from argos.crawler.dynamic_fetcher import (
     _is_safe_url,
+    _parse_published_at_from_html,
     extract_main_content,
     fetch_dynamic_page,
 )
@@ -256,6 +257,7 @@ async def _fetch_url_content(url: str) -> dict | None:
                     "title": title or "",
                     "raw_content": _truncate_raw_content(body.strip()),
                     "source_url": final_url,
+                    "_published_at": _parse_published_at_from_html(response.text),
                 }
 
     # Static path returned no usable content — fall back to dynamic.
