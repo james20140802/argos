@@ -39,6 +39,7 @@ import re
 import feedparser
 import httpx
 
+from argos.crawler._html_utils import clean_title
 from argos.crawler.user_agents import random_user_agent
 from argos.models.tech_item import CategoryType
 
@@ -107,6 +108,7 @@ def _entry_to_dict(entry: object) -> dict:
     title: str = getattr(entry, "title", "") or ""
     entry_id: str = getattr(entry, "id", "") or ""
     summary: str = getattr(entry, "summary", "") or ""
+    title = clean_title(title)
 
     source_url = _normalize_abs_url(entry_id) if entry_id else ""
     raw_content = _truncate(f"{title}\n\n{summary}")

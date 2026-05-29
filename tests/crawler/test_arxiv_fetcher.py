@@ -362,3 +362,32 @@ async def test_fetch_arxiv_recent_truncates_large_summary(mock_client):
 
     assert len(items) == 1
     assert len(items[0]["raw_content"].encode("utf-8")) <= 8 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Tests: HTML title cleaning in _entry_to_dict (ARG-129)
+# ---------------------------------------------------------------------------
+
+
+def test_entry_to_dict_cleans_html_entities_in_title() -> None:
+    """arXiv Atom entry titles can carry HTML entities (ARG-129)."""
+    entry = _make_entry(
+        title="Attention &amp; Transformers: A Survey",
+        entry_id="http://arxiv.org/abs/2401.99999v1",
+        summary="A comprehensive survey.",
+    )
+    result = _entry_to_dict(entry)
+    assert result["title"] == "Attention & Transformers: A Survey"
+    assert "&amp;" not in result["title"]
+
+
+def test_entry_to_dict_cleans_html_tags_in_title() -> None:
+    """Defensive: arXiv titles occasionally contain markup (ARG-129)."""
+    entry = _make_entry(
+        title="<i>In Silico</i> Drug Discovery with LLMs",
+        entry_id="http://arxiv.org/abs/2401.11111v1",
+        summary="Abstract here.",
+    )
+    result = _entry_to_dict(entry)
+    assert result["title"] == "In Silico Drug Discovery with LLMs"
+    assert "<i>" not in result["title"]

@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 import feedparser
 
 from argos.config import RSSFeedConfig
+from argos.crawler._html_utils import clean_title
 from argos.crawler._robots import is_robots_allowed
 from argos.crawler.user_agents import random_user_agent
 from argos.models.tech_item import CategoryType
@@ -47,6 +48,10 @@ def _entry_to_dict(entry: object, category: CategoryType) -> dict | None:
     link: str | None = getattr(entry, "link", None)
 
     if not title or not link:
+        return None
+
+    title = clean_title(title)
+    if not title:
         return None
 
     # Prefer the full content over summary when available

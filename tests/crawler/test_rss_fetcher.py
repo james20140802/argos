@@ -278,3 +278,47 @@ async def test_run_rss_fetchers_swallows_per_feed_failure():
 
     assert len(items) == 1
     assert items[0]["title"] == "GPT-5 Is Here"
+
+
+# ---------------------------------------------------------------------------
+# Tests: HTML title cleaning in _entry_to_dict (ARG-129)
+# ---------------------------------------------------------------------------
+
+
+def test_entry_to_dict_cleans_html_entities_in_title() -> None:
+    """RSS feed entries may carry HTML entities in their title (ARG-129)."""
+    from argos.crawler.rss_fetcher import _entry_to_dict
+    from argos.models.tech_item import CategoryType
+
+    entry = SimpleNamespace(
+        title="AT&amp;T launches AI &mdash; first look",
+        link="https://example.com/att-ai",
+        summary="Details here.",
+        content=None,
+        description=None,
+        published_parsed=None,
+    )
+    result = _entry_to_dict(entry, CategoryType.MAINSTREAM)
+    assert result is not None
+    assert result["title"] == "AT&T launches AI — first look"
+    assert "&amp;" not in result["title"]
+    assert "&mdash;" not in result["title"]
+
+
+def test_entry_to_dict_cleans_html_tags_in_title() -> None:
+    """Some RSS feeds include HTML markup in their entry title (ARG-129)."""
+    from argos.crawler.rss_fetcher import _entry_to_dict
+    from argos.models.tech_item import CategoryType
+
+    entry = SimpleNamespace(
+        title="<b>Breaking:</b> New LLM beats GPT-4",
+        link="https://example.com/new-llm",
+        summary="Details.",
+        content=None,
+        description=None,
+        published_parsed=None,
+    )
+    result = _entry_to_dict(entry, CategoryType.MAINSTREAM)
+    assert result is not None
+    assert result["title"] == "Breaking: New LLM beats GPT-4"
+    assert "<b>" not in result["title"]

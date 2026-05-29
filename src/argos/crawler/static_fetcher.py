@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from argos.crawler._html_utils import clean_title
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
 from argos.crawler.dynamic_fetcher import _is_safe_url, extract_main_content
 from argos.crawler.user_agents import random_user_agent
@@ -102,7 +103,7 @@ async def fetch_github_trending(
             continue
 
         source_url = f"https://github.com{href}"
-        title = anchor.get_text(strip=True)
+        title = clean_title(anchor.get_text(strip=True))
         description_tag = article.select_one("p.col-9.color-fg-muted") or article.find("p")
         description = description_tag.get_text(strip=True) if description_tag else title
         parsed.append((title, source_url, description, _parse_github_repo_slug(href)))
@@ -198,8 +199,9 @@ async def fetch_hackernews_top(
                 title = ""
             if not isinstance(text, str):
                 text = ""
+            title = clean_title(title)
             if text:
-                raw_content = f"{title} {text}".strip()
+                raw_content = f"{title}\n\n{clean_title(text)}".strip()
             elif is_external:
                 body = await _fetch_article_body(client, url)
                 raw_content = f"{title}\n\n{body}".strip() if body else title
