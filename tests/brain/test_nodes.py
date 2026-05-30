@@ -1576,3 +1576,117 @@ async def test_triage_prompt_omits_is_relevant_schema_when_topics_empty(monkeypa
     await triage_node(_state(raw_text="A new database library."))
 
     assert "is_relevant" not in captured["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# ARG-127: language config respected in brain LLM prompts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_triage_prompt_reason_uses_configured_language(monkeypatch):
+    """The triage prompt must instruct the LLM to write reason in the configured language."""
+    from argos.brain.nodes import triage as triage_module
+
+    monkeypatch.setattr(triage_module.settings.user.slack, "summary_language", "Korean")
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return (
+                '{"is_valid": true, "reason": "이유", "trust_score": 0.5,'
+                ' "summary": "요약."}'
+            )
+
+        async def unload(self, model_role):
+            return None
+
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _FakeClient())
+
+    await triage_node(_state())
+    assert "Korean" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_triage_prompt_language_fallback_when_empty(monkeypatch):
+    """When summary_language is empty, the prompt must fall back to 'English'."""
+    from argos.brain.nodes import triage as triage_module
+
+    monkeypatch.setattr(triage_module.settings.user.slack, "summary_language", "")
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return (
+                '{"is_valid": true, "reason": "reason", "trust_score": 0.5,'
+                ' "summary": "blurb."}'
+            )
+
+        async def unload(self, model_role):
+            return None
+
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _FakeClient())
+
+    await triage_node(_state())
+    assert "English" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_genealogist_prompt_uses_configured_language(monkeypatch):
+    """The genealogist prompt must instruct the LLM to write reason in the configured language."""
+    from argos.brain.nodes import genealogist as gen_module
+
+    monkeypatch.setattr(gen_module.settings.user.slack, "summary_language", "Korean")
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return '{"replace_target_id": null, "relation_type": null, "reason": "이유"}'
+
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
+    await genealogist_node(_genealogist_state())
+
+    assert "Korean" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_genealogist_prompt_language_fallback_when_empty(monkeypatch):
+    """When summary_language is empty, genealogist prompt must fall back to 'English'."""
+    from argos.brain.nodes import genealogist as gen_module
+
+    monkeypatch.setattr(gen_module.settings.user.slack, "summary_language", "")
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return '{"replace_target_id": null, "relation_type": null, "reason": "reason"}'
+
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
+    await genealogist_node(_genealogist_state())
+
+    assert "English" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_genealogist_prompt_does_not_contain_language_in_json_keys(monkeypatch):
+    """Language directive must NOT appear inside the JSON schema example to avoid
+    the model translating enum values like relation_type."""
+    from argos.brain.nodes import genealogist as gen_module
+
+    monkeypatch.setattr(gen_module.settings.user.slack, "summary_language", "Korean")
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return '{"replace_target_id": null, "relation_type": null, "reason": "이유"}'
+
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
+    await genealogist_node(_genealogist_state())
+
+    # JSON schema line must not be language-modified — these keys stay English
+    assert '"Replace or Enhance or Fork or null"' in captured["prompt"]

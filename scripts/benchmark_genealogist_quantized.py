@@ -113,9 +113,13 @@ async def run_benchmark(
         raw_content = row.raw_content or ""
 
         # Build the prompt the same way genealogist_node does for a single-item run
+        from argos.config import settings as _benchmark_settings
+
+        _language = _benchmark_settings.user.slack.summary_language or "English"
         prompt = GENEALOGIST_PROMPT.format(
             new_tech=raw_content[:1000],
             existing_techs="(benchmark mode — no similarity context)",
+            language=_language,
         )
 
         start = time.perf_counter()

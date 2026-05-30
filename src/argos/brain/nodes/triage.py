@@ -201,7 +201,7 @@ async def _triage_one(state: BrainState, client, keep_alive) -> BrainState:
     triage_text = (state["raw_text"] or "")[:_TRIAGE_TEXT_MAX_CHARS]
     prompt = _TRIAGE_PROMPT.format(
         text=triage_text,
-        language=settings.user.slack.summary_language,
+        language=settings.user.slack.summary_language or "English",
         interests_block=interests_block,
         source_hint_block=source_hint_block,
         schema=schema,

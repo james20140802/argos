@@ -9,6 +9,7 @@ from pydantic import BaseModel, field_validator
 from argos.brain.graph_state import BrainState
 from argos.brain.llm_client import get_genealogist_llm_client
 from argos.brain.ollama_client import LARGE_MODEL_TIMEOUT
+from argos.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ Existing related technologies:
 {existing_techs}
 
 Respond ONLY with valid JSON:
-{{"replace_target_id": "UUID string or null", "relation_type": "Replace or Enhance or Fork or null", "reason": "brief explanation"}}"""
+{{"replace_target_id": "UUID string or null", "relation_type": "Replace or Enhance or Fork or null", "reason": "brief explanation written in {language}"}}"""
 
 
 class _SuccessionResult(BaseModel):
@@ -54,18 +55,17 @@ async def genealogist_node(
     if not similar_items:
         return state
 
-    from argos.config import settings as _settings_g
-
-    max_chars = _settings_g.user.genealogist.context_max_chars
+    max_chars = settings.user.genealogist.context_max_chars
     existing_techs = "\n".join(
         f"- ID: {item['id']}, Title: {item['title']}: {item['raw_content'][:max_chars]}"
         for item in similar_items
     )
+    language = settings.user.slack.summary_language or "English"
     prompt = _GENEALOGIST_PROMPT.format(
         new_tech=state["raw_text"][:1000],
         existing_techs=existing_techs,
+        language=language,
     )
-    from argos.config import settings as _settings
 
     client = get_genealogist_llm_client()
     try:
@@ -77,7 +77,7 @@ async def genealogist_node(
             prompt,
             keep_alive="5m",
             timeout=LARGE_MODEL_TIMEOUT,
-            num_ctx=_settings.user.genealogist.num_ctx,
+            num_ctx=settings.user.genealogist.num_ctx,
             think=False,
         )
         start = raw.find("{")
