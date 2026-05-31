@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import uuid
 import pytest
 import respx
@@ -1576,3 +1577,167 @@ async def test_triage_prompt_omits_is_relevant_schema_when_topics_empty(monkeypa
     await triage_node(_state(raw_text="A new database library."))
 
     assert "is_relevant" not in captured["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# ARG-127: language config respected in brain LLM prompts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_triage_prompt_reason_uses_configured_language(monkeypatch):
+    """The triage prompt must instruct the LLM to write reason in the configured language."""
+    from argos.brain.nodes import triage as triage_module
+
+    monkeypatch.setattr(triage_module.settings.user.slack, "summary_language", "Korean")
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return (
+                '{"is_valid": true, "reason": "이유", "trust_score": 0.5,'
+                ' "summary": "요약."}'
+            )
+
+        async def unload(self, model_role):
+            return None
+
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _FakeClient())
+
+    await triage_node(_state())
+    # Assert specifically on the reason directive, not just that "Korean"
+    # appears anywhere — the summary line already mentions the language, so a
+    # bare `"Korean" in prompt` would pass even if reason were never localized.
+    reason_line = next(
+        (
+            line
+            for line in captured["prompt"].splitlines()
+            if line.lower().startswith("reason")
+        ),
+        "",
+    )
+    assert "Korean" in reason_line
+
+
+@pytest.mark.asyncio
+async def test_triage_prompt_language_fallback_when_empty(monkeypatch):
+    """When summary_language is empty, the prompt must fall back to 'English'."""
+    from argos.brain.nodes import triage as triage_module
+
+    monkeypatch.setattr(triage_module.settings.user.slack, "summary_language", "")
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return (
+                '{"is_valid": true, "reason": "reason", "trust_score": 0.5,'
+                ' "summary": "blurb."}'
+            )
+
+        async def unload(self, model_role):
+            return None
+
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _FakeClient())
+
+    await triage_node(_state())
+    # Isolate the reason directive so this fallback assertion can't be
+    # satisfied by the summary line alone.
+    reason_line = next(
+        (
+            line
+            for line in captured["prompt"].splitlines()
+            if line.lower().startswith("reason")
+        ),
+        "",
+    )
+    assert "English" in reason_line
+
+
+@pytest.mark.asyncio
+async def test_genealogist_prompt_uses_configured_language(monkeypatch):
+    """The genealogist prompt must instruct the LLM to write reason in the configured language."""
+    from argos.brain.nodes import genealogist as gen_module
+
+    monkeypatch.setattr(gen_module.settings.user.slack, "summary_language", "Korean")
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return '{"replace_target_id": null, "relation_type": null, "reason": "이유"}'
+
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
+    await genealogist_node(_genealogist_state())
+
+    assert "Korean" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_genealogist_prompt_language_fallback_when_empty(monkeypatch):
+    """When summary_language is empty, genealogist prompt must fall back to 'English'."""
+    from argos.brain.nodes import genealogist as gen_module
+
+    monkeypatch.setattr(gen_module.settings.user.slack, "summary_language", "")
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return '{"replace_target_id": null, "relation_type": null, "reason": "reason"}'
+
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
+    await genealogist_node(_genealogist_state())
+
+    assert "English" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_genealogist_prompt_does_not_contain_language_in_json_keys(monkeypatch):
+    """Language directive must NOT appear inside the JSON schema example to avoid
+    the model translating enum values like relation_type."""
+    from argos.brain.nodes import genealogist as gen_module
+
+    monkeypatch.setattr(gen_module.settings.user.slack, "summary_language", "Korean")
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return '{"replace_target_id": null, "relation_type": null, "reason": "이유"}'
+
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
+    await genealogist_node(_genealogist_state())
+
+    # JSON schema line must not be language-modified — these keys stay English
+    assert '"Replace or Enhance or Fork or null"' in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_genealogist_prompt_json_example_valid_with_quoted_language(monkeypatch):
+    """A custom summary_language containing a double quote must not corrupt the
+    JSON example. The {language} directive lives outside the JSON literal, so the
+    rendered "Respond ONLY with valid JSON" example stays parseable instead of
+    becoming e.g. `"reason": "... written in Portuguese "BR""` (invalid JSON)."""
+    from argos.brain.nodes import genealogist as gen_module
+
+    monkeypatch.setattr(
+        gen_module.settings.user.slack, "summary_language", 'Portuguese "BR"'
+    )
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return '{"replace_target_id": null, "relation_type": null, "reason": "이유"}'
+
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
+    await genealogist_node(_genealogist_state())
+
+    prompt = captured["prompt"]
+    json_example = prompt[prompt.rfind("{") : prompt.rfind("}") + 1]
+    # Must not raise — a quote in the language must not leak into the JSON literal.
+    json.loads(json_example)
+    # The language directive must still reach the model, just outside the literal.
+    assert 'Portuguese "BR"' in prompt
