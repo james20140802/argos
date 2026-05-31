@@ -21,8 +21,9 @@ New technology:
 Existing related technologies:
 {existing_techs}
 
+Write the reason field in {language}.
 Respond ONLY with valid JSON:
-{{"replace_target_id": "UUID string or null", "relation_type": "Replace or Enhance or Fork or null", "reason": "brief explanation written in {language}"}}"""
+{{"replace_target_id": "UUID string or null", "relation_type": "Replace or Enhance or Fork or null", "reason": "brief explanation"}}"""
 
 
 class _SuccessionResult(BaseModel):

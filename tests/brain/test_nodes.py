@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import uuid
 import pytest
 import respx
@@ -1711,3 +1712,32 @@ async def test_genealogist_prompt_does_not_contain_language_in_json_keys(monkeyp
 
     # JSON schema line must not be language-modified — these keys stay English
     assert '"Replace or Enhance or Fork or null"' in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_genealogist_prompt_json_example_valid_with_quoted_language(monkeypatch):
+    """A custom summary_language containing a double quote must not corrupt the
+    JSON example. The {language} directive lives outside the JSON literal, so the
+    rendered "Respond ONLY with valid JSON" example stays parseable instead of
+    becoming e.g. `"reason": "... written in Portuguese "BR""` (invalid JSON)."""
+    from argos.brain.nodes import genealogist as gen_module
+
+    monkeypatch.setattr(
+        gen_module.settings.user.slack, "summary_language", 'Portuguese "BR"'
+    )
+    captured: dict = {}
+
+    class _FakeClient:
+        async def query(self, model_role, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return '{"replace_target_id": null, "relation_type": null, "reason": "이유"}'
+
+    monkeypatch.setattr(gen_module, "get_genealogist_llm_client", lambda: _FakeClient())
+    await genealogist_node(_genealogist_state())
+
+    prompt = captured["prompt"]
+    json_example = prompt[prompt.rfind("{") : prompt.rfind("}") + 1]
+    # Must not raise — a quote in the language must not leak into the JSON literal.
+    json.loads(json_example)
+    # The language directive must still reach the model, just outside the literal.
+    assert 'Portuguese "BR"' in prompt
