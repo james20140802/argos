@@ -22,6 +22,7 @@ pooled connections are shared across pytest-asyncio function-scope event loops.
 """
 from __future__ import annotations
 
+import socket
 import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
@@ -29,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -46,6 +48,37 @@ from argos.slack.services.track_check import (
 # database.rebuild() (and mutate os.environ + settings.secrets) cannot
 # change the URL seen by these E2E tests.
 _DB_URL: str = settings.database_url
+
+
+def _db_reachable(url: str) -> bool:
+    """Return True if a TCP connection to the DB host:port succeeds quickly.
+
+    Used to skip (rather than fail) these tests when no pgvector DB is
+    running — e.g. the Release CI runner, which has no Docker service.
+    """
+    parsed = make_url(url)
+    host = parsed.host or "localhost"
+    port = parsed.port or 5432
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _require_db():
+    """Skip the E2E signal-match suite when the pgvector DB is unreachable.
+
+    Synchronous on purpose: an async module-scoped fixture would reintroduce
+    the cross-event-loop asyncpg trap that NullPool + per-test engines exist
+    to avoid (see module docstring).
+    """
+    if not _db_reachable(_DB_URL):
+        pytest.skip(
+            "pgvector DB not reachable — skipping ARG-119 E2E signal-match tests "
+            "(start the Docker DB to run them)"
+        )
 
 
 # ---------------------------------------------------------------------------
