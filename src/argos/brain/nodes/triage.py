@@ -17,6 +17,7 @@ _TRIAGE_TEXT_MAX_CHARS = 2000
 
 _TRIAGE_PROMPT = """Analyze the following text and determine if it describes a real technology (tool, library, framework, model, protocol, or platform).
 trust_score reflects substance over hype: 0.0=pure marketing, 0.5=neutral, 1.0=well-evidenced technical detail.
+reason is a brief 1-sentence justification of the is_valid and category decision; written in {language}.
 summary is a 1-2 sentence factual blurb (max 500 chars) describing what the technology is and why it matters; written in {language}. Use null if is_valid is false.
 category must be one of "Mainstream" or "Alpha". Mainstream = mature, widely adopted technology; Alpha = cutting-edge, experimental, or niche. Default to "Alpha" when uncertain.
 {source_hint_block}Respond ONLY with valid JSON: {schema}

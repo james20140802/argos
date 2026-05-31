@@ -1605,7 +1605,18 @@ async def test_triage_prompt_reason_uses_configured_language(monkeypatch):
     monkeypatch.setattr(triage_module, "get_llm_client", lambda: _FakeClient())
 
     await triage_node(_state())
-    assert "Korean" in captured["prompt"]
+    # Assert specifically on the reason directive, not just that "Korean"
+    # appears anywhere — the summary line already mentions the language, so a
+    # bare `"Korean" in prompt` would pass even if reason were never localized.
+    reason_line = next(
+        (
+            line
+            for line in captured["prompt"].splitlines()
+            if line.lower().startswith("reason")
+        ),
+        "",
+    )
+    assert "Korean" in reason_line
 
 
 @pytest.mark.asyncio
@@ -1630,7 +1641,17 @@ async def test_triage_prompt_language_fallback_when_empty(monkeypatch):
     monkeypatch.setattr(triage_module, "get_llm_client", lambda: _FakeClient())
 
     await triage_node(_state())
-    assert "English" in captured["prompt"]
+    # Isolate the reason directive so this fallback assertion can't be
+    # satisfied by the summary line alone.
+    reason_line = next(
+        (
+            line
+            for line in captured["prompt"].splitlines()
+            if line.lower().startswith("reason")
+        ),
+        "",
+    )
+    assert "English" in reason_line
 
 
 @pytest.mark.asyncio
