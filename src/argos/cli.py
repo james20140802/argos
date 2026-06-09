@@ -17,11 +17,6 @@ try:
 except ImportError:  # pragma: no cover — py<3.11 fallback
     import tomli as tomllib  # type: ignore[no-reuse-import]
 
-try:
-    import uvicorn  # noqa: F401 — patched in tests; lazy-used in _cmd_web
-except ImportError:  # pragma: no cover - uvicorn is a runtime dep
-    uvicorn = None  # type: ignore[assignment]
-
 from pydantic import ValidationError
 
 from argos import config_store
@@ -693,6 +688,7 @@ def _build_web_parser(
 
 
 def _cmd_web(args: argparse.Namespace) -> int:
+    import uvicorn
     from argos.web.app import build_web_app
 
     rc = _apply_config_override(args)

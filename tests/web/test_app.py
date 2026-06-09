@@ -38,10 +38,28 @@ async def test_healthz_returns_200_ok():
     assert resp.json() == {"status": "ok"}
 
 
-def test_build_web_app_does_not_connect_to_db_at_construction():
-    """Factory must not open a DB connection during build (no DB in release CI)."""
-    # Build twice; if a connection were opened we'd see it through engine pool.
-    # The cheapest assertion is that build_web_app does not raise even when the
-    # configured Postgres is unreachable. Smoke-build it without monkeypatching.
-    app = build_web_app()
-    assert app is not None
+def test_build_web_app_does_not_import_argos_database():
+    """build_web_app must not pull argos.database into the import graph.
+
+    Enforced via a fresh subprocess so sys.modules isn't polluted by other
+    tests in the session. release.yml runs pytest without Postgres — any
+    DB-touching import at construction would break that CI.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys\n"
+                "from argos.web.app import build_web_app\n"
+                "build_web_app()\n"
+                "assert 'argos.database' not in sys.modules, "
+                "'argos.database leaked into argos.web.app import graph'\n"
+            ),
+        ],
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode()
