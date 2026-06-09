@@ -48,3 +48,5 @@ gha-creds-*.json
 .agents/
 .codex/
 .linear-prism-manifest.json
+# brainstorm visual companion output (throwaway)
+.superpowers/

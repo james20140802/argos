@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d12">
+<title>ARGOS · 로고 마크</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#0b0d12;--bg2:#0e1118;--ink:#ECE7DD;--muted:#8b9098;--faint:#5b6068;--line:rgba(236,231,221,.09);--brass:#C9A86A;--brass-hi:#E7C98B}
+  *{box-sizing:border-box}html,body{margin:0}
+  body{min-height:100vh;background:radial-gradient(120% 60% at 50% -8%,rgba(201,168,106,.10),transparent 55%),linear-gradient(180deg,var(--bg2),var(--bg) 42%);color:var(--ink);font-family:'IBM Plex Sans KR',sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:760px;margin:0 auto;padding:40px 24px 60px}
+  .kick{font:500 10px/1 'IBM Plex Mono';letter-spacing:.4em;color:var(--brass);text-transform:uppercase}
+  h1{font:600 27px/1.2 'Fraunces',serif;margin:10px 0 6px}
+  .sub{font:400 13.5px/1.6 'IBM Plex Sans KR';color:var(--muted);margin:0 0 26px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .opt{border:1px solid var(--line);border-radius:18px;padding:24px 18px;cursor:pointer;text-align:center;
+    background:linear-gradient(180deg,rgba(236,231,221,.04),rgba(236,231,221,.012));transition:.18s}
+  .opt:hover{border-color:rgba(236,231,221,.2);transform:translateY(-2px)}
+  .opt.selected{border-color:rgba(201,168,106,.6);background:rgba(201,168,106,.08);box-shadow:0 10px 30px -16px rgba(201,168,106,.5)}
+  .lockup{display:flex;align-items:center;justify-content:center;gap:13px;margin-bottom:18px}
+  .wm{font:600 22px/1 'Fraunces',serif;letter-spacing:.26em;text-indent:.26em}
+  .name{font:600 14px/1 'IBM Plex Sans KR';margin-bottom:4px}
+  .desc{font:400 11.5px/1.5 'IBM Plex Sans KR';color:var(--faint)}
+  svg{display:block;filter:drop-shadow(0 0 9px rgba(201,168,106,.3))}
+  .note{font:400 12px/1.6 'IBM Plex Sans KR';color:var(--faint);margin-top:24px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="kick">ARGOS · LOGO MARK</div>
+  <h1>눈은 뺐어 — 어떤 마크?</h1>
+  <p class="sub">"관측·렌즈·탐색"의 의미는 살리되, 눈동자가 아닌 기하학적 마크로. 마음에 드는 걸 클릭해줘.</p>
+
+  <div class="grid">
+    <!-- A : aperture / lens -->
+    <div class="opt" data-choice="aperture" onclick="toggleSelect(this)">
+      <div class="lockup">
+        <svg viewBox="0 0 40 40" width="46" height="46" fill="none" stroke="var(--brass)" stroke-width="1.5" stroke-linejoin="round">
+          <circle cx="20" cy="20" r="15"/>
+          <polygon points="20,9 29.5,14.5 29.5,25.5 20,31 10.5,25.5 10.5,14.5"/>
+          <line x1="20" y1="9" x2="13.5" y2="11.5"/><line x1="29.5" y1="14.5" x2="28" y2="8"/>
+          <line x1="29.5" y1="25.5" x2="35" y2="22"/><line x1="20" y1="31" x2="26.5" y2="28.5"/>
+          <line x1="10.5" y1="25.5" x2="12" y2="32"/><line x1="10.5" y1="14.5" x2="5" y2="18"/>
+        </svg>
+        <span class="wm">ARGOS</span>
+      </div>
+      <div class="name">A · 조리개 / 렌즈</div>
+      <div class="desc">카메라 조리개. "초점을 맞춰 본다" — 가장 렌즈다움.</div>
+    </div>
+
+    <!-- B : radar / observatory -->
+    <div class="opt" data-choice="radar" onclick="toggleSelect(this)">
+      <div class="lockup">
+        <svg viewBox="0 0 40 40" width="46" height="46" fill="none" stroke="var(--brass)" stroke-width="1.5">
+          <circle cx="20" cy="20" r="15" opacity=".45"/>
+          <circle cx="20" cy="20" r="9" opacity=".8"/>
+          <line x1="20" y1="3" x2="20" y2="37" opacity=".28"/>
+          <line x1="3" y1="20" x2="37" y2="20" opacity=".28"/>
+          <circle cx="27.5" cy="12.5" r="2.2" fill="var(--brass)" stroke="none"/>
+        </svg>
+        <span class="wm">ARGOS</span>
+      </div>
+      <div class="name">B · 레이더 / 관측</div>
+      <div class="desc">지평선을 스캔하는 레이더. 신호(blip) 하나 잡힌 느낌.</div>
+    </div>
+
+    <!-- C : north star -->
+    <div class="opt" data-choice="star" onclick="toggleSelect(this)">
+      <div class="lockup">
+        <svg viewBox="0 0 40 40" width="46" height="46" fill="none" stroke="var(--brass)" stroke-width="1.4">
+          <circle cx="20" cy="20" r="15" opacity=".32"/>
+          <path d="M20 6 L22.6 17.4 L34 20 L22.6 22.6 L20 34 L17.4 22.6 L6 20 L17.4 17.4 Z" fill="var(--brass)" stroke="none"/>
+        </svg>
+        <span class="wm">ARGOS</span>
+      </div>
+      <div class="name">C · 북극성</div>
+      <div class="desc">길잡이 별. 조용하고 항해적인 느낌.</div>
+    </div>
+
+    <!-- D : ringed planet -->
+    <div class="opt" data-choice="planet" onclick="toggleSelect(this)">
+      <div class="lockup">
+        <svg viewBox="0 0 40 40" width="46" height="46" fill="none" stroke="var(--brass)" stroke-width="1.5">
+          <circle cx="20" cy="20" r="8.5"/>
+          <ellipse cx="20" cy="20" rx="17" ry="5.5" transform="rotate(-20 20 20)" opacity=".85"/>
+        </svg>
+        <span class="wm">ARGOS</span>
+      </div>
+      <div class="name">D · 고리 행성</div>
+      <div class="desc">천문대/우주 무드. 친근하고 부드러움.</div>
+    </div>
+  </div>
+
+  <p class="note">고르면 세 화면(피드·포트폴리오·상세) 마스트헤드에 전부 반영해서 다시 보여줄게.</p>
+</div>
+</body>
+</html>
