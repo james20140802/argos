@@ -195,6 +195,11 @@ class SPAConfig(BaseModel):
     )
 
 
+class WebConfig(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = Field(default=8765, ge=1, le=65535)
+
+
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
@@ -206,6 +211,7 @@ class UserConfig(BaseModel):
     genealogist: GenealogistConfig = GenealogistConfig()
     rss: RSSConfig = Field(default_factory=RSSConfig)
     spa: SPAConfig = Field(default_factory=SPAConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:
