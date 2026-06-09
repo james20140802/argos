@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d12">
+<title>ARGOS · 피드 / 포트폴리오 / 상세</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Gowun+Batang:wght@400;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0b0d12; --bg2:#0e1118;
+    --ink:#ECE7DD; --muted:#8b9098; --faint:#5b6068;
+    --line:rgba(236,231,221,.09);
+    --brass:#C9A86A; --brass-hi:#E7C98B;
+    --main:#74B7C7; --alpha:#B790E4;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:
+      radial-gradient(120% 60% at 50% -8%, rgba(201,168,106,.10), transparent 55%),
+      radial-gradient(80% 50% at 85% 108%, rgba(116,183,199,.06), transparent 60%),
+      linear-gradient(180deg, var(--bg2), var(--bg) 42%);
+    color:var(--ink);font-family:'IBM Plex Sans KR',sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh}
+  .sky{position:fixed;inset:0;pointer-events:none;z-index:0;background-image:
+    radial-gradient(1.2px 1.2px at 12% 16%,rgba(255,255,255,.30),transparent),
+    radial-gradient(1px 1px at 80% 10%,rgba(255,255,255,.20),transparent),
+    radial-gradient(1px 1px at 62% 30%,rgba(255,255,255,.15),transparent),
+    radial-gradient(1.3px 1.3px at 28% 70%,rgba(255,255,255,.18),transparent),
+    radial-gradient(1px 1px at 90% 64%,rgba(255,255,255,.13),transparent)}
+  .grain{position:fixed;inset:0;pointer-events:none;z-index:1;opacity:.045;mix-blend-mode:soft-light;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+  .head{position:relative;z-index:2;max-width:1100px;margin:0 auto;padding:30px 24px 4px}
+  .h-kick{font:500 10px/1 'IBM Plex Mono',monospace;letter-spacing:.4em;color:var(--brass);text-transform:uppercase}
+  .h-title{font:600 28px/1.2 'Fraunces','Gowun Batang',serif;margin:10px 0 0}
+  .h-sub{font:400 13.5px/1.6 'IBM Plex Sans KR';color:var(--muted);margin:10px 0 0;max-width:60ch}
+  .swipe{font:500 11px/1 'IBM Plex Mono',monospace;color:var(--faint);letter-spacing:.05em;margin-top:14px}
+
+  /* deck / carousel */
+  .deck{position:relative;z-index:2;display:flex;gap:30px;overflow-x:auto;scroll-snap-type:x mandatory;
+    padding:18px 24px 8px;scrollbar-width:thin}
+  .col{scroll-snap-align:center;flex:0 0 auto;width:368px}
+  .cap{font:500 12px/1.4 'IBM Plex Sans KR';color:var(--muted);margin:0 4px 12px;display:flex;gap:8px;align-items:baseline}
+  .cap b{color:var(--ink);font-weight:600}
+  .cap .n{font:500 10px 'IBM Plex Mono';color:var(--brass);border:1px solid rgba(201,168,106,.4);border-radius:6px;padding:2px 6px}
+
+  .device{border-radius:30px;border:1px solid var(--line);overflow:hidden;
+    background:linear-gradient(180deg, rgba(20,23,31,.6), rgba(11,13,18,.5));
+    box-shadow:0 30px 60px -30px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04)}
+  .scr{padding:18px 16px 14px}
+
+  /* masthead mini */
+  .mini{display:flex;align-items:center;gap:10px}
+  .eye{width:30px;height:30px;flex:0 0 auto;filter:drop-shadow(0 0 8px rgba(201,168,106,.35))}
+  .wm{font:600 17px/1 'Fraunces',serif;letter-spacing:.26em;text-indent:.26em}
+  .mk{font:500 8.5px/1 'IBM Plex Mono';letter-spacing:.36em;color:var(--brass);text-transform:uppercase;margin-top:4px}
+  .scr-head{display:flex;align-items:flex-end;justify-content:space-between;margin:16px 2px 4px}
+  .scr-h1{font:500 23px/1 'Fraunces','Gowun Batang',serif}
+  .scr-cnt{font:500 10px 'IBM Plex Mono';color:var(--muted);text-align:right}
+  .scr-cnt b{display:block;font-size:17px;color:var(--ink);margin-bottom:2px}
+  .scr-sub{font:400 12px/1.5 'IBM Plex Sans KR';color:var(--faint);margin:9px 2px 0}
+
+  .filters{display:flex;gap:7px;margin:14px 2px 2px;flex-wrap:wrap}
+  .chip{font:500 11.5px/1 'IBM Plex Sans KR';padding:7px 12px;border-radius:999px;color:var(--muted);
+    border:1px solid transparent;background:rgba(236,231,221,.035)}
+  .chip[aria-current="true"]{color:var(--ink);border-color:rgba(201,168,106,.42);background:rgba(201,168,106,.10)}
+
+  /* image news card */
+  .ncard{margin-top:14px;border-radius:18px;border:1px solid var(--line);overflow:hidden;
+    background:linear-gradient(180deg, rgba(236,231,221,.04), rgba(236,231,221,.012))}
+  .cover{position:relative;height:150px;background-size:cover;background-position:center}
+  .cover.fallback{display:flex;align-items:center;justify-content:center}
+  .cover .scrim{position:absolute;inset:0}
+  .cover.main .scrim{background:linear-gradient(180deg, rgba(11,13,18,.15), rgba(11,13,18,.78)),radial-gradient(80% 90% at 20% 0%, rgba(116,183,199,.35), transparent 60%)}
+  .cover.alpha .scrim{background:linear-gradient(135deg,#241d44,#3a2c63)}
+  .cover .ctag{position:absolute;left:14px;top:13px}
+  .cover .cdial{position:absolute;right:13px;top:12px}
+  .fb-word{font:600 22px/1 'Fraunces',serif;letter-spacing:.04em;color:rgba(236,231,221,.6);z-index:1}
+  .fb-pat{position:absolute;inset:0;opacity:.5;background-image:
+     radial-gradient(circle at 1px 1px, rgba(255,255,255,.12) 1px, transparent 0);background-size:14px 14px}
+
+  .tag{font:600 9.5px/1 'IBM Plex Sans KR';letter-spacing:.2em;text-transform:uppercase;padding:5px 10px;border-radius:7px;border:1px solid;backdrop-filter:blur(6px)}
+  .tag.main{color:#cdeff7;border-color:rgba(116,183,199,.5);background:rgba(116,183,199,.22)}
+  .tag.alpha{color:#ead9ff;border-color:rgba(183,144,228,.5);background:rgba(183,144,228,.22)}
+  .tag.flat.main{color:var(--main);background:rgba(116,183,199,.10);backdrop-filter:none}
+  .tag.flat.alpha{color:var(--alpha);background:rgba(183,144,228,.10);backdrop-filter:none}
+
+  .dial{width:24px;height:24px;border-radius:50%;
+    background:conic-gradient(var(--brass) calc(var(--v)*1%), rgba(236,231,221,.12) 0);
+    -webkit-mask:radial-gradient(farthest-side,#0000 calc(100% - 3.5px),#000 calc(100% - 3.5px));
+            mask:radial-gradient(farthest-side,#0000 calc(100% - 3.5px),#000 calc(100% - 3.5px))}
+  .dialwrap{display:inline-flex;align-items:center;gap:6px;background:rgba(11,13,18,.5);border-radius:999px;padding:4px 8px 4px 5px;backdrop-filter:blur(6px)}
+  .tnum{font:500 11px/1 'IBM Plex Mono';color:var(--ink)}
+
+  .nbody{padding:14px 15px 13px}
+  .headline{font:600 18.5px/1.28 'Fraunces','Gowun Batang',serif;font-optical-sizing:auto;letter-spacing:-.01em;margin:0 0 8px}
+  .summary{font:400 13px/1.6 'IBM Plex Sans KR';color:#a3a8b1;margin:0 0 14px}
+  .cfoot{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .meta{font:400 10.5px/1.3 'IBM Plex Mono';color:var(--faint)}
+  .actions{display:flex;gap:7px}
+  .btn{font:600 12px/1 'IBM Plex Sans KR';padding:9px 15px;border-radius:10px;border:1px solid transparent;cursor:pointer;white-space:nowrap}
+  .btn.keep{color:#1c1509;background:linear-gradient(180deg,var(--brass-hi),var(--brass));box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 8px 18px -10px rgba(201,168,106,.7)}
+  .btn.pass{color:var(--muted);background:rgba(236,231,221,.03);border-color:var(--line)}
+  .btn.ghost{color:var(--ink);background:rgba(236,231,221,.05);border-color:var(--line)}
+  .btn.wide{flex:1;text-align:center;padding:13px}
+
+  /* ---- portfolio list ---- */
+  .prow{display:flex;gap:12px;padding:13px 4px;border-bottom:1px solid var(--line);align-items:center}
+  .thumb{width:54px;height:54px;border-radius:12px;flex:0 0 auto;background-size:cover;background-position:center;position:relative;overflow:hidden}
+  .thumb.fb{display:flex;align-items:center;justify-content:center;font:600 11px 'Fraunces';color:rgba(236,231,221,.55)}
+  .thumb.fb.main{background:linear-gradient(135deg,#16323a,#1d4350)}
+  .thumb.fb.alpha{background:linear-gradient(135deg,#241d44,#3a2c63)}
+  .pmain{flex:1;min-width:0}
+  .ptitle{font:600 14px/1.3 'IBM Plex Sans KR';color:var(--ink);margin:0 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pmeta{font:400 10.5px/1.3 'IBM Plex Mono';color:var(--faint);display:flex;gap:8px;align-items:center}
+  .pdot{width:6px;height:6px;border-radius:50%;display:inline-block}
+  .pdot.main{background:var(--main)}.pdot.alpha{background:var(--alpha)}
+  .signal{font:500 10px/1 'IBM Plex Sans KR';color:var(--brass);background:rgba(201,168,106,.1);border:1px solid rgba(201,168,106,.35);border-radius:999px;padding:4px 8px;white-space:nowrap;flex:0 0 auto}
+  .pgroup{font:600 10px/1 'IBM Plex Sans KR';letter-spacing:.18em;text-transform:uppercase;color:var(--faint);margin:16px 4px 2px}
+
+  /* ---- detail / reader ---- */
+  .d-cover{height:180px;background-size:cover;background-position:center;position:relative}
+  .d-cover .scrim{position:absolute;inset:0;background:linear-gradient(180deg,rgba(11,13,18,.1),rgba(11,13,18,.55))}
+  .d-back{position:absolute;left:12px;top:12px;width:34px;height:34px;border-radius:50%;background:rgba(11,13,18,.55);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;color:var(--ink);font-size:16px;border:1px solid var(--line)}
+  .d-body{padding:16px}
+  .d-meta{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .d-title{font:600 23px/1.26 'Fraunces','Gowun Batang',serif;letter-spacing:-.01em;margin:0 0 14px}
+  .d-para{font:400 13.5px/1.7 'IBM Plex Sans KR';color:#b3b8c0;margin:0 0 14px}
+  .insight{border-left:2.5px solid var(--brass);background:rgba(201,168,106,.06);border-radius:0 12px 12px 0;padding:11px 14px;margin:0 0 11px}
+  .insight .ih{font:600 11px/1 'IBM Plex Sans KR';letter-spacing:.05em;color:var(--brass-hi);margin-bottom:6px;display:flex;gap:7px;align-items:center}
+  .insight .it{font:400 12.5px/1.55 'IBM Plex Sans KR';color:#c3c8d0}
+  .insight.signal-i{border-color:var(--main);background:rgba(116,183,199,.06)}
+  .insight.signal-i .ih{color:#9fdcea}
+  .d-actions{display:flex;gap:9px;margin-top:18px}
+
+  /* tab bar */
+  .tabbar{display:flex;gap:6px;margin:18px 0 2px;padding:7px;border-radius:16px;background:rgba(11,13,18,.6);
+    backdrop-filter:blur(14px);border:1px solid var(--line)}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px;border-radius:11px;
+    font:500 10.5px/1 'IBM Plex Sans KR';color:var(--faint)}
+  .tab .ic{font-size:14px}
+  .tab.on{color:var(--ink);background:rgba(236,231,221,.06)}.tab.on .ic{color:var(--brass)}
+
+  .rise{opacity:0;animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards;animation-delay:var(--d,0s)}
+  @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  @media(prefers-reduced-motion:reduce){.rise{animation:none;opacity:1}}
+
+  .feedback{position:relative;z-index:2;max-width:1100px;margin:10px auto 44px;padding:16px 24px;border-top:1px dashed var(--line)}
+  .fb-label{font:400 12px/1.4 'IBM Plex Sans KR';color:var(--faint);display:block;margin-bottom:10px}
+  .fb-chips{display:flex;flex-wrap:wrap;gap:8px}
+  .fb{font:500 12.5px/1 'IBM Plex Sans KR';padding:9px 14px;border-radius:10px;cursor:pointer;color:var(--muted);background:rgba(236,231,221,.04);border:1px solid var(--line)}
+  .fb.selected{color:var(--brass-hi);border-color:rgba(201,168,106,.55);background:rgba(201,168,106,.1)}
+</style>
+</head>
+<body>
+  <div class="sky"></div><div class="grain"></div>
+
+  <header class="head">
+    <div class="h-kick">ARGOS · DESIGN PREVIEW</div>
+    <h1 class="h-title">피드 · 포트폴리오 · 상세</h1>
+    <p class="h-sub">뉴스형 이미지 카드, 보관한 자산을 모아 보는 포트폴리오, 그리고 카드를 탭하면 뜨는 인앱 상세(요약·계보·신호 + 원문 보기). · 로고 마크 B(레이더) 적용, A(조리개)는 대안 보관.</p>
+    <div class="swipe">← 옆으로 스와이프 / 스크롤 →</div>
+  </header>
+
+  <div class="deck">
+
+    <!-- ============ COL 1 : FEED (image cards) ============ -->
+    <div class="col">
+      <div class="cap"><span class="n">1</span><b>관측 피드</b> — 이미지 뉴스 카드</div>
+      <div class="device">
+        <div class="scr">
+          <div class="mini">
+            <svg class="eye" viewBox="0 0 40 40" fill="none" stroke="var(--brass)" stroke-width="1.6"><circle cx="20" cy="20" r="15" opacity=".45"/><circle cx="20" cy="20" r="9" opacity=".85"/><line x1="20" y1="4" x2="20" y2="36" opacity=".28"/><line x1="4" y1="20" x2="36" y2="20" opacity=".28"/><circle cx="27.5" cy="12.5" r="2.2" fill="var(--brass)" stroke="none"/></svg>
+            <div><div class="wm">ARGOS</div><div class="mk">Observatory</div></div>
+          </div>
+          <div class="scr-head"><div class="scr-h1">오늘의 관측</div><div class="scr-cnt"><b>18</b>6월 9일 화</div></div>
+          <p class="scr-sub">훑어보고, 남길 것만 남기세요.</p>
+          <div class="filters"><span class="chip" aria-current="true">전체</span><span class="chip">Mainstream</span><span class="chip">Alpha</span></div>
+
+          <!-- card with real og:image -->
+          <article class="ncard rise" style="--d:.1s">
+            <div class="cover main" style="background-image:url('https://picsum.photos/seed/argos-opus/700/360?grayscale')">
+              <div class="scrim"></div>
+              <span class="tag main ctag">Mainstream</span>
+              <span class="cdial dialwrap"><span class="dial" style="--v:95"></span><span class="tnum">0.95</span></span>
+            </div>
+            <div class="nbody">
+              <h2 class="headline">Claude Opus 4.8 출시</h2>
+              <p class="summary">에이전트 코딩·장기 추론에서 큰 폭의 향상. 200K 컨텍스트를 유지하며 도구 호출 안정성 개선.</p>
+              <div class="cfoot"><span class="meta">Anthropic · 2시간 전</span>
+                <div class="actions"><button class="btn keep">남기기</button><button class="btn pass">넘기기</button></div></div>
+            </div>
+          </article>
+
+          <!-- card with fallback banner (arXiv: no og:image) -->
+          <article class="ncard rise" style="--d:.2s">
+            <div class="cover alpha fallback">
+              <div class="scrim"></div><div class="fb-pat"></div>
+              <span class="fb-word">arXiv</span>
+              <span class="tag alpha ctag">Alpha</span>
+              <span class="cdial dialwrap"><span class="dial" style="--v:88"></span><span class="tnum">0.88</span></span>
+            </div>
+            <div class="nbody">
+              <h2 class="headline">LightRAG v2 — 그래프 기반 검색</h2>
+              <p class="summary">검색 정확도를 끌어올리면서 인덱싱 비용을 절감. 이미지가 없는 소스는 폴백 배너로.</p>
+              <div class="cfoot"><span class="meta">arXiv · 5시간 전</span>
+                <div class="actions"><button class="btn keep">남기기</button><button class="btn pass">넘기기</button></div></div>
+            </div>
+          </article>
+
+          <nav class="tabbar"><div class="tab on"><span class="ic">◎</span>관측 피드</div><div class="tab"><span class="ic">✦</span>포트폴리오</div></nav>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ COL 2 : PORTFOLIO ============ -->
+    <div class="col">
+      <div class="cap"><span class="n">2</span><b>포트폴리오</b> — 보관한 자산 + 후속 신호</div>
+      <div class="device">
+        <div class="scr">
+          <div class="scr-head"><div class="scr-h1">포트폴리오</div><div class="scr-cnt"><b>31</b>보관 중</div></div>
+          <p class="scr-sub">남긴 기술을 모아 보고, 새 신호가 오면 표시돼요.</p>
+          <div class="filters"><span class="chip" aria-current="true">전체</span><span class="chip">최근순</span><span class="chip">신뢰도순</span></div>
+
+          <div class="pgroup">새 신호 있음</div>
+          <div class="prow rise" style="--d:.08s">
+            <div class="thumb" style="background-image:url('https://picsum.photos/seed/argos-langgraph/120/120?grayscale')"></div>
+            <div class="pmain"><div class="ptitle">LangGraph 0.3</div>
+              <div class="pmeta"><span class="pdot alpha"></span>Alpha · 보관 5/01 · 신호 5/30</div></div>
+            <span class="signal">🔭 신호 2</span>
+          </div>
+          <div class="prow rise" style="--d:.14s">
+            <div class="thumb fb main">vLLM</div>
+            <div class="pmain"><div class="ptitle">vLLM 0.7</div>
+              <div class="pmeta"><span class="pdot main"></span>Mainstream · 보관 6/08 · 신호 —</div></div>
+            <span class="signal">🧬 계보 1</span>
+          </div>
+
+          <div class="pgroup">조용함</div>
+          <div class="prow rise" style="--d:.2s">
+            <div class="thumb" style="background-image:url('https://picsum.photos/seed/argos-cursor/120/120?grayscale')"></div>
+            <div class="pmain"><div class="ptitle">Cursor AI</div>
+              <div class="pmeta"><span class="pdot main"></span>Mainstream · 보관 4/28 · 신호 —</div></div>
+          </div>
+          <div class="prow rise" style="--d:.26s">
+            <div class="thumb fb alpha">LightRAG</div>
+            <div class="pmain"><div class="ptitle">LightRAG v2</div>
+              <div class="pmeta"><span class="pdot alpha"></span>Alpha · 보관 6/09 · 신호 —</div></div>
+          </div>
+          <div class="prow rise" style="--d:.32s">
+            <div class="thumb" style="background-image:url('https://picsum.photos/seed/argos-dspy/120/120?grayscale')"></div>
+            <div class="pmain"><div class="ptitle">DSPy 3.0</div>
+              <div class="pmeta"><span class="pdot alpha"></span>Alpha · 보관 5/19 · 신호 —</div></div>
+          </div>
+
+          <nav class="tabbar"><div class="tab"><span class="ic">◎</span>관측 피드</div><div class="tab on"><span class="ic">✦</span>포트폴리오</div></nav>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ COL 3 : DETAIL / READER ============ -->
+    <div class="col">
+      <div class="cap"><span class="n">3</span><b>상세 (탭하면)</b> — 인앱 리더 + 원문 보기</div>
+      <div class="device">
+        <div class="d-cover" style="background-image:url('https://picsum.photos/seed/argos-opus/700/420?grayscale')">
+          <div class="scrim"></div><div class="d-back">‹</div>
+          <span class="tag main ctag" style="position:absolute;left:14px;bottom:14px">Mainstream</span>
+        </div>
+        <div class="d-body">
+          <div class="d-meta"><span class="dialwrap"><span class="dial" style="--v:95"></span><span class="tnum">0.95</span></span><span class="meta">Anthropic · 2시간 전</span></div>
+          <h1 class="d-title">Claude Opus 4.8 출시</h1>
+          <p class="d-para">에이전트 코딩과 장기 추론에서 큰 폭의 향상. 200K 컨텍스트를 유지하면서 도구 호출의 안정성을 높였고, 멀티스텝 작업에서의 일관성이 개선됐습니다. 로컬 추론 비용에는 변화가 없습니다.</p>
+
+          <div class="insight">
+            <div class="ih">🧬 기술 계보</div>
+            <div class="it">Opus 4.7을 <b>대체(Replace)</b> — 동일 워크플로에서 상위 호환. 포트폴리오의 4.7 자산에 폐기 후보로 표시됩니다.</div>
+          </div>
+          <div class="insight signal-i">
+            <div class="ih">🔭 관련 신호</div>
+            <div class="it">보관한 <b>LangGraph 0.3</b>과 유사도 0.86 — 에이전트 스택에 영향 가능.</div>
+          </div>
+
+          <div class="d-actions">
+            <button class="btn keep wide">남기기</button>
+            <button class="btn ghost wide">원문 보기 →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="feedback">
+    <span class="fb-label">피드백 — 클릭하거나 터미널로 말해줘.</span>
+    <div class="fb-chips">
+      <button class="fb" data-choice="love" onclick="toggleSelect(this)">이 방향 좋아 👍</button>
+      <button class="fb" data-choice="image-bigger" onclick="toggleSelect(this)">이미지 더 크게</button>
+      <button class="fb" data-choice="image-smaller" onclick="toggleSelect(this)">이미지 작게/썸네일로</button>
+      <button class="fb" data-choice="detail-inapp" onclick="toggleSelect(this)">클릭=인앱 상세 좋아</button>
+      <button class="fb" data-choice="detail-redirect" onclick="toggleSelect(this)">클릭=바로 원문이동이 나아</button>
+      <button class="fb" data-choice="light" onclick="toggleSelect(this)">라이트 테마도</button>
+    </div>
+  </div>
+</body>
+</html>
