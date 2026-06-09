@@ -37,3 +37,12 @@ def test_web_config_rejects_invalid_port():
         UserConfig.model_validate({"web": {"port": 0}})
     with pytest.raises(ValidationError):
         UserConfig.model_validate({"web": {"port": 70000}})
+
+
+def test_web_config_loads_from_toml(tmp_path):
+    """[web] section in a TOML file overrides host and port via UserConfig.load."""
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_bytes(b'[web]\nhost = "0.0.0.0"\nport = 9000\n')
+    cfg = UserConfig.load(path=toml_file)
+    assert cfg.web.host == "0.0.0.0"
+    assert cfg.web.port == 9000
