@@ -17,6 +17,11 @@ try:
 except ImportError:  # pragma: no cover — py<3.11 fallback
     import tomli as tomllib  # type: ignore[no-reuse-import]
 
+try:
+    import uvicorn  # noqa: F401 — patched in tests; lazy-used in _cmd_web
+except ImportError:  # pragma: no cover - uvicorn is a runtime dep
+    uvicorn = None  # type: ignore[assignment]
+
 from pydantic import ValidationError
 
 from argos import config_store
@@ -651,6 +656,57 @@ def _positive_int(value: str) -> int:
     return n
 
 
+def _tcp_port(value: str) -> int:
+    """Argparse type that accepts a valid TCP port (1..65535)."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not an integer")
+    if n < 1 or n > 65535:
+        raise argparse.ArgumentTypeError(f"--port must be in 1..65535, got {n}")
+    return n
+
+
+def _build_web_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos web`` subcommand (ARG-133)."""
+    web_p = sub.add_parser(
+        "web",
+        help="Start the Argos web app (FastAPI + uvicorn)",
+        description=(
+            "Run the Argos web layer locally with uvicorn.\n\n"
+            "Host/port default to [web].host / [web].port from config "
+            "(127.0.0.1:8765). Use --host / --port to override per-invocation."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[common],
+    )
+    web_p.add_argument("--host", default=None, help="Override config [web].host")
+    web_p.add_argument(
+        "--port",
+        type=_tcp_port,
+        default=None,
+        help="Override config [web].port",
+    )
+
+
+def _cmd_web(args: argparse.Namespace) -> int:
+    from argos.web.app import build_web_app
+
+    rc = _apply_config_override(args)
+    if rc is not None:
+        return rc
+
+    host = args.host if args.host is not None else settings.user.web.host
+    port = args.port if args.port is not None else settings.user.web.port
+
+    app = build_web_app()
+    uvicorn.run(app, host=host, port=port)
+    return 0
+
+
 def _build_search_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -1270,6 +1326,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_schedule_parser(sub)
     _build_search_parser(sub, common)
     _build_stats_parser(sub, common)
+    _build_web_parser(sub, common)
 
     args = parser.parse_args(argv)
 
@@ -1299,6 +1356,8 @@ def main(argv: list[str] | None = None) -> int:
 
         asyncio.run(slack_main())
         return 0
+    if args.command == "web":
+        return _cmd_web(args)
     if args.command == "brief":
         rc = _apply_config_override(args)
         if rc is not None:
