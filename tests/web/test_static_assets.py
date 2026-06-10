@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 # Routes that must respond 200 once T1 lands. Keep in sync with the files
 # vendored under src/argos/web/static/.
 STATIC_ROUTES = [
+    "/static/css/argos.css",
     "/static/img/logo.svg",
     "/static/fonts/Fraunces-Regular.woff2",
     "/static/fonts/Fraunces-SemiBold.woff2",
@@ -48,3 +49,20 @@ def test_woff2_file_is_nonempty(web_client: TestClient, route: str) -> None:
         f"{route} is suspiciously small ({len(response.content)} bytes); "
         "verify the font was actually downloaded, not stubbed."
     )
+
+
+def test_argos_css_contains_required_tokens(web_client: TestClient) -> None:
+    """argos.css must declare the Midnight Observatory token set."""
+    body = web_client.get("/static/css/argos.css").text
+    for token in ("--bg", "--ink", "--brass", "--main", "--alpha"):
+        assert token in body, f"missing token {token}"
+    assert "#C9A86A" in body
+    assert "@font-face" in body
+    assert "Fraunces" in body
+    assert "Gowun Batang" in body
+    assert "IBM Plex Sans KR" in body
+    assert "IBM Plex Mono" in body
+    assert ".card" in body or ".ncard" in body
+    assert "conic-gradient" in body
+    assert "backdrop-filter" in body
+    assert "prefers-reduced-motion" in body

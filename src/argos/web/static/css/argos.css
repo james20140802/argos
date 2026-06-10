@@ -1,0 +1,255 @@
+/* Midnight Observatory design system — ARG-134
+ *
+ * Layers, in order:
+ *   1. Token layer        — CSS custom properties
+ *   2. @font-face layer   — vendored self-hosted fonts (ARG-145)
+ *   3. Base layer         — resets, body atmosphere
+ *   4. Atmosphere layer   — .sky (constellation) + .grain (noise)
+ *   5. Component layer    — masthead, card (.ncard), tag, trust dial, tabbar
+ *   6. Motion layer       — .rise stagger with prefers-reduced-motion opt-out
+ *
+ * Visual parity baseline: docs/design/argos-web-pwa-mockup.html
+ */
+
+/* === 1. Tokens === */
+:root {
+  --bg: #0b0d12;
+  --bg2: #0e1118;
+  --ink: #ECE7DD;
+  --muted: #8b9098;
+  --faint: #5b6068;
+  --line: rgba(236, 231, 221, 0.09);
+  --brass: #C9A86A;
+  --brass-hi: #E7C98B;
+  --main: #74B7C7;   /* Mainstream */
+  --alpha: #B790E4;  /* Alpha */
+}
+
+/* === 2. @font-face — paths are relative to this file === */
+@font-face {
+  font-family: "Fraunces";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/Fraunces-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Fraunces";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("../fonts/Fraunces-SemiBold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Gowun Batang";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/GowunBatang-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Gowun Batang";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../fonts/GowunBatang-Bold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans KR";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/IBMPlexSansKR-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans KR";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("../fonts/IBMPlexSansKR-SemiBold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/IBMPlexMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../fonts/IBMPlexMono-Medium.woff2") format("woff2");
+}
+
+/* === 3. Base === */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(120% 60% at 50% -8%, rgba(201, 168, 106, 0.10), transparent 55%),
+    radial-gradient(80% 50% at 85% 108%, rgba(116, 183, 199, 0.06), transparent 60%),
+    linear-gradient(180deg, var(--bg2), var(--bg) 42%);
+  color: var(--ink);
+  font-family: "IBM Plex Sans KR", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* === 4. Atmosphere — constellation + grain === */
+.sky {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    radial-gradient(1.2px 1.2px at 12% 16%, rgba(255, 255, 255, 0.30), transparent),
+    radial-gradient(1px 1px at 80% 10%, rgba(255, 255, 255, 0.20), transparent),
+    radial-gradient(1px 1px at 62% 30%, rgba(255, 255, 255, 0.15), transparent),
+    radial-gradient(1.3px 1.3px at 28% 70%, rgba(255, 255, 255, 0.18), transparent),
+    radial-gradient(1px 1px at 90% 64%, rgba(255, 255, 255, 0.13), transparent);
+}
+.grain {
+  position: fixed; inset: 0; pointer-events: none; z-index: 1;
+  opacity: 0.045; mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* === 5. Components === */
+
+/* Masthead — top of base.html */
+.masthead {
+  position: relative; z-index: 2;
+  display: flex; align-items: center; gap: 10px;
+  padding: 22px 20px 10px;
+}
+.masthead .mark {
+  width: 30px; height: 30px;
+  filter: drop-shadow(0 0 8px rgba(201, 168, 106, 0.35));
+}
+.masthead .wordmark {
+  font: 600 17px/1 "Fraunces", serif;
+  letter-spacing: 0.26em; text-indent: 0.26em;
+}
+.masthead .kicker {
+  font: 500 8.5px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.36em; color: var(--brass);
+  text-transform: uppercase; margin-top: 4px;
+}
+
+/* Page content container — children render inside this */
+.page {
+  position: relative; z-index: 2;
+  max-width: 760px; margin: 0 auto;
+  padding: 8px 20px 96px; /* bottom padding clears the fixed tabbar */
+}
+
+/* Category tag — small-caps style for Mainstream / Alpha */
+.tag {
+  font: 600 9.5px/1 "IBM Plex Sans KR", sans-serif;
+  letter-spacing: 0.2em; text-transform: uppercase;
+  padding: 5px 10px; border-radius: 7px;
+  border: 1px solid; backdrop-filter: blur(6px);
+  display: inline-block;
+}
+.tag.main {
+  color: #cdeff7;
+  border-color: rgba(116, 183, 199, 0.5);
+  background: rgba(116, 183, 199, 0.22);
+}
+.tag.alpha {
+  color: #ead9ff;
+  border-color: rgba(183, 144, 228, 0.5);
+  background: rgba(183, 144, 228, 0.22);
+}
+.tag.flat.main {
+  color: var(--main);
+  background: rgba(116, 183, 199, 0.10);
+  backdrop-filter: none;
+}
+.tag.flat.alpha {
+  color: var(--alpha);
+  background: rgba(183, 144, 228, 0.10);
+  backdrop-filter: none;
+}
+
+/* Trust conic dial — pure CSS, --v is the score 0-100 */
+.dial {
+  width: 24px; height: 24px; border-radius: 50%;
+  background: conic-gradient(var(--brass) calc(var(--v, 0) * 1%), rgba(236, 231, 221, 0.12) 0);
+  -webkit-mask: radial-gradient(farthest-side, #0000 calc(100% - 3.5px), #000 calc(100% - 3.5px));
+          mask: radial-gradient(farthest-side, #0000 calc(100% - 3.5px), #000 calc(100% - 3.5px));
+}
+.dialwrap {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(11, 13, 18, 0.5);
+  border-radius: 999px; padding: 4px 8px 4px 5px;
+  backdrop-filter: blur(6px);
+}
+.tnum {
+  font: 500 11px/1 "IBM Plex Mono", monospace;
+  color: var(--ink);
+}
+
+/* Card — news / portfolio item */
+.card {
+  border-radius: 18px; border: 1px solid var(--line); overflow: hidden;
+  background: linear-gradient(180deg, rgba(236, 231, 221, 0.04), rgba(236, 231, 221, 0.012));
+}
+.card .cover {
+  position: relative; height: 150px;
+  background-size: cover; background-position: center;
+}
+.card .cover .scrim { position: absolute; inset: 0; }
+.card .body { padding: 14px 15px 13px; }
+.card .headline {
+  font: 600 18.5px/1.28 "Fraunces", "Gowun Batang", serif;
+  font-optical-sizing: auto;
+  letter-spacing: -0.01em; margin: 0 0 8px;
+}
+.card .summary {
+  font: 400 13px/1.6 "IBM Plex Sans KR", sans-serif;
+  color: #a3a8b1; margin: 0 0 14px;
+}
+
+/* Glass bottom tabbar — fixed at viewport bottom */
+.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  z-index: 3;
+  display: flex; gap: 6px;
+  padding: 7px;
+  margin: 0 auto;
+  max-width: 760px;
+  border-radius: 16px 16px 0 0;
+  background: rgba(11, 13, 18, 0.6);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--line);
+  border-bottom: none;
+}
+.tabbar .tab {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 10px 8px;
+  border-radius: 11px;
+  font: 500 10.5px/1 "IBM Plex Sans KR", sans-serif;
+  color: var(--faint);
+  text-decoration: none;
+}
+.tabbar .tab .ic { font-size: 14px; }
+.tabbar .tab[aria-current="page"] {
+  color: var(--ink);
+  background: rgba(236, 231, 221, 0.06);
+}
+.tabbar .tab[aria-current="page"] .ic { color: var(--brass); }
+
+/* === 6. Motion — staggered reveal === */
+.rise {
+  opacity: 0;
+  animation: rise 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+  animation-delay: var(--d, 0s);
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rise { animation: none; opacity: 1; }
+}
