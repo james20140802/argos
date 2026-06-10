@@ -147,7 +147,7 @@ body {
   font: 600 9.5px/1 "IBM Plex Sans KR", sans-serif;
   letter-spacing: 0.2em; text-transform: uppercase;
   padding: 5px 10px; border-radius: 7px;
-  border: 1px solid; backdrop-filter: blur(6px);
+  border: 1px solid; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   display: inline-block;
 }
 .tag.main {
@@ -163,11 +163,13 @@ body {
 .tag.flat.main {
   color: var(--main);
   background: rgba(116, 183, 199, 0.10);
+  -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
 .tag.flat.alpha {
   color: var(--alpha);
   background: rgba(183, 144, 228, 0.10);
+  -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
 
@@ -182,6 +184,7 @@ body {
   display: inline-flex; align-items: center; gap: 6px;
   background: rgba(11, 13, 18, 0.5);
   border-radius: 999px; padding: 4px 8px 4px 5px;
+  -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
 .tnum {
@@ -220,6 +223,7 @@ body {
   max-width: 760px;
   border-radius: 16px 16px 0 0;
   background: rgba(11, 13, 18, 0.6);
+  -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
   border: 1px solid var(--line);
   border-bottom: none;
