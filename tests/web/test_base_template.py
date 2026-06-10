@@ -3,16 +3,25 @@
 Strategy: register a temporary child template + FastAPI route at
 test time so we exercise the real Jinja2 environment from
 build_web_app() instead of asserting against a string snapshot.
+
+The child template lives in ``tmp_path`` (never the source tree). The
+app's Jinja2 loader is pointed at ``[tmp_path, <package templates>]`` so
+``base.html`` still resolves from the package while the child resolves
+from the temp dir. Because nothing is written under ``src/``, a hard
+kill mid-test cannot leave a stray template in the committed tree.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 from fastapi import Request
 from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 from fastapi.testclient import TestClient
 
+import argos.web
 from argos.web.app import build_web_app
 
 
@@ -24,26 +33,29 @@ CHILD_TEMPLATE_BODY = """{% extends "base.html" %}
 
 @pytest.fixture()
 def app_with_child_template(tmp_path: Path):
-    """Drop a test-only child template into the live templates dir.
+    """Build the web app with a tmp-only child template mounted alongside base.
 
-    Cleaned up after the test so the working tree stays untouched.
+    Exposes the child at ``/__test_child__`` plus the real tab paths
+    ``/feed`` and ``/portfolio`` so base.html's ``aria-current`` logic
+    (which keys off ``request.url.path``) is actually exercised.
     """
-    templates_dir = Path(__file__).parent.parent.parent / "src" / "argos" / "web" / "templates"
-    child = templates_dir / CHILD_TEMPLATE_NAME
+    child = tmp_path / CHILD_TEMPLATE_NAME
     child.write_text(CHILD_TEMPLATE_BODY, encoding="utf-8")
-    try:
-        app = build_web_app()
 
-        @app.get("/__test_child__", response_class=HTMLResponse)
-        async def _render_child(request: Request) -> HTMLResponse:
-            templates = app.state.templates
-            return templates.TemplateResponse(
-                request, CHILD_TEMPLATE_NAME, {}
-            )
+    package_templates = Path(argos.web.__file__).parent / "templates"
+    app = build_web_app()
+    # Override the package-only loader with [tmp_path, package] so the
+    # child resolves from tmp_path and base.html from the package dir.
+    app.state.templates = Jinja2Templates(directory=[tmp_path, package_templates])
 
-        yield TestClient(app)
-    finally:
-        child.unlink(missing_ok=True)
+    async def _render_child(request: Request) -> HTMLResponse:
+        return app.state.templates.TemplateResponse(request, CHILD_TEMPLATE_NAME, {})
+
+    app.get("/__test_child__", response_class=HTMLResponse)(_render_child)
+    app.get("/feed", response_class=HTMLResponse)(_render_child)
+    app.get("/portfolio", response_class=HTMLResponse)(_render_child)
+
+    return TestClient(app)
 
 
 def test_base_renders_masthead(app_with_child_template: TestClient) -> None:
@@ -87,3 +99,27 @@ def test_base_includes_sky_and_grain_atmosphere(
     html = app_with_child_template.get("/__test_child__").text
     assert 'class="sky"' in html
     assert 'class="grain"' in html
+
+
+@pytest.mark.parametrize(
+    ("path", "active_href", "inactive_href"),
+    [
+        ("/feed", "/feed", "/portfolio"),
+        ("/portfolio", "/portfolio", "/feed"),
+    ],
+)
+def test_active_tab_marked_aria_current(
+    app_with_child_template: TestClient,
+    path: str,
+    active_href: str,
+    inactive_href: str,
+) -> None:
+    """The tab matching the current path carries aria-current; the other doesn't."""
+    html = app_with_child_template.get(path).text
+    # Exactly one tab is marked current.
+    assert html.count('aria-current="page"') == 1
+    # The active tab's anchor carries it; the inactive one does not.
+    assert re.search(rf'href="{re.escape(active_href)}"[^>]*aria-current="page"', html)
+    assert not re.search(
+        rf'href="{re.escape(inactive_href)}"[^>]*aria-current="page"', html
+    )

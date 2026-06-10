@@ -5,7 +5,7 @@
  *   2. @font-face layer   — vendored self-hosted fonts (ARG-145)
  *   3. Base layer         — resets, body atmosphere
  *   4. Atmosphere layer   — .sky (constellation) + .grain (noise)
- *   5. Component layer    — masthead, card (.ncard), tag, trust dial, tabbar
+ *   5. Component layer    — masthead, card (.card), tag, trust dial, tabbar
  *   6. Motion layer       — .rise stagger with prefers-reduced-motion opt-out
  *
  * Visual parity baseline: docs/design/argos-web-pwa-mockup.html
