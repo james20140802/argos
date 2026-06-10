@@ -695,7 +695,7 @@ def _cmd_web(args: argparse.Namespace) -> int:
     if rc is not None:
         return rc
 
-    host = args.host if args.host is not None else settings.user.web.host
+    host = args.host or settings.user.web.host
     port = args.port if args.port is not None else settings.user.web.port
 
     app = build_web_app()

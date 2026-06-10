@@ -31,7 +31,12 @@ def build_web_app() -> FastAPI:
     a configured Jinja2 templates environment on ``app.state.templates``
     so request handlers added by later issues can render views.
     """
-    app = FastAPI(title="Argos Web", docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="Argos Web",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
 
     app.mount(
         "/static",

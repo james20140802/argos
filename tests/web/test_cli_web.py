@@ -33,8 +33,18 @@ def test_web_cli_flags_override_config():
     assert kwargs["port"] == 9000
 
 
-def test_web_cli_rejects_invalid_port():
-    """argparse rejects non-positive ports."""
+def test_web_cli_empty_host_falls_back_to_config():
+    """--host "" is falsy and must not leak through to uvicorn as a blank bind."""
+    with patch("uvicorn.run") as mock_run:
+        rc = main(["web", "--host", ""])
+    assert rc == 0
+    _, kwargs = mock_run.call_args
+    assert kwargs["host"] == "127.0.0.1"
+
+
+@pytest.mark.parametrize("port", ["0", "65536"])
+def test_web_cli_rejects_out_of_range_port(port):
+    """argparse rejects ports outside 1..65535 at both bounds."""
     with patch("uvicorn.run"):
         with pytest.raises(SystemExit):
-            main(["web", "--port", "0"])
+            main(["web", "--port", port])
