@@ -17,6 +17,7 @@ STATIC_ROUTES = [
     "/static/fonts/IBMPlexSansKR-SemiBold.woff2",
     "/static/fonts/IBMPlexMono-Regular.woff2",
     "/static/fonts/IBMPlexMono-Medium.woff2",
+    "/static/js/htmx.min.js",
 ]
 
 FONT_ROUTES = [r for r in STATIC_ROUTES if r.endswith(".woff2")]
