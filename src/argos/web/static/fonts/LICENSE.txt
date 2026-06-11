@@ -1,0 +1,27 @@
+Vendored web fonts — licensing & attribution
+=============================================
+
+All font files in this directory are licensed under the
+SIL Open Font License, Version 1.1 (OFL-1.1).
+Full license text: https://openfontlicense.org
+(also: https://scripts.sil.org/OFL)
+
+Per OFL-1.1, the fonts may be bundled and redistributed (including with
+the Argos web app) provided this notice is retained. The Reserved Font
+Names below must not be applied to modified versions.
+
+Families
+--------
+Fraunces           — © The Fraunces Project Authors (Undercase Type).
+                     Reserved Font Name "Fraunces".
+                     https://github.com/undercasetype/Fraunces
+Gowun Batang       — © The Gowun Batang Project Authors.
+                     Reserved Font Name "Gowun Batang".
+                     https://fonts.google.com/specimen/Gowun+Batang
+IBM Plex Sans KR   — © 2017 IBM Corp. Reserved Font Name "IBM Plex".
+                     https://github.com/IBM/plex
+IBM Plex Mono      — © 2017 IBM Corp. Reserved Font Name "IBM Plex".
+                     https://github.com/IBM/plex
+
+Only the weights actually used by the design system are vendored
+(see @font-face declarations in ../css/argos.css).

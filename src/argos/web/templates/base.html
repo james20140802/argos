@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0d12">
+  <title>{% block title %}ARGOS{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/argos.css">
+  <link rel="preload" as="font" type="font/woff2"
+        href="/static/fonts/Fraunces-SemiBold.woff2" crossorigin>
+  <link rel="preload" as="font" type="font/woff2"
+        href="/static/fonts/IBMPlexSansKR-Regular.woff2" crossorigin>
+  <link rel="preload" as="font" type="font/woff2"
+        href="/static/fonts/IBMPlexMono-Regular.woff2" crossorigin>
+</head>
+<body>
+  <div class="sky" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="masthead">
+    <img class="mark" src="/static/img/logo.svg" alt="" width="30" height="30">
+    <div>
+      <div class="wordmark">ARGOS</div>
+      <div class="kicker">Observatory</div>
+    </div>
+  </header>
+
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+
+  <nav class="tabbar" aria-label="기본 내비게이션">
+    <a class="tab" href="/feed"
+       {% if request.url.path == '/feed' or request.url.path.startswith('/feed/') %}aria-current="page"{% endif %}>
+      <span class="ic" aria-hidden="true">◎</span>관측 피드
+    </a>
+    <a class="tab" href="/portfolio"
+       {% if request.url.path == '/portfolio' or request.url.path.startswith('/portfolio/') %}aria-current="page"{% endif %}>
+      <span class="ic" aria-hidden="true">✦</span>포트폴리오
+    </a>
+  </nav>
+
+  <script src="/static/js/htmx.min.js" defer></script>
+</body>
+</html>
