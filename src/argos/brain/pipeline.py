@@ -24,6 +24,7 @@ async def run_brain_pipeline(
     *,
     source_category: CategoryType | None = None,
     published_at: datetime | None = None,
+    image_url: str | None = None,
 ) -> BrainState:
     # source_category is an optional hint from the fetcher (e.g. RSS in ARG-52,
     # arXiv in ARG-53) indicating which category the source leans towards.
@@ -45,6 +46,7 @@ async def run_brain_pipeline(
         "source_category": source_category,
         "category": None,
         "published_at": published_at,
+        "image_url": image_url,
     }
     triaged = await triage_node(initial)
     if not triaged["is_valid"]:
@@ -96,6 +98,7 @@ def _make_initial_state(item: dict) -> BrainState:
         "source_category": source_category,
         "category": None,
         "published_at": item.get("_published_at"),
+        "image_url": item.get("image_url"),
     }
 
 

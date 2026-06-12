@@ -83,6 +83,7 @@ async def save_node(
         category=state.get("category") or CategoryType.ALPHA,
         trust_score=state.get("trust_score"),
         published_at=state.get("published_at"),
+        image_url=state.get("image_url"),
     )
 
     extracted_info = state.get("extracted_info") or {}

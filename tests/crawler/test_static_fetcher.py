@@ -643,3 +643,175 @@ async def test_fetch_hackernews_top_text_html_does_not_contaminate_derived_title
     assert "<i>" not in first_line
     # The text body content should still appear in raw_content (after the newline)
     assert "DeepSeek" in item["raw_content"]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# ARG-150: og:image extraction during external article body enrichment
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def test_fetch_hackernews_top_extracts_og_image_from_external_article() -> None:
+    article_html = """
+        <html><head>
+            <meta property="og:image" content="https://cdn.example.com/cover.jpg">
+        </head><body><article>
+            <h1>Headline</h1>
+            <p>Detailed analysis.</p>
+        </article></body></html>
+    """
+    top_ids = [42]
+    item_payload = {
+        "id": 42,
+        "title": "Cool announcement",
+        "url": "https://example.com/post",
+        "text": "",
+    }
+
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/42.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        respx.get("https://example.com/post").mock(
+            return_value=httpx.Response(
+                200, text=article_html, headers={"content-type": "text/html"}
+            )
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert result[0]["image_url"] == "https://cdn.example.com/cover.jpg"
+
+
+async def test_fetch_hackernews_top_image_url_is_none_when_no_og_image() -> None:
+    article_html = (
+        "<html><body><article><h1>Headline</h1>"
+        "<p>No og:image here.</p></article></body></html>"
+    )
+    top_ids = [43]
+    item_payload = {
+        "id": 43,
+        "title": "Plain article",
+        "url": "https://example.com/plain",
+        "text": "",
+    }
+
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/43.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        respx.get("https://example.com/plain").mock(
+            return_value=httpx.Response(
+                200, text=article_html, headers={"content-type": "text/html"}
+            )
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert result[0].get("image_url") is None
+
+
+async def test_fetch_hackernews_top_image_url_falls_back_to_twitter_image() -> None:
+    article_html = (
+        '<html><head>'
+        '<meta name="twitter:image" content="https://cdn.example.com/tw.jpg">'
+        '</head><body><article><p>Body.</p></article></body></html>'
+    )
+    top_ids = [44]
+    item_payload = {
+        "id": 44,
+        "title": "Twitter image only",
+        "url": "https://example.com/tw",
+        "text": "",
+    }
+
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/44.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        respx.get("https://example.com/tw").mock(
+            return_value=httpx.Response(
+                200, text=article_html, headers={"content-type": "text/html"}
+            )
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert result[0]["image_url"] == "https://cdn.example.com/tw.jpg"
+
+
+async def test_fetch_hackernews_top_image_url_rejects_data_uri(monkeypatch) -> None:
+    """Pipeline must not raise on an invalid (data:) og:image — falls back to None."""
+    article_html = (
+        '<html><head>'
+        '<meta property="og:image" content="data:image/png;base64,abc">'
+        '</head><body><article><p>Body.</p></article></body></html>'
+    )
+    top_ids = [45]
+    item_payload = {
+        "id": 45,
+        "title": "Bad og:image",
+        "url": "https://example.com/bad",
+        "text": "",
+    }
+
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/45.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        respx.get("https://example.com/bad").mock(
+            return_value=httpx.Response(
+                200, text=article_html, headers={"content-type": "text/html"}
+            )
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert result[0].get("image_url") is None
+
+
+async def test_fetch_hackernews_top_image_url_none_when_body_fetch_fails(
+    monkeypatch,
+) -> None:
+    """When the external body fetch fails entirely, image_url must be None."""
+    monkeypatch.setattr(
+        "argos.crawler.static_fetcher.asyncio.sleep", AsyncMock()
+    )
+    top_ids = [46]
+    item_payload = {
+        "id": 46,
+        "title": "Body failure",
+        "url": "https://broken.example.com/x",
+        "text": "",
+    }
+
+    with respx.mock:
+        respx.get("https://hacker-news.firebaseio.com/v0/topstories.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(top_ids))
+        )
+        respx.get("https://hacker-news.firebaseio.com/v0/item/46.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(item_payload))
+        )
+        respx.get("https://broken.example.com/x").mock(
+            return_value=httpx.Response(500, text="boom")
+        )
+        async with httpx.AsyncClient() as client:
+            result = await fetch_hackernews_top(client, limit=1)
+
+    assert len(result) == 1
+    assert result[0].get("image_url") is None
