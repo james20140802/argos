@@ -14,6 +14,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from readability import Document
 
+from argos.crawler._og_image import extract_og_image
 from argos.crawler._robots import _robots_cache, is_robots_allowed
 from argos.crawler.user_agents import random_user_agent
 
@@ -170,10 +171,12 @@ async def fetch_dynamic_page(
                     return None
             title, raw_content = extract_main_content(html)
             published_at = _parse_published_at_from_html(html)
+            image_url = extract_og_image(html, final_url)
             return {
                 "title": title,
                 "source_url": final_url,
                 "raw_content": raw_content,
+                "image_url": image_url,
                 "_published_at": published_at,
             }
         except PlaywrightTimeoutError as exc:
