@@ -178,6 +178,7 @@ async def _upsert_crawl_queue(session: AsyncSession, items: list[dict]) -> int:
         {
             "source_url": item["source_url"],
             "raw_content": item.get("raw_content"),
+            "image_url": item.get("image_url"),
             "source": item.get("_source"),
             "source_category": (
                 item["_source_category"].value
@@ -288,6 +289,7 @@ async def run_full_pipeline(
         {
             "source_url": row.source_url,
             "raw_content": row.raw_content or "",
+            "image_url": getattr(row, "image_url", None),
             "_source": row.source,
             "_source_category": (
                 CategoryType(row.source_category) if row.source_category else None

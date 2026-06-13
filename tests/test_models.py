@@ -66,6 +66,12 @@ class TestCrawlQueueModel:
         col = mapper.columns["raw_content"]
         assert col.nullable is True
 
+    def test_image_url_is_nullable_varchar_2048(self):
+        mapper = inspect(CrawlQueue)
+        col = mapper.columns["image_url"]
+        assert col.nullable is True
+        assert col.type.length == 2048
+
     def test_queued_at_is_not_nullable(self):
         mapper = inspect(CrawlQueue)
         col = mapper.columns["queued_at"]
@@ -122,6 +128,13 @@ class TestTechItemModel:
         assert published_at_col.nullable is True
         assert published_at_col.type.timezone is True
         assert published_at_col.index is True
+
+    def test_image_url_column(self):
+        """image_url은 nullable VARCHAR(2048)이어야 한다 (og:image 저장용)."""
+        mapper = inspect(TechItem)
+        image_url_col = mapper.columns["image_url"]
+        assert image_url_col.nullable is True
+        assert image_url_col.type.length == 2048
 
     def test_relationships_defined(self):
         mapper = inspect(TechItem)

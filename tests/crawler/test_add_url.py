@@ -681,3 +681,149 @@ async def test_static_fetch_no_redirect_issues_single_request() -> None:
     # Only the entry-point SSRF check should have run when there's no redirect.
     assert safe_url.await_count == 1
     assert get_mock.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# ARG-152: add_url forwards image_url from fetcher to brain pipeline
+# ---------------------------------------------------------------------------
+
+
+async def test_add_url_forwards_image_url_to_brain_pipeline() -> None:
+    """image_url from the fetcher must be forwarded as a kwarg to run_brain_pipeline."""
+    session = _make_session()
+    new_id = uuid.uuid4()
+    brain_state = {
+        "is_valid": True,
+        "saved": True,
+        "source_url": "https://example.com/page",
+    }
+    brain_mock = AsyncMock(return_value=brain_state)
+    with (
+        _patch_safe_url(True),
+        _patch_robots(True),
+        _patch_dedup_lookup(None, new_id),
+        _patch_fetch(
+            {
+                "title": "t",
+                "raw_content": "body",
+                "source_url": "https://example.com/page",
+                "image_url": "https://cdn.example.com/cover.jpg",
+            }
+        ),
+        patch("argos.crawler.add_url.run_brain_pipeline", new=brain_mock),
+    ):
+        r = await add_url("https://example.com/page", session)
+
+    assert r.status is AddUrlStatus.CREATED
+    brain_mock.assert_awaited_once()
+    kwargs = brain_mock.call_args.kwargs
+    assert kwargs.get("image_url") == "https://cdn.example.com/cover.jpg"
+
+
+async def test_add_url_forwards_none_image_url_when_fetcher_returned_none() -> None:
+    """A fetcher dict without image_url surfaces None to run_brain_pipeline."""
+    session = _make_session()
+    new_id = uuid.uuid4()
+    brain_state = {
+        "is_valid": True,
+        "saved": True,
+        "source_url": "https://example.com/page",
+    }
+    brain_mock = AsyncMock(return_value=brain_state)
+    with (
+        _patch_safe_url(True),
+        _patch_robots(True),
+        _patch_dedup_lookup(None, new_id),
+        _patch_fetch(
+            {
+                "title": "t",
+                "raw_content": "body",
+                "source_url": "https://example.com/page",
+            }
+        ),
+        patch("argos.crawler.add_url.run_brain_pipeline", new=brain_mock),
+    ):
+        await add_url("https://example.com/page", session)
+
+    brain_mock.assert_awaited_once()
+    assert brain_mock.call_args.kwargs.get("image_url") is None
+
+
+async def test_fetch_url_content_extracts_image_url_via_static_path() -> None:
+    """_fetch_url_content's static path calls extract_og_image on response.text."""
+    import httpx
+
+    from argos.crawler.add_url import _fetch_url_content
+
+    html = (
+        '<html><head>'
+        '<meta property="og:image" content="https://cdn.example.com/cover.jpg">'
+        '</head><body><article><h1>Headline</h1>'
+        '<p>Substantive body text.</p></article></body></html>'
+    )
+
+    async def _fake_safe_fetch(url: str):
+        return httpx.Response(
+            200,
+            text=html,
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", url),
+        )
+
+    with patch("argos.crawler.add_url._safe_static_fetch", new=_fake_safe_fetch):
+        result = await _fetch_url_content("https://example.com/page")
+
+    assert result is not None
+    assert result["image_url"] == "https://cdn.example.com/cover.jpg"
+
+
+async def test_fetch_url_content_image_url_is_none_when_no_og_image() -> None:
+    """Static path returns image_url=None when response HTML has no og:image."""
+    import httpx
+
+    from argos.crawler.add_url import _fetch_url_content
+
+    html = (
+        "<html><body><article><h1>Headline</h1>"
+        "<p>Substantive body text.</p></article></body></html>"
+    )
+
+    async def _fake_safe_fetch(url: str):
+        return httpx.Response(
+            200,
+            text=html,
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", url),
+        )
+
+    with patch("argos.crawler.add_url._safe_static_fetch", new=_fake_safe_fetch):
+        result = await _fetch_url_content("https://example.com/page")
+
+    assert result is not None
+    assert result.get("image_url") is None
+
+
+async def test_fetch_url_content_dynamic_fallback_preserves_image_url() -> None:
+    """Dynamic-fetcher fallback path forwards image_url from fetch_dynamic_page."""
+    from argos.crawler.add_url import _fetch_url_content
+
+    async def _fake_safe_fetch(url: str):
+        return None  # force dynamic fallback
+
+    async def _fake_dynamic(url: str):
+        return {
+            "title": "Dynamic title",
+            "source_url": url,
+            "raw_content": "Dynamic body content.",
+            "image_url": "https://cdn.example.com/spa.jpg",
+            "_published_at": None,
+        }
+
+    with (
+        patch("argos.crawler.add_url._safe_static_fetch", new=_fake_safe_fetch),
+        patch("argos.crawler.add_url.fetch_dynamic_page", new=_fake_dynamic),
+    ):
+        result = await _fetch_url_content("https://example.com/spa")
+
+    assert result is not None
+    assert result["image_url"] == "https://cdn.example.com/spa.jpg"

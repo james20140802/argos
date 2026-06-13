@@ -34,3 +34,6 @@ class BrainState(TypedDict):
     # arXiv published_parsed, GitHub API created_at, OpenGraph article:published_time).
     # None when the source did not provide a date or extraction failed.
     published_at: NotRequired[datetime | None]
+    # og:image URL extracted by the fetcher (ARG-135). None when the source
+    # had no og:image / twitter:image meta or the value failed validation.
+    image_url: NotRequired[str | None]

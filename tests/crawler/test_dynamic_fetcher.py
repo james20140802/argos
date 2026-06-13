@@ -696,3 +696,86 @@ async def test_fetch_dynamic_page_includes_published_at(monkeypatch):
     assert result is not None
     assert "_published_at" in result
     assert result["_published_at"] == datetime(2024, 5, 10, 9, 0, 0, tzinfo=timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# ARG-151: og:image extraction in fetch_dynamic_page
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_dynamic_page_extracts_og_image(_public_dns):
+    html = (
+        '<html><head>'
+        '<meta property="og:image" content="https://cdn.example.com/cover.jpg">'
+        '</head><body><article><p>Body</p></article></body></html>'
+    )
+    mock_pw_cm, _ = _make_playwright_mock(html)
+
+    with patch("argos.crawler.dynamic_fetcher.async_playwright", return_value=mock_pw_cm):
+        result = await fetch_dynamic_page("https://example.com/article")
+
+    assert result is not None
+    assert result["image_url"] == "https://cdn.example.com/cover.jpg"
+
+
+@pytest.mark.asyncio
+async def test_fetch_dynamic_page_falls_back_to_twitter_image(_public_dns):
+    html = (
+        '<html><head>'
+        '<meta name="twitter:image" content="https://cdn.example.com/tw.jpg">'
+        '</head><body><article><p>Body</p></article></body></html>'
+    )
+    mock_pw_cm, _ = _make_playwright_mock(html)
+
+    with patch("argos.crawler.dynamic_fetcher.async_playwright", return_value=mock_pw_cm):
+        result = await fetch_dynamic_page("https://example.com/article")
+
+    assert result is not None
+    assert result["image_url"] == "https://cdn.example.com/tw.jpg"
+
+
+@pytest.mark.asyncio
+async def test_fetch_dynamic_page_image_url_is_none_when_absent(_public_dns):
+    html = "<html><body><article><h1>Headline</h1><p>Body</p></article></body></html>"
+    mock_pw_cm, _ = _make_playwright_mock(html)
+
+    with patch("argos.crawler.dynamic_fetcher.async_playwright", return_value=mock_pw_cm):
+        result = await fetch_dynamic_page("https://example.com/article")
+
+    assert result is not None
+    assert result.get("image_url") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_dynamic_page_image_url_none_for_invalid_scheme(_public_dns):
+    html = (
+        '<html><head>'
+        '<meta property="og:image" content="data:image/png;base64,xyz">'
+        '</head><body><article><p>Body</p></article></body></html>'
+    )
+    mock_pw_cm, _ = _make_playwright_mock(html)
+
+    with patch("argos.crawler.dynamic_fetcher.async_playwright", return_value=mock_pw_cm):
+        result = await fetch_dynamic_page("https://example.com/article")
+
+    assert result is not None
+    assert result.get("image_url") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_dynamic_page_resolves_relative_og_image(_public_dns):
+    html = (
+        '<html><head>'
+        '<meta property="og:image" content="/static/cover.jpg">'
+        '</head><body><article><p>Body</p></article></body></html>'
+    )
+    mock_pw_cm, _ = _make_playwright_mock(
+        html, page_url="https://example.com/blog/post"
+    )
+
+    with patch("argos.crawler.dynamic_fetcher.async_playwright", return_value=mock_pw_cm):
+        result = await fetch_dynamic_page("https://example.com/blog/post")
+
+    assert result is not None
+    assert result["image_url"] == "https://example.com/static/cover.jpg"

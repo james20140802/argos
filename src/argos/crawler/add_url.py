@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.pipeline import run_brain_pipeline
+from argos.crawler._og_image import extract_og_image
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
 from argos.crawler.dynamic_fetcher import (
     _is_safe_url,
@@ -258,6 +259,7 @@ async def _fetch_url_content(url: str) -> dict | None:
                     "raw_content": _truncate_raw_content(body.strip()),
                     "source_url": final_url,
                     "_published_at": _parse_published_at_from_html(response.text),
+                    "image_url": extract_og_image(response.text, final_url),
                 }
 
     # Static path returned no usable content — fall back to dynamic.
@@ -269,6 +271,7 @@ async def _fetch_url_content(url: str) -> dict | None:
         "raw_content": _truncate_raw_content((dynamic.get("raw_content") or "").strip()),
         "source_url": dynamic.get("source_url") or url,
         "_published_at": dynamic.get("_published_at"),
+        "image_url": dynamic.get("image_url"),
     }
 
 
@@ -399,12 +402,14 @@ async def add_url(url: str, session: AsyncSession) -> AddUrlResult:
 
     # ── 6. Brain pipeline ─────────────────────────────────────────────────
     published_at = fetched.get("_published_at")
+    image_url = fetched.get("image_url")
     try:
         state = await run_brain_pipeline(
             raw_text=raw_content,
             source_url=final_url,
             session=session,
             published_at=published_at,
+            image_url=image_url,
         )
     except Exception as exc:  # noqa: BLE001 — last-resort guard
         logger.warning(

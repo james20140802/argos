@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.crawler._html_utils import clean_title
+from argos.crawler._og_image import extract_og_image
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
 from argos.crawler.dynamic_fetcher import _is_safe_url, extract_main_content
 from argos.crawler.user_agents import random_user_agent
@@ -136,18 +137,27 @@ async def fetch_github_trending(
     return items
 
 
-async def _fetch_article_body(client: httpx.AsyncClient, url: str) -> str:
+async def _fetch_article_body(
+    client: httpx.AsyncClient, url: str
+) -> tuple[str, str | None]:
+    """Return (article body text, og:image URL or None).
+
+    Returns (\"\", None) when the URL is unsafe, the request fails, or the
+    response is non-HTML. og:image extraction is best effort: a body without
+    a usable image just yields (body, None).
+    """
     if not await _is_safe_url(url):
-        return ""
+        return "", None
     try:
         response = await _get_with_retry(client, url)
     except (httpx.HTTPError, RobotsDisallowed):
-        return ""
+        return "", None
     content_type = response.headers.get("content-type", "").lower()
     if content_type and "html" not in content_type:
-        return ""
+        return "", None
     _title, body = extract_main_content(response.text)
-    return body.strip()
+    image_url = extract_og_image(response.text, str(response.url) or url)
+    return body.strip(), image_url
 
 
 async def fetch_hackernews_top(
@@ -200,10 +210,11 @@ async def fetch_hackernews_top(
             if not isinstance(text, str):
                 text = ""
             title = clean_title(title)
+            image_url: str | None = None
             if text:
                 raw_content = f"{title}\n\n{clean_title(text)}".strip()
             elif is_external:
-                body = await _fetch_article_body(client, url)
+                body, image_url = await _fetch_article_body(client, url)
                 raw_content = f"{title}\n\n{body}".strip() if body else title
             else:
                 raw_content = title
@@ -218,6 +229,7 @@ async def fetch_hackernews_top(
                 "title": title,
                 "source_url": url,
                 "raw_content": _truncate_raw_content(raw_content),
+                "image_url": image_url,
                 "_published_at": published_at,
             }
 

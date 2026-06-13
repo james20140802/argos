@@ -526,6 +526,25 @@ async def test_save_node_persists_null_published_at_by_default():
 
 
 @pytest.mark.asyncio
+async def test_save_node_persists_image_url():
+    """ARG-135: image_url from BrainState lands on TechItem."""
+    session = _mock_session_no_existing()
+    url = "https://cdn.example.com/cover.jpg"
+    await save_node(_state(is_valid=True, image_url=url), session=session)
+    added_item = session.add.call_args[0][0]
+    assert added_item.image_url == url
+
+
+@pytest.mark.asyncio
+async def test_save_node_persists_null_image_url_by_default():
+    """ARG-135: missing image_url stays NULL (UI falls back to per-source banner)."""
+    session = _mock_session_no_existing()
+    await save_node(_state(is_valid=True), session=session)
+    added_item = session.add.call_args[0][0]
+    assert added_item.image_url is None
+
+
+@pytest.mark.asyncio
 async def test_save_node_creates_succession():
     # execute is called twice: source_url duplicate check (None) then predecessor existence check (found)
     no_existing = MagicMock()

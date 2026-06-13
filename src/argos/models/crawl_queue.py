@@ -26,6 +26,7 @@ class CrawlQueue(Base):
         default=uuid.uuid4,
     )
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False, unique=True)
+    image_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     raw_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
