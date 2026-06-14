@@ -198,6 +198,21 @@ def test_feed_items_fragment_passes_cursor_to_service(monkeypatch):
     assert capture[-1]["cursor"] == "ABC"
 
 
+def test_feed_image_url_rendered_safely_not_in_inline_css(monkeypatch):
+    # A crawled og:image URL is attacker-controllable. A single quote must
+    # not break out of a quoted url() in a style attribute.
+    payload = "https://evil.example/a'); } body { display:none } /*"
+    page = FeedPage(items=[_item(title="Pwn", image_url=payload)], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    # No untrusted URL injected into inline CSS at all.
+    assert "background-image: url(" not in body
+    # The raw CSS-breakout sequence must not appear unescaped.
+    assert "'); } body" not in body
+    # Rendered instead as an (HTML-escaped) <img src>.
+    assert "<img" in body
+
+
 def _client_real_feed() -> TestClient:
     """TestClient using the REAL fetch_feed with a None session.
 

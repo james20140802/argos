@@ -3,8 +3,10 @@
 {% for item in items %}
 <article class="card rise" style="--d: {{ '%.2f'|format(loop.index0 * 0.04) }}s">
   {% if item.image_url %}
-  <a class="cover" href="{{ item.source_url }}" target="_blank" rel="noopener"
-     style="background-image: url('{{ item.image_url }}')">
+  <a class="cover" href="{{ item.source_url }}" target="_blank" rel="noopener">
+    {# og:image is attacker-controllable (crawled): render via an HTML-escaped
+       <img src> rather than inline CSS url() to avoid CSS-context injection. #}
+    <img class="cover__img" src="{{ item.image_url }}" alt="" loading="lazy">
     <span class="scrim" aria-hidden="true"></span>
   </a>
   {% else %}
