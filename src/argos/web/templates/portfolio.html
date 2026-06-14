@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}포트폴리오 · ARGOS{% endblock %}
+{% block content %}
+<nav class="portfolio-filter" aria-label="카테고리 필터">
+  <a class="chip{% if not category %} is-active{% endif %}"
+     href="/portfolio{% if sort != 'recency' %}?sort={{ sort }}{% endif %}"
+     {% if not category %}aria-current="true"{% endif %}>전체</a>
+  <a class="chip chip--main{% if category == 'Mainstream' %} is-active{% endif %}"
+     href="/portfolio?category=Mainstream{% if sort != 'recency' %}&sort={{ sort }}{% endif %}"
+     {% if category == 'Mainstream' %}aria-current="true"{% endif %}>Mainstream</a>
+  <a class="chip chip--alpha{% if category == 'Alpha' %} is-active{% endif %}"
+     href="/portfolio?category=Alpha{% if sort != 'recency' %}&sort={{ sort }}{% endif %}"
+     {% if category == 'Alpha' %}aria-current="true"{% endif %}>Alpha</a>
+</nav>
+<nav class="portfolio-sort" aria-label="정렬">
+  <a class="chip{% if sort == 'recency' %} is-active{% endif %}"
+     href="/portfolio?sort=recency{% if category %}&category={{ category }}{% endif %}"
+     {% if sort == 'recency' %}aria-current="true"{% endif %}>최근</a>
+  <a class="chip{% if sort == 'trust' %} is-active{% endif %}"
+     href="/portfolio?sort=trust{% if category %}&category={{ category }}{% endif %}"
+     {% if sort == 'trust' %}aria-current="true"{% endif %}>신뢰도</a>
+</nav>
+
+{% if not view.active and not view.quiet %}
+<p class="portfolio-empty">아직 Keep한 자산이 없습니다. 관측 피드에서 마음에 드는 항목을 Keep 해보세요.</p>
+{% else %}
+{% if view.active %}
+<section class="portfolio-section">
+  <h2 class="portfolio-section__title">새 신호 있음</h2>
+  {% set items = view.active %}
+  {% include "_portfolio_cards.html" %}
+</section>
+{% endif %}
+{% if view.quiet %}
+<section class="portfolio-section">
+  <h2 class="portfolio-section__title">조용함</h2>
+  {% set items = view.quiet %}
+  {% include "_portfolio_cards.html" %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

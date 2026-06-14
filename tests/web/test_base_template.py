@@ -39,10 +39,9 @@ def app_with_child_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     ``/feed`` and ``/portfolio`` so base.html's ``aria-current`` logic
     (which keys off ``request.url.path``) is actually exercised.
 
-    ``/feed`` is a real route as of ARG-136, so rather than stub it we make
-    it render offline (empty feed page, no DB) — it renders ``feed.html``
-    which still extends ``base.html``. ``/portfolio`` has no real route yet
-    (ARG-137), so it stays a child-template stub.
+    Both ``/feed`` (ARG-136) and ``/portfolio`` (ARG-137) are real routes, so
+    rather than stub them we make them render offline (empty pages, no DB) —
+    they render their respective templates which both extend ``base.html``.
     """
     child = tmp_path / CHILD_TEMPLATE_NAME
     child.write_text(CHILD_TEMPLATE_BODY, encoding="utf-8")
@@ -56,9 +55,10 @@ def app_with_child_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     async def _render_child(request: Request) -> HTMLResponse:
         return app.state.templates.TemplateResponse(request, CHILD_TEMPLATE_NAME, {})
 
-    # Make the real ARG-136 /feed route render without Postgres.
+    # Make the real /feed and /portfolio routes render without Postgres.
     from argos.web.app import _get_session
     from argos.web.services.feed import FeedPage
+    from argos.web.services.portfolio import PortfolioView
 
     async def _fake_session():
         yield None
@@ -66,11 +66,14 @@ def app_with_child_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     async def _empty_feed(session, *, category=None, cursor=None, limit=20):
         return FeedPage(items=[], next_cursor=None)
 
+    async def _empty_portfolio(session, *, category=None, sort="recency"):
+        return PortfolioView(active=[], quiet=[], category=None, sort="recency")
+
     app.dependency_overrides[_get_session] = _fake_session
     monkeypatch.setattr("argos.web.app.fetch_feed", _empty_feed)
+    monkeypatch.setattr("argos.web.app.fetch_portfolio", _empty_portfolio)
 
     app.get("/__test_child__", response_class=HTMLResponse)(_render_child)
-    app.get("/portfolio", response_class=HTMLResponse)(_render_child)
 
     return TestClient(app)
 
