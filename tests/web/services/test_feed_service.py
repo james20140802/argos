@@ -180,11 +180,17 @@ async def test_fetch_feed_filters_by_category_and_joins_status() -> None:
             ours_main = [it for it in mainstream_page.items if it.id in set(seeded_ids)]
             assert all(it.category == CategoryType.MAINSTREAM for it in ours_main)
     finally:
+        # Core DELETE so the DB-level FK CASCADE removes the seeded
+        # user_assets row. An ORM session.delete(TechItem) would instead
+        # try to NULL the child's tech_id (no delete-orphan on the
+        # relationship), violating its NOT NULL constraint.
+        from sqlalchemy import delete as sa_delete
+
         async with Session() as session:
-            for tid in seeded_ids:
-                obj = await session.get(TechItem, tid)
-                if obj is not None:
-                    await session.delete(obj)
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
             await session.commit()
         await engine.dispose()
 
