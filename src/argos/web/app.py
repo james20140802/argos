@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -78,6 +78,30 @@ def build_web_app() -> FastAPI:
     async def index() -> RedirectResponse:
         return RedirectResponse(url="/feed")
 
+    async def _render_feed(
+        request: Request,
+        template_name: str,
+        category: Optional[str],
+        cursor: Optional[str],
+        session,
+    ) -> HTMLResponse:
+        normalized = _normalize_category(category)
+        try:
+            page = await fetch_feed(session, category=normalized, cursor=cursor)
+        except ValueError as exc:
+            # ``cursor`` is user-controlled query state; a stale/corrupted
+            # load-more URL must not 500. Translate it to a controlled 400.
+            raise HTTPException(status_code=400, detail="invalid feed cursor") from exc
+        return request.app.state.templates.TemplateResponse(
+            request,
+            template_name,
+            {
+                "items": page.items,
+                "next_cursor": page.next_cursor,
+                "category": normalized,
+            },
+        )
+
     @app.get("/feed", response_class=HTMLResponse)
     async def feed(
         request: Request,
@@ -85,17 +109,7 @@ def build_web_app() -> FastAPI:
         cursor: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
-        normalized = _normalize_category(category)
-        page = await fetch_feed(session, category=normalized, cursor=cursor)
-        return request.app.state.templates.TemplateResponse(
-            request,
-            "feed.html",
-            {
-                "items": page.items,
-                "next_cursor": page.next_cursor,
-                "category": normalized,
-            },
-        )
+        return await _render_feed(request, "feed.html", category, cursor, session)
 
     @app.get("/feed/items", response_class=HTMLResponse)
     async def feed_items(
@@ -104,16 +118,8 @@ def build_web_app() -> FastAPI:
         cursor: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
-        normalized = _normalize_category(category)
-        page = await fetch_feed(session, category=normalized, cursor=cursor)
-        return request.app.state.templates.TemplateResponse(
-            request,
-            "_feed_items.html",
-            {
-                "items": page.items,
-                "next_cursor": page.next_cursor,
-                "category": normalized,
-            },
+        return await _render_feed(
+            request, "_feed_items.html", category, cursor, session
         )
 
     return app

@@ -196,3 +196,32 @@ def test_feed_items_fragment_passes_cursor_to_service(monkeypatch):
     )
     client.get("/feed/items?cursor=ABC")
     assert capture[-1]["cursor"] == "ABC"
+
+
+def _client_real_feed() -> TestClient:
+    """TestClient using the REAL fetch_feed with a None session.
+
+    A malformed cursor fails in decode_cursor *before* any DB access, so the
+    None session is never touched — letting us assert the route's cursor
+    guard without Postgres. raise_server_exceptions=False so an unguarded
+    ValueError surfaces as a 500 response rather than re-raising in the test.
+    """
+    app = build_web_app()
+
+    async def _fake_session():
+        yield None
+
+    app.dependency_overrides[_get_session] = _fake_session
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_feed_malformed_cursor_returns_400_not_500():
+    client = _client_real_feed()
+    resp = client.get("/feed?cursor=not-a-valid-cursor")
+    assert resp.status_code == 400
+
+
+def test_feed_items_malformed_cursor_returns_400_not_500():
+    client = _client_real_feed()
+    resp = client.get("/feed/items?cursor=%%%bogus%%%")
+    assert resp.status_code == 400
