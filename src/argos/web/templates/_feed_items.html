@@ -1,0 +1,43 @@
+{# Feed card list fragment (ARG-136). Rendered both inside feed.html and
+   returned bare by GET /feed/items for HTMX "더 보기" cursor pagination. #}
+{% for item in items %}
+<article class="card rise" style="--d: {{ '%.2f'|format(loop.index0 * 0.04) }}s">
+  {% if item.image_url %}
+  <a class="cover" href="{{ item.source_url }}" target="_blank" rel="noopener"
+     style="background-image: url('{{ item.image_url }}')">
+    <span class="scrim" aria-hidden="true"></span>
+  </a>
+  {% else %}
+  <a class="cover cover--fallback cover--{{ (item.category.value if item.category else 'none')|lower }}"
+     href="{{ item.source_url }}" target="_blank" rel="noopener">
+    <span class="scrim" aria-hidden="true"></span>
+    <span class="cover__glyph" aria-hidden="true">◎</span>
+  </a>
+  {% endif %}
+  <div class="body">
+    <div class="meta">
+      {% if item.category %}
+      <span class="tag {{ 'main' if item.category.value == 'Mainstream' else 'alpha' }}">{{ item.category.value }}</span>
+      {% endif %}
+      {% if item.status %}
+      <span class="status-badge status-badge--{{ item.status.value|lower }}">{{ item.status.value }}</span>
+      {% endif %}
+    </div>
+    <h2 class="headline">
+      <a href="{{ item.source_url }}" target="_blank" rel="noopener">{{ item.title }}</a>
+    </h2>
+  </div>
+</article>
+{% else %}
+<p class="feed-empty">아직 관측된 항목이 없습니다.</p>
+{% endfor %}
+
+{% if next_cursor %}
+<button class="load-more"
+        hx-get="/feed/items?cursor={{ next_cursor }}{% if category %}&category={{ category }}{% endif %}"
+        hx-target="this"
+        hx-swap="outerHTML"
+        hx-indicator="this">
+  더 보기
+</button>
+{% endif %}

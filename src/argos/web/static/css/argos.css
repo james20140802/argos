@@ -257,3 +257,82 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .rise { animation: none; opacity: 1; }
 }
+
+/* === 7. 관측 피드 (ARG-136) — feed list, filter chips, cards === */
+.feed-filter {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin: 6px 0 18px;
+}
+.chip {
+  font: 500 12px/1 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 8px 14px; border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(236, 231, 221, 0.03);
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.chip:hover { color: var(--ink); }
+.chip.is-active {
+  color: var(--bg); background: var(--brass); border-color: var(--brass);
+}
+.chip--main.is-active { background: var(--main); border-color: var(--main); }
+.chip--alpha.is-active { background: var(--alpha); border-color: var(--alpha); }
+
+.feed-list { display: flex; flex-direction: column; gap: 16px; }
+.feed-empty {
+  font: 400 14px/1.6 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); text-align: center; padding: 48px 0;
+}
+
+/* Card cover is a link — keep it block-level and image-covered */
+.card .cover { display: block; }
+.card .headline a { color: var(--ink); text-decoration: none; }
+.card .headline a:hover { color: var(--brass-hi); }
+
+/* Cover scrim — darken bottom so any future overlay text stays legible */
+.card .cover .scrim {
+  background: linear-gradient(180deg, rgba(11, 13, 18, 0) 40%, rgba(11, 13, 18, 0.55) 100%);
+}
+
+/* Fallback banner when an item has no og:image — category-tinted */
+.cover--fallback {
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(120% 90% at 50% 0%, rgba(236, 231, 221, 0.06), rgba(11, 13, 18, 0.0));
+}
+.cover--fallback.cover--mainstream {
+  background: radial-gradient(120% 90% at 50% 0%, rgba(116, 183, 199, 0.22), rgba(11, 13, 18, 0));
+}
+.cover--fallback.cover--alpha {
+  background: radial-gradient(120% 90% at 50% 0%, rgba(183, 144, 228, 0.22), rgba(11, 13, 18, 0));
+}
+.cover--fallback .cover__glyph {
+  position: relative; z-index: 1;
+  font-size: 40px; color: var(--brass);
+  opacity: 0.7;
+}
+
+/* Asset status badge on cards */
+.meta { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.status-badge {
+  font: 600 9.5px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  padding: 5px 9px; border-radius: 7px;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.status-badge--keep { color: var(--brass-hi); border-color: rgba(201, 168, 106, 0.5); }
+.status-badge--tracking { color: var(--main); border-color: rgba(116, 183, 199, 0.5); }
+.status-badge--archived { color: var(--faint); }
+
+/* "더 보기" HTMX cursor button */
+.load-more {
+  display: block; width: 100%;
+  margin-top: 4px; padding: 13px;
+  font: 500 13px/1 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); cursor: pointer;
+  background: rgba(236, 231, 221, 0.03);
+  border: 1px solid var(--line); border-radius: 12px;
+  transition: color 0.2s, border-color 0.2s;
+}
+.load-more:hover { color: var(--ink); border-color: var(--brass); }
+.load-more.htmx-request { opacity: 0.5; pointer-events: none; }
