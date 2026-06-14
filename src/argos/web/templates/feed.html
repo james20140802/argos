@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}관측 피드 · ARGOS{% endblock %}
+{% block content %}
+<nav class="feed-filter" aria-label="카테고리 필터">
+  <a class="chip{% if not category %} is-active{% endif %}"
+     href="/feed"{% if not category %} aria-current="true"{% endif %}>전체</a>
+  <a class="chip chip--main{% if category == 'Mainstream' %} is-active{% endif %}"
+     href="/feed?category=Mainstream"{% if category == 'Mainstream' %} aria-current="true"{% endif %}>Mainstream</a>
+  <a class="chip chip--alpha{% if category == 'Alpha' %} is-active{% endif %}"
+     href="/feed?category=Alpha"{% if category == 'Alpha' %} aria-current="true"{% endif %}>Alpha</a>
+</nav>
+
+<div id="feed-list" class="feed-list">
+  {% include "_feed_items.html" %}
+</div>
+{% endblock %}
