@@ -169,7 +169,7 @@ async def fetch_portfolio(
 
         def _sort_key(a: PortfolioAsset) -> tuple:
             # trust DESC NULLS LAST → negate, put None after real values
-            trust_key = (0, -(a.trust_score or 0.0)) if a.trust_score is not None else (1, 0.0)
+            trust_key = (0, -a.trust_score) if a.trust_score is not None else (1, 0.0)
             kept_key = -a.kept_since.timestamp()
             return (*trust_key, kept_key)
 

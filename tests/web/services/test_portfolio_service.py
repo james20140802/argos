@@ -148,11 +148,12 @@ async def test_trust_sort_orders_trust_score_desc_nulls_last() -> None:
 
 
 # ------------------------------------------------------------------ #
-# Test 6: signal window boundary — old rows excluded from signal_count
+# Test 6: active/quiet partition based on signal_count threshold
 # ------------------------------------------------------------------ #
 
+# Verifies the active/quiet partition criterion; SQL window cutoff is exercised by integration tests (ARG-142).
 @pytest.mark.asyncio
-async def test_signal_window_boundary_excludes_old_rows() -> None:
+async def test_active_partition_uses_signal_count_threshold() -> None:
     # One asset with fresh signal_count > 0, one with signal_count == 0
     fresh = _make_row(title="Fresh", signal_count=1, lineage_count=0)
     stale = _make_row(title="Stale", signal_count=0, lineage_count=0)
