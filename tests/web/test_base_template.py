@@ -32,12 +32,17 @@ CHILD_TEMPLATE_BODY = """{% extends "base.html" %}
 
 
 @pytest.fixture()
-def app_with_child_template(tmp_path: Path):
+def app_with_child_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Build the web app with a tmp-only child template mounted alongside base.
 
     Exposes the child at ``/__test_child__`` plus the real tab paths
     ``/feed`` and ``/portfolio`` so base.html's ``aria-current`` logic
     (which keys off ``request.url.path``) is actually exercised.
+
+    ``/feed`` is a real route as of ARG-136, so rather than stub it we make
+    it render offline (empty feed page, no DB) — it renders ``feed.html``
+    which still extends ``base.html``. ``/portfolio`` has no real route yet
+    (ARG-137), so it stays a child-template stub.
     """
     child = tmp_path / CHILD_TEMPLATE_NAME
     child.write_text(CHILD_TEMPLATE_BODY, encoding="utf-8")
@@ -51,8 +56,20 @@ def app_with_child_template(tmp_path: Path):
     async def _render_child(request: Request) -> HTMLResponse:
         return app.state.templates.TemplateResponse(request, CHILD_TEMPLATE_NAME, {})
 
+    # Make the real ARG-136 /feed route render without Postgres.
+    from argos.web.app import _get_session
+    from argos.web.services.feed import FeedPage
+
+    async def _fake_session():
+        yield None
+
+    async def _empty_feed(session, *, category=None, cursor=None, limit=20):
+        return FeedPage(items=[], next_cursor=None)
+
+    app.dependency_overrides[_get_session] = _fake_session
+    monkeypatch.setattr("argos.web.app.fetch_feed", _empty_feed)
+
     app.get("/__test_child__", response_class=HTMLResponse)(_render_child)
-    app.get("/feed", response_class=HTMLResponse)(_render_child)
     app.get("/portfolio", response_class=HTMLResponse)(_render_child)
 
     return TestClient(app)
