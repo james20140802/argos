@@ -22,12 +22,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from argos.web.services.feed import fetch_feed
+from argos.web.services.portfolio import fetch_portfolio
 
 _PACKAGE_DIR = Path(__file__).parent
 _TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 _STATIC_DIR = _PACKAGE_DIR / "static"
 
 _VALID_CATEGORIES = ("Mainstream", "Alpha")
+_VALID_SORTS = ("recency", "trust")
 
 
 async def _get_session():
@@ -121,5 +123,40 @@ def build_web_app() -> FastAPI:
         return await _render_feed(
             request, "_feed_items.html", category, cursor, session
         )
+
+    async def _render_portfolio(
+        request: Request,
+        category: Optional[str],
+        sort: Optional[str],
+        session,
+    ) -> HTMLResponse:
+        normalized_category = _normalize_category(category)
+        normalized_sort = sort if sort in _VALID_SORTS else "recency"
+        try:
+            view = await fetch_portfolio(
+                session, category=normalized_category, sort=normalized_sort
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="invalid portfolio query"
+            ) from exc
+        return request.app.state.templates.TemplateResponse(
+            request,
+            "portfolio.html",
+            {
+                "view": view,
+                "category": normalized_category,
+                "sort": normalized_sort,
+            },
+        )
+
+    @app.get("/portfolio", response_class=HTMLResponse)
+    async def portfolio(
+        request: Request,
+        category: Optional[str] = None,
+        sort: Optional[str] = None,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        return await _render_portfolio(request, category, sort, session)
 
     return app

@@ -342,3 +342,59 @@ body {
 }
 .load-more:hover { color: var(--ink); border-color: var(--brass); }
 .load-more.htmx-request { opacity: 0.5; pointer-events: none; }
+
+/* === ARG-137 portfolio === */
+
+/* Filter chip row — mirrors .feed-filter */
+.portfolio-filter {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin: 6px 0 10px;
+}
+
+/* Sort chip row — second row below the category filter */
+.portfolio-sort {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 18px;
+}
+
+/* Section wrapper + heading */
+.portfolio-section {
+  margin-bottom: 32px;
+}
+.portfolio-section__title {
+  font: 600 11px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--brass);
+  margin: 0 0 14px;
+}
+
+/* Card list inside each section */
+.portfolio-list {
+  display: flex; flex-direction: column; gap: 16px;
+}
+
+/* Signal / lineage count badges */
+.pf-badge {
+  font: 500 11px/1 "IBM Plex Mono", monospace;
+  padding: 4px 8px; border-radius: 7px;
+  border: 1px solid var(--line);
+  background: rgba(236, 231, 221, 0.05);
+  color: var(--muted);
+}
+.pf-badge--signal { color: var(--brass-hi); border-color: rgba(201, 168, 106, 0.4); }
+.pf-badge--lineage { color: var(--alpha); border-color: rgba(183, 144, 228, 0.4); }
+
+/* Small dim meta line under the headline */
+.pf-meta {
+  font: 400 12px/1.5 "IBM Plex Mono", monospace;
+  color: var(--faint);
+  margin: 0;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.pf-meta__sep { color: var(--line); }
+
+/* Empty state — mirrors .feed-empty */
+.portfolio-empty {
+  font: 400 14px/1.6 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); text-align: center; padding: 48px 0;
+}
