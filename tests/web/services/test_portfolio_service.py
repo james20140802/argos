@@ -209,3 +209,30 @@ async def test_invalid_sort_raises() -> None:
 
 def test_recent_signal_window_is_7_days() -> None:
     assert RECENT_SIGNAL_WINDOW == timedelta(days=7)
+
+
+# ------------------------------------------------------------------ #
+# Test 11: signal aggregates filter on signal sentinels only
+# ------------------------------------------------------------------ #
+
+# Regression guard: ``track_history`` is a shared log — ``transition_asset``
+# writes ordinary status changes (Keep/Tracking/Archived) to the same table as
+# real signal alerts.  The signal_count / last_signal_at subqueries must filter
+# on the sentinel ``changed_to`` values, otherwise an Archive→Keep flip would
+# be miscounted as a "new signal".  We compile the statement handed to
+# session.execute and assert both sentinel literals are bound into the SQL.
+@pytest.mark.asyncio
+async def test_signal_subqueries_filter_on_sentinels() -> None:
+    from argos.slack.services.track_check import SIGNAL_MATCHED, SUCCESSION_ALERTED
+
+    session = _make_session([])
+    await fetch_portfolio(session)
+
+    stmt = session.execute.call_args.args[0]
+    compiled = stmt.compile(compile_kwargs={"literal_binds": True})
+    sql = str(compiled)
+
+    assert SUCCESSION_ALERTED in sql
+    assert SIGNAL_MATCHED in sql
+    # changed_to predicate is applied (the IN-list against the sentinels)
+    assert "changed_to" in sql

@@ -83,19 +83,32 @@ async def fetch_portfolio(
 
     cutoff = datetime.now(timezone.utc) - RECENT_SIGNAL_WINDOW
 
-    # ---- signal subquery: COUNT within window ----
+    # ``track_history`` is a shared log: ``transition_asset`` writes ordinary
+    # status changes (changed_to ∈ AssetStatus values) while real signal alerts
+    # are recorded with these sentinel ``changed_to`` values.  Portfolio signal
+    # aggregates must count only the latter, otherwise an ordinary status flip
+    # (e.g. Archive→Keep) would falsely surface as a "new signal" and move the
+    # asset into the active group.  Imported lazily so app construction does not
+    # pull ``argos.database`` into the import graph (release CI has no Postgres).
+    from argos.slack.services.track_check import SIGNAL_MATCHED, SUCCESSION_ALERTED
+
+    signal_sentinels = (SUCCESSION_ALERTED, SIGNAL_MATCHED)
+
+    # ---- signal subquery: COUNT signal alerts within window ----
     signal_count_sq = (
         select(func.count())
         .where(TrackHistory.user_asset_id == UserAsset.id)
+        .where(TrackHistory.changed_to.in_(signal_sentinels))
         .where(TrackHistory.changed_at >= cutoff)
         .correlate(UserAsset)
         .scalar_subquery()
     )
 
-    # ---- last_signal_at subquery: MAX(changed_at) over all time ----
+    # ---- last_signal_at subquery: MAX(changed_at) over signal alerts ----
     last_signal_sq = (
         select(func.max(TrackHistory.changed_at))
         .where(TrackHistory.user_asset_id == UserAsset.id)
+        .where(TrackHistory.changed_to.in_(signal_sentinels))
         .correlate(UserAsset)
         .scalar_subquery()
     )
