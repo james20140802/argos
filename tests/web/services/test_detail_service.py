@@ -222,6 +222,92 @@ def test_similar_limit_default_is_five() -> None:
     assert SIMILAR_LIMIT == 5
 
 
+def test_history_limit_default_is_ten() -> None:
+    from argos.web.services.detail import HISTORY_LIMIT
+
+    assert HISTORY_LIMIT == 10
+
+
+@pytest.mark.asyncio
+async def test_fetch_related_history_returns_empty_for_empty_tech_id_list() -> None:
+    """No DB hit when the caller passes an empty list."""
+    from argos.web.services.detail import _fetch_related_history
+
+    class _Sentinel:
+        async def execute(self, *args, **kwargs):
+            raise AssertionError("DB must not be touched when tech_ids is empty")
+
+    result = await _fetch_related_history(_Sentinel(), [])  # type: ignore[arg-type]
+    assert result == []
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_related_history_returns_recent_rows_desc_for_seeded_tech() -> None:
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import TechItem
+    from argos.models.track_history import TrackHistory
+    from argos.models.user_asset import AssetStatus, UserAsset
+    from argos.web.services.detail import _fetch_related_history
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    seeded_tech_ids: list[uuid.UUID] = []
+    try:
+        from datetime import datetime, timezone
+
+        async with Session() as session:
+            tech = TechItem(
+                title="arg161-history-anchor",
+                source_url=f"https://example.com/arg161/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            session.add(tech)
+            await session.flush()
+            seeded_tech_ids = [tech.id]
+            asset = UserAsset(tech_id=tech.id, status=AssetStatus.KEEP)
+            session.add(asset)
+            await session.flush()
+            session.add_all(
+                [
+                    TrackHistory(
+                        user_asset_id=asset.id,
+                        changed_from="Tracking",
+                        changed_to="Keep",
+                        changed_at=datetime(2026, 5, 1, 0, 0, tzinfo=timezone.utc),
+                    ),
+                    TrackHistory(
+                        user_asset_id=asset.id,
+                        changed_from="Keep",
+                        changed_to="signal_matched",
+                        changed_at=datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc),
+                    ),
+                ]
+            )
+            await session.commit()
+            tech_id = tech.id
+
+        async with Session() as session:
+            rows = await _fetch_related_history(session, [tech_id])
+            ours = [r for r in rows if r.tech_id == tech_id]
+            assert len(ours) == 2
+            # Desc order: newest first.
+            assert ours[0].changed_to == "signal_matched"
+            assert ours[1].changed_to == "Keep"
+            assert ours[0].tech_title == "arg161-history-anchor"
+    finally:
+        async with Session() as session:
+            if seeded_tech_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_tech_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
 @pytestmark_db
 @pytest.mark.asyncio
 async def test_fetch_item_detail_loads_predecessors_and_successors() -> None:

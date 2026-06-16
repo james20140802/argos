@@ -1,4 +1,4 @@
-"""Read-side service backing the 상세 보기 screen (ARG-158/159/160).
+"""Read-side service backing the 상세 보기 screen (ARG-158/159/160/161).
 
 ``fetch_item_detail`` returns a single ``tech_item`` enriched with the
 fields needed to render the in-app reader:
@@ -8,9 +8,8 @@ fields needed to render the in-app reader:
   ``relation_type`` + ``reasoning``.
 * T4 (ARG-160): 🔭 related signals — pgvector top-5 similarity vs Keep
   user_assets (excluding current item id).
-
-The remaining slice (ARG-161) will extend ``ItemDetailView`` with
-track_history without changing the existing contract.
+* T3 (ARG-161): 🔭 related signals — 10 most recent track_history rows
+  scoped to user_assets tied to the current item OR similarity tech ids.
 """
 from __future__ import annotations
 
@@ -25,11 +24,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.models.tech_item import CategoryType, TechItem
 from argos.models.tech_succession import RelationType, TechSuccession
+from argos.models.track_history import TrackHistory
+from argos.models.user_asset import UserAsset
 
 
 # Number of pgvector-similar items shown in the 관련 신호 → similarity
 # subsection (ARG-160).
 SIMILAR_LIMIT: int = 5
+
+# Number of track_history rows shown in the 관련 신호 → timeline
+# subsection (ARG-161).
+HISTORY_LIMIT: int = 10
 
 
 @dataclass(frozen=True)
@@ -60,6 +65,22 @@ class SimilarItem:
 
 
 @dataclass(frozen=True)
+class HistoryEntry:
+    """One row of the 🔭 관련 신호 → track_history timeline (ARG-161).
+
+    ``tech_title`` is the title of the tech_item the user_asset points
+    at, so the timeline reads as "TechX: Tracking → Keep at …" rather
+    than referring back to an opaque user_asset id.
+    """
+
+    changed_from: str
+    changed_to: str
+    changed_at: datetime
+    tech_id: uuid.UUID
+    tech_title: str
+
+
+@dataclass(frozen=True)
 class ItemDetailView:
     id: uuid.UUID
     title: str
@@ -72,6 +93,7 @@ class ItemDetailView:
     predecessors: list[GenealogyEntry] = field(default_factory=list)
     successors: list[GenealogyEntry] = field(default_factory=list)
     similar: list[SimilarItem] = field(default_factory=list)
+    related_history: list[HistoryEntry] = field(default_factory=list)
 
 
 async def _fetch_predecessors(
@@ -160,6 +182,44 @@ async def _fetch_similar(
     return [SimilarItem(tech_id=row.id, title=row.title) for row in rows]
 
 
+async def _fetch_related_history(
+    session: AsyncSession,
+    tech_ids: list[uuid.UUID],
+    limit: int = HISTORY_LIMIT,
+) -> list[HistoryEntry]:
+    """Most recent ``track_history`` rows for user_assets in ``tech_ids``.
+
+    Empty when no user_asset exists for any of those tech_ids.
+    """
+    if not tech_ids:
+        return []
+    stmt = (
+        select(
+            TrackHistory.changed_from,
+            TrackHistory.changed_to,
+            TrackHistory.changed_at,
+            TechItem.id.label("tech_id"),
+            TechItem.title.label("tech_title"),
+        )
+        .join(UserAsset, UserAsset.id == TrackHistory.user_asset_id)
+        .join(TechItem, TechItem.id == UserAsset.tech_id)
+        .where(TechItem.id.in_(tech_ids))
+        .order_by(TrackHistory.changed_at.desc())
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [
+        HistoryEntry(
+            changed_from=row.changed_from,
+            changed_to=row.changed_to,
+            changed_at=row.changed_at,
+            tech_id=row.tech_id,
+            tech_title=row.tech_title,
+        )
+        for row in rows
+    ]
+
+
 async def fetch_item_detail(
     session: AsyncSession,
     item_id: uuid.UUID,
@@ -183,6 +243,10 @@ async def fetch_item_detail(
     predecessors = await _fetch_predecessors(session, item_id)
     successors = await _fetch_successors(session, item_id)
     similar = await _fetch_similar(session, item_id)
+    related_history = await _fetch_related_history(
+        session,
+        [item_id] + [s.tech_id for s in similar],
+    )
 
     return ItemDetailView(
         id=row.id,
@@ -196,4 +260,5 @@ async def fetch_item_detail(
         predecessors=predecessors,
         successors=successors,
         similar=similar,
+        related_history=related_history,
     )

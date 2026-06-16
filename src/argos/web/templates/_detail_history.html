@@ -1,0 +1,21 @@
+{# 🔭 track_history timeline subsection (ARG-161). Rendered inside
+   _detail_signals.html when `item.related_history` is non-empty. #}
+{% if item.related_history %}
+<div class="signals-history">
+  <h3 class="signals-subsection__label">최근 변화</h3>
+  <ol class="signals-history__list">
+    {% for h in item.related_history %}
+    <li class="signals-history__entry">
+      <a class="signals-history__tech" href="/item/{{ h.tech_id }}">{{ h.tech_title }}</a>
+      <span class="signals-history__delta">
+        <span class="signals-history__from">{{ h.changed_from }}</span>
+        <span class="signals-history__arrow" aria-hidden="true">→</span>
+        <span class="signals-history__to">{{ h.changed_to }}</span>
+      </span>
+      <time class="signals-history__time"
+            datetime="{{ h.changed_at.isoformat() }}">{{ h.changed_at.strftime('%Y-%m-%d') }}</time>
+    </li>
+    {% endfor %}
+  </ol>
+</div>
+{% endif %}
