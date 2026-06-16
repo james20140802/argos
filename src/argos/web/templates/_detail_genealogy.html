@@ -1,0 +1,41 @@
+{# 🧬 기술 계보 partial (ARG-159). Rendered inside item_detail.html only when
+   `item.predecessors` or `item.successors` is non-empty. #}
+{% if item.predecessors or item.successors %}
+<section class="detail-genealogy">
+  <h2 class="detail-section__title">🧬 기술 계보</h2>
+
+  {% if item.predecessors %}
+  <div class="genealogy-group">
+    <h3 class="genealogy-group__label">선행</h3>
+    <ul class="genealogy-list">
+      {% for entry in item.predecessors %}
+      <li class="genealogy-entry">
+        <span class="genealogy-relation genealogy-relation--{{ entry.relation_type.value|lower }}">{{ entry.relation_type.value }}</span>
+        <a class="genealogy-link" href="/item/{{ entry.tech_id }}">{{ entry.title }}</a>
+        {% if entry.reasoning %}
+        <p class="genealogy-reasoning">{{ entry.reasoning }}</p>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if item.successors %}
+  <div class="genealogy-group">
+    <h3 class="genealogy-group__label">후속</h3>
+    <ul class="genealogy-list">
+      {% for entry in item.successors %}
+      <li class="genealogy-entry">
+        <span class="genealogy-relation genealogy-relation--{{ entry.relation_type.value|lower }}">{{ entry.relation_type.value }}</span>
+        <a class="genealogy-link" href="/item/{{ entry.tech_id }}">{{ entry.title }}</a>
+        {% if entry.reasoning %}
+        <p class="genealogy-reasoning">{{ entry.reasoning }}</p>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</section>
+{% endif %}

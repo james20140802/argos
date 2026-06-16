@@ -96,11 +96,88 @@ async def test_fetch_item_detail_returns_view_for_known_id() -> None:
             assert view.summary == "A long form summary that the reader will see."
             assert view.category == CategoryType.ALPHA
             assert view.trust_score == pytest.approx(0.66)
+            assert view.predecessors == []
+            assert view.successors == []
     finally:
         async with Session() as session:
             if seeded_id is not None:
                 await session.execute(
                     sa_delete(TechItem).where(TechItem.id == seeded_id)
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_item_detail_loads_predecessors_and_successors() -> None:
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import TechItem
+    from argos.models.tech_succession import RelationType, TechSuccession
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            anchor = TechItem(
+                title="arg159-anchor",
+                source_url=f"https://example.com/arg159/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            parent = TechItem(
+                title="arg159-parent",
+                source_url=f"https://example.com/arg159/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            child = TechItem(
+                title="arg159-child",
+                source_url=f"https://example.com/arg159/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            session.add_all([anchor, parent, child])
+            await session.flush()
+            seeded_ids = [anchor.id, parent.id, child.id]
+
+            session.add_all(
+                [
+                    TechSuccession(
+                        predecessor_id=parent.id,
+                        successor_id=anchor.id,
+                        relation_type=RelationType.REPLACE,
+                        reasoning="parent replaced",
+                    ),
+                    TechSuccession(
+                        predecessor_id=anchor.id,
+                        successor_id=child.id,
+                        relation_type=RelationType.ENHANCE,
+                        reasoning="child enhances",
+                    ),
+                ]
+            )
+            await session.commit()
+            anchor_id = anchor.id
+
+        async with Session() as session:
+            view = await fetch_item_detail(session, anchor_id)
+            assert view is not None
+            titles_pred = [p.title for p in view.predecessors]
+            titles_succ = [s.title for s in view.successors]
+            assert "arg159-parent" in titles_pred
+            assert "arg159-child" in titles_succ
+            pred = next(p for p in view.predecessors if p.title == "arg159-parent")
+            assert pred.relation_type == RelationType.REPLACE
+            assert pred.reasoning == "parent replaced"
+            succ = next(s for s in view.successors if s.title == "arg159-child")
+            assert succ.relation_type == RelationType.ENHANCE
+    finally:
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
                 )
             await session.commit()
         await engine.dispose()
