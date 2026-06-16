@@ -13,6 +13,7 @@ foundation only ships /healthz so deployments can probe liveness.
 """
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from argos.web.services.detail import fetch_item_detail
 from argos.web.services.feed import fetch_feed
 from argos.web.services.portfolio import fetch_portfolio
 
@@ -158,5 +160,31 @@ def build_web_app() -> FastAPI:
         session=Depends(_get_session),
     ) -> HTMLResponse:
         return await _render_portfolio(request, category, sort, session)
+
+    def _render_not_found(request: Request) -> HTMLResponse:
+        return request.app.state.templates.TemplateResponse(
+            request, "not_found.html", {}, status_code=404
+        )
+
+    @app.get("/item/{item_id}", response_class=HTMLResponse)
+    async def item_detail(
+        request: Request,
+        item_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        # ``item_id`` is user-controlled path state; a malformed UUID must not
+        # 500. Translate it to the same 404 page as a real miss.
+        try:
+            parsed_id = uuid.UUID(item_id)
+        except ValueError:
+            return _render_not_found(request)
+
+        item = await fetch_item_detail(session, parsed_id)
+        if item is None:
+            return _render_not_found(request)
+
+        return request.app.state.templates.TemplateResponse(
+            request, "item_detail.html", {"item": item}
+        )
 
     return app

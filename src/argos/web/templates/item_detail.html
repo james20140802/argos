@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}{{ item.title }} · ARGOS{% endblock %}
+{% block content %}
+<article class="detail">
+  {% if item.image_url %}
+  <div class="detail-hero">
+    {# og:image is attacker-controllable (crawled): render via an HTML-escaped
+       <img src> rather than inline CSS url() to avoid CSS-context injection. #}
+    <img class="detail-hero__img" src="{{ item.image_url }}" alt="" loading="lazy">
+    <span class="detail-hero__scrim" aria-hidden="true"></span>
+  </div>
+  {% else %}
+  <div class="detail-hero detail-hero--fallback detail-hero--{{ (item.category.value if item.category else 'none')|lower }}">
+    <span class="detail-hero__scrim" aria-hidden="true"></span>
+    <span class="detail-hero__glyph" aria-hidden="true">◎</span>
+  </div>
+  {% endif %}
+
+  <header class="detail-head">
+    <div class="detail-meta">
+      {% if item.category %}
+      <span class="tag {{ 'main' if item.category.value == 'Mainstream' else 'alpha' }}">{{ item.category.value }}</span>
+      {% endif %}
+      {% if item.trust_score is not none %}
+      {% set pct = ((item.trust_score|float) * 100)|round(0)|int %}
+      <span class="trust-dial"
+            role="img"
+            aria-label="신뢰도 {{ pct }}%"
+            style="--p: {{ pct }};">
+        <span class="trust-dial__face">{{ pct }}</span>
+      </span>
+      {% endif %}
+    </div>
+    <h1 class="detail-title">{{ item.title }}</h1>
+  </header>
+
+  {% if item.summary %}
+  <section class="detail-summary">
+    <p>{{ item.summary }}</p>
+  </section>
+  {% endif %}
+
+  <p class="detail-source">
+    <a class="detail-source__link"
+       href="{{ item.source_url }}"
+       target="_blank"
+       rel="noopener noreferrer">원문 보기 →</a>
+  </p>
+</article>
+{% endblock %}
