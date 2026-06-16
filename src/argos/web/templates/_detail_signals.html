@@ -1,0 +1,11 @@
+{# 🔭 관련 신호 wrapper. Outer section is omitted when no subsection has
+   content so the heading never appears on its own. Subsections (pgvector
+   similarity + track_history timeline) are independently omitted by their
+   own partials when their lists are empty. #}
+{% set has_similar = item.similar %}
+{% if has_similar %}
+<section class="detail-signals">
+  <h2 class="detail-section__title">🔭 관련 신호</h2>
+  {% include "_detail_similarity.html" %}
+</section>
+{% endif %}

@@ -1,0 +1,14 @@
+{# 🔭 pgvector similarity subsection (ARG-160). Rendered inside
+   _detail_signals.html when `item.similar` is non-empty. #}
+{% if item.similar %}
+<div class="signals-similar">
+  <h3 class="signals-subsection__label">유사 신호</h3>
+  <ul class="signals-similar__list">
+    {% for s in item.similar %}
+    <li class="signals-similar__entry">
+      <a class="signals-similar__link" href="/item/{{ s.tech_id }}">{{ s.title }}</a>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}

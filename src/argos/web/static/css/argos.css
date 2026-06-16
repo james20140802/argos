@@ -575,3 +575,33 @@ body {
   font: 400 13px/1.55 "IBM Plex Sans KR", sans-serif;
   color: var(--muted); margin: 0;
 }
+
+/* === ARG-160 detail 🔭 관련 신호 — pgvector similarity === */
+
+.detail-signals {
+  display: flex; flex-direction: column; gap: 18px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+}
+.signals-subsection__label {
+  font: 500 11px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--muted); margin: 0 0 10px;
+}
+.signals-similar { display: flex; flex-direction: column; gap: 0; }
+.signals-similar__list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.signals-similar__entry {
+  padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: rgba(116, 183, 199, 0.04);
+}
+.signals-similar__link {
+  font: 500 14px/1.4 "IBM Plex Sans KR", sans-serif;
+  color: var(--ink); text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+.signals-similar__link:hover { border-bottom-color: var(--main); }

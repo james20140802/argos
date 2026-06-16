@@ -110,6 +110,120 @@ async def test_fetch_item_detail_returns_view_for_known_id() -> None:
 
 @pytestmark_db
 @pytest.mark.asyncio
+async def test_fetch_similar_ranks_seeded_items_by_proximity_to_keep_anchor() -> None:
+    """Direct check on the similarity helper.
+
+    Uses a generous LIMIT so the assertion ranks SEEDED items against
+    each other — the shared dev DB has its own Keep assets and embedded
+    items that would otherwise crowd the top-5 production ordering.
+    """
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import TechItem
+    from argos.models.user_asset import AssetStatus, UserAsset
+    from argos.web.services.detail import _fetch_similar
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            keep_emb = [1.0] + [0.0] * 767
+            very_similar = [0.99] + [0.01] * 767
+            somewhat = [0.5] + [0.5] * 767
+            # Far point on a perpendicular axis — cosine distance ≫ above.
+            far = [0.0] * 767 + [1.0]
+
+            keep_item = TechItem(
+                title="arg160-keep-anchor",
+                source_url=f"https://example.com/arg160/{uuid.uuid4()}",
+                raw_content="x",
+                embedding=keep_emb,
+            )
+            anchor = TechItem(
+                title="arg160-current",
+                source_url=f"https://example.com/arg160/{uuid.uuid4()}",
+                raw_content="x",
+                embedding=very_similar,
+            )
+            top = TechItem(
+                title="arg160-top",
+                source_url=f"https://example.com/arg160/{uuid.uuid4()}",
+                raw_content="x",
+                embedding=very_similar,
+            )
+            mid = TechItem(
+                title="arg160-mid",
+                source_url=f"https://example.com/arg160/{uuid.uuid4()}",
+                raw_content="x",
+                embedding=somewhat,
+            )
+            tail = TechItem(
+                title="arg160-tail",
+                source_url=f"https://example.com/arg160/{uuid.uuid4()}",
+                raw_content="x",
+                embedding=far,
+            )
+            no_emb = TechItem(
+                title="arg160-no-emb",
+                source_url=f"https://example.com/arg160/{uuid.uuid4()}",
+                raw_content="x",
+                embedding=None,
+            )
+            session.add_all([keep_item, anchor, top, mid, tail, no_emb])
+            await session.flush()
+            seeded_ids = [
+                keep_item.id,
+                anchor.id,
+                top.id,
+                mid.id,
+                tail.id,
+                no_emb.id,
+            ]
+            session.add(UserAsset(tech_id=keep_item.id, status=AssetStatus.KEEP))
+            await session.commit()
+            anchor_id = anchor.id
+
+        async with Session() as session:
+            # Generous limit so seeded titles all surface regardless of
+            # production data populating the top-K.
+            similar = await _fetch_similar(session, anchor_id, limit=5000)
+            titles = [s.title for s in similar]
+
+            # Current item and the no-embedding row must never appear.
+            assert "arg160-current" not in titles
+            assert "arg160-no-emb" not in titles
+
+            # All three embedded seeded candidates surface somewhere.
+            assert "arg160-top" in titles
+            assert "arg160-mid" in titles
+            assert "arg160-tail" in titles
+
+            # Ordering among seeded titles matches embedding proximity.
+            idx_top = titles.index("arg160-top")
+            idx_mid = titles.index("arg160-mid")
+            idx_tail = titles.index("arg160-tail")
+            assert idx_top < idx_mid < idx_tail
+    finally:
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+def test_similar_limit_default_is_five() -> None:
+    from argos.web.services.detail import SIMILAR_LIMIT
+
+    assert SIMILAR_LIMIT == 5
+
+
+@pytestmark_db
+@pytest.mark.asyncio
 async def test_fetch_item_detail_loads_predecessors_and_successors() -> None:
     from sqlalchemy import delete as sa_delete
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
