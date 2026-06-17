@@ -3,8 +3,10 @@
 <div class="portfolio-list">
 {% for asset in items %}
 <article class="card rise" style="--d: {{ '%.2f'|format(loop.index0 * 0.04) }}s">
+  {# Card taps open the in-app reader (ARG-138) keyed on the tech_item id;
+     "원문 보기" on the detail page handles the external source_url redirect. #}
   {% if asset.image_url %}
-  <a class="cover" href="{{ asset.source_url }}" target="_blank" rel="noopener">
+  <a class="cover" href="/item/{{ asset.tech_id }}">
     {# og:image is attacker-controllable (crawled): render via an HTML-escaped
        <img src> rather than inline CSS url() to avoid CSS-context injection. #}
     <img class="cover__img" src="{{ asset.image_url }}" alt="" loading="lazy">
@@ -12,7 +14,7 @@
   </a>
   {% else %}
   <a class="cover cover--fallback cover--{{ (asset.category.value if asset.category else 'none')|lower }}"
-     href="{{ asset.source_url }}" target="_blank" rel="noopener">
+     href="/item/{{ asset.tech_id }}">
     <span class="scrim" aria-hidden="true"></span>
     <span class="cover__glyph" aria-hidden="true">◎</span>
   </a>
@@ -26,7 +28,7 @@
       {% if asset.lineage_count > 0 %}<span class="pf-badge pf-badge--lineage" title="계보 연결 수">🧬 {{ asset.lineage_count }}</span>{% endif %}
     </div>
     <h2 class="headline">
-      <a href="{{ asset.source_url }}" target="_blank" rel="noopener">{{ asset.title }}</a>
+      <a href="/item/{{ asset.tech_id }}">{{ asset.title }}</a>
     </h2>
     <p class="pf-meta">
       <span>Keep {{ asset.kept_since.strftime('%Y-%m-%d') }}</span>

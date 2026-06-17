@@ -1,0 +1,24 @@
+{# 🔭 관련 신호 → 새 신호 subsection. Surfaces the signal-alert rows the Slack
+   pipeline writes to track_history (the same rows that mark a portfolio card
+   active), so an active card's detail page explains why it signalled.
+   Rendered inside _detail_signals.html when `item.signal_alerts` is non-empty. #}
+{% if item.signal_alerts %}
+<div class="signals-new">
+  <h3 class="signals-subsection__label">새 신호</h3>
+  <ul class="signals-new__list">
+    {% for a in item.signal_alerts %}
+    <li class="signals-new__entry">
+      {% if a.kind == "signal" and a.matched_tech_id %}
+      <a class="signals-new__link" href="/item/{{ a.matched_tech_id }}">새 신호: {{ a.matched_title }}</a>
+      {% elif a.kind == "signal" %}
+      <span class="signals-new__label">새 신호</span>
+      {% else %}
+      <span class="signals-new__label">후속 기술 신호</span>
+      {% endif %}
+      <time class="signals-new__time"
+            datetime="{{ a.changed_at.isoformat() }}">{{ a.changed_at.strftime('%Y-%m-%d') }}</time>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}

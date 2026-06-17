@@ -2,8 +2,10 @@
    returned bare by GET /feed/items for HTMX "더 보기" cursor pagination. #}
 {% for item in items %}
 <article class="card rise" style="--d: {{ '%.2f'|format(loop.index0 * 0.04) }}s">
+  {# Card taps open the in-app reader (ARG-138); "원문 보기" on the detail
+     page handles the external source_url redirect. #}
   {% if item.image_url %}
-  <a class="cover" href="{{ item.source_url }}" target="_blank" rel="noopener">
+  <a class="cover" href="/item/{{ item.id }}">
     {# og:image is attacker-controllable (crawled): render via an HTML-escaped
        <img src> rather than inline CSS url() to avoid CSS-context injection. #}
     <img class="cover__img" src="{{ item.image_url }}" alt="" loading="lazy">
@@ -11,7 +13,7 @@
   </a>
   {% else %}
   <a class="cover cover--fallback cover--{{ (item.category.value if item.category else 'none')|lower }}"
-     href="{{ item.source_url }}" target="_blank" rel="noopener">
+     href="/item/{{ item.id }}">
     <span class="scrim" aria-hidden="true"></span>
     <span class="cover__glyph" aria-hidden="true">◎</span>
   </a>
@@ -26,7 +28,7 @@
       {% endif %}
     </div>
     <h2 class="headline">
-      <a href="{{ item.source_url }}" target="_blank" rel="noopener">{{ item.title }}</a>
+      <a href="/item/{{ item.id }}">{{ item.title }}</a>
     </h2>
   </div>
 </article>

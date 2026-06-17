@@ -80,6 +80,19 @@ def test_feed_renders_cards_with_titles(monkeypatch):
     assert 'class="tabbar"' in body
 
 
+def test_feed_cards_link_to_in_app_reader(monkeypatch):
+    """Card taps must open the in-app reader (ARG-138), not bounce to the
+    external source_url — that bounce is exactly the loss the detail page
+    exists to prevent."""
+    item = _item(title="Linkable", category=CategoryType.ALPHA)
+    page = FeedPage(items=[item], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    assert f'href="/item/{item.id}"' in body
+    # Cards no longer point straight at the external source.
+    assert f'href="{item.source_url}"' not in body
+
+
 def test_feed_renders_category_tags(monkeypatch):
     page = FeedPage(
         items=[
