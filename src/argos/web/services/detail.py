@@ -8,8 +8,13 @@ fields needed to render the in-app reader:
   ``relation_type`` + ``reasoning``.
 * T4 (ARG-160): 🔭 related signals — pgvector top-5 Keep user_assets
   ranked by similarity to the current item (excluding current item id).
-* T3 (ARG-161): 🔭 related signals — 10 most recent track_history rows
-  scoped to user_assets tied to the current item OR similarity tech ids.
+* T3 (ARG-161): 🔭 related signals — 10 most recent track_history *status
+  transitions* scoped to user_assets tied to the current item OR similarity
+  tech ids.
+* 🔭 새 신호 (signal alerts): the Slack-pipeline alert rows in track_history
+  (``signal_matched`` / ``succession_alerted``, the same rows the portfolio
+  counts to mark a card active), resolved to the matched item and linked, so
+  an active card's detail page explains why it signalled.
 """
 from __future__ import annotations
 
@@ -18,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import String, and_, cast, select, text
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +40,10 @@ SIMILAR_LIMIT: int = 5
 # Number of track_history rows shown in the 관련 신호 → timeline
 # subsection (ARG-161).
 HISTORY_LIMIT: int = 10
+
+# Number of signal-alert rows shown in the 관련 신호 → 새 신호 subsection.
+# These are the same alert rows the portfolio counts to mark an asset active.
+SIGNAL_ALERT_LIMIT: int = 10
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,26 @@ class HistoryEntry:
 
 
 @dataclass(frozen=True)
+class SignalAlert:
+    """One signal-alert row for the 🔭 관련 신호 → 새 신호 subsection.
+
+    These are the alert rows the Slack pipeline writes to ``track_history``
+    (and the portfolio counts to mark an asset active):
+
+    * ``kind == "signal"`` — a new tech_item matched a Keep asset. The
+      matched item is resolved to ``matched_tech_id`` / ``matched_title``
+      so the entry links to it; both are ``None`` if the item was deleted.
+    * ``kind == "succession"`` — a succession/replacement alert was sent for
+      the Keep asset; it carries no specific matched item.
+    """
+
+    kind: str  # "signal" | "succession"
+    changed_at: datetime
+    matched_tech_id: Optional[uuid.UUID] = None
+    matched_title: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class ItemDetailView:
     id: uuid.UUID
     title: str
@@ -93,6 +122,7 @@ class ItemDetailView:
     predecessors: list[GenealogyEntry] = field(default_factory=list)
     successors: list[GenealogyEntry] = field(default_factory=list)
     similar: list[SimilarItem] = field(default_factory=list)
+    signal_alerts: list[SignalAlert] = field(default_factory=list)
     related_history: list[HistoryEntry] = field(default_factory=list)
 
 
@@ -232,6 +262,65 @@ async def _fetch_related_history(
     ]
 
 
+async def _fetch_signal_alerts(
+    session: AsyncSession,
+    tech_ids: list[uuid.UUID],
+    limit: int = SIGNAL_ALERT_LIMIT,
+) -> list[SignalAlert]:
+    """Most recent signal-alert rows for user_assets in ``tech_ids``.
+
+    Surfaces the alert-dedup rows the Slack pipeline writes to
+    ``track_history`` — the same rows the portfolio counts to mark an asset
+    active — so an active card's detail page explains *why* it signalled.
+
+    ``signal_matched`` rows store the matched ``new_item_id`` in
+    ``changed_from``; we LEFT JOIN it back to ``tech_items`` to resolve the
+    matched item's title/id for linking. ``succession_alerted`` rows carry no
+    specific item. Real status transitions are excluded — those belong to the
+    ``최근 변화`` timeline (see ``_fetch_related_history``).
+    """
+    if not tech_ids:
+        return []
+    # Lazy import keeps the web service decoupled from the slack module:
+    # importing ``track_check`` at module scope pulls ``argos.database`` into
+    # the import graph (release CI has no Postgres). Mirrors portfolio.py.
+    from argos.slack.services.track_check import SIGNAL_MATCHED, SUCCESSION_ALERTED
+
+    Matched = aliased(TechItem)
+    stmt = (
+        select(
+            TrackHistory.changed_to,
+            TrackHistory.changed_at,
+            Matched.id.label("matched_id"),
+            Matched.title.label("matched_title"),
+        )
+        .join(UserAsset, UserAsset.id == TrackHistory.user_asset_id)
+        .join(TechItem, TechItem.id == UserAsset.tech_id)
+        .join(
+            Matched,
+            and_(
+                TrackHistory.changed_to == SIGNAL_MATCHED,
+                cast(Matched.id, String) == TrackHistory.changed_from,
+            ),
+            isouter=True,
+        )
+        .where(TechItem.id.in_(tech_ids))
+        .where(TrackHistory.changed_to.in_((SIGNAL_MATCHED, SUCCESSION_ALERTED)))
+        .order_by(TrackHistory.changed_at.desc())
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [
+        SignalAlert(
+            kind="signal" if row.changed_to == SIGNAL_MATCHED else "succession",
+            changed_at=row.changed_at,
+            matched_tech_id=row.matched_id,
+            matched_title=row.matched_title,
+        )
+        for row in rows
+    ]
+
+
 async def fetch_item_detail(
     session: AsyncSession,
     item_id: uuid.UUID,
@@ -255,10 +344,9 @@ async def fetch_item_detail(
     predecessors = await _fetch_predecessors(session, item_id)
     successors = await _fetch_successors(session, item_id)
     similar = await _fetch_similar(session, item_id)
-    related_history = await _fetch_related_history(
-        session,
-        [item_id] + [s.tech_id for s in similar],
-    )
+    signal_scope = [item_id] + [s.tech_id for s in similar]
+    signal_alerts = await _fetch_signal_alerts(session, signal_scope)
+    related_history = await _fetch_related_history(session, signal_scope)
 
     return ItemDetailView(
         id=row.id,
@@ -272,5 +360,6 @@ async def fetch_item_detail(
         predecessors=predecessors,
         successors=successors,
         similar=similar,
+        signal_alerts=signal_alerts,
         related_history=related_history,
     )

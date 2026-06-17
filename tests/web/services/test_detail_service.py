@@ -361,6 +361,97 @@ async def test_fetch_related_history_returns_recent_rows_desc_for_seeded_tech() 
 
 @pytestmark_db
 @pytest.mark.asyncio
+async def test_fetch_signal_alerts_resolves_matched_item_and_skips_transitions() -> None:
+    """signal_matched rows resolve to the matched TechItem (title + id),
+    succession_alerted rows surface generically, and real status transitions
+    are excluded — they belong to the 최근 변화 timeline."""
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import TechItem
+    from argos.models.track_history import TrackHistory
+    from argos.models.user_asset import AssetStatus, UserAsset
+    from argos.web.services.detail import _fetch_signal_alerts
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    seeded_tech_ids: list[uuid.UUID] = []
+    try:
+        from datetime import datetime, timezone
+
+        async with Session() as session:
+            anchor = TechItem(
+                title="arg-signal-anchor",
+                source_url=f"https://example.com/sig/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            matched = TechItem(
+                title="arg-signal-matched-item",
+                source_url=f"https://example.com/sig/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            session.add_all([anchor, matched])
+            await session.flush()
+            seeded_tech_ids = [anchor.id, matched.id]
+            asset = UserAsset(tech_id=anchor.id, status=AssetStatus.KEEP)
+            session.add(asset)
+            await session.flush()
+            session.add_all(
+                [
+                    # signal_matched stores the matched item's id in changed_from.
+                    TrackHistory(
+                        user_asset_id=asset.id,
+                        changed_from=str(matched.id),
+                        changed_to="signal_matched",
+                        changed_at=datetime(2026, 6, 2, 0, 0, tzinfo=timezone.utc),
+                    ),
+                    TrackHistory(
+                        user_asset_id=asset.id,
+                        changed_from="Keep",
+                        changed_to="succession_alerted",
+                        changed_at=datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc),
+                    ),
+                    # Real transition — must NOT appear among signal alerts.
+                    TrackHistory(
+                        user_asset_id=asset.id,
+                        changed_from="Tracking",
+                        changed_to="Keep",
+                        changed_at=datetime(2026, 5, 1, 0, 0, tzinfo=timezone.utc),
+                    ),
+                ]
+            )
+            await session.commit()
+            anchor_id = anchor.id
+            matched_id = matched.id
+
+        async with Session() as session:
+            alerts = await _fetch_signal_alerts(session, [anchor_id])
+            # Only the two alert rows; the status transition is excluded.
+            kinds = [a.kind for a in alerts]
+            assert kinds == ["signal", "succession"]  # desc by changed_at
+
+            sig = alerts[0]
+            assert sig.kind == "signal"
+            assert sig.matched_tech_id == matched_id
+            assert sig.matched_title == "arg-signal-matched-item"
+
+            succ = alerts[1]
+            assert succ.kind == "succession"
+            assert succ.matched_tech_id is None
+            assert succ.matched_title is None
+    finally:
+        async with Session() as session:
+            if seeded_tech_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_tech_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
 async def test_fetch_item_detail_loads_predecessors_and_successors() -> None:
     from sqlalchemy import delete as sa_delete
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine

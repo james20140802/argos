@@ -606,6 +606,36 @@ body {
 }
 .signals-similar__link:hover { border-bottom-color: var(--main); }
 
+/* === detail 🔭 관련 신호 — 새 신호 (signal alerts) === */
+
+.signals-new { display: flex; flex-direction: column; gap: 0; }
+.signals-new__list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.signals-new__entry {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: rgba(116, 183, 199, 0.04);
+}
+.signals-new__link {
+  font: 500 14px/1.4 "IBM Plex Sans KR", sans-serif;
+  color: var(--ink); text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+.signals-new__link:hover { border-bottom-color: var(--main); }
+.signals-new__label {
+  font: 500 14px/1.4 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted);
+}
+.signals-new__time {
+  font: 400 11px/1 "IBM Plex Mono", monospace;
+  color: var(--faint); white-space: nowrap;
+}
+
 /* === ARG-161 detail 🔭 관련 신호 — track_history timeline === */
 
 .signals-history { display: flex; flex-direction: column; gap: 0; }
