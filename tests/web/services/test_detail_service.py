@@ -303,6 +303,7 @@ async def test_fetch_related_history_returns_recent_rows_desc_for_seeded_tech() 
             await session.flush()
             session.add_all(
                 [
+                    # Real status transitions — these belong in 최근 변화.
                     TrackHistory(
                         user_asset_id=asset.id,
                         changed_from="Tracking",
@@ -312,8 +313,22 @@ async def test_fetch_related_history_returns_recent_rows_desc_for_seeded_tech() 
                     TrackHistory(
                         user_asset_id=asset.id,
                         changed_from="Keep",
-                        changed_to="signal_matched",
+                        changed_to="Archived",
+                        changed_at=datetime(2026, 5, 5, 0, 0, tzinfo=timezone.utc),
+                    ),
+                    # Alert-dedup sentinels written by the Slack signal pipeline
+                    # — must NOT surface in the timeline (would render raw noise).
+                    TrackHistory(
+                        user_asset_id=asset.id,
+                        changed_from="Keep",
+                        changed_to="succession_alerted",
                         changed_at=datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc),
+                    ),
+                    TrackHistory(
+                        user_asset_id=asset.id,
+                        changed_from=str(uuid.uuid4()),
+                        changed_to="signal_matched",
+                        changed_at=datetime(2026, 6, 2, 0, 0, tzinfo=timezone.utc),
                     ),
                 ]
             )
@@ -323,9 +338,15 @@ async def test_fetch_related_history_returns_recent_rows_desc_for_seeded_tech() 
         async with Session() as session:
             rows = await _fetch_related_history(session, [tech_id])
             ours = [r for r in rows if r.tech_id == tech_id]
+            # Only the two real status transitions survive; both sentinels
+            # are filtered out.
             assert len(ours) == 2
-            # Desc order: newest first.
-            assert ours[0].changed_to == "signal_matched"
+            changed_tos = {r.changed_to for r in ours}
+            assert changed_tos == {"Keep", "Archived"}
+            assert "signal_matched" not in changed_tos
+            assert "succession_alerted" not in changed_tos
+            # Desc order: newest real transition first.
+            assert ours[0].changed_to == "Archived"
             assert ours[1].changed_to == "Keep"
             assert ours[0].tech_title == "arg161-history-anchor"
     finally:

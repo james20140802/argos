@@ -95,8 +95,8 @@ def test_history_and_similarity_both_render(monkeypatch):
     view = _view_with(
         related_history=[
             HistoryEntry(
-                changed_from="Keep",
-                changed_to="signal_matched",
+                changed_from="Tracking",
+                changed_to="Keep",
                 changed_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
                 tech_id=tech_id,
                 tech_title="LangGraph",
@@ -129,7 +129,7 @@ def test_history_entries_render_in_provided_order(monkeypatch):
     )
     newer = HistoryEntry(
         changed_from="Keep",
-        changed_to="signal_matched",
+        changed_to="Archived",
         changed_at=datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc),
         tech_id=uuid.uuid4(),
         tech_title="Newer",

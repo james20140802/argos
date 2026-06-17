@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from argos.models.tech_item import CategoryType, TechItem
 from argos.models.tech_succession import RelationType, TechSuccession
 from argos.models.track_history import TrackHistory
-from argos.models.user_asset import UserAsset
+from argos.models.user_asset import AssetStatus, UserAsset
 
 
 # Number of pgvector-similar items shown in the 관련 신호 → similarity
@@ -188,12 +188,22 @@ async def _fetch_related_history(
     tech_ids: list[uuid.UUID],
     limit: int = HISTORY_LIMIT,
 ) -> list[HistoryEntry]:
-    """Most recent ``track_history`` rows for user_assets in ``tech_ids``.
+    """Most recent asset status *transitions* for user_assets in ``tech_ids``.
 
-    Empty when no user_asset exists for any of those tech_ids.
+    ``track_history`` also carries alert-dedup bookkeeping rows written by the
+    Slack signal pipeline (``changed_to`` = ``succession_alerted`` /
+    ``signal_matched``, the latter with a raw ``new_item_id`` UUID in
+    ``changed_from``). Those are not user-facing status changes, so the
+    timeline is restricted to rows whose ``changed_to`` is a real
+    ``AssetStatus`` — otherwise the 최근 변화 list would render noise like
+    ``<uuid> → signal_matched``.
+
+    Empty when no user_asset (with a status transition) exists for any of
+    those tech_ids.
     """
     if not tech_ids:
         return []
+    status_values = [s.value for s in AssetStatus]
     stmt = (
         select(
             TrackHistory.changed_from,
@@ -205,6 +215,7 @@ async def _fetch_related_history(
         .join(UserAsset, UserAsset.id == TrackHistory.user_asset_id)
         .join(TechItem, TechItem.id == UserAsset.tech_id)
         .where(TechItem.id.in_(tech_ids))
+        .where(TrackHistory.changed_to.in_(status_values))
         .order_by(TrackHistory.changed_at.desc())
         .limit(limit)
     )
