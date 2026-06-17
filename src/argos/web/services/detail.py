@@ -6,8 +6,8 @@ fields needed to render the in-app reader:
 * T1 (ARG-158): hero image, title, trust-score dial, summary, source link.
 * T2 (ARG-159): 🧬 genealogy — predecessors + successors with
   ``relation_type`` + ``reasoning``.
-* T4 (ARG-160): 🔭 related signals — pgvector top-5 similarity vs Keep
-  user_assets (excluding current item id).
+* T4 (ARG-160): 🔭 related signals — pgvector top-5 Keep user_assets
+  ranked by similarity to the current item (excluding current item id).
 * T3 (ARG-161): 🔭 related signals — 10 most recent track_history rows
   scoped to user_assets tied to the current item OR similarity tech ids.
 """
@@ -55,9 +55,9 @@ class GenealogyEntry:
 class SimilarItem:
     """One pgvector-similar tech item for the 🔭 관련 신호 subsection.
 
-    ``tech_id`` / ``title`` describe the recommended tech item; the
-    cosine distance to the closest Keep asset is not exposed — the
-    view is a flat top-K list.
+    ``tech_id`` / ``title`` describe the recommended Keep asset; the
+    cosine distance to the current item is not exposed — the view is a
+    flat top-K list.
     """
 
     tech_id: uuid.UUID
@@ -157,21 +157,22 @@ async def _fetch_similar(
     item_id: uuid.UUID,
     limit: int = SIMILAR_LIMIT,
 ) -> list[SimilarItem]:
-    """Top-K tech_items closest (cosine `<=>`) to any Keep user_asset's embedding.
+    """Top-K Keep assets closest (cosine `<=>`) to the *current item*'s embedding.
 
-    The current item is excluded. Items without an embedding are skipped on
-    both sides of the comparison. Result is empty when no Keep asset exists,
-    no embeddings are present, or there is no candidate other than the
-    anchor itself.
+    The vector comparison is anchored on the item being viewed: candidates are
+    the user's Keep assets, ranked by their cosine distance to this item, so
+    ``관련 신호`` surfaces the tracked assets most related to what's on screen.
+    The current item is excluded. Result is empty when the current item has no
+    embedding, no Keep asset exists, or no Keep asset has an embedding.
     """
     sql = text(
-        "SELECT t.id, t.title, MIN(t.embedding <=> k.embedding) AS dist "
+        "SELECT t.id, t.title, MIN(t.embedding <=> c.embedding) AS dist "
         "FROM tech_items t "
-        "CROSS JOIN tech_items k "
-        "JOIN user_assets ua ON ua.tech_id = k.id AND ua.status = 'Keep' "
+        "JOIN user_assets ua ON ua.tech_id = t.id AND ua.status = 'Keep' "
+        "CROSS JOIN (SELECT embedding FROM tech_items WHERE id = :item_id) c "
         "WHERE t.id <> :item_id "
         "  AND t.embedding IS NOT NULL "
-        "  AND k.embedding IS NOT NULL "
+        "  AND c.embedding IS NOT NULL "
         "GROUP BY t.id, t.title "
         "ORDER BY dist ASC "
         "LIMIT :limit"

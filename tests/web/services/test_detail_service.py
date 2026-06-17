@@ -110,10 +110,15 @@ async def test_fetch_item_detail_returns_view_for_known_id() -> None:
 
 @pytestmark_db
 @pytest.mark.asyncio
-async def test_fetch_similar_ranks_seeded_items_by_proximity_to_keep_anchor() -> None:
+async def test_fetch_similar_ranks_keep_assets_by_proximity_to_current_item() -> None:
     """Direct check on the similarity helper.
 
-    Uses a generous LIMIT so the assertion ranks SEEDED items against
+    The comparison is anchored on the *current item*: candidates are the
+    user's Keep assets, ranked by cosine distance to the viewed item. A
+    non-Keep item close to the anchor must NOT surface, and a Keep asset's
+    own self-match (when it is the current item) is excluded by id.
+
+    Uses a generous LIMIT so the assertion ranks SEEDED Keep assets against
     each other — the shared dev DB has its own Keep assets and embedded
     items that would otherwise crowd the top-5 production ordering.
     """
@@ -130,59 +135,71 @@ async def test_fetch_similar_ranks_seeded_items_by_proximity_to_keep_anchor() ->
     seeded_ids: list[uuid.UUID] = []
     try:
         async with Session() as session:
-            keep_emb = [1.0] + [0.0] * 767
+            anchor_emb = [1.0] + [0.0] * 767
             very_similar = [0.99] + [0.01] * 767
             somewhat = [0.5] + [0.5] * 767
             # Far point on a perpendicular axis — cosine distance ≫ above.
             far = [0.0] * 767 + [1.0]
 
-            keep_item = TechItem(
-                title="arg160-keep-anchor",
-                source_url=f"https://example.com/arg160/{uuid.uuid4()}",
-                raw_content="x",
-                embedding=keep_emb,
-            )
+            # The item being viewed (not a Keep asset itself).
             anchor = TechItem(
                 title="arg160-current",
                 source_url=f"https://example.com/arg160/{uuid.uuid4()}",
                 raw_content="x",
-                embedding=very_similar,
+                embedding=anchor_emb,
             )
-            top = TechItem(
-                title="arg160-top",
+            # Keep assets at varying distance from the anchor.
+            keep_near = TechItem(
+                title="arg160-keep-near",
                 source_url=f"https://example.com/arg160/{uuid.uuid4()}",
                 raw_content="x",
                 embedding=very_similar,
             )
-            mid = TechItem(
-                title="arg160-mid",
+            keep_mid = TechItem(
+                title="arg160-keep-mid",
                 source_url=f"https://example.com/arg160/{uuid.uuid4()}",
                 raw_content="x",
                 embedding=somewhat,
             )
-            tail = TechItem(
-                title="arg160-tail",
+            keep_far = TechItem(
+                title="arg160-keep-far",
                 source_url=f"https://example.com/arg160/{uuid.uuid4()}",
                 raw_content="x",
                 embedding=far,
             )
-            no_emb = TechItem(
-                title="arg160-no-emb",
+            keep_no_emb = TechItem(
+                title="arg160-keep-no-emb",
                 source_url=f"https://example.com/arg160/{uuid.uuid4()}",
                 raw_content="x",
                 embedding=None,
             )
-            session.add_all([keep_item, anchor, top, mid, tail, no_emb])
+            # Close to the anchor but NOT a Keep asset — must never surface.
+            nonkeep_near = TechItem(
+                title="arg160-nonkeep-near",
+                source_url=f"https://example.com/arg160/{uuid.uuid4()}",
+                raw_content="x",
+                embedding=very_similar,
+            )
+            session.add_all(
+                [anchor, keep_near, keep_mid, keep_far, keep_no_emb, nonkeep_near]
+            )
             await session.flush()
             seeded_ids = [
-                keep_item.id,
                 anchor.id,
-                top.id,
-                mid.id,
-                tail.id,
-                no_emb.id,
+                keep_near.id,
+                keep_mid.id,
+                keep_far.id,
+                keep_no_emb.id,
+                nonkeep_near.id,
             ]
-            session.add(UserAsset(tech_id=keep_item.id, status=AssetStatus.KEEP))
+            session.add_all(
+                [
+                    UserAsset(tech_id=keep_near.id, status=AssetStatus.KEEP),
+                    UserAsset(tech_id=keep_mid.id, status=AssetStatus.KEEP),
+                    UserAsset(tech_id=keep_far.id, status=AssetStatus.KEEP),
+                    UserAsset(tech_id=keep_no_emb.id, status=AssetStatus.KEEP),
+                ]
+            )
             await session.commit()
             anchor_id = anchor.id
 
@@ -192,20 +209,33 @@ async def test_fetch_similar_ranks_seeded_items_by_proximity_to_keep_anchor() ->
             similar = await _fetch_similar(session, anchor_id, limit=5000)
             titles = [s.title for s in similar]
 
-            # Current item and the no-embedding row must never appear.
+            # Current item, the no-embedding Keep asset, and any non-Keep
+            # candidate must never appear.
             assert "arg160-current" not in titles
-            assert "arg160-no-emb" not in titles
+            assert "arg160-keep-no-emb" not in titles
+            assert "arg160-nonkeep-near" not in titles
 
-            # All three embedded seeded candidates surface somewhere.
-            assert "arg160-top" in titles
-            assert "arg160-mid" in titles
-            assert "arg160-tail" in titles
+            # All three embedded Keep assets surface somewhere.
+            assert "arg160-keep-near" in titles
+            assert "arg160-keep-mid" in titles
+            assert "arg160-keep-far" in titles
 
-            # Ordering among seeded titles matches embedding proximity.
-            idx_top = titles.index("arg160-top")
-            idx_mid = titles.index("arg160-mid")
-            idx_tail = titles.index("arg160-tail")
-            assert idx_top < idx_mid < idx_tail
+            # Ordering among seeded Keep assets matches proximity to anchor.
+            idx_near = titles.index("arg160-keep-near")
+            idx_mid = titles.index("arg160-keep-mid")
+            idx_far = titles.index("arg160-keep-far")
+            assert idx_near < idx_mid < idx_far
+
+        async with Session() as session:
+            # When the current item has no embedding, the comparison can't be
+            # anchored — the subsection is empty (Codex P2: no global fallback).
+            similar_no_anchor = await _fetch_similar(
+                session, keep_no_emb.id, limit=5000
+            )
+            no_anchor_titles = [s.title for s in similar_no_anchor]
+            assert "arg160-keep-near" not in no_anchor_titles
+            assert "arg160-keep-mid" not in no_anchor_titles
+            assert "arg160-keep-far" not in no_anchor_titles
     finally:
         async with Session() as session:
             if seeded_ids:
