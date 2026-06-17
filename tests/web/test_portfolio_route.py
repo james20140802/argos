@@ -82,6 +82,21 @@ def test_get_portfolio_returns_200_with_empty_view(monkeypatch):
     assert "아직 Keep한 자산이 없습니다" in body
 
 
+def test_portfolio_cards_link_to_in_app_reader(monkeypatch):
+    """Portfolio cards must open the in-app reader keyed on the tech_item id
+    (ARG-138), not bounce to the external source_url, and not mistakenly use
+    the user_asset id."""
+    asset = _asset(title="Linkable", signal_count=1)
+    view = PortfolioView(active=[asset], quiet=[], category=None, sort="recency")
+    client = _client_with_portfolio(monkeypatch, view)
+    body = client.get("/portfolio").text
+    assert f'href="/item/{asset.tech_id}"' in body
+    # The user_asset id is NOT a valid /item/{id} key.
+    assert f'href="/item/{asset.id}"' not in body
+    # Cards no longer point straight at the external source.
+    assert f'href="{asset.source_url}"' not in body
+
+
 # ------------------------------------------------------------------ #
 # Test 2 — Section ordering
 # ------------------------------------------------------------------ #
