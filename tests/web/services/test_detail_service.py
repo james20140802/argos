@@ -267,7 +267,9 @@ async def test_fetch_related_history_returns_empty_for_empty_tech_id_list() -> N
         async def execute(self, *args, **kwargs):
             raise AssertionError("DB must not be touched when tech_ids is empty")
 
-    result = await _fetch_related_history(_Sentinel(), [])  # type: ignore[arg-type]
+    result = await _fetch_related_history(
+        _Sentinel(), uuid.uuid4(), []
+    )  # type: ignore[arg-type]
     assert result == []
 
 
@@ -336,7 +338,7 @@ async def test_fetch_related_history_returns_recent_rows_desc_for_seeded_tech() 
             tech_id = tech.id
 
         async with Session() as session:
-            rows = await _fetch_related_history(session, [tech_id])
+            rows = await _fetch_related_history(session, tech_id, [tech_id])
             ours = [r for r in rows if r.tech_id == tech_id]
             # Only the two real status transitions survive; both sentinels
             # are filtered out.
@@ -426,7 +428,7 @@ async def test_fetch_signal_alerts_resolves_matched_item_and_skips_transitions()
             matched_id = matched.id
 
         async with Session() as session:
-            alerts = await _fetch_signal_alerts(session, [anchor_id])
+            alerts = await _fetch_signal_alerts(session, anchor_id, [anchor_id])
             # Only the two alert rows; the status transition is excluded.
             kinds = [a.kind for a in alerts]
             assert kinds == ["signal", "succession"]  # desc by changed_at
@@ -440,6 +442,97 @@ async def test_fetch_signal_alerts_resolves_matched_item_and_skips_transitions()
             assert succ.kind == "succession"
             assert succ.matched_tech_id is None
             assert succ.matched_title is None
+    finally:
+        async with Session() as session:
+            if seeded_tech_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_tech_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_signal_alerts_prioritizes_current_item_before_limit() -> None:
+    """The viewed item's own alert must win a tight limit even when a similar
+    asset has a newer alert — otherwise tapping an active card shows no
+    explanation for it."""
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import TechItem
+    from argos.models.track_history import TrackHistory
+    from argos.models.user_asset import AssetStatus, UserAsset
+    from argos.web.services.detail import _fetch_signal_alerts
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    seeded_tech_ids: list[uuid.UUID] = []
+    try:
+        from datetime import datetime, timezone
+
+        async with Session() as session:
+            current = TechItem(
+                title="arg-prio-current",
+                source_url=f"https://example.com/prio/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            similar = TechItem(
+                title="arg-prio-similar",
+                source_url=f"https://example.com/prio/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            cur_match = TechItem(
+                title="arg-prio-current-match",
+                source_url=f"https://example.com/prio/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            sim_match = TechItem(
+                title="arg-prio-similar-match",
+                source_url=f"https://example.com/prio/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            session.add_all([current, similar, cur_match, sim_match])
+            await session.flush()
+            seeded_tech_ids = [current.id, similar.id, cur_match.id, sim_match.id]
+            cur_asset = UserAsset(tech_id=current.id, status=AssetStatus.KEEP)
+            sim_asset = UserAsset(tech_id=similar.id, status=AssetStatus.KEEP)
+            session.add_all([cur_asset, sim_asset])
+            await session.flush()
+            session.add_all(
+                [
+                    # Current item's alert is OLDER…
+                    TrackHistory(
+                        user_asset_id=cur_asset.id,
+                        changed_from=str(cur_match.id),
+                        changed_to="signal_matched",
+                        changed_at=datetime(2026, 5, 1, 0, 0, tzinfo=timezone.utc),
+                    ),
+                    # …the similar asset's alert is NEWER.
+                    TrackHistory(
+                        user_asset_id=sim_asset.id,
+                        changed_from=str(sim_match.id),
+                        changed_to="signal_matched",
+                        changed_at=datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc),
+                    ),
+                ]
+            )
+            await session.commit()
+            current_id = current.id
+            similar_id = similar.id
+            cur_match_id = cur_match.id
+
+        async with Session() as session:
+            # limit=1: pure recency would return the similar asset's newer alert,
+            # but prioritization must surface the current item's own alert.
+            alerts = await _fetch_signal_alerts(
+                session, current_id, [current_id, similar_id], limit=1
+            )
+            assert len(alerts) == 1
+            assert alerts[0].matched_tech_id == cur_match_id
+            assert alerts[0].matched_title == "arg-prio-current-match"
     finally:
         async with Session() as session:
             if seeded_tech_ids:

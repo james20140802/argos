@@ -215,6 +215,7 @@ async def _fetch_similar(
 
 async def _fetch_related_history(
     session: AsyncSession,
+    item_id: uuid.UUID,
     tech_ids: list[uuid.UUID],
     limit: int = HISTORY_LIMIT,
 ) -> list[HistoryEntry]:
@@ -227,6 +228,11 @@ async def _fetch_related_history(
     timeline is restricted to rows whose ``changed_to`` is a real
     ``AssetStatus`` — otherwise the 최근 변화 list would render noise like
     ``<uuid> → signal_matched``.
+
+    The viewed item (``item_id``) is prioritized: its own transitions sort
+    ahead of similar-asset transitions before ``limit`` applies, so a flood of
+    newer rows from similar assets can't push the tapped item's own history out
+    of view. ``tech_ids`` is the full scope (current item + similar tech ids).
 
     Empty when no user_asset (with a status transition) exists for any of
     those tech_ids.
@@ -246,7 +252,7 @@ async def _fetch_related_history(
         .join(TechItem, TechItem.id == UserAsset.tech_id)
         .where(TechItem.id.in_(tech_ids))
         .where(TrackHistory.changed_to.in_(status_values))
-        .order_by(TrackHistory.changed_at.desc())
+        .order_by((TechItem.id == item_id).desc(), TrackHistory.changed_at.desc())
         .limit(limit)
     )
     rows = (await session.execute(stmt)).all()
@@ -264,6 +270,7 @@ async def _fetch_related_history(
 
 async def _fetch_signal_alerts(
     session: AsyncSession,
+    item_id: uuid.UUID,
     tech_ids: list[uuid.UUID],
     limit: int = SIGNAL_ALERT_LIMIT,
 ) -> list[SignalAlert]:
@@ -278,6 +285,12 @@ async def _fetch_signal_alerts(
     matched item's title/id for linking. ``succession_alerted`` rows carry no
     specific item. Real status transitions are excluded — those belong to the
     ``최근 변화`` timeline (see ``_fetch_related_history``).
+
+    The viewed item (``item_id``) is prioritized: its own alerts sort ahead of
+    similar-asset alerts before ``limit`` applies, so when a card is active
+    because *this* asset signalled, that alert is always shown even if similar
+    assets have newer ones. ``tech_ids`` is the full scope (current item +
+    similar tech ids).
     """
     if not tech_ids:
         return []
@@ -306,7 +319,7 @@ async def _fetch_signal_alerts(
         )
         .where(TechItem.id.in_(tech_ids))
         .where(TrackHistory.changed_to.in_((SIGNAL_MATCHED, SUCCESSION_ALERTED)))
-        .order_by(TrackHistory.changed_at.desc())
+        .order_by((TechItem.id == item_id).desc(), TrackHistory.changed_at.desc())
         .limit(limit)
     )
     rows = (await session.execute(stmt)).all()
@@ -345,8 +358,8 @@ async def fetch_item_detail(
     successors = await _fetch_successors(session, item_id)
     similar = await _fetch_similar(session, item_id)
     signal_scope = [item_id] + [s.tech_id for s in similar]
-    signal_alerts = await _fetch_signal_alerts(session, signal_scope)
-    related_history = await _fetch_related_history(session, signal_scope)
+    signal_alerts = await _fetch_signal_alerts(session, item_id, signal_scope)
+    related_history = await _fetch_related_history(session, item_id, signal_scope)
 
     return ItemDetailView(
         id=row.id,
