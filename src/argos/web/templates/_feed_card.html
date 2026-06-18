@@ -1,0 +1,15 @@
+{# Single feed-card partial for HTMX action swaps (ARG-139). #}
+<article class="feed-card" id="feed-card-{{ item.id }}">
+  <header class="feed-card__title">{{ item.title }}</header>
+  {% if item.status %}
+    <span class="badge badge--{{ item.status.value|lower }}">{{ item.status.value }}</span>
+  {% endif %}
+  <div class="feed-card__actions">
+    <button hx-post="/items/{{ item.id }}/keep"
+            hx-target="#feed-card-{{ item.id }}"
+            hx-swap="outerHTML">Keep</button>
+    <button hx-post="/items/{{ item.id }}/pass"
+            hx-target="#feed-card-{{ item.id }}"
+            hx-swap="outerHTML">Pass</button>
+  </div>
+</article>

@@ -26,7 +26,20 @@ from argos.web.services.detail import fetch_item_detail
 from argos.web.services.feed import fetch_feed
 from argos.web.services.portfolio import fetch_portfolio
 
-_PACKAGE_DIR = Path(__file__).parent
+_PACKAGE_DIR = Path(__file__).parent  # noqa: E402 — module-level lazy shims below
+
+
+async def transition_asset(session, tech_id: uuid.UUID, target_status):
+    """Lazy shim — delegates to argos.slack.services.asset_transition.
+
+    Defined at module level so tests can monkeypatch ``argos.web.app.transition_asset``
+    without triggering an eager ``argos.database`` import at app-construction time.
+    """
+    from argos.slack.services.asset_transition import (
+        transition_asset as _real_transition_asset,
+    )
+
+    return await _real_transition_asset(session, tech_id, target_status)
 _TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 _STATIC_DIR = _PACKAGE_DIR / "static"
 
@@ -51,6 +64,37 @@ async def _get_session():
 def _normalize_category(category: Optional[str]) -> Optional[str]:
     """Coerce an arbitrary ?category= value to a valid filter or None (전체)."""
     return category if category in _VALID_CATEGORIES else None
+
+
+async def _load_feed_card_context(session, tech_id: uuid.UUID):
+    """Fetch the minimal shape the feed-card partial needs after a transition.
+
+    Returns a mapping with keys (id, title, status, category, image_url,
+    source_url) or None if the tech_item does not exist.
+    """
+    from sqlalchemy import select
+
+    from argos.models.tech_item import TechItem
+    from argos.models.user_asset import UserAsset
+
+    row = (
+        await session.execute(
+            select(TechItem, UserAsset)
+            .join(UserAsset, UserAsset.tech_id == TechItem.id, isouter=True)
+            .where(TechItem.id == tech_id)
+        )
+    ).first()
+    if row is None:
+        return None
+    tech_item, user_asset = row
+    return {
+        "id": tech_item.id,
+        "title": tech_item.title,
+        "status": user_asset.status if user_asset else None,
+        "category": tech_item.category,
+        "image_url": getattr(tech_item, "image_url", None),
+        "source_url": tech_item.source_url,
+    }
 
 
 def build_web_app() -> FastAPI:
@@ -186,5 +230,60 @@ def build_web_app() -> FastAPI:
         return request.app.state.templates.TemplateResponse(
             request, "item_detail.html", {"item": item}
         )
+
+    def _error_fragment(request: Request, status_code: int, message: str) -> HTMLResponse:
+        return HTMLResponse(
+            f'<div class="action-error" data-status="{status_code}">{message}</div>',
+            status_code=status_code,
+        )
+
+    def _action_response(request: Request, item: dict, partial_name: str) -> HTMLResponse:
+        from types import SimpleNamespace
+
+        return request.app.state.templates.TemplateResponse(
+            request, partial_name, {"item": SimpleNamespace(**item)}
+        )
+
+    async def _transition_item(
+        request: Request, item_id: str, target_status, session
+    ) -> HTMLResponse:
+        from argos.slack.services.asset_transition import TransitionOutcome
+
+        try:
+            parsed_id = uuid.UUID(item_id)
+        except ValueError:
+            return _error_fragment(request, 404, "not found")
+
+        item = await _load_feed_card_context(session, parsed_id)
+        if item is None:
+            return _error_fragment(request, 404, "not found")
+
+        outcome = await transition_asset(session, parsed_id, target_status)
+        if outcome is TransitionOutcome.NOOP:
+            return _error_fragment(request, 409, "already in that state")
+
+        # Reload after transition so the partial sees fresh status.
+        item = await _load_feed_card_context(session, parsed_id)
+        return _action_response(request, item, "_feed_card.html")
+
+    @app.post("/items/{item_id}/keep", response_class=HTMLResponse)
+    async def keep_item(
+        request: Request,
+        item_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        from argos.models.user_asset import AssetStatus
+
+        return await _transition_item(request, item_id, AssetStatus.KEEP, session)
+
+    @app.post("/items/{item_id}/pass", response_class=HTMLResponse)
+    async def pass_item(
+        request: Request,
+        item_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        from argos.models.user_asset import AssetStatus
+
+        return await _transition_item(request, item_id, AssetStatus.ARCHIVED, session)
 
     return app
