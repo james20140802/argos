@@ -146,6 +146,60 @@ async def main():
 asyncio.run(main())
 ```
 
+## Web Layer (Tailscale)
+
+`uv run argos web` serves the FastAPI app at `http://127.0.0.1:8765` by default
+(`WebConfig` in `src/argos/config.py`). It binds to **localhost only** — Tailscale
+is responsible for exposing the port to your tailnet over HTTPS, so no port is
+ever opened on `0.0.0.0`.
+
+### HTTPS over Tailscale — primary path: `tailscale serve`
+
+1. In the Tailscale admin console, toggle **HTTPS Certificates** on for your
+   tailnet. **This step is a hard prerequisite** — on macOS App Store builds,
+   `tailscale serve` will silently hang without it.
+2. Start the web layer locally:
+   ```bash
+   uv run argos web        # listens on 127.0.0.1:8765
+   ```
+3. In a second terminal, expose it through your tailnet:
+   ```bash
+   tailscale serve --bg --https=443 http://127.0.0.1:8765
+   ```
+4. Confirm the URL:
+   ```bash
+   tailscale serve status
+   # → https://<machine>.<tailnet>.ts.net is now serving …
+   ```
+
+### iPad PWA install (Safari → 홈 화면에 추가)
+
+1. On the iPad (signed into the same tailnet), open Safari and visit
+   `https://<machine>.<tailnet>.ts.net`.
+2. Tap the share sheet → **홈 화면에 추가 / Add to Home Screen** → confirm.
+3. Launch from the home screen icon; it opens in standalone PWA mode.
+
+### Fallback — `tailscale cert` + uvicorn TLS
+
+Only if `tailscale serve` is unavailable (e.g. a `tailscaled` build without
+serve support):
+
+```bash
+# Provision the cert (writes machine.tailnet.ts.net.{crt,key} into cwd)
+tailscale cert <machine>.<tailnet>.ts.net
+
+# Run uvicorn directly with TLS, binding to the tailnet address
+uv run uvicorn argos.web.app:build_web_app \
+  --factory \
+  --host <tailnet-ip> \
+  --port 443 \
+  --ssl-certfile <machine>.<tailnet>.ts.net.crt \
+  --ssl-keyfile  <machine>.<tailnet>.ts.net.key
+```
+
+This path bypasses `argos web`'s `127.0.0.1` binding — be deliberate about
+who can reach `<tailnet-ip>`.
+
 ## Slack Bot
 
 Argos의 사용자 인터페이스는 Slack 봇입니다 (Socket Mode 기반, 인바운드 포트 불필요).
