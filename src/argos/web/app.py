@@ -97,6 +97,56 @@ async def _load_feed_card_context(session, tech_id: uuid.UUID):
     }
 
 
+async def _resolve_user_asset_tech_id(session, user_asset_id: uuid.UUID):
+    """Resolve a user_asset row to its tech_id.
+
+    Returns ``None`` if no row exists.  Lazy DB import keeps the module-level
+    import graph free of ``argos.database`` (see the no-DB guard test).
+    """
+    from sqlalchemy import select
+
+    from argos.models.user_asset import UserAsset
+
+    row = (
+        await session.execute(
+            select(UserAsset.tech_id).where(UserAsset.id == user_asset_id)
+        )
+    ).first()
+    if row is None:
+        return None
+    return row[0]
+
+
+async def _load_portfolio_row_context(session, user_asset_id: uuid.UUID):
+    """Fetch the minimal shape the portfolio-row partial needs after an Untrack.
+
+    Returns a mapping with keys (id, title, status, category, image_url)
+    or None if the user_asset does not exist.
+    """
+    from sqlalchemy import select
+
+    from argos.models.tech_item import TechItem
+    from argos.models.user_asset import UserAsset
+
+    row = (
+        await session.execute(
+            select(UserAsset, TechItem)
+            .join(TechItem, TechItem.id == UserAsset.tech_id)
+            .where(UserAsset.id == user_asset_id)
+        )
+    ).first()
+    if row is None:
+        return None
+    user_asset, tech_item = row
+    return {
+        "id": user_asset.id,
+        "title": tech_item.title,
+        "status": user_asset.status,
+        "category": tech_item.category,
+        "image_url": getattr(tech_item, "image_url", None),
+    }
+
+
 def build_web_app() -> FastAPI:
     """Build and return the Argos FastAPI app.
 
@@ -285,5 +335,30 @@ def build_web_app() -> FastAPI:
         from argos.models.user_asset import AssetStatus
 
         return await _transition_item(request, item_id, AssetStatus.ARCHIVED, session)
+
+    @app.post("/assets/{user_asset_id}/untrack", response_class=HTMLResponse)
+    async def untrack_asset(
+        request: Request,
+        user_asset_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        from argos.models.user_asset import AssetStatus
+        from argos.slack.services.asset_transition import TransitionOutcome
+
+        try:
+            parsed_id = uuid.UUID(user_asset_id)
+        except ValueError:
+            return _error_fragment(request, 404, "not found")
+
+        tech_id = await _resolve_user_asset_tech_id(session, parsed_id)
+        if tech_id is None:
+            return _error_fragment(request, 404, "not found")
+
+        outcome = await transition_asset(session, tech_id, AssetStatus.ARCHIVED)
+        if outcome is TransitionOutcome.NOOP:
+            return _error_fragment(request, 409, "already archived")
+
+        item = await _load_portfolio_row_context(session, parsed_id)
+        return _action_response(request, item, "_portfolio_row.html")
 
     return app

@@ -127,3 +127,83 @@ def test_keep_noop_returns_409_fragment(monkeypatch):
     resp = client.post(f"/items/{item_id}/keep")
     assert resp.status_code == 409
     assert "<!DOCTYPE html>" not in resp.text
+
+
+def test_untrack_returns_updated_portfolio_row_partial(monkeypatch):
+    user_asset_id = uuid.uuid4()
+    tech_id = uuid.uuid4()
+    captured: dict = {}
+
+    async def _fake_resolve(session, ua_id):
+        assert ua_id == user_asset_id
+        return tech_id
+
+    async def _fake_transition(session, t_id, target_status):
+        captured["tech_id"] = t_id
+        captured["target_status"] = target_status
+        return TransitionOutcome.TRANSITIONED
+
+    async def _fake_lookup(session, ua_id):
+        return {"id": ua_id, "title": "Tracked", "status": AssetStatus.ARCHIVED,
+                "category": None, "image_url": None}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
+            "argos.web.app.transition_asset": _fake_transition,
+            "argos.web.app._load_portfolio_row_context": _fake_lookup,
+        },
+    )
+    resp = client.post(f"/assets/{user_asset_id}/untrack")
+    assert resp.status_code == 200
+    assert "Tracked" in resp.text
+    assert "<!DOCTYPE html>" not in resp.text
+    assert captured["target_status"] == AssetStatus.ARCHIVED
+    assert captured["tech_id"] == tech_id
+
+
+def test_untrack_unknown_asset_returns_404_fragment(monkeypatch):
+    user_asset_id = uuid.uuid4()
+
+    async def _fake_resolve(session, ua_id):
+        return None
+
+    client = _client(
+        monkeypatch,
+        **{"argos.web.app._resolve_user_asset_tech_id": _fake_resolve},
+    )
+    resp = client.post(f"/assets/{user_asset_id}/untrack")
+    assert resp.status_code == 404
+
+
+def test_untrack_malformed_uuid_returns_404(monkeypatch):
+    client = _client(monkeypatch)
+    resp = client.post("/assets/not-a-uuid/untrack")
+    assert resp.status_code == 404
+
+
+def test_untrack_already_archived_returns_409(monkeypatch):
+    user_asset_id = uuid.uuid4()
+    tech_id = uuid.uuid4()
+
+    async def _fake_resolve(session, ua_id):
+        return tech_id
+
+    async def _fake_transition(session, t_id, target_status):
+        return TransitionOutcome.NOOP
+
+    async def _fake_lookup(session, ua_id):
+        return {"id": ua_id, "title": "Already", "status": AssetStatus.ARCHIVED,
+                "category": None, "image_url": None}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
+            "argos.web.app.transition_asset": _fake_transition,
+            "argos.web.app._load_portfolio_row_context": _fake_lookup,
+        },
+    )
+    resp = client.post(f"/assets/{user_asset_id}/untrack")
+    assert resp.status_code == 409
