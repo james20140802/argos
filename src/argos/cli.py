@@ -1204,7 +1204,7 @@ def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
     from argos.scheduler import SchedulerError, bootout_plist
 
     failures: list[str] = []
-    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly"):
+    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly", "com.argos.web"):
         try:
             bootout_plist(label)
             print(f"Unloaded: {label}")
@@ -1217,7 +1217,7 @@ def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
 def _cmd_schedule_status(_args: argparse.Namespace) -> int:
     from argos.scheduler import is_loaded
 
-    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly"):
+    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly", "com.argos.web"):
         state = "loaded" if is_loaded(label) else "not loaded"
         print(f"{label}: {state}")
     return EXIT_OK

@@ -69,14 +69,54 @@ def isolated_paths(monkeypatch, tmp_path) -> dict[str, Path]:
 
 
 def _make_fake_launchctl(
-    handlers: dict[str, Callable[[list[str]], subprocess.CompletedProcess[str]]],
+    handlers: dict[str, Callable[[list[str]], subprocess.CompletedProcess[str]]] | None = None,
+    *,
+    bootstrap: Callable[[str, str], None] | None = None,
+    bootout: Callable[[str], None] | None = None,
 ) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
-    """Build a `_run_launchctl` replacement that dispatches on the first arg."""
+    """Build a `_run_launchctl` replacement that dispatches on the first arg.
+
+    Supports two calling styles:
+    - Legacy: ``_make_fake_launchctl({"bootstrap": fn, ...})`` — handlers dict.
+    - Keyword: ``_make_fake_launchctl(bootstrap=fn, bootout=fn)`` — convenience
+      wrappers that extract label/path from the args list before calling ``fn``.
+    """
+    resolved_handlers: dict[str, Callable[[list[str]], subprocess.CompletedProcess[str]]] = (
+        handlers or {}
+    )
+    # Wrap keyword-arg shims into the handlers dict if provided.
+    if bootstrap is not None and "bootstrap" not in resolved_handlers:
+        _bootstrap_fn = bootstrap
+
+        def _bootstrap_handler(args: list[str]) -> subprocess.CompletedProcess[str]:
+            # args: ["bootstrap", "<domain>", "<plist_path>"]
+            # Derive the label from the plist filename (e.g. "com.argos.web.plist" → "com.argos.web").
+            plist_path = args[2] if len(args) > 2 else ""
+            label = Path(plist_path).stem if plist_path else ""
+            _bootstrap_fn(label, plist_path)
+            return subprocess.CompletedProcess(["launchctl", *args], 0, stdout="", stderr="")
+
+        resolved_handlers["bootstrap"] = _bootstrap_handler
+    if bootout is not None and "bootout" not in resolved_handlers:
+        _bootout_fn = bootout
+
+        def _bootout_handler(args: list[str]) -> subprocess.CompletedProcess[str]:
+            # args: ["bootout", "<domain>/<label>"]
+            target = args[1] if len(args) > 1 else ""
+            label = target.rsplit("/", 1)[-1] if "/" in target else target
+            _bootout_fn(label)
+            return subprocess.CompletedProcess(["launchctl", *args], 0, stdout="", stderr="")
+
+        resolved_handlers["bootout"] = _bootout_handler
 
     def fake(args: list[str]) -> subprocess.CompletedProcess[str]:
         action = args[0] if args else ""
-        if action in handlers:
-            return handlers[action](args)
+        if action in resolved_handlers:
+            return resolved_handlers[action](args)
+        # print: return the label in stdout so is_loaded() succeeds.
+        if action == "print":
+            label = (args[1] if len(args) > 1 else "").rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(["launchctl", *args], 0, stdout=f"{label} = service", stderr="")
         return subprocess.CompletedProcess(["launchctl", *args], 0, stdout="", stderr="")
 
     return fake
@@ -1655,3 +1695,119 @@ def test_briefing_config_weekly_time_inherits_from_time():
 
     cfg_explicit = BriefingConfig(time="09:00", weekly_time="08:00")
     assert cfg_explicit.weekly_time == "08:00"
+
+
+# ---------------------------------------------------------------------------
+# ARG-165: render_web_plist — persistent daemon plist (RunAtLoad + KeepAlive)
+# ---------------------------------------------------------------------------
+
+
+def test_render_web_plist_runs_at_load_with_keep_alive_and_no_calendar(
+    fake_argos_binary, fake_uid, tmp_path
+):
+    """com.argos.web is a persistent daemon, not a scheduled job."""
+    import plistlib
+    from argos.scheduler import render_web_plist
+
+    xml = render_web_plist(working_directory=tmp_path)
+    payload = plistlib.loads(xml.encode("utf-8"))
+
+    assert payload["Label"] == "com.argos.web"
+    assert payload["RunAtLoad"] is True
+    assert payload["KeepAlive"] is True
+    assert "StartCalendarInterval" not in payload
+    # ProgramArguments: [argos-bin, "web"] with no --config.
+    assert payload["ProgramArguments"][-1] == "web"
+    assert str(fake_argos_binary) in payload["ProgramArguments"][0]
+    assert payload["StandardOutPath"].endswith("/web.log")
+    assert payload["StandardErrorPath"].endswith("/web.log")
+    assert payload["WorkingDirectory"] == str(tmp_path)
+
+
+def test_render_web_plist_passes_config_path_when_provided(
+    fake_argos_binary, fake_uid, tmp_path
+):
+    import plistlib
+    from argos.scheduler import render_web_plist
+
+    cfg = tmp_path / "argos.toml"
+    cfg.write_text("# stub\n")
+    xml = render_web_plist(config_path=cfg, working_directory=tmp_path)
+    payload = plistlib.loads(xml.encode("utf-8"))
+
+    args = payload["ProgramArguments"]
+    assert "--config" in args
+    assert str(cfg) in args
+
+
+def test_render_web_plist_custom_label(fake_argos_binary, fake_uid, tmp_path):
+    import plistlib
+    from argos.scheduler import render_web_plist
+
+    xml = render_web_plist(label="com.argos.web-alt", working_directory=tmp_path)
+    payload = plistlib.loads(xml.encode("utf-8"))
+    assert payload["Label"] == "com.argos.web-alt"
+
+
+# ---------------------------------------------------------------------------
+# ARG-165: reload_schedule honors web.launchd_enabled
+# ---------------------------------------------------------------------------
+
+
+def test_reload_schedule_installs_and_bootstraps_web_when_enabled(
+    fake_argos_binary, fake_uid, isolated_paths, monkeypatch
+):
+    """When user_config.web.launchd_enabled=True, com.argos.web is rendered,
+    installed, and bootstrapped alongside run/brief."""
+    from types import SimpleNamespace
+    from argos.scheduler import reload_schedule
+
+    bootstrap_calls: list[str] = []
+    fake = _make_fake_launchctl(bootstrap=lambda label, _path: bootstrap_calls.append(label))
+    monkeypatch.setattr("argos.scheduler._run_launchctl", fake)
+
+    user_config = SimpleNamespace(
+        run=SimpleNamespace(time="03:00"),
+        briefing=SimpleNamespace(
+            time="08:00", weekdays=["Mon", "Tue", "Wed", "Thu", "Fri"],
+            weekly_enabled=False, weekly_time="09:00", weekly_weekday="Mon",
+        ),
+        web=SimpleNamespace(launchd_enabled=True),
+    )
+
+    reload_schedule(user_config)
+
+    web_plist = isolated_paths["launch_agents"] / "com.argos.web.plist"
+    assert web_plist.exists()
+    assert "com.argos.web" in bootstrap_calls
+
+
+def test_reload_schedule_bootouts_web_when_disabled(
+    fake_argos_binary, fake_uid, isolated_paths, monkeypatch
+):
+    """When launchd_enabled=False, a previously-loaded com.argos.web is
+    booted out (mirroring the brief-weekly disabled path)."""
+    from types import SimpleNamespace
+    from argos.scheduler import reload_schedule
+
+    bootout_calls: list[str] = []
+    fake = _make_fake_launchctl(
+        bootstrap=lambda label, _path: None,
+        bootout=lambda label: bootout_calls.append(label),
+    )
+    monkeypatch.setattr("argos.scheduler._run_launchctl", fake)
+
+    user_config = SimpleNamespace(
+        run=SimpleNamespace(time="03:00"),
+        briefing=SimpleNamespace(
+            time="08:00", weekdays=["Mon"],
+            weekly_enabled=False, weekly_time="09:00", weekly_weekday="Mon",
+        ),
+        web=SimpleNamespace(launchd_enabled=False),
+    )
+
+    reload_schedule(user_config)
+
+    assert "com.argos.web" in bootout_calls
+    # And no web plist was bootstrapped this run.
+    # (Plist may or may not exist on disk from prior installs — we don't assert delete.)

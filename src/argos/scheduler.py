@@ -355,6 +355,42 @@ def render_brief_plist(
     )
 
 
+def render_web_plist(
+    *,
+    label: str = "com.argos.web",
+    config_path: Path | None = None,
+    log_dir: Path | None = None,
+    working_directory: Path | None = None,
+) -> str:
+    """Render the persistent ``argos web`` daemon plist as XML text (ARG-165).
+
+    Unlike the run/brief/brief-weekly schedules, this plist runs at login
+    and is kept alive by launchd — there is no ``StartCalendarInterval``.
+    """
+    argos_bin = _resolve_argos_binary()
+    program_args: list[str] = [str(argos_bin), "web"]
+    if config_path is not None:
+        program_args.extend(["--config", str(config_path)])
+    resolved_log_dir = log_dir if log_dir is not None else _DEFAULT_LOG_DIR
+    resolved_cwd = (
+        working_directory if working_directory is not None else Path.cwd()
+    )
+    # Hand-build the payload so we can set RunAtLoad/KeepAlive=True and
+    # omit StartCalendarInterval entirely — _build_plist_dict bakes a
+    # scheduled-job shape that doesn't fit a long-running daemon.
+    payload = {
+        "Label": label,
+        "ProgramArguments": program_args,
+        "StandardOutPath": str(resolved_log_dir / "web.log"),
+        "StandardErrorPath": str(resolved_log_dir / "web.log"),
+        "EnvironmentVariables": {"PATH": _DEFAULT_ENV_PATH},
+        "WorkingDirectory": str(resolved_cwd),
+        "RunAtLoad": True,
+        "KeepAlive": True,
+    }
+    return plistlib.dumps(payload, fmt=plistlib.FMT_XML).decode("utf-8")
+
+
 def install_plist(plist_path: Path, content: str) -> None:
     """Write ``content`` to ``plist_path`` atomically with mode 0o644.
 
@@ -488,6 +524,10 @@ def reload_schedule(
     weekly_time = getattr(user_config.briefing, "weekly_time", brief_time)
     weekly_weekday = getattr(user_config.briefing, "weekly_weekday", "Mon")
 
+    # ARG-165: opt-in persistent web daemon (default False — safe for existing
+    # installs that don't have `web.launchd_enabled = true` in their config).
+    web_enabled = bool(getattr(getattr(user_config, "web", None), "launchd_enabled", False))
+
     _DEFAULT_LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
     _DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -496,6 +536,7 @@ def reload_schedule(
     brief_weekly_plist_path = (
         _DEFAULT_LAUNCH_AGENTS / "com.argos.brief-weekly.plist"
     )
+    web_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.web.plist"
 
     # Capture cwd once so all plists agree on the same WorkingDirectory,
     # even if some caller mutates cwd between the render calls.
@@ -542,6 +583,21 @@ def reload_schedule(
                 exc_info=True,
             )
 
+    if web_enabled:
+        web_xml = render_web_plist(
+            config_path=config_path,
+            working_directory=install_cwd,
+        )
+        install_plist(web_plist_path, web_xml)
+    else:
+        try:
+            bootout_plist("com.argos.web")
+        except SchedulerError:
+            logger.warning(
+                "web launchd disabled; bootout of com.argos.web failed",
+                exc_info=True,
+            )
+
     bootstrap_plist(run_plist_path)
     try:
         bootstrap_plist(brief_plist_path)
@@ -560,6 +616,15 @@ def reload_schedule(
                 f"job (com.argos.brief-weekly) failed: {exc}. "
                 f"To clean up, run: argos schedule uninstall && argos schedule install"
             ) from exc
+    if web_enabled:
+        try:
+            bootstrap_plist(web_plist_path)
+        except SchedulerError as exc:
+            raise SchedulerError(
+                f"run/brief jobs bootstrapped successfully but web daemon "
+                f"(com.argos.web) failed: {exc}. "
+                f"To clean up, run: argos schedule uninstall && argos schedule install"
+            ) from exc
 
 
 __all__ = [
@@ -572,4 +637,5 @@ __all__ = [
     "render_brief_plist",
     "render_brief_weekly_plist",
     "render_run_plist",
+    "render_web_plist",
 ]
