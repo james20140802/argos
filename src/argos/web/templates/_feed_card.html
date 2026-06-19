@@ -1,15 +1,48 @@
-{# Single feed-card partial for HTMX action swaps (ARG-139). #}
-<article class="feed-card" id="feed-card-{{ item.id }}">
-  <header class="feed-card__title">{{ item.title }}</header>
-  {% if item.status %}
-    <span class="badge badge--{{ item.status.value|lower }}">{{ item.status.value }}</span>
+{# Single feed card — the source of truth for both the initial feed list
+   (_feed_items.html loops + includes this) and the HTMX Keep/Pass action
+   swaps returned by POST /items/{id}/keep|pass (ARG-136 / ARG-139).
+
+   ``card_delay`` is supplied by the list loop for the staggered entrance
+   animation and defaults to 0 when rendered bare as an action response. #}
+<article class="card rise" id="feed-card-{{ item.id }}"
+         style="--d: {{ card_delay | default('0.00') }}s">
+  {# Card taps open the in-app reader (ARG-138); "원문 보기" on the detail
+     page handles the external source_url redirect. #}
+  {% if item.image_url %}
+  <a class="cover" href="/item/{{ item.id }}">
+    {# og:image is attacker-controllable (crawled): render via an HTML-escaped
+       <img src> rather than inline CSS url() to avoid CSS-context injection. #}
+    <img class="cover__img" src="{{ item.image_url }}" alt="" loading="lazy">
+    <span class="scrim" aria-hidden="true"></span>
+  </a>
+  {% else %}
+  <a class="cover cover--fallback cover--{{ (item.category.value if item.category else 'none')|lower }}"
+     href="/item/{{ item.id }}">
+    <span class="scrim" aria-hidden="true"></span>
+    <span class="cover__glyph" aria-hidden="true">◎</span>
+  </a>
   {% endif %}
-  <div class="feed-card__actions">
-    <button hx-post="/items/{{ item.id }}/keep"
-            hx-target="#feed-card-{{ item.id }}"
-            hx-swap="outerHTML">Keep</button>
-    <button hx-post="/items/{{ item.id }}/pass"
-            hx-target="#feed-card-{{ item.id }}"
-            hx-swap="outerHTML">Pass</button>
+  <div class="body">
+    <div class="meta">
+      {% if item.category %}
+      <span class="tag {{ 'main' if item.category.value == 'Mainstream' else 'alpha' }}">{{ item.category.value }}</span>
+      {% endif %}
+      {% if item.status %}
+      <span class="status-badge status-badge--{{ item.status.value|lower }}">{{ item.status.value }}</span>
+      {% endif %}
+    </div>
+    <h2 class="headline">
+      <a href="/item/{{ item.id }}">{{ item.title }}</a>
+    </h2>
+    <div class="card-actions">
+      <button class="card-action card-action--keep"
+              hx-post="/items/{{ item.id }}/keep"
+              hx-target="#feed-card-{{ item.id }}"
+              hx-swap="outerHTML">Keep</button>
+      <button class="card-action card-action--pass"
+              hx-post="/items/{{ item.id }}/pass"
+              hx-target="#feed-card-{{ item.id }}"
+              hx-swap="outerHTML">Pass</button>
+    </div>
   </div>
 </article>

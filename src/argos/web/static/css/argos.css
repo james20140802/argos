@@ -343,6 +343,36 @@ body {
 .load-more:hover { color: var(--ink); border-color: var(--brass); }
 .load-more.htmx-request { opacity: 0.5; pointer-events: none; }
 
+/* Keep / Pass / Untrack HTMX action buttons (ARG-139) */
+.card-actions {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-top: 12px;
+}
+.card-action {
+  flex: 1 1 0; min-width: 72px;
+  padding: 9px 12px;
+  font: 600 11px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted); cursor: pointer;
+  background: rgba(236, 231, 221, 0.03);
+  border: 1px solid var(--line); border-radius: 9px;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.card-action:hover { color: var(--ink); border-color: var(--brass); }
+.card-action--keep:hover { color: var(--brass-hi); border-color: rgba(201, 168, 106, 0.5); }
+.card-action--pass:hover,
+.card-action--untrack:hover { color: var(--faint); border-color: var(--line); }
+.card-action.htmx-request { opacity: 0.5; pointer-events: none; }
+
+/* Inline error returned by an action route (404 / 409) */
+.action-error {
+  margin-top: 12px; padding: 10px 12px;
+  font: 500 12px/1.4 "IBM Plex Sans KR", sans-serif;
+  color: var(--faint);
+  background: rgba(236, 231, 221, 0.03);
+  border: 1px solid var(--line); border-radius: 9px;
+}
+
 /* === ARG-137 portfolio === */
 
 /* Filter chip row — mirrors .feed-filter */

@@ -117,36 +117,6 @@ async def _resolve_user_asset_tech_id(session, user_asset_id: uuid.UUID):
     return row[0]
 
 
-async def _load_portfolio_row_context(session, user_asset_id: uuid.UUID):
-    """Fetch the minimal shape the portfolio-row partial needs after an Untrack.
-
-    Returns a mapping with keys (id, title, status, category, image_url)
-    or None if the user_asset does not exist.
-    """
-    from sqlalchemy import select
-
-    from argos.models.tech_item import TechItem
-    from argos.models.user_asset import UserAsset
-
-    row = (
-        await session.execute(
-            select(UserAsset, TechItem)
-            .join(TechItem, TechItem.id == UserAsset.tech_id)
-            .where(UserAsset.id == user_asset_id)
-        )
-    ).first()
-    if row is None:
-        return None
-    user_asset, tech_item = row
-    return {
-        "id": user_asset.id,
-        "title": tech_item.title,
-        "status": user_asset.status,
-        "category": tech_item.category,
-        "image_url": getattr(tech_item, "image_url", None),
-    }
-
-
 def build_web_app() -> FastAPI:
     """Build and return the Argos FastAPI app.
 
@@ -312,6 +282,12 @@ def build_web_app() -> FastAPI:
         if outcome is TransitionOutcome.NOOP:
             return _error_fragment(request, 409, "already in that state")
 
+        # ``_get_session`` only opens and closes the AsyncSession; it does not
+        # auto-commit. Without this explicit commit the transition is rolled
+        # back when the request dependency closes, so a reload would still see
+        # the old status. The Slack handlers commit after the same service call.
+        await session.commit()
+
         # Reload after transition so the partial sees fresh status.
         item = await _load_feed_card_context(session, parsed_id)
         return _action_response(request, item, "_feed_card.html")
@@ -358,7 +334,12 @@ def build_web_app() -> FastAPI:
         if outcome is TransitionOutcome.NOOP:
             return _error_fragment(request, 409, "already archived")
 
-        item = await _load_portfolio_row_context(session, parsed_id)
-        return _action_response(request, item, "_portfolio_row.html")
+        # See keep/pass above: the request session does not auto-commit.
+        await session.commit()
+
+        # Untracking archives the asset, so it drops out of the Keep-only
+        # portfolio. Return an empty body so the HTMX ``outerHTML`` swap removes
+        # the card from the page rather than leaving a stale entry behind.
+        return HTMLResponse("", status_code=200)
 
     return app

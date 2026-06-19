@@ -10,11 +10,23 @@ from argos.slack.services.asset_transition import TransitionOutcome
 from argos.web.app import _get_session, build_web_app
 
 
+class _FakeSession:
+    """Minimal stand-in for an AsyncSession.
+
+    The action routes commit the transition explicitly (the real
+    ``get_session`` does not auto-commit), so the fake must accept an
+    awaitable ``commit()``. All DB access itself is monkeypatched out.
+    """
+
+    async def commit(self) -> None:
+        return None
+
+
 def _client(monkeypatch, **patches) -> TestClient:
     app = build_web_app()
 
     async def _fake_session():
-        yield None
+        yield _FakeSession()
 
     app.dependency_overrides[_get_session] = _fake_session
     for path, fn in patches.items():
@@ -129,7 +141,10 @@ def test_keep_noop_returns_409_fragment(monkeypatch):
     assert "<!DOCTYPE html>" not in resp.text
 
 
-def test_untrack_returns_updated_portfolio_row_partial(monkeypatch):
+def test_untrack_returns_empty_body_to_remove_card(monkeypatch):
+    # Untracking archives the asset, so it leaves the Keep-only portfolio.
+    # The route returns an empty 200 body and the HTMX outerHTML swap deletes
+    # the card client-side.
     user_asset_id = uuid.uuid4()
     tech_id = uuid.uuid4()
     captured: dict = {}
@@ -143,22 +158,16 @@ def test_untrack_returns_updated_portfolio_row_partial(monkeypatch):
         captured["target_status"] = target_status
         return TransitionOutcome.TRANSITIONED
 
-    async def _fake_lookup(session, ua_id):
-        return {"id": ua_id, "title": "Tracked", "status": AssetStatus.ARCHIVED,
-                "category": None, "image_url": None}
-
     client = _client(
         monkeypatch,
         **{
             "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
             "argos.web.app.transition_asset": _fake_transition,
-            "argos.web.app._load_portfolio_row_context": _fake_lookup,
         },
     )
     resp = client.post(f"/assets/{user_asset_id}/untrack")
     assert resp.status_code == 200
-    assert "Tracked" in resp.text
-    assert "<!DOCTYPE html>" not in resp.text
+    assert resp.text == ""
     assert captured["target_status"] == AssetStatus.ARCHIVED
     assert captured["tech_id"] == tech_id
 
