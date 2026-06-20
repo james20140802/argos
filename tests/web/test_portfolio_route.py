@@ -97,6 +97,18 @@ def test_portfolio_cards_link_to_in_app_reader(monkeypatch):
     assert f'href="{asset.source_url}"' not in body
 
 
+def test_portfolio_cards_render_untrack_control(monkeypatch):
+    """The Untrack action endpoint must be reachable from the portfolio render
+    (ARG-139). Regression guard for the control living in an unincluded
+    partial; the button targets its own card by user_asset id."""
+    asset = _asset(title="Untrackable", signal_count=1)
+    view = PortfolioView(active=[asset], quiet=[], category=None, sort="recency")
+    client = _client_with_portfolio(monkeypatch, view)
+    body = client.get("/portfolio").text
+    assert f'hx-post="/assets/{asset.id}/untrack"' in body
+    assert f'id="portfolio-card-{asset.id}"' in body
+
+
 # ------------------------------------------------------------------ #
 # Test 2 — Section ordering
 # ------------------------------------------------------------------ #

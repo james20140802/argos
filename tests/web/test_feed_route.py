@@ -123,6 +123,30 @@ def test_feed_shows_asset_status_badge(monkeypatch):
     assert "Archived" in body
 
 
+def test_feed_renders_keep_pass_controls(monkeypatch):
+    """The Keep/Pass action endpoints must be reachable from the initial feed
+    render (ARG-139) — not only after an HTMX swap. Regression guard for the
+    controls living in an unincluded partial."""
+    item = _item(title="Actionable", category=CategoryType.ALPHA)
+    page = FeedPage(items=[item], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    assert f'hx-post="/items/{item.id}/keep"' in body
+    assert f'hx-post="/items/{item.id}/pass"' in body
+    assert f'id="feed-card-{item.id}"' in body
+
+
+def test_feed_items_fragment_renders_keep_pass_controls(monkeypatch):
+    """The bare /feed/items fragment (HTMX cursor pagination) must also carry
+    the action controls so paginated-in cards stay actionable."""
+    item = _item(title="FragActionable", category=CategoryType.ALPHA)
+    page = FeedPage(items=[item], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed/items").text
+    assert f'hx-post="/items/{item.id}/keep"' in body
+    assert f'hx-post="/items/{item.id}/pass"' in body
+
+
 def test_feed_uses_og_image_when_present(monkeypatch):
     page = FeedPage(
         items=[_item(title="WithImg", image_url="https://img.example.com/x.png")],

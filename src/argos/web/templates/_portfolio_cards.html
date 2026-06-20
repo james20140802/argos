@@ -2,7 +2,7 @@
    both the "새 신호 있음" (active) and "조용함" (quiet) sections. #}
 <div class="portfolio-list">
 {% for asset in items %}
-<article class="card rise" style="--d: {{ '%.2f'|format(loop.index0 * 0.04) }}s">
+<article class="card rise" id="portfolio-card-{{ asset.id }}" style="--d: {{ '%.2f'|format(loop.index0 * 0.04) }}s">
   {# Card taps open the in-app reader (ARG-138) keyed on the tech_item id;
      "원문 보기" on the detail page handles the external source_url redirect. #}
   {% if asset.image_url %}
@@ -37,6 +37,14 @@
       <span>마지막 신호 {{ asset.last_signal_at.strftime('%Y-%m-%d') }}</span>
       {% endif %}
     </p>
+    <div class="card-actions">
+      {# Untrack archives the asset; the route returns an empty body so this
+         outerHTML swap removes the card from the Keep-only portfolio. #}
+      <button class="card-action card-action--untrack"
+              hx-post="/assets/{{ asset.id }}/untrack"
+              hx-target="#portfolio-card-{{ asset.id }}"
+              hx-swap="outerHTML">Untrack</button>
+    </div>
   </div>
 </article>
 {% endfor %}

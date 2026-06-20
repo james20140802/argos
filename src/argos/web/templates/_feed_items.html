@@ -1,37 +1,10 @@
 {# Feed card list fragment (ARG-136). Rendered both inside feed.html and
-   returned bare by GET /feed/items for HTMX "더 보기" cursor pagination. #}
+   returned bare by GET /feed/items for HTMX "더 보기" cursor pagination.
+   Each card lives in _feed_card.html so the Keep/Pass action routes can
+   re-render a single card on swap (ARG-139). #}
 {% for item in items %}
-<article class="card rise" style="--d: {{ '%.2f'|format(loop.index0 * 0.04) }}s">
-  {# Card taps open the in-app reader (ARG-138); "원문 보기" on the detail
-     page handles the external source_url redirect. #}
-  {% if item.image_url %}
-  <a class="cover" href="/item/{{ item.id }}">
-    {# og:image is attacker-controllable (crawled): render via an HTML-escaped
-       <img src> rather than inline CSS url() to avoid CSS-context injection. #}
-    <img class="cover__img" src="{{ item.image_url }}" alt="" loading="lazy">
-    <span class="scrim" aria-hidden="true"></span>
-  </a>
-  {% else %}
-  <a class="cover cover--fallback cover--{{ (item.category.value if item.category else 'none')|lower }}"
-     href="/item/{{ item.id }}">
-    <span class="scrim" aria-hidden="true"></span>
-    <span class="cover__glyph" aria-hidden="true">◎</span>
-  </a>
-  {% endif %}
-  <div class="body">
-    <div class="meta">
-      {% if item.category %}
-      <span class="tag {{ 'main' if item.category.value == 'Mainstream' else 'alpha' }}">{{ item.category.value }}</span>
-      {% endif %}
-      {% if item.status %}
-      <span class="status-badge status-badge--{{ item.status.value|lower }}">{{ item.status.value }}</span>
-      {% endif %}
-    </div>
-    <h2 class="headline">
-      <a href="/item/{{ item.id }}">{{ item.title }}</a>
-    </h2>
-  </div>
-</article>
+{% set card_delay = '%.2f'|format(loop.index0 * 0.04) %}
+{% include "_feed_card.html" %}
 {% else %}
 <p class="feed-empty">아직 관측된 항목이 없습니다.</p>
 {% endfor %}
