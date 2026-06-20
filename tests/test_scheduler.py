@@ -833,7 +833,7 @@ def test_cli_schedule_install_invokes_reload(
 
 
 def test_cli_schedule_uninstall_calls_bootout(
-    monkeypatch, capsys, fake_uid: int
+    monkeypatch, capsys, fake_uid: int, isolated_paths: dict[str, Path]
 ) -> None:
     from argos.cli import main
 
@@ -847,12 +847,22 @@ def test_cli_schedule_uninstall_calls_bootout(
         )
 
     monkeypatch.setattr(scheduler, "_run_launchctl", fake)
+
+    # A web plist left over from a prior opt-in install must be deleted, not
+    # just booted out — otherwise launchd reloads the RunAtLoad daemon at the
+    # next login despite the uninstall.
+    web_plist = isolated_paths["launch_agents"] / "com.argos.web.plist"
+    web_plist.parent.mkdir(parents=True, exist_ok=True)
+    web_plist.write_text("<stale/>")
+
     rc = main(["schedule", "uninstall"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "com.argos.run" in bootout_labels
     assert "com.argos.brief" in bootout_labels
+    assert "com.argos.web" in bootout_labels
     assert "Unloaded: com.argos.run" in out
+    assert not web_plist.exists()
 
 
 # ---------------------------------------------------------------------------
