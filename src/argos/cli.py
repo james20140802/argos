@@ -1201,23 +1201,30 @@ def _cmd_schedule_install(args: argparse.Namespace) -> int:
 
 
 def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
+    from argos import scheduler
     from argos.scheduler import SchedulerError, bootout_plist
 
     failures: list[str] = []
-    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly"):
+    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly", "com.argos.web"):
         try:
             bootout_plist(label)
             print(f"Unloaded: {label}")
         except SchedulerError as exc:
             failures.append(f"{label}: {exc}")
             print(f"Failed to unload {label}: {exc}", file=sys.stderr)
+    # com.argos.web is RunAtLoad + KeepAlive: a plist left in ~/Library/
+    # LaunchAgents is auto-loaded at the next login and resurrects the daemon,
+    # so bootout alone doesn't uninstall it. Delete the file too (mirrors the
+    # opt-out path in reload_schedule). The scheduled jobs are calendar-driven
+    # and follow the existing bootout-only convention.
+    (scheduler._DEFAULT_LAUNCH_AGENTS / "com.argos.web.plist").unlink(missing_ok=True)
     return EXIT_GENERIC if failures else EXIT_OK
 
 
 def _cmd_schedule_status(_args: argparse.Namespace) -> int:
     from argos.scheduler import is_loaded
 
-    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly"):
+    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly", "com.argos.web"):
         state = "loaded" if is_loaded(label) else "not loaded"
         print(f"{label}: {state}")
     return EXIT_OK

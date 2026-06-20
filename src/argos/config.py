@@ -198,6 +198,7 @@ class SPAConfig(BaseModel):
 class WebConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
+    launchd_enabled: bool = False
 
 
 class UserConfig(BaseModel):
