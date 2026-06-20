@@ -1786,7 +1786,8 @@ def test_reload_schedule_bootouts_web_when_disabled(
     fake_argos_binary, fake_uid, isolated_paths, monkeypatch
 ):
     """When launchd_enabled=False, a previously-loaded com.argos.web is
-    booted out (mirroring the brief-weekly disabled path)."""
+    booted out AND its stale plist is removed — otherwise launchd would
+    auto-load the RunAtLoad/KeepAlive daemon again at the next login."""
     from types import SimpleNamespace
     from argos.scheduler import reload_schedule
 
@@ -1796,6 +1797,11 @@ def test_reload_schedule_bootouts_web_when_disabled(
         bootout=lambda label: bootout_calls.append(label),
     )
     monkeypatch.setattr("argos.scheduler._run_launchctl", fake)
+
+    # Simulate a plist left over from a prior opt-in install.
+    web_plist = isolated_paths["launch_agents"] / "com.argos.web.plist"
+    web_plist.parent.mkdir(parents=True, exist_ok=True)
+    web_plist.write_text("<stale/>")
 
     user_config = SimpleNamespace(
         run=SimpleNamespace(time="03:00"),
@@ -1809,5 +1815,6 @@ def test_reload_schedule_bootouts_web_when_disabled(
     reload_schedule(user_config)
 
     assert "com.argos.web" in bootout_calls
-    # And no web plist was bootstrapped this run.
-    # (Plist may or may not exist on disk from prior installs — we don't assert delete.)
+    # The opt-out must persist across logins: the plist is deleted, not just
+    # booted out of the current session.
+    assert not web_plist.exists()

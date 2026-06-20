@@ -597,6 +597,13 @@ def reload_schedule(
                 "web launchd disabled; bootout of com.argos.web failed",
                 exc_info=True,
             )
+        # Unlike the scheduled jobs, com.argos.web is RunAtLoad + KeepAlive: a
+        # plist left in ~/Library/LaunchAgents is auto-loaded at the next login
+        # and would resurrect the daemon despite the opt-out. bootout only
+        # clears the current session, so delete the file too — otherwise
+        # disabling never sticks across reboots. install_plist regenerates it
+        # whenever the operator opts back in.
+        web_plist_path.unlink(missing_ok=True)
 
     bootstrap_plist(run_plist_path)
     try:
