@@ -71,7 +71,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"argos.web" = ["templates/**", "templates/.gitkeep", "static/**", "static/.gitkeep"]
+"argos.web" = ["templates/**", "templates/.gitkeep", "static/**", "static/.gitkeep", "assets/**"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

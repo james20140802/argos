@@ -42,6 +42,7 @@ async def transition_asset(session, tech_id: uuid.UUID, target_status):
     return await _real_transition_asset(session, tech_id, target_status)
 _TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 _STATIC_DIR = _PACKAGE_DIR / "static"
+_ASSETS_DIR = _PACKAGE_DIR / "assets"
 
 _VALID_CATEGORIES = ("Mainstream", "Alpha")
 _VALID_SORTS = ("recency", "trust")
@@ -187,17 +188,17 @@ def build_web_app() -> FastAPI:
             media_type="application/manifest+json",
         )
 
-    _SW_PATH = _STATIC_DIR / "sw.js"
+    # Pre-read the SW body once at app construction so /sw.js never does
+    # disk I/O on the request path (it's served on every install/update).
+    # The file lives outside the /static/ mount on purpose: serving it only
+    # from the root-scope route avoids a second copy at /static/sw.js that
+    # would have a needlessly narrow scope.
+    _sw_body = (_ASSETS_DIR / "sw.js").read_bytes()
 
     @app.get("/sw.js", include_in_schema=False)
     async def service_worker() -> Response:
-        # Served from origin root so the SW controls / and below. The
-        # Service-Worker-Allowed header is redundant for /sw.js (root path
-        # already implies root scope) but is set explicitly to document intent
-        # and to survive a future relocation under /static/.
-        body = _SW_PATH.read_bytes()
         return Response(
-            content=body,
+            content=_sw_body,
             media_type="application/javascript",
             headers={
                 "Service-Worker-Allowed": "/",
