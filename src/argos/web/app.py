@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -145,6 +145,65 @@ def build_web_app() -> FastAPI:
     @app.get("/", include_in_schema=False)
     async def index() -> RedirectResponse:
         return RedirectResponse(url="/feed")
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    async def manifest() -> JSONResponse:
+        return JSONResponse(
+            {
+                "name": "ARGOS — Observatory",
+                "short_name": "ARGOS",
+                "description": (
+                    "Local-first AI technology observatory — feed, "
+                    "portfolio, and signals."
+                ),
+                "start_url": "/feed",
+                "scope": "/",
+                "display": "standalone",
+                "orientation": "portrait",
+                "theme_color": "#0b0d12",
+                "background_color": "#0b0d12",
+                "lang": "ko",
+                "icons": [
+                    {
+                        "src": "/static/img/icons/icon-192.png",
+                        "sizes": "192x192",
+                        "type": "image/png",
+                        "purpose": "any",
+                    },
+                    {
+                        "src": "/static/img/icons/icon-512.png",
+                        "sizes": "512x512",
+                        "type": "image/png",
+                        "purpose": "any",
+                    },
+                    {
+                        "src": "/static/img/icons/icon-maskable-512.png",
+                        "sizes": "512x512",
+                        "type": "image/png",
+                        "purpose": "maskable",
+                    },
+                ],
+            },
+            media_type="application/manifest+json",
+        )
+
+    _SW_PATH = _STATIC_DIR / "sw.js"
+
+    @app.get("/sw.js", include_in_schema=False)
+    async def service_worker() -> Response:
+        # Served from origin root so the SW controls / and below. The
+        # Service-Worker-Allowed header is redundant for /sw.js (root path
+        # already implies root scope) but is set explicitly to document intent
+        # and to survive a future relocation under /static/.
+        body = _SW_PATH.read_bytes()
+        return Response(
+            content=body,
+            media_type="application/javascript",
+            headers={
+                "Service-Worker-Allowed": "/",
+                "Cache-Control": "no-cache",
+            },
+        )
 
     async def _render_feed(
         request: Request,
