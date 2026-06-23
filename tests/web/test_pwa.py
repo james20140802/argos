@@ -100,6 +100,19 @@ def test_sw_body_caches_app_shell(web_client: TestClient) -> None:
     assert "/static/css/argos.css" in body
 
 
+def test_sw_navigation_caching_gated_to_app_shell_routes(
+    web_client: TestClient,
+) -> None:
+    """Navigation SWR must be restricted to the /feed + /portfolio shell so
+    state-sensitive detail pages (/item/{id}) are never cached and served stale.
+    """
+    body = web_client.get("/sw.js").text
+    assert "APP_SHELL_ROUTES" in body
+    # The navigate branch must be gated by the route allowlist, not fire for
+    # every navigation request.
+    assert "req.mode === 'navigate' && APP_SHELL_ROUTES.includes(url.pathname)" in body
+
+
 # ---------------------------------------------------------------------------
 # Icon PNGs on disk + served via /static/
 # ---------------------------------------------------------------------------

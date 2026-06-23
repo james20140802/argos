@@ -9,9 +9,12 @@
  * generations can coexist briefly during activation.
  */
 const CACHE_VERSION = 'argos-v1';
+// Navigations we treat as the cacheable app shell. Everything else (e.g.
+// /item/{id} detail pages) carries changing per-item state and must never be
+// served from a stale cache, so it stays network-only.
+const APP_SHELL_ROUTES = ['/feed', '/portfolio'];
 const APP_SHELL = [
-  '/feed',
-  '/portfolio',
+  ...APP_SHELL_ROUTES,
   '/static/css/argos.css',
   '/static/img/logo.svg',
   '/static/img/icons/icon-192.png',
@@ -46,9 +49,11 @@ self.addEventListener('fetch', (event) => {
 
   // Don't cache action POSTs, HTMX fragment endpoints, or item detail pages —
   // those are user-state-sensitive and stale shells would mislead. Action
-  // routes are POSTs (skipped above); the feed/portfolio entry HTML is the
-  // navigable shell and is the only navigation request we serve from cache.
-  if (req.mode === 'navigate') {
+  // routes are POSTs (skipped above); only the /feed and /portfolio entry HTML
+  // is a navigable shell we serve from (and refresh into) cache. Any other
+  // navigation (e.g. /item/{id}) falls through to a plain network fetch so it
+  // is never cached and can't go stale.
+  if (req.mode === 'navigate' && APP_SHELL_ROUTES.includes(url.pathname)) {
     // Stale-while-revalidate: serve cached shell instantly, refresh in bg.
     event.respondWith(
       caches.match(req).then((cached) => {
