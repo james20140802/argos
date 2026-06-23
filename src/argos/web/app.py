@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -42,6 +42,7 @@ async def transition_asset(session, tech_id: uuid.UUID, target_status):
     return await _real_transition_asset(session, tech_id, target_status)
 _TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 _STATIC_DIR = _PACKAGE_DIR / "static"
+_ASSETS_DIR = _PACKAGE_DIR / "assets"
 
 _VALID_CATEGORIES = ("Mainstream", "Alpha")
 _VALID_SORTS = ("recency", "trust")
@@ -145,6 +146,65 @@ def build_web_app() -> FastAPI:
     @app.get("/", include_in_schema=False)
     async def index() -> RedirectResponse:
         return RedirectResponse(url="/feed")
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    async def manifest() -> JSONResponse:
+        return JSONResponse(
+            {
+                "name": "ARGOS — Observatory",
+                "short_name": "ARGOS",
+                "description": (
+                    "Local-first AI technology observatory — feed, "
+                    "portfolio, and signals."
+                ),
+                "start_url": "/feed",
+                "scope": "/",
+                "display": "standalone",
+                "orientation": "portrait",
+                "theme_color": "#0b0d12",
+                "background_color": "#0b0d12",
+                "lang": "ko",
+                "icons": [
+                    {
+                        "src": "/static/img/icons/icon-192.png",
+                        "sizes": "192x192",
+                        "type": "image/png",
+                        "purpose": "any",
+                    },
+                    {
+                        "src": "/static/img/icons/icon-512.png",
+                        "sizes": "512x512",
+                        "type": "image/png",
+                        "purpose": "any",
+                    },
+                    {
+                        "src": "/static/img/icons/icon-maskable-512.png",
+                        "sizes": "512x512",
+                        "type": "image/png",
+                        "purpose": "maskable",
+                    },
+                ],
+            },
+            media_type="application/manifest+json",
+        )
+
+    # Pre-read the SW body once at app construction so /sw.js never does
+    # disk I/O on the request path (it's served on every install/update).
+    # The file lives outside the /static/ mount on purpose: serving it only
+    # from the root-scope route avoids a second copy at /static/sw.js that
+    # would have a needlessly narrow scope.
+    _sw_body = (_ASSETS_DIR / "sw.js").read_bytes()
+
+    @app.get("/sw.js", include_in_schema=False)
+    async def service_worker() -> Response:
+        return Response(
+            content=_sw_body,
+            media_type="application/javascript",
+            headers={
+                "Service-Worker-Allowed": "/",
+                "Cache-Control": "no-cache",
+            },
+        )
 
     async def _render_feed(
         request: Request,
