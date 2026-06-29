@@ -737,6 +737,7 @@ async def test_fetch_dynamic_page_falls_back_to_twitter_image(_public_dns):
 
 @pytest.mark.asyncio
 async def test_fetch_dynamic_page_image_url_is_none_when_absent(_public_dns):
+    """After ARG-177: no og/twitter/body image falls back to the domain favicon."""
     html = "<html><body><article><h1>Headline</h1><p>Body</p></article></body></html>"
     mock_pw_cm, _ = _make_playwright_mock(html)
 
@@ -744,11 +745,13 @@ async def test_fetch_dynamic_page_image_url_is_none_when_absent(_public_dns):
         result = await fetch_dynamic_page("https://example.com/article")
 
     assert result is not None
-    assert result.get("image_url") is None
+    # Favicon fallback — not None any more (ARG-177)
+    assert result.get("image_url") == "https://example.com/favicon.ico"
 
 
 @pytest.mark.asyncio
 async def test_fetch_dynamic_page_image_url_none_for_invalid_scheme(_public_dns):
+    """After ARG-177: an invalid (data:) og:image falls back to the domain favicon."""
     html = (
         '<html><head>'
         '<meta property="og:image" content="data:image/png;base64,xyz">'
@@ -760,7 +763,8 @@ async def test_fetch_dynamic_page_image_url_none_for_invalid_scheme(_public_dns)
         result = await fetch_dynamic_page("https://example.com/article")
 
     assert result is not None
-    assert result.get("image_url") is None
+    # Favicon fallback — not None any more (ARG-177)
+    assert result.get("image_url") == "https://example.com/favicon.ico"
 
 
 @pytest.mark.asyncio
@@ -779,3 +783,33 @@ async def test_fetch_dynamic_page_resolves_relative_og_image(_public_dns):
 
     assert result is not None
     assert result["image_url"] == "https://example.com/static/cover.jpg"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# ARG-177: favicon fallback in fetch_dynamic_page
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fetch_dynamic_page_persists_favicon_fallback(monkeypatch):
+    """fetch_dynamic_page yields the domain favicon when HTML has no og/twitter/body image."""
+    from argos.crawler import dynamic_fetcher
+
+    html = "<html><body><p>no images</p></body></html>"
+
+    async def _mock_load(url, timeout_ms):
+        return html, "https://blog.example.com/x"
+
+    async def _mock_safe(url):
+        return True
+
+    async def _mock_robots(url, *args, **kwargs):
+        return True
+
+    monkeypatch.setattr(dynamic_fetcher, "_load_page_html", _mock_load)
+    monkeypatch.setattr(dynamic_fetcher, "_is_safe_url", _mock_safe)
+    monkeypatch.setattr(dynamic_fetcher, "_is_robots_allowed", _mock_robots)
+
+    result = await dynamic_fetcher.fetch_dynamic_page("https://blog.example.com/x")
+    assert result is not None
+    assert result["image_url"] == "https://blog.example.com/favicon.ico"

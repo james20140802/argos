@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.crawler._html_utils import clean_title
-from argos.crawler._og_image import extract_og_image
+from argos.crawler._og_image import resolve_image
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
 from argos.crawler.dynamic_fetcher import _is_safe_url, extract_main_content
 from argos.crawler.user_agents import random_user_agent
@@ -156,7 +156,7 @@ async def _fetch_article_body(
     if content_type and "html" not in content_type:
         return "", None
     _title, body = extract_main_content(response.text)
-    image_url = extract_og_image(response.text, str(response.url) or url)
+    image_url = resolve_image(response.text, str(response.url) or url).url
     return body.strip(), image_url
 
 

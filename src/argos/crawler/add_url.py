@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.pipeline import run_brain_pipeline
-from argos.crawler._og_image import extract_og_image
+from argos.crawler._og_image import resolve_image
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
 from argos.crawler.dynamic_fetcher import (
     _is_safe_url,
@@ -259,7 +259,7 @@ async def _fetch_url_content(url: str) -> dict | None:
                     "raw_content": _truncate_raw_content(body.strip()),
                     "source_url": final_url,
                     "_published_at": _parse_published_at_from_html(response.text),
-                    "image_url": extract_og_image(response.text, final_url),
+                    "image_url": resolve_image(response.text, final_url).url,
                 }
 
     # Static path returned no usable content — fall back to dynamic.
