@@ -1014,7 +1014,12 @@ async def _refetch_image_url(source_url: str) -> str | None:
 
     try:
         data = await _fetch_url_content(source_url)
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "backfill --refetch failed for %s: %r (falling back to favicon)",
+            source_url,
+            exc,
+        )
         data = None
     if data and data.get("image_url"):
         return data["image_url"]
