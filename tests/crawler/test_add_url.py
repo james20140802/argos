@@ -833,33 +833,3 @@ async def test_fetch_url_content_dynamic_fallback_preserves_image_url() -> None:
     assert result is not None
     assert result["image_url"] == "https://cdn.example.com/spa.jpg"
 
-
-# ──────────────────────────────────────────────────────────────────────────
-# ARG-177: favicon fallback in add_url static path
-# ──────────────────────────────────────────────────────────────────────────
-
-
-async def test_fetch_url_content_falls_back_to_favicon_when_no_image() -> None:
-    """Static path yields the domain favicon URL when HTML has no og/twitter/body image."""
-    import httpx
-
-    from argos.crawler.add_url import _fetch_url_content
-
-    html = (
-        "<html><body><article><h1>Headline</h1>"
-        "<p>Substantive body text.</p></article></body></html>"
-    )
-
-    async def _fake_safe_fetch(url: str):
-        return httpx.Response(
-            200,
-            text=html,
-            headers={"content-type": "text/html"},
-            request=httpx.Request("GET", url),
-        )
-
-    with patch("argos.crawler.add_url._safe_static_fetch", new=_fake_safe_fetch):
-        result = await _fetch_url_content("https://example.com/page")
-
-    assert result is not None
-    assert result["image_url"] == "https://example.com/favicon.ico"
