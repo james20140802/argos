@@ -16,6 +16,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -138,6 +139,17 @@ def build_web_app() -> FastAPI:
         name="static",
     )
     app.state.templates = Jinja2Templates(directory=_TEMPLATES_DIR)
+
+    def _domain_of(url: str | None) -> str:
+        """Render-time helper: netloc of a URL, '' when unparseable."""
+        if not url:
+            return ""
+        try:
+            return urlsplit(url).netloc
+        except ValueError:
+            return ""
+
+    app.state.templates.env.filters["domain"] = _domain_of
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

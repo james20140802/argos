@@ -8,7 +8,17 @@
          style="--d: {{ card_delay | default('0.00') }}s">
   {# Card taps open the in-app reader (ARG-138); "원문 보기" on the detail
      page handles the external source_url redirect. #}
-  {% if item.image_url %}
+  {% if item.image_url and item.image_url.endswith('/favicon.ico') %}
+  <a class="cover cover--favicon cover--{{ (item.category.value if item.category else 'none')|lower }}"
+     href="/item/{{ item.id }}">
+    <span class="scrim" aria-hidden="true"></span>
+    {# image_url is attacker-controllable (crawled): escaped <img src> only, never CSS url(). #}
+    <span class="favicon-chip">
+      <img class="favicon-chip__img" src="{{ item.image_url }}" alt="" loading="lazy" width="32" height="32">
+      <span class="favicon-chip__domain">{{ item.source_url | domain }}</span>
+    </span>
+  </a>
+  {% elif item.image_url %}
   <a class="cover" href="/item/{{ item.id }}">
     {# og:image is attacker-controllable (crawled): render via an HTML-escaped
        <img src> rather than inline CSS url() to avoid CSS-context injection. #}
