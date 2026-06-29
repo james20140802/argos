@@ -14,11 +14,14 @@ a ``None`` result (typically: persist NULL on ``tech_items.image_url``).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
-__all__ = ["extract_og_image"]
+__all__ = ["extract_og_image", "resolve_image", "favicon_for_domain", "ResolvedImage"]
+
+_MIN_IMG_DIM = 100
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 _MAX_URL_LEN = 2048
@@ -89,3 +92,91 @@ def extract_og_image(html: str, base_url: str) -> str | None:
         return None
 
     return _validate(absolute)
+
+
+@dataclass(frozen=True)
+class ResolvedImage:
+    """Result of the prioritized image fallback chain.
+
+    ``favicon_only`` is True only when ``url`` is a domain-derived favicon
+    (the lowest-priority fallback), signalling the web layer to render the
+    gradient + favicon-chip treatment instead of a full cover image.
+    """
+
+    url: str | None
+    favicon_only: bool
+
+
+def _too_small(dim) -> bool:
+    """True when a declared width/height attribute is below the icon threshold.
+
+    Missing / unparseable dimensions are treated as "unknown, not too small"
+    so images without explicit sizes are still eligible.
+    """
+    if dim is None:
+        return False
+    try:
+        return int(str(dim).strip().lower().rstrip("px")) < _MIN_IMG_DIM
+    except (ValueError, TypeError):
+        return False
+
+
+def _first_body_image(soup: BeautifulSoup, base_url: str) -> str | None:
+    """First meaningful body <img>: skip data-URIs and icon/tracking-sized images."""
+    for img in soup.find_all("img"):
+        if not hasattr(img, "get"):
+            continue
+        src = img.get("src")
+        if not isinstance(src, str):
+            continue
+        src = src.strip()
+        if not src or src.lower().startswith("data:"):
+            continue
+        if _too_small(img.get("width")) or _too_small(img.get("height")):
+            continue
+        try:
+            absolute = urljoin(base_url or "", src)
+        except ValueError:
+            continue
+        validated = _validate(absolute)
+        if validated:
+            return validated
+    return None
+
+
+def favicon_for_domain(base_url: str) -> str | None:
+    """Derive ``{scheme}://{netloc}/favicon.ico`` purely from ``base_url``.
+
+    No network I/O — the browser loads the favicon at render time. Returns
+    ``None`` when ``base_url`` has no valid http(s) scheme + netloc.
+    """
+    try:
+        parts = urlsplit(base_url or "")
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in _ALLOWED_SCHEMES or not parts.netloc:
+        return None
+    return _validate(f"{parts.scheme.lower()}://{parts.netloc}/favicon.ico")
+
+
+def resolve_image(html: str, base_url: str) -> ResolvedImage:
+    """Resolve the highest-priority image: og → twitter → body img → favicon."""
+    og = extract_og_image(html, base_url)
+    if og:
+        return ResolvedImage(url=og, favicon_only=False)
+
+    if html:
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception:
+            soup = None
+        if soup is not None:
+            body = _first_body_image(soup, base_url)
+            if body:
+                return ResolvedImage(url=body, favicon_only=False)
+
+    fav = favicon_for_domain(base_url)
+    if fav:
+        return ResolvedImage(url=fav, favicon_only=True)
+
+    return ResolvedImage(url=None, favicon_only=False)
