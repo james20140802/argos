@@ -81,14 +81,16 @@ def test_backfill_images_default_path_calls_favicon_no_network(capsys):
         patch(
             "argos.crawler._og_image.favicon_for_domain",
             return_value="https://example.com/favicon.ico",
-        ),
+        ) as favicon_mock,
         patch("argos.crawler.add_url._fetch_url_content", new_callable=AsyncMock) as fetch_mock,
     ):
         rc = main(["backfill-images"])
 
     assert rc == 0
-    # favicon_for_domain should have been called (imported inside _backfill_images)
-    # fetch_url_content should NOT have been called (no network on default path)
+    # Positively assert favicon_for_domain was called with the row's source_url —
+    # this proves the no-network favicon route actually executed.
+    favicon_mock.assert_called_once_with("https://example.com/article")
+    # Secondary guard: the network fetch path must NOT have been touched.
     fetch_mock.assert_not_awaited()
 
 
