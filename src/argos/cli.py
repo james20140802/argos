@@ -980,6 +980,93 @@ async def _stats(days: int) -> int:
     return 0
 
 
+def _build_backfill_images_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos backfill-images`` subcommand (ARG-179)."""
+    bf_p = sub.add_parser(
+        "backfill-images",
+        help="Fill image_url for items that have none (favicon by default)",
+        parents=[common],
+        description=(
+            "Fill tech_items.image_url where it is NULL. Default: derive a "
+            "domain favicon with no network call. --refetch: re-crawl the "
+            "source_url and apply the full image fallback chain (slow). "
+            "Existing non-NULL image_url values are never overwritten."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bf_p.add_argument(
+        "--refetch",
+        action="store_true",
+        help="Re-crawl source_url to recover og/body images (network, slow)",
+    )
+
+
+def _cmd_backfill_images(args: argparse.Namespace) -> int:
+    return asyncio.run(_backfill_images(refetch=bool(getattr(args, "refetch", False))))
+
+
+async def _refetch_image_url(source_url: str) -> str | None:
+    """Re-crawl a source URL and resolve its best image (slow path)."""
+    from argos.crawler.add_url import _fetch_url_content  # reuse existing fetch+resolve
+
+    try:
+        data = await _fetch_url_content(source_url)
+    except Exception:
+        data = None
+    if data and data.get("image_url"):
+        return data["image_url"]
+    from argos.crawler._og_image import favicon_for_domain
+
+    return favicon_for_domain(source_url)
+
+
+async def _backfill_images(refetch: bool = False) -> int:
+    """Fill tech_items.image_url for rows where it is NULL.
+
+    Default path (refetch=False): derive a domain favicon with no network call.
+    Refetch path (refetch=True): re-crawl source_url and apply the full chain.
+
+    Non-overwrite guarantee: only NULL rows are selected, and the UPDATE is
+    guarded by ``image_url IS NULL`` so concurrent writers cannot accidentally
+    overwrite a value set between the SELECT and the UPDATE.
+    """
+    from sqlalchemy import select, update
+
+    from argos.crawler._og_image import favicon_for_domain
+    from argos.models.tech_item import TechItem
+
+    filled = 0
+    async with AsyncSessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(TechItem.id, TechItem.source_url).where(
+                    TechItem.image_url.is_(None)
+                )
+            )
+        ).all()
+        for tid, source_url in rows:
+            new_url = (
+                await _refetch_image_url(source_url)
+                if refetch
+                else favicon_for_domain(source_url)
+            )
+            if not new_url:
+                continue
+            result = await session.execute(
+                update(TechItem)
+                .where(TechItem.id == tid, TechItem.image_url.is_(None))
+                .values(image_url=new_url)
+            )
+            filled += result.rowcount or 0
+        await session.commit()
+
+    print(f"backfill-images: filled {filled} of {len(rows)} NULL image_url rows")
+    return EXIT_OK
+
+
 def _build_add_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -1322,6 +1409,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     _build_add_parser(sub, common)
+    _build_backfill_images_parser(sub, common)
     _build_config_parser(sub)
     _build_doctor_parser(sub)
     _build_init_parser(sub)
@@ -1421,6 +1509,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"오류: --days 값은 양의 정수여야 합니다. (입력값: {args.days})", file=sys.stderr)
             return 1
         return asyncio.run(_stats(args.days))
+    if args.command == "backfill-images":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_backfill_images(args)
     return 1
 
 
