@@ -95,7 +95,7 @@ def _client_with_detail(monkeypatch, view: ItemDetailView) -> TestClient:
         return view
 
     monkeypatch.setattr("argos.web.app.fetch_item_detail", _fake_fetch_item_detail)
-    return TestClient(app, raise_server_exceptions=False)
+    return TestClient(app)
 
 
 # ──────────────────────────────────────────────────────
@@ -110,7 +110,9 @@ def test_feed_favicon_only_renders_chip_and_domain(monkeypatch):
     )
     page = FeedPage(items=[item], next_cursor=None)
     client = _client_with_feed(monkeypatch, page)
-    body = client.get("/feed").text
+    response = client.get("/feed")
+    assert response.status_code == 200
+    body = response.text
 
     assert "cover--favicon" in body
     assert "favicon-chip" in body
@@ -128,7 +130,9 @@ def test_feed_favicon_only_does_not_render_cover_img(monkeypatch):
     )
     page = FeedPage(items=[item], next_cursor=None)
     client = _client_with_feed(monkeypatch, page)
-    body = client.get("/feed").text
+    response = client.get("/feed")
+    assert response.status_code == 200
+    body = response.text
 
     assert "cover--favicon" in body
     # cover__img is the class used for a real-image cover; must not appear
@@ -143,7 +147,9 @@ def test_feed_real_image_renders_cover_img(monkeypatch):
     )
     page = FeedPage(items=[item], next_cursor=None)
     client = _client_with_feed(monkeypatch, page)
-    body = client.get("/feed").text
+    response = client.get("/feed")
+    assert response.status_code == 200
+    body = response.text
 
     assert "cover__img" in body
     assert "cover--favicon" not in body
@@ -155,7 +161,9 @@ def test_feed_no_image_renders_fallback_glyph(monkeypatch):
     item = _feed_item(image_url=None)
     page = FeedPage(items=[item], next_cursor=None)
     client = _client_with_feed(monkeypatch, page)
-    body = client.get("/feed").text
+    response = client.get("/feed")
+    assert response.status_code == 200
+    body = response.text
 
     assert "cover__glyph" in body
     assert "cover--fallback" in body
@@ -173,7 +181,9 @@ def test_detail_favicon_only_renders_chip_and_domain(monkeypatch):
         source_url="https://example.com/post",
     )
     client = _client_with_detail(monkeypatch, view)
-    body = client.get(f"/item/{view.id}").text
+    response = client.get(f"/item/{view.id}")
+    assert response.status_code == 200
+    body = response.text
 
     assert "detail-hero--favicon" in body
     assert "favicon-chip" in body
@@ -190,7 +200,9 @@ def test_detail_real_image_renders_hero_img(monkeypatch):
         source_url="https://example.com/post",
     )
     client = _client_with_detail(monkeypatch, view)
-    body = client.get(f"/item/{view.id}").text
+    response = client.get(f"/item/{view.id}")
+    assert response.status_code == 200
+    body = response.text
 
     assert "detail-hero__img" in body
     assert "detail-hero--favicon" not in body
@@ -201,7 +213,9 @@ def test_detail_no_image_renders_fallback_glyph(monkeypatch):
     """No image_url on detail page → detail-hero__glyph fallback; no favicon branch."""
     view = _detail_view(image_url=None)
     client = _client_with_detail(monkeypatch, view)
-    body = client.get(f"/item/{view.id}").text
+    response = client.get(f"/item/{view.id}")
+    assert response.status_code == 200
+    body = response.text
 
     assert "detail-hero__glyph" in body
     assert "detail-hero--fallback" in body
@@ -220,7 +234,9 @@ def test_feed_favicon_url_escaped_in_img_src_not_css(monkeypatch):
     )
     page = FeedPage(items=[item], next_cursor=None)
     client = _client_with_feed(monkeypatch, page)
-    body = client.get("/feed").text
+    response = client.get("/feed")
+    assert response.status_code == 200
+    body = response.text
 
     assert "background-image: url(" not in body
     assert "url('https://example.com/favicon.ico')" not in body
