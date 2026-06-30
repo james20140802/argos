@@ -252,6 +252,65 @@ def test_feed_image_url_rendered_safely_not_in_inline_css(monkeypatch):
     assert "<img" in body
 
 
+# --------------------------------------------------------------------- #
+# ARG-175 (T2) — magazine grid: summary line + featured hero
+# --------------------------------------------------------------------- #
+
+def test_feed_renders_summary_line_when_present(monkeypatch):
+    page = FeedPage(
+        items=[_item(title="Has Summary", summary="이것은 한 줄 요약입니다.")],
+        next_cursor=None,
+    )
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    assert "이것은 한 줄 요약입니다." in body
+    assert 'class="summary"' in body
+
+
+def test_feed_omits_summary_when_absent(monkeypatch):
+    page = FeedPage(items=[_item(title="No Summary", summary=None)], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    # No empty summary element is rendered when the column is null.
+    assert 'class="summary"' not in body
+
+
+def test_feed_summary_is_html_escaped(monkeypatch):
+    # summary is triage-generated, but defense in depth: never inject raw HTML.
+    page = FeedPage(
+        items=[_item(title="Pwn", summary="<script>alert(1)</script>")],
+        next_cursor=None,
+    )
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    assert "<script>alert(1)</script>" not in body
+    assert "&lt;script&gt;" in body
+
+
+def test_feed_first_card_is_featured_on_first_page(monkeypatch):
+    first = _item(title="Hero Item", category=CategoryType.ALPHA)
+    second = _item(title="Plain Item", category=CategoryType.MAINSTREAM)
+    page = FeedPage(items=[first, second], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    # Exactly one featured hero, and it is the first card.
+    assert body.count("card--featured") == 1
+    assert f'card--featured" id="feed-card-{first.id}"' in body
+    assert f'card--featured" id="feed-card-{second.id}"' not in body
+
+
+def test_feed_load_more_fragment_has_no_featured_hero(monkeypatch):
+    """The HTMX 더 보기 fragment is reused for every subsequent page, so its
+    index-0 item must NOT become a second hero mid-scroll (AC)."""
+    page = FeedPage(
+        items=[_item(title="FragFirst"), _item(title="FragSecond")],
+        next_cursor=None,
+    )
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed/items").text
+    assert "card--featured" not in body
+
+
 def _client_real_feed() -> TestClient:
     """TestClient using the REAL fetch_feed with a None session.
 

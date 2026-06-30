@@ -72,7 +72,7 @@ async def _load_feed_card_context(session, tech_id: uuid.UUID):
     """Fetch the minimal shape the feed-card partial needs after a transition.
 
     Returns a mapping with keys (id, title, status, category, image_url,
-    source_url) or None if the tech_item does not exist.
+    summary, source_url) or None if the tech_item does not exist.
     """
     from sqlalchemy import select
 
@@ -95,6 +95,7 @@ async def _load_feed_card_context(session, tech_id: uuid.UUID):
         "status": user_asset.status if user_asset else None,
         "category": tech_item.category,
         "image_url": getattr(tech_item, "image_url", None),
+        "summary": getattr(tech_item, "summary", None),
         "source_url": tech_item.source_url,
     }
 
@@ -224,6 +225,8 @@ def build_web_app() -> FastAPI:
         category: Optional[str],
         cursor: Optional[str],
         session,
+        *,
+        first_page: bool,
     ) -> HTMLResponse:
         normalized = _normalize_category(category)
         try:
@@ -239,6 +242,10 @@ def build_web_app() -> FastAPI:
                 "items": page.items,
                 "next_cursor": page.next_cursor,
                 "category": normalized,
+                # Featured hero is keyed on first-page index 0 only; the HTMX
+                # "더 보기" fragment (GET /feed/items) must never re-emit a hero
+                # mid-scroll, so it renders with first_page=False.
+                "first_page": first_page,
             },
         )
 
@@ -249,7 +256,9 @@ def build_web_app() -> FastAPI:
         cursor: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
-        return await _render_feed(request, "feed.html", category, cursor, session)
+        return await _render_feed(
+            request, "feed.html", category, cursor, session, first_page=True
+        )
 
     @app.get("/feed/items", response_class=HTMLResponse)
     async def feed_items(
@@ -259,7 +268,7 @@ def build_web_app() -> FastAPI:
         session=Depends(_get_session),
     ) -> HTMLResponse:
         return await _render_feed(
-            request, "_feed_items.html", category, cursor, session
+            request, "_feed_items.html", category, cursor, session, first_page=False
         )
 
     async def _render_portfolio(
