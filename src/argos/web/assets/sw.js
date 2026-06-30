@@ -4,11 +4,16 @@
  * static assets they need. Stale-while-revalidate for navigations, cache-first
  * for versioned static assets.
  *
- * Bump CACHE_VERSION whenever the precache list changes so old shells get
- * evicted on next install. The version is part of the cache name so multiple
- * generations can coexist briefly during activation.
+ * Bump CACHE_VERSION whenever any precached asset changes — its path list OR
+ * its *contents* (e.g. an argos.css edit). Static assets are served cache-first
+ * with no content hash in their filenames, so a same-URL content change is NOT
+ * picked up until the cache name changes and `activate` evicts the old one.
+ * The version is part of the cache name so multiple generations can coexist
+ * briefly during activation.
+ *
+ * v2: ARG-171 magazine-grid CSS + /feed shell changes.
  */
-const CACHE_VERSION = 'argos-v1';
+const CACHE_VERSION = 'argos-v2';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
