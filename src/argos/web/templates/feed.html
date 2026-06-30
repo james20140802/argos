@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}관측 피드 · ARGOS{% endblock %}
+{# Magazine grid (ARG-175): only the feed widens its wrap per breakpoint so the
+   reader/portfolio keep their narrow 760px reading column. #}
+{% block page_class %}page--feed{% endblock %}
 {% block content %}
 <nav class="feed-filter" aria-label="카테고리 필터">
   <a class="chip{% if not category %} is-active{% endif %}"

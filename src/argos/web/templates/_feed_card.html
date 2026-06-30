@@ -3,8 +3,12 @@
    swaps returned by POST /items/{id}/keep|pass (ARG-136 / ARG-139).
 
    ``card_delay`` is supplied by the list loop for the staggered entrance
-   animation and defaults to 0 when rendered bare as an action response. #}
-<article class="card rise" id="feed-card-{{ item.id }}"
+   animation and defaults to 0 when rendered bare as an action response.
+
+   ``is_featured`` is supplied only by the first-page list loop (ARG-175); it
+   is undefined — and thus falsy — on the bare Keep/Pass action re-render, so
+   the magazine hero degrades to a standard card there. #}
+<article class="card rise{% if is_featured %} card--featured{% endif %}" id="feed-card-{{ item.id }}"
          style="--d: {{ card_delay | default('0.00') }}s">
   {# Card taps open the in-app reader (ARG-138); "원문 보기" on the detail
      page handles the external source_url redirect. #}
@@ -44,13 +48,22 @@
     <h2 class="headline">
       <a href="/item/{{ item.id }}">{{ item.title }}</a>
     </h2>
+    {# Triage-generated one-liner; auto-escaped. CSS line-clamps it (2 lines on
+       the featured hero, 1 line on standard cards). Omitted entirely when the
+       column is null so no empty element reserves space. #}
+    {% if item.summary %}
+    <p class="summary">{{ item.summary }}</p>
+    {% endif %}
+    {# ``?featured=1`` tells the action route to re-render the swapped-in card
+       as the hero again, so a Keep/Pass on the featured card does not collapse
+       it to a standard grid cell mid-list. #}
     <div class="card-actions">
       <button class="card-action card-action--keep"
-              hx-post="/items/{{ item.id }}/keep"
+              hx-post="/items/{{ item.id }}/keep{% if is_featured %}?featured=1{% endif %}"
               hx-target="#feed-card-{{ item.id }}"
               hx-swap="outerHTML">Keep</button>
       <button class="card-action card-action--pass"
-              hx-post="/items/{{ item.id }}/pass"
+              hx-post="/items/{{ item.id }}/pass{% if is_featured %}?featured=1{% endif %}"
               hx-target="#feed-card-{{ item.id }}"
               hx-swap="outerHTML">Pass</button>
     </div>

@@ -4,6 +4,10 @@
    re-render a single card on swap (ARG-139). #}
 {% for item in items %}
 {% set card_delay = '%.2f'|format(loop.index0 * 0.04) %}
+{# Featured hero is the first card of the first page only. ``first_page`` is
+   passed True by feed.html and False by the /feed/items 더 보기 fragment so a
+   second hero never appears mid-scroll. #}
+{% set is_featured = first_page and loop.index0 == 0 %}
 {% include "_feed_card.html" %}
 {% else %}
 <p class="feed-empty">아직 관측된 항목이 없습니다.</p>

@@ -33,6 +33,7 @@ class FeedItem:
     source_url: str
     category: Optional[CategoryType]
     image_url: Optional[str]
+    summary: Optional[str]
     status: Optional[AssetStatus]
     sort_at: datetime
 
@@ -94,6 +95,7 @@ async def fetch_feed(
             TechItem.source_url,
             TechItem.category,
             TechItem.image_url,
+            TechItem.summary,
             UserAsset.status,
             sort_expr.label("sort_at"),
         )
@@ -124,6 +126,7 @@ async def fetch_feed(
             source_url=row.source_url,
             category=row.category,
             image_url=row.image_url,
+            summary=row.summary,
             status=row.status,
             sort_at=row.sort_at,
         )

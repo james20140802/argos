@@ -211,6 +211,12 @@ body {
 .card .summary {
   font: 400 13px/1.6 "IBM Plex Sans KR", sans-serif;
   color: #a3a8b1; margin: 0 0 14px;
+  /* One-line clamp on standard grid cards; the featured hero overrides to 2. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
 }
 
 /* Glass bottom tabbar — fixed at viewport bottom */
@@ -279,10 +285,47 @@ body {
 .chip--main.is-active { background: var(--main); border-color: var(--main); }
 .chip--alpha.is-active { background: var(--alpha); border-color: var(--alpha); }
 
-.feed-list { display: flex; flex-direction: column; gap: 16px; }
+/* Magazine grid (ARG-175). Mobile is a single column — identical to the
+   previous flex column. Tablet/desktop widen to 2/3 columns in the media
+   queries below. The featured hero, empty-state line, and 더 보기 button each
+   span the full row regardless of column count. */
+.feed-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+.feed-list > .feed-empty,
+.feed-list > .load-more,
+.feed-list > .card--featured {
+  grid-column: 1 / -1;
+}
 .feed-empty {
   font: 400 14px/1.6 "IBM Plex Sans KR", sans-serif;
   color: var(--muted); text-align: center; padding: 48px 0;
+}
+
+/* Featured hero — first card of the first page only (ARG-175). Taller cover,
+   larger headline, and a 2-line summary clamp vs the 1-line standard card. */
+.card--featured .cover { height: 220px; }
+.card--featured .headline { font-size: 23px; }
+.card--featured .summary {
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-size: 14px;
+}
+
+/* Tablet — 2 columns, wrap widened past the 760px mobile column. */
+@media (min-width: 768px) {
+  .page--feed { max-width: 980px; }
+  .feed-list { grid-template-columns: repeat(2, 1fr); gap: 18px; }
+  .card--featured .cover { height: 340px; }
+  .card--featured .headline { font-size: 28px; }
+}
+
+/* Desktop — 3 columns, wrap widened to a magazine width. */
+@media (min-width: 1100px) {
+  .page--feed { max-width: 1200px; }
+  .feed-list { grid-template-columns: repeat(3, 1fr); gap: 20px; }
 }
 
 /* Card cover is a link — keep it block-level and image-covered */
