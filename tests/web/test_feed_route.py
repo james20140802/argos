@@ -24,6 +24,7 @@ def _item(
     category: CategoryType | None = None,
     image_url: str | None = None,
     status: AssetStatus | None = None,
+    summary: str | None = None,
 ) -> FeedItem:
     return FeedItem(
         id=uuid.uuid4(),
@@ -31,6 +32,7 @@ def _item(
         source_url="https://example.com/" + title.replace(" ", "-"),
         category=category,
         image_url=image_url,
+        summary=summary,
         status=status,
         sort_at=datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc),
     )
