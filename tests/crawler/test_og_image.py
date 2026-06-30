@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from argos.crawler._og_image import extract_og_image
+from argos.crawler._og_image import (
+    ResolvedImage,
+    extract_og_image,
+    favicon_for_domain,
+    resolve_image,
+)
 
 
 BASE = "https://example.com/article"
@@ -157,3 +162,63 @@ def test_invalid_base_url_does_not_raise(base_url: str) -> None:
     html = '<html><head><meta property="og:image" content="/cover.jpg"></head></html>'
     # Result may be None (can't resolve) or some value, but no exception.
     extract_og_image(html, base_url)
+
+
+def test_favicon_for_domain_pure_convention() -> None:
+    assert favicon_for_domain("https://example.com/a/b?x=1") == "https://example.com/favicon.ico"
+    assert favicon_for_domain("http://sub.example.org/post") == "http://sub.example.org/favicon.ico"
+
+
+def test_favicon_for_domain_rejects_non_http() -> None:
+    assert favicon_for_domain("ftp://example.com/x") is None
+    assert favicon_for_domain("not a url") is None
+    assert favicon_for_domain("") is None
+
+
+def test_resolve_prefers_og_then_twitter() -> None:
+    html = (
+        '<html><head>'
+        '<meta property="og:image" content="https://cdn.example.com/og.jpg">'
+        '<meta name="twitter:image" content="https://cdn.example.com/tw.jpg">'
+        '</head><body><img src="https://cdn.example.com/body.jpg" width="600" height="400"></body></html>'
+    )
+    r = resolve_image(html, "https://example.com/a")
+    assert r == ResolvedImage(url="https://cdn.example.com/og.jpg", favicon_only=False)
+
+
+def test_resolve_falls_back_to_body_image() -> None:
+    html = (
+        '<html><head></head><body>'
+        '<img src="/spacer.gif" width="1" height="1">'
+        '<img src="https://cdn.example.com/hero.png" width="800" height="600">'
+        '</body></html>'
+    )
+    r = resolve_image(html, "https://example.com/a")
+    assert r == ResolvedImage(url="https://cdn.example.com/hero.png", favicon_only=False)
+
+
+def test_resolve_body_image_resolves_relative_and_skips_data_uri() -> None:
+    html = (
+        '<html><body>'
+        '<img src="data:image/gif;base64,AAAA">'
+        '<img src="/img/cover.jpg">'
+        '</body></html>'
+    )
+    r = resolve_image(html, "https://example.com/post/1")
+    assert r == ResolvedImage(url="https://example.com/img/cover.jpg", favicon_only=False)
+
+
+def test_resolve_falls_back_to_favicon_when_no_images() -> None:
+    html = "<html><head><title>x</title></head><body><p>no images</p></body></html>"
+    r = resolve_image(html, "https://example.com/article")
+    assert r == ResolvedImage(url="https://example.com/favicon.ico", favicon_only=True)
+
+
+def test_resolve_empty_html_still_yields_favicon_from_base_url() -> None:
+    r = resolve_image("", "https://example.com/article")
+    assert r == ResolvedImage(url="https://example.com/favicon.ico", favicon_only=True)
+
+
+def test_resolve_no_url_when_base_url_unusable() -> None:
+    r = resolve_image("<html></html>", "not-a-url")
+    assert r == ResolvedImage(url=None, favicon_only=False)

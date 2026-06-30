@@ -318,6 +318,39 @@ body {
   opacity: 0.7;
 }
 
+/* Favicon-only cards (ARG-178): gradient + favicon chip + domain. */
+.cover--favicon,
+.detail-hero--favicon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--surface-2, #1b2030), var(--surface-3, #2a3145));
+}
+.favicon-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  position: relative; z-index: 1;
+}
+.favicon-chip__img {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 6px;
+  object-fit: contain;
+}
+.favicon-chip__domain {
+  font-size: 0.85rem;
+  color: var(--text-1, #e8ecf4);
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Asset status badge on cards */
 .meta { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .status-badge {

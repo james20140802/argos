@@ -778,7 +778,11 @@ async def test_fetch_url_content_extracts_image_url_via_static_path() -> None:
 
 
 async def test_fetch_url_content_image_url_is_none_when_no_og_image() -> None:
-    """Static path returns image_url=None when response HTML has no og:image."""
+    """Static path falls back to the domain favicon when response HTML has no og:image.
+
+    After ARG-177 the full resolve_image() chain is applied: no og/twitter/body
+    image causes the domain favicon to be returned instead of None.
+    """
     import httpx
 
     from argos.crawler.add_url import _fetch_url_content
@@ -800,7 +804,8 @@ async def test_fetch_url_content_image_url_is_none_when_no_og_image() -> None:
         result = await _fetch_url_content("https://example.com/page")
 
     assert result is not None
-    assert result.get("image_url") is None
+    # Favicon fallback — not None any more (ARG-177)
+    assert result.get("image_url") == "https://example.com/favicon.ico"
 
 
 async def test_fetch_url_content_dynamic_fallback_preserves_image_url() -> None:
@@ -827,3 +832,4 @@ async def test_fetch_url_content_dynamic_fallback_preserves_image_url() -> None:
 
     assert result is not None
     assert result["image_url"] == "https://cdn.example.com/spa.jpg"
+

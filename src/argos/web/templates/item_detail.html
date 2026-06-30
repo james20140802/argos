@@ -2,7 +2,16 @@
 {% block title %}{{ item.title }} · ARGOS{% endblock %}
 {% block content %}
 <article class="detail">
-  {% if item.image_url %}
+  {% if item.image_url and item.image_url.endswith('/favicon.ico') %}
+  <div class="detail-hero detail-hero--favicon detail-hero--{{ (item.category.value if item.category else 'none')|lower }}">
+    <span class="detail-hero__scrim" aria-hidden="true"></span>
+    {# image_url is attacker-controllable (crawled): escaped <img src> only, never CSS url(). #}
+    <span class="favicon-chip">
+      <img class="favicon-chip__img" src="{{ item.image_url }}" alt="" loading="lazy" width="40" height="40">
+      <span class="favicon-chip__domain">{{ item.source_url | domain }}</span>
+    </span>
+  </div>
+  {% elif item.image_url %}
   <div class="detail-hero">
     {# og:image is attacker-controllable (crawled): render via an HTML-escaped
        <img src> rather than inline CSS url() to avoid CSS-context injection. #}

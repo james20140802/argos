@@ -64,6 +64,23 @@ async def test_fetch_github_trending_parses_repos() -> None:
         assert item["source_url"].startswith("https://github.com/")
 
 
+async def test_fetch_github_trending_fills_favicon_image_url() -> None:
+    """Trending repos have no per-repo og:image, so every row must carry the
+    github.com favicon — otherwise image_url saves NULL and the feed renders
+    the legacy glyph, leaving the fallback chain unapplied at this path."""
+    with respx.mock:
+        respx.get("https://github.com/trending").mock(
+            return_value=httpx.Response(200, text=_github_trending_html())
+        )
+        _stub_github_readmes_missing()
+        async with httpx.AsyncClient() as client:
+            items = await fetch_github_trending(client)
+
+    assert items
+    for item in items:
+        assert item["image_url"] == "https://github.com/favicon.ico"
+
+
 async def test_fetch_github_trending_sends_user_agent_header() -> None:
     sent_headers: dict = {}
 
@@ -687,6 +704,7 @@ async def test_fetch_hackernews_top_extracts_og_image_from_external_article() ->
 
 
 async def test_fetch_hackernews_top_image_url_is_none_when_no_og_image() -> None:
+    """After ARG-177: no og/twitter/body image falls back to the domain favicon."""
     article_html = (
         "<html><body><article><h1>Headline</h1>"
         "<p>No og:image here.</p></article></body></html>"
@@ -715,7 +733,8 @@ async def test_fetch_hackernews_top_image_url_is_none_when_no_og_image() -> None
             result = await fetch_hackernews_top(client, limit=1)
 
     assert len(result) == 1
-    assert result[0].get("image_url") is None
+    # Favicon fallback — not None any more (ARG-177)
+    assert result[0].get("image_url") == "https://example.com/favicon.ico"
 
 
 async def test_fetch_hackernews_top_image_url_falls_back_to_twitter_image() -> None:
@@ -752,7 +771,7 @@ async def test_fetch_hackernews_top_image_url_falls_back_to_twitter_image() -> N
 
 
 async def test_fetch_hackernews_top_image_url_rejects_data_uri(monkeypatch) -> None:
-    """Pipeline must not raise on an invalid (data:) og:image — falls back to None."""
+    """Pipeline must not raise on an invalid (data:) og:image — falls back to favicon (ARG-177)."""
     article_html = (
         '<html><head>'
         '<meta property="og:image" content="data:image/png;base64,abc">'
@@ -782,7 +801,8 @@ async def test_fetch_hackernews_top_image_url_rejects_data_uri(monkeypatch) -> N
             result = await fetch_hackernews_top(client, limit=1)
 
     assert len(result) == 1
-    assert result[0].get("image_url") is None
+    # Invalid og:image → body image absent → favicon fallback (ARG-177)
+    assert result[0].get("image_url") == "https://example.com/favicon.ico"
 
 
 async def test_fetch_hackernews_top_image_url_none_when_body_fetch_fails(
@@ -815,3 +835,38 @@ async def test_fetch_hackernews_top_image_url_none_when_body_fetch_fails(
 
     assert len(result) == 1
     assert result[0].get("image_url") is None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# ARG-177: favicon fallback in _fetch_article_body
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def test_article_body_falls_back_to_favicon(monkeypatch) -> None:
+    """An article page with no og/twitter/body image yields a domain favicon URL."""
+    from argos.crawler import static_fetcher
+
+    html = "<html><head><title>t</title></head><body><p>text only</p></body></html>"
+    url = "https://news.example.com/a"
+
+    # Stub is_robots_allowed so _get_with_retry doesn't hit the network.
+    monkeypatch.setattr(
+        "argos.crawler.static_fetcher.is_robots_allowed",
+        AsyncMock(return_value=True),
+    )
+    # Stub _is_safe_url so DNS resolution doesn't run in CI.
+    monkeypatch.setattr(
+        "argos.crawler.static_fetcher._is_safe_url",
+        AsyncMock(return_value=True),
+    )
+
+    with respx.mock:
+        respx.get(url).mock(
+            return_value=httpx.Response(
+                200, text=html, headers={"content-type": "text/html"}
+            )
+        )
+        async with httpx.AsyncClient() as client:
+            _body, image_url = await static_fetcher._fetch_article_body(client, url)
+
+    assert image_url == "https://news.example.com/favicon.ico"
