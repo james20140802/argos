@@ -133,8 +133,10 @@ def test_feed_renders_keep_pass_controls(monkeypatch):
     page = FeedPage(items=[item], next_cursor=None)
     client = _client_with_feed(monkeypatch, page)
     body = client.get("/feed").text
-    assert f'hx-post="/items/{item.id}/keep"' in body
-    assert f'hx-post="/items/{item.id}/pass"' in body
+    # A lone first-page item is the featured hero, so its action URLs carry the
+    # ?featured=1 suffix — match the path prefix to stay agnostic to it.
+    assert f'hx-post="/items/{item.id}/keep' in body
+    assert f'hx-post="/items/{item.id}/pass' in body
     assert f'id="feed-card-{item.id}"' in body
 
 
@@ -309,6 +311,32 @@ def test_feed_load_more_fragment_has_no_featured_hero(monkeypatch):
     client = _client_with_feed(monkeypatch, page)
     body = client.get("/feed/items").text
     assert "card--featured" not in body
+
+
+def test_feed_with_cursor_has_no_featured_hero(monkeypatch):
+    """A direct hit on /feed?cursor=<token> is a mid-feed page (browser
+    history / shared link), so its index-0 item must NOT be promoted to the
+    hero slot — only the genuine first page (no cursor) gets a hero."""
+    page = FeedPage(items=[_item(title="MidFeed")], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed?cursor=SOMETOKEN").text
+    assert "card--featured" not in body
+
+
+def test_featured_card_action_buttons_carry_featured_flag(monkeypatch):
+    """The featured hero's Keep/Pass buttons must post ?featured=1 so the
+    swapped-in card re-renders as the hero (not a collapsed grid cell);
+    standard cards must not carry the flag."""
+    first = _item(title="HeroItem")
+    second = _item(title="PlainItem")
+    page = FeedPage(items=[first, second], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    assert f'/items/{first.id}/keep?featured=1' in body
+    assert f'/items/{first.id}/pass?featured=1' in body
+    # The non-featured card keeps the plain action URLs.
+    assert f'/items/{second.id}/keep"' in body
+    assert f'/items/{second.id}/keep?featured=1' not in body
 
 
 def _client_real_feed() -> TestClient:

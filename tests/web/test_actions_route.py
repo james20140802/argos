@@ -44,9 +44,11 @@ def test_keep_returns_updated_feed_card_partial(monkeypatch):
         return TransitionOutcome.CREATED
 
     async def _fake_lookup(session, tech_id):
-        # Returns a tiny shape sufficient for the partial.
+        # Mirror the real _load_feed_card_context 7-key shape (incl. summary)
+        # so the partial re-renders the same data the production path would.
         return {"id": tech_id, "title": "Kept Thing", "status": AssetStatus.KEEP,
-                "category": None, "image_url": None, "source_url": "https://x"}
+                "category": None, "image_url": None, "summary": "킵된 한 줄 요약",
+                "source_url": "https://x"}
 
     client = _client(
         monkeypatch,
@@ -58,10 +60,41 @@ def test_keep_returns_updated_feed_card_partial(monkeypatch):
     resp = client.post(f"/items/{item_id}/keep")
     assert resp.status_code == 200
     assert "Kept Thing" in resp.text
+    # The summary line survives the action re-render (ARG-174/175 contract).
+    assert "킵된 한 줄 요약" in resp.text
     # Partial, not full page.
     assert "<!DOCTYPE html>" not in resp.text
     assert captured["target_status"] == AssetStatus.KEEP
     assert captured["tech_id"] == item_id
+
+
+def test_keep_on_featured_card_re_renders_as_hero(monkeypatch):
+    """A Keep/Pass on the featured hero passes ?featured=1, so the swapped-in
+    card must re-render as the hero (card--featured) rather than collapsing to
+    a standard grid cell (ARG-175)."""
+    item_id = uuid.uuid4()
+
+    async def _fake_transition(session, tech_id, target_status):
+        return TransitionOutcome.CREATED
+
+    async def _fake_lookup(session, tech_id):
+        return {"id": tech_id, "title": "Hero Kept", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": "히어로 요약",
+                "source_url": "https://x"}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.transition_asset": _fake_transition,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+        },
+    )
+    featured = client.post(f"/items/{item_id}/keep?featured=1")
+    assert featured.status_code == 200
+    assert "card--featured" in featured.text
+    # Without the flag the same card re-renders as a standard (non-hero) card.
+    plain = client.post(f"/items/{item_id}/keep")
+    assert "card--featured" not in plain.text
 
 
 def test_pass_returns_updated_feed_card_partial(monkeypatch):
@@ -74,7 +107,8 @@ def test_pass_returns_updated_feed_card_partial(monkeypatch):
 
     async def _fake_lookup(session, tech_id):
         return {"id": tech_id, "title": "Passed", "status": AssetStatus.ARCHIVED,
-                "category": None, "image_url": None, "source_url": "https://x"}
+                "category": None, "image_url": None, "summary": None,
+                "source_url": "https://x"}
 
     client = _client(
         monkeypatch,
@@ -127,7 +161,8 @@ def test_keep_noop_returns_409_fragment(monkeypatch):
 
     async def _fake_lookup(session, tech_id):
         return {"id": tech_id, "title": "Already Kept", "status": AssetStatus.KEEP,
-                "category": None, "image_url": None, "source_url": "https://x"}
+                "category": None, "image_url": None, "summary": None,
+                "source_url": "https://x"}
 
     client = _client(
         monkeypatch,

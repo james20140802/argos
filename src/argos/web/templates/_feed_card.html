@@ -54,13 +54,16 @@
     {% if item.summary %}
     <p class="summary">{{ item.summary }}</p>
     {% endif %}
+    {# ``?featured=1`` tells the action route to re-render the swapped-in card
+       as the hero again, so a Keep/Pass on the featured card does not collapse
+       it to a standard grid cell mid-list. #}
     <div class="card-actions">
       <button class="card-action card-action--keep"
-              hx-post="/items/{{ item.id }}/keep"
+              hx-post="/items/{{ item.id }}/keep{% if is_featured %}?featured=1{% endif %}"
               hx-target="#feed-card-{{ item.id }}"
               hx-swap="outerHTML">Keep</button>
       <button class="card-action card-action--pass"
-              hx-post="/items/{{ item.id }}/pass"
+              hx-post="/items/{{ item.id }}/pass{% if is_featured %}?featured=1{% endif %}"
               hx-target="#feed-card-{{ item.id }}"
               hx-swap="outerHTML">Pass</button>
     </div>

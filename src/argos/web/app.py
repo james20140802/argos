@@ -256,8 +256,12 @@ def build_web_app() -> FastAPI:
         cursor: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
+        # Featured hero belongs to the genuine first page only. A direct hit on
+        # ``/feed?cursor=<token>`` (browser history, shared link) is a mid-feed
+        # page, so its index-0 item must not be promoted to the hero slot.
         return await _render_feed(
-            request, "feed.html", category, cursor, session, first_page=True
+            request, "feed.html", category, cursor, session,
+            first_page=cursor is None,
         )
 
     @app.get("/feed/items", response_class=HTMLResponse)
@@ -338,15 +342,23 @@ def build_web_app() -> FastAPI:
             status_code=status_code,
         )
 
-    def _action_response(request: Request, item: dict, partial_name: str) -> HTMLResponse:
+    def _action_response(
+        request: Request,
+        item: dict,
+        partial_name: str,
+        *,
+        is_featured: bool = False,
+    ) -> HTMLResponse:
         from types import SimpleNamespace
 
         return request.app.state.templates.TemplateResponse(
-            request, partial_name, {"item": SimpleNamespace(**item)}
+            request,
+            partial_name,
+            {"item": SimpleNamespace(**item), "is_featured": is_featured},
         )
 
     async def _transition_item(
-        request: Request, item_id: str, target_status, session
+        request: Request, item_id: str, target_status, session, *, is_featured: bool
     ) -> HTMLResponse:
         from argos.slack.services.asset_transition import TransitionOutcome
 
@@ -371,27 +383,35 @@ def build_web_app() -> FastAPI:
 
         # Reload after transition so the partial sees fresh status.
         item = await _load_feed_card_context(session, parsed_id)
-        return _action_response(request, item, "_feed_card.html")
+        return _action_response(
+            request, item, "_feed_card.html", is_featured=is_featured
+        )
 
     @app.post("/items/{item_id}/keep", response_class=HTMLResponse)
     async def keep_item(
         request: Request,
         item_id: str,
+        featured: bool = False,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
 
-        return await _transition_item(request, item_id, AssetStatus.KEEP, session)
+        return await _transition_item(
+            request, item_id, AssetStatus.KEEP, session, is_featured=featured
+        )
 
     @app.post("/items/{item_id}/pass", response_class=HTMLResponse)
     async def pass_item(
         request: Request,
         item_id: str,
+        featured: bool = False,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
 
-        return await _transition_item(request, item_id, AssetStatus.ARCHIVED, session)
+        return await _transition_item(
+            request, item_id, AssetStatus.ARCHIVED, session, is_featured=featured
+        )
 
     @app.post("/assets/{user_asset_id}/untrack", response_class=HTMLResponse)
     async def untrack_asset(

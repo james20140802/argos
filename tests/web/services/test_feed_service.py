@@ -218,7 +218,11 @@ async def test_fetch_feed_returns_summary_and_none_when_null() -> None:
                 raw_content="x",
                 summary="한 줄 요약입니다.",
                 category=CategoryType.MAINSTREAM,
-                published_at=datetime(2026, 6, 28, 2, 0, tzinfo=timezone.utc),
+                # Far-future published_at so both seeded rows land on the first
+                # page regardless of how many real items a populated dev DB has
+                # accumulated — otherwise they fall off page 1 and the lookup
+                # below raises an opaque KeyError instead of asserting summary.
+                published_at=datetime(2099, 1, 1, 2, 0, tzinfo=timezone.utc),
             )
             without_summary = TechItem(
                 title="arg174-no-summary",
@@ -226,7 +230,7 @@ async def test_fetch_feed_returns_summary_and_none_when_null() -> None:
                 raw_content="x",
                 summary=None,
                 category=CategoryType.MAINSTREAM,
-                published_at=datetime(2026, 6, 28, 1, 0, tzinfo=timezone.utc),
+                published_at=datetime(2099, 1, 1, 1, 0, tzinfo=timezone.utc),
             )
             session.add_all([with_summary, without_summary])
             await session.flush()
@@ -236,6 +240,9 @@ async def test_fetch_feed_returns_summary_and_none_when_null() -> None:
         async with Session() as session:
             page = await fetch_feed(session, limit=PAGE_SIZE)
             by_id = {it.id: it for it in page.items if it.id in set(seeded_ids)}
+            assert set(seeded_ids) <= by_id.keys(), (
+                "seeded items must appear on the first page"
+            )
             assert by_id[seeded_ids[0]].summary == "한 줄 요약입니다."
             assert by_id[seeded_ids[1]].summary is None
     finally:
