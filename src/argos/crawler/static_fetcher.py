@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.crawler._html_utils import clean_title
-from argos.crawler._og_image import resolve_image
+from argos.crawler._og_image import favicon_for_domain, resolve_image
 from argos.crawler._robots import RobotsDisallowed, is_robots_allowed
 from argos.crawler.dynamic_fetcher import _is_safe_url, extract_main_content
 from argos.crawler.user_agents import random_user_agent
@@ -130,6 +130,11 @@ async def fetch_github_trending(
                 "title": title,
                 "source_url": source_url,
                 "raw_content": _truncate_raw_content(combined),
+                # GitHub trending pages expose no per-repo og:image, so derive
+                # the github.com favicon (no network). Without it these rows
+                # save NULL image_url and render the legacy glyph, leaving the
+                # full fallback chain unapplied at this ingestion path.
+                "image_url": favicon_for_domain(source_url),
                 "_published_at": None,
             }
         )

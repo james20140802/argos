@@ -64,6 +64,23 @@ async def test_fetch_github_trending_parses_repos() -> None:
         assert item["source_url"].startswith("https://github.com/")
 
 
+async def test_fetch_github_trending_fills_favicon_image_url() -> None:
+    """Trending repos have no per-repo og:image, so every row must carry the
+    github.com favicon — otherwise image_url saves NULL and the feed renders
+    the legacy glyph, leaving the fallback chain unapplied at this path."""
+    with respx.mock:
+        respx.get("https://github.com/trending").mock(
+            return_value=httpx.Response(200, text=_github_trending_html())
+        )
+        _stub_github_readmes_missing()
+        async with httpx.AsyncClient() as client:
+            items = await fetch_github_trending(client)
+
+    assert items
+    for item in items:
+        assert item["image_url"] == "https://github.com/favicon.ico"
+
+
 async def test_fetch_github_trending_sends_user_agent_header() -> None:
     sent_headers: dict = {}
 
