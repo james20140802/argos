@@ -109,6 +109,13 @@ def test_backfill_images_refetch_path_calls_fetch(capsys):
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=session_ctx),
+        # Gate is exercised by its own test below; force-pass it here so this
+        # test stays network-free (no real DNS for the SSRF safety check).
+        patch(
+            "argos.crawler.dynamic_fetcher._is_safe_url",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
         patch(
             "argos.crawler.add_url._fetch_url_content",
             new_callable=AsyncMock,
@@ -119,3 +126,32 @@ def test_backfill_images_refetch_path_calls_fetch(capsys):
 
     assert rc == 0
     fetch_mock.assert_awaited_once_with("https://example.com/article")
+
+
+def test_backfill_images_refetch_skips_unsafe_url(capsys):
+    """--refetch must NOT fetch a stored row whose source_url targets a
+    private/loopback/metadata host — it re-applies add_url()'s SSRF gate and
+    falls back to the favicon instead of issuing the request."""
+    session, session_ctx = _make_session_ctx()
+
+    row = (MagicMock(), "http://169.254.169.254/latest/meta-data/")
+    session.execute = AsyncMock(
+        side_effect=[
+            MagicMock(**{"all.return_value": [row]}),
+            MagicMock(rowcount=1),
+        ]
+    )
+    session.commit = AsyncMock()
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=session_ctx),
+        patch(
+            "argos.crawler.add_url._fetch_url_content",
+            new_callable=AsyncMock,
+        ) as fetch_mock,
+    ):
+        rc = main(["backfill-images", "--refetch"])
+
+    assert rc == 0
+    # The unsafe URL is link-local — never fetched.
+    fetch_mock.assert_not_awaited()

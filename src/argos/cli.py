@@ -1009,11 +1009,30 @@ def _cmd_backfill_images(args: argparse.Namespace) -> int:
 
 
 async def _refetch_image_url(source_url: str) -> str | None:
-    """Re-crawl a source URL and resolve its best image (slow path)."""
-    from argos.crawler.add_url import _fetch_url_content  # reuse existing fetch+resolve
+    """Re-crawl a source URL and resolve its best image (slow path).
+
+    Stored rows are re-fetched here directly. ``_fetch_url_content`` validates
+    redirect hops but NOT its initial URL — ``add_url()`` normally runs the
+    parse/scheme/SSRF gate before calling it. A legacy/HN/RSS row whose
+    ``source_url`` is a private, link-local, loopback, or metadata host would
+    otherwise be requested before any SSRF check runs. Re-apply the same gate
+    here and fall back to the favicon (no network) for unsafe/unparseable URLs.
+    """
+    from argos.crawler._og_image import favicon_for_domain
+    from argos.crawler.add_url import _fetch_url_content, _parse_and_validate
+    from argos.crawler.dynamic_fetcher import _is_safe_url
+
+    cleaned, reason = _parse_and_validate(source_url)
+    if cleaned is None or not await _is_safe_url(cleaned):
+        logging.getLogger(__name__).warning(
+            "backfill --refetch skipping unsafe URL %s (%s); falling back to favicon",
+            source_url,
+            reason or "failed SSRF safety check",
+        )
+        return favicon_for_domain(source_url)
 
     try:
-        data = await _fetch_url_content(source_url)
+        data = await _fetch_url_content(cleaned)
     except Exception as exc:
         logging.getLogger(__name__).warning(
             "backfill --refetch failed for %s: %r (falling back to favicon)",
@@ -1023,7 +1042,6 @@ async def _refetch_image_url(source_url: str) -> str | None:
         data = None
     if data and data.get("image_url"):
         return data["image_url"]
-    from argos.crawler._og_image import favicon_for_domain
 
     return favicon_for_domain(source_url)
 
