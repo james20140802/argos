@@ -11,6 +11,7 @@ than raw glyph character equality to stay robust against layout chrome.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -116,8 +117,11 @@ def test_feed_favicon_only_renders_chip_and_domain(monkeypatch):
 
     assert "cover--favicon" in body
     assert "favicon-chip" in body
-    assert "favicon-chip__domain" in body
-    assert "example.com" in body
+    # Domain text must render inside the favicon chip. Use a regex anchored on
+    # the chip element rather than a bare ``"example.com" in body`` substring
+    # check — the latter trips CodeQL's incomplete-URL-sanitization heuristic
+    # even though this is rendered HTML, not a security gate.
+    assert re.search(r'favicon-chip__domain"[^>]*>\s*example\.com', body)
     # The cover__glyph class only appears in the fallback branch — not here.
     assert "cover__glyph" not in body
 
@@ -187,8 +191,11 @@ def test_detail_favicon_only_renders_chip_and_domain(monkeypatch):
 
     assert "detail-hero--favicon" in body
     assert "favicon-chip" in body
-    assert "favicon-chip__domain" in body
-    assert "example.com" in body
+    # Domain text must render inside the favicon chip. Use a regex anchored on
+    # the chip element rather than a bare ``"example.com" in body`` substring
+    # check — the latter trips CodeQL's incomplete-URL-sanitization heuristic
+    # even though this is rendered HTML, not a security gate.
+    assert re.search(r'favicon-chip__domain"[^>]*>\s*example\.com', body)
     # detail-hero__glyph class only appears in the fallback branch.
     assert "detail-hero__glyph" not in body
 
