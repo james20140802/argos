@@ -36,18 +36,25 @@
     {% if item.summary %}
     <p class="summary">{{ item.summary }}</p>
     {% endif %}
-    {# ``?featured=1`` tells the action route to re-render the swapped-in card
-       as the hero again, so a Keep/Pass on the featured card does not collapse
-       it to a standard grid cell mid-list. #}
+    {# Current triage state drives an active (pressed) button so a Keep/Pass is
+       obviously reflected — a small eyebrow badge alone read as "nothing
+       happened". Both buttons stay live so the choice can be changed.
+       ``?featured=1`` tells the action route to re-render the swapped-in card
+       as the hero again, so an action on the featured card does not collapse it
+       to a standard grid cell mid-list. #}
+    {% set is_kept = item.status and item.status.value == 'Keep' %}
+    {% set is_passed = item.status and item.status.value == 'Archived' %}
     <div class="card-actions">
-      <button class="card-action card-action--keep"
+      <button class="card-action card-action--keep{% if is_kept %} is-active{% endif %}"
+              aria-pressed="{{ 'true' if is_kept else 'false' }}"
               hx-post="/items/{{ item.id }}/keep{% if is_featured %}?featured=1{% endif %}"
               hx-target="#feed-card-{{ item.id }}"
-              hx-swap="outerHTML">Keep</button>
-      <button class="card-action card-action--pass"
+              hx-swap="outerHTML">{% if is_kept %}✓ Keep{% else %}Keep{% endif %}</button>
+      <button class="card-action card-action--pass{% if is_passed %} is-active{% endif %}"
+              aria-pressed="{{ 'true' if is_passed else 'false' }}"
               hx-post="/items/{{ item.id }}/pass{% if is_featured %}?featured=1{% endif %}"
               hx-target="#feed-card-{{ item.id }}"
-              hx-swap="outerHTML">Pass</button>
+              hx-swap="outerHTML">{% if is_passed %}✓ Pass{% else %}Pass{% endif %}</button>
     </div>
   </div>
 </article>

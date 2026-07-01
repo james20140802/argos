@@ -695,6 +695,24 @@ body {
 .card-action--untrack:hover { color: var(--faint); border-color: var(--line); }
 .card-action.htmx-request { opacity: 0.5; pointer-events: none; }
 
+/* Active (pressed) triage state — the current status is filled in so a Keep /
+   Pass is unmistakably reflected on the card itself. */
+.card-action--keep.is-active {
+  color: var(--bg);
+  background: var(--brass);
+  border-color: var(--brass);
+}
+.card-action--keep.is-active:hover {
+  color: var(--bg);
+  background: var(--brass-hi);
+  border-color: var(--brass-hi);
+}
+.card-action--pass.is-active {
+  color: var(--muted);
+  background: var(--surface);
+  border-color: var(--muted);
+}
+
 /* Inline error returned by an action route (404 / 409) */
 .action-error {
   margin-top: 12px; padding: 10px 12px;
