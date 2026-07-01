@@ -288,6 +288,38 @@ async def test_stale_active_click_does_not_recreate_asset():
 
 
 @pytest.mark.asyncio
+async def test_stale_active_clear_leaves_different_status_untouched():
+    """Regression (finding A): a stale ✓ Keep clear must delete only while the
+    row is *still* Keep. If another tab switched the asset to Archived in the
+    meantime, the conditional DELETE's status predicate spares it — a blind
+    delete-by-PK would have wiped the Archived decision the user never acted on."""
+    tech_id = await _insert_tech_item()
+    try:
+        client = _client_with_real_db()
+
+        # User kept it; then another tab switched the SAME asset to Archived.
+        assert client.post(f"/items/{tech_id}/keep").status_code == 200
+        async with _session_ctx() as session:
+            await session.execute(
+                UserAsset.__table__.update()
+                .where(UserAsset.tech_id == tech_id)
+                .values(status=AssetStatus.ARCHIVED)
+            )
+            await session.commit()
+
+        # The stale ✓ Keep card posts keep?active=1 → conditional DELETE WHERE
+        # status = Keep. The live row is Archived, so nothing is deleted.
+        stale = client.post(f"/items/{tech_id}/keep?active=1")
+        assert stale.status_code == 200, stale.text
+
+        after = await _fetch_asset(tech_id)
+        assert after is not None
+        assert after.status == AssetStatus.ARCHIVED
+    finally:
+        await _cleanup(tech_id)
+
+
+@pytest.mark.asyncio
 async def test_untrack_archives_kept_asset_and_writes_history():
     """Untrack on a previously Kept asset archives it via the user_asset
     id route and writes one Keep→Archived history row."""

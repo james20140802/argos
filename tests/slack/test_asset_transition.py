@@ -115,13 +115,15 @@ async def test_transition_archived_to_keep_logs_history(tech_id):
 
 
 @pytest.mark.asyncio
-async def test_toggle_clear_deletes_when_active_and_status_matches(tech_id):
-    """currently_active=True on a row still in the target status clears it."""
-    existing = UserAsset(id=uuid.uuid4(), tech_id=tech_id, status=AssetStatus.KEEP)
-    sel = MagicMock()
-    sel.scalar_one_or_none.return_value = existing
+async def test_toggle_clear_issues_conditional_delete(tech_id):
+    """currently_active=True issues a single conditional
+    ``DELETE ... WHERE tech_id = :id AND status = :target`` — never an ORM
+    delete-by-PK. The status predicate is what keeps a concurrent switch from
+    being clobbered (verified end-to-end in the DB integration tests)."""
+    from sqlalchemy import Delete
+
     session = AsyncMock()
-    session.execute = AsyncMock(return_value=sel)
+    session.execute = AsyncMock()
     session.delete = AsyncMock()
 
     outcome = await toggle_asset(
@@ -129,44 +131,14 @@ async def test_toggle_clear_deletes_when_active_and_status_matches(tech_id):
     )
 
     assert outcome is ToggleOutcome.REMOVED
-    session.delete.assert_awaited_once_with(existing)
-
-
-@pytest.mark.asyncio
-async def test_toggle_clear_is_noop_when_row_already_gone(tech_id):
-    """Stale active card: the client rendered ✓ but the DB row is already gone.
-    Clearing must not error or recreate — REMOVED with no delete/insert."""
-    sel = MagicMock()
-    sel.scalar_one_or_none.return_value = None
-    session = AsyncMock()
-    session.execute = AsyncMock(return_value=sel)
-    session.delete = AsyncMock()
-
-    outcome = await toggle_asset(
-        session, tech_id, AssetStatus.KEEP, currently_active=True
-    )
-
-    assert outcome is ToggleOutcome.REMOVED
+    # No ORM delete-by-PK (that path races); a Core conditional DELETE instead.
     session.delete.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_toggle_clear_leaves_different_status_untouched(tech_id):
-    """A stale ✓Keep press while the DB actually holds Archived must not wipe
-    the Archived decision the user never acted on (guarded delete)."""
-    existing = UserAsset(id=uuid.uuid4(), tech_id=tech_id, status=AssetStatus.ARCHIVED)
-    sel = MagicMock()
-    sel.scalar_one_or_none.return_value = existing
-    session = AsyncMock()
-    session.execute = AsyncMock(return_value=sel)
-    session.delete = AsyncMock()
-
-    outcome = await toggle_asset(
-        session, tech_id, AssetStatus.KEEP, currently_active=True
-    )
-
-    assert outcome is ToggleOutcome.REMOVED
-    session.delete.assert_not_called()
+    session.execute.assert_awaited_once()
+    stmt = session.execute.await_args.args[0]
+    assert isinstance(stmt, Delete)
+    sql = str(stmt).lower()
+    assert "delete from user_assets" in sql
+    assert "status" in sql and "tech_id" in sql
 
 
 @pytest.mark.asyncio

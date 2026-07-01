@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -100,18 +100,22 @@ async def toggle_asset(
       to :func:`transition_asset` (create or switch, logging the transition).
       Returns ``SET``.
 
-    The guarded delete (only when the live status matches ``target_status``)
-    means a stale ``✓ Keep`` press never wipes a *different* decision the user
-    has since made — e.g. an ``Archived`` row set from another tab.
+    The clear is a single **conditional** ``DELETE ... WHERE tech_id = :id AND
+    status = :target``: it deletes only while the row is *still* in
+    ``target_status``, so a stale ``✓ Keep`` press never wipes a *different*
+    decision the user has since made — e.g. an ``Archived`` row set from another
+    tab. A read-then-``session.delete`` would race (the status read and the
+    delete-by-PK are not atomic); the conditional statement is evaluated against
+    the committed row in one shot. The DB-level ``ON DELETE CASCADE`` on
+    ``track_history.user_asset_id`` removes the asset's history rows.
     """
     if currently_active:
-        existing = (
-            await session.execute(
-                select(UserAsset).where(UserAsset.tech_id == tech_id)
+        await session.execute(
+            delete(UserAsset).where(
+                UserAsset.tech_id == tech_id,
+                UserAsset.status == target_status,
             )
-        ).scalar_one_or_none()
-        if existing is not None and existing.status == target_status:
-            await session.delete(existing)
+        )
         return ToggleOutcome.REMOVED
     await transition_asset(session, tech_id, target_status)
     return ToggleOutcome.SET
