@@ -1088,22 +1088,34 @@ async def _backfill_images(
       clobbered.
 
     * Upgrade (``upgrade_favicons=True``, implies ``refetch``): target rows
-      whose ``image_url`` is a bare ``/favicon.ico`` — the earliest crawls and
-      the no-network backfill persisted these, and because the default mode
-      only fills NULLs they were otherwise stuck on the favicon forever. Each
+      whose ``image_url`` path is ``/favicon.ico`` (bare, or with a cache-busting
+      ``?query``/``#fragment``) — the earliest crawls and the no-network backfill
+      persisted these, and because the default mode only fills NULLs they were
+      otherwise stuck on the favicon forever. Each
       is re-crawled; the row is overwritten **only** when a real og/twitter/body
       image is recovered (the UPDATE is guarded by the old favicon value).
       Rows that still resolve to a favicon are left as-is.
     """
-    from sqlalchemy import func, select, update
+    from sqlalchemy import func, or_, select, update
 
     from argos.crawler._og_image import favicon_for_domain
     from argos.models.tech_item import TechItem
 
     if upgrade_favicons:
         refetch = True
-        selector = TechItem.image_url.like("%/favicon.ico")
-        guard = TechItem.image_url.like("%/favicon.ico")
+        # A favicon cover is the path ".../favicon.ico" — but a stored URL may
+        # carry a cache-busting query or fragment (``/favicon.ico?v=2``). Match
+        # the path end followed by end-of-string, "?", or "#" so those rows are
+        # selected too, keeping the SQL predicate in step with is_favicon_url()
+        # and the cover templates. Otherwise a query-string favicon would stay
+        # stuck forever (never NULL, never selected for upgrade).
+        favicon_match = or_(
+            TechItem.image_url.like("%/favicon.ico"),
+            TechItem.image_url.like("%/favicon.ico?%"),
+            TechItem.image_url.like("%/favicon.ico#%"),
+        )
+        selector = favicon_match
+        guard = favicon_match
         noun = "favicon"
     else:
         selector = TechItem.image_url.is_(None)
