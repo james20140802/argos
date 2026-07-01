@@ -167,8 +167,9 @@ def test_detail_renders_digest_paragraphs(monkeypatch):
     assert resp.status_code == 200
     assert "첫 문단 내용입니다." in resp.text
     assert "둘째 문단 내용입니다." in resp.text
-    # 두 문단이 별도 <p>로 렌더
-    assert resp.text.count("첫 문단 내용입니다.") == 1
+    # 두 문단이 각각 별도 <p>로 렌더되는지 검증
+    assert "<p>첫 문단 내용입니다.</p>" in resp.text
+    assert "<p>둘째 문단 내용입니다.</p>" in resp.text
 
 
 def test_detail_without_digest_shows_only_summary(monkeypatch):
