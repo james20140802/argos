@@ -6,6 +6,7 @@ import uuid
 
 from sqlalchemy import select
 
+from argos.brain._language import language_directive
 from argos.brain.llm_client import get_llm_client
 from argos.brain.ollama_client import LARGE_MODEL_TIMEOUT
 from argos.config import settings
@@ -33,7 +34,7 @@ Format your response for Slack mrkdwn:
 - Write in plain prose paragraphs
 - Use line breaks naturally between sections
 
-Respond in {language}. Be concise but substantive."""
+Respond in {language}. Be concise but substantive.{language_reminder}"""
 
 
 async def _run_and_reply(
@@ -64,6 +65,7 @@ async def _run_and_reply(
             source_url=item.source_url,
             raw_content=item.raw_content[:3000],
             language=language,
+            language_reminder=language_directive(language or "English"),
         )
 
         llm = get_llm_client()

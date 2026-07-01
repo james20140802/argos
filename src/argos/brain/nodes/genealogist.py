@@ -6,6 +6,7 @@ import logging
 
 from pydantic import BaseModel, field_validator
 
+from argos.brain._language import language_directive
 from argos.brain.graph_state import BrainState
 from argos.brain.llm_client import get_genealogist_llm_client
 from argos.brain.ollama_client import LARGE_MODEL_TIMEOUT
@@ -23,7 +24,7 @@ Existing related technologies:
 
 Write the reason field in {language}.
 Respond ONLY with valid JSON:
-{{"replace_target_id": "UUID string or null", "relation_type": "Replace or Enhance or Fork or null", "reason": "brief explanation"}}"""
+{{"replace_target_id": "UUID string or null", "relation_type": "Replace or Enhance or Fork or null", "reason": "brief explanation"}}{language_reminder}"""
 
 
 class _SuccessionResult(BaseModel):
@@ -66,6 +67,7 @@ async def genealogist_node(
         new_tech=state["raw_text"][:1000],
         existing_techs=existing_techs,
         language=language,
+        language_reminder=language_directive(language),
     )
 
     client = get_genealogist_llm_client()
