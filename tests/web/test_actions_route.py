@@ -249,7 +249,10 @@ def test_untrack_returns_empty_body_to_remove_card(monkeypatch):
     assert captured["tech_id"] == tech_id
 
 
-def test_untrack_unknown_asset_returns_404_fragment(monkeypatch):
+def test_untrack_unknown_asset_removes_stale_card(monkeypatch):
+    """A stale portfolio card whose asset was already cleared (missing row)
+    must be *removed* (empty 200), not error — the untracked state already
+    holds, so a 404 fragment would leave a dead card showing an error."""
     user_asset_id = uuid.uuid4()
 
     async def _fake_resolve(session, ua_id):
@@ -260,7 +263,8 @@ def test_untrack_unknown_asset_returns_404_fragment(monkeypatch):
         **{"argos.web.app._resolve_user_asset_tech_id": _fake_resolve},
     )
     resp = client.post(f"/assets/{user_asset_id}/untrack")
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert resp.text == ""
 
 
 def test_untrack_malformed_uuid_returns_404(monkeypatch):
@@ -269,7 +273,10 @@ def test_untrack_malformed_uuid_returns_404(monkeypatch):
     assert resp.status_code == 404
 
 
-def test_untrack_already_archived_returns_409(monkeypatch):
+def test_untrack_already_archived_removes_stale_card(monkeypatch):
+    """A stale card for an asset already Archived (NOOP) is also removed: it is
+    no longer a live Keep, so the Keep-only portfolio card is stale. Empty 200
+    removes it idempotently rather than surfacing a 409 on a dead card."""
     user_asset_id = uuid.uuid4()
     tech_id = uuid.uuid4()
 
@@ -287,4 +294,5 @@ def test_untrack_already_archived_returns_409(monkeypatch):
         },
     )
     resp = client.post(f"/assets/{user_asset_id}/untrack")
-    assert resp.status_code == 409
+    assert resp.status_code == 200
+    assert resp.text == ""

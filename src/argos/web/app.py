@@ -512,19 +512,21 @@ def build_web_app() -> FastAPI:
             return _error_fragment(request, 404, "not found")
 
         tech_id = await _resolve_user_asset_tech_id(session, parsed_id)
-        if tech_id is None:
-            return _error_fragment(request, 404, "not found")
+        if tech_id is not None:
+            outcome = await transition_asset(session, tech_id, AssetStatus.ARCHIVED)
+            if outcome is TransitionOutcome.TRANSITIONED:
+                # Only a real Keep→Archived transition mutates state; the request
+                # session does not auto-commit (see keep/pass above).
+                await session.commit()
+            # NOOP (already Archived) changed nothing — no commit needed.
 
-        outcome = await transition_asset(session, tech_id, AssetStatus.ARCHIVED)
-        if outcome is TransitionOutcome.NOOP:
-            return _error_fragment(request, 409, "already archived")
-
-        # See keep/pass above: the request session does not auto-commit.
-        await session.commit()
-
-        # Untracking archives the asset, so it drops out of the Keep-only
-        # portfolio. Return an empty body so the HTMX ``outerHTML`` swap removes
-        # the card from the page rather than leaving a stale entry behind.
+        # Untracking archives the asset, dropping it out of the Keep-only
+        # portfolio. A missing row (a stale cached /portfolio card whose asset
+        # was already cleared — e.g. a feed toggle-off deleted the UserAsset) or
+        # an already-Archived row both mean the desired end state already holds.
+        # Return an empty body so the HTMX ``outerHTML`` swap removes the card,
+        # idempotently — a 404/409 error fragment would leave a stale, dead card
+        # displaying an error even though the untrack goal is satisfied.
         return HTMLResponse("", status_code=200)
 
     return app
