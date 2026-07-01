@@ -169,6 +169,19 @@ class GenealogistConfig(BaseModel):
     embed_search_concurrency: int = Field(default=4, ge=1)
 
 
+class DigestConfig(BaseModel):
+    # ARG-173 상세 페이지 롱폼 다이제스트 노드. triage(8B)와 별개 모델.
+    # config 필드로 두어 로컬 벤치 후 기본값 교체 가능(GenealogistConfig와 동일 관행).
+    model: str = Field(default="qwen3:14b")
+    num_ctx: int = Field(default=4096, ge=512)
+    # 프롬프트에 넣는 raw_content 상한(문자). triage 2000자보다 크게.
+    input_max_chars: int = Field(default=6000, ge=500)
+    # 이 미만이면 롱폼을 만들지 않고 NULL(헛수고/환각 방지).
+    min_content_chars: int = Field(default=1000, ge=0)
+    # 생성 결과가 이 미만이면 버리고 NULL.
+    min_output_chars: int = Field(default=150, ge=0)
+
+
 class RSSFeedConfig(BaseModel):
     url: str
     category: Literal["Mainstream", "Alpha"] = "Mainstream"
@@ -210,6 +223,7 @@ class UserConfig(BaseModel):
     llm: LLMConfig = LLMConfig()
     triage: TriageConfig = TriageConfig()
     genealogist: GenealogistConfig = GenealogistConfig()
+    digest: DigestConfig = DigestConfig()
     rss: RSSConfig = Field(default_factory=RSSConfig)
     spa: SPAConfig = Field(default_factory=SPAConfig)
     web: WebConfig = Field(default_factory=WebConfig)
