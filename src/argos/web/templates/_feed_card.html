@@ -44,15 +44,21 @@
        to a standard grid cell mid-list. #}
     {% set is_kept = item.status and item.status.value == 'Keep' %}
     {% set is_passed = item.status and item.status.value == 'Archived' %}
+    {# ``active=1`` tells the toggle route the button was rendered pressed, so a
+       click clears the decision *based on what the user saw* — a stale
+       service-worker-cached ✓ card can't invert the action (see toggle_asset).
+       Params are appended only when set so untriaged cards keep their bare URLs. #}
+    {% set keep_params = (['featured=1'] if is_featured else []) + (['active=1'] if is_kept else []) %}
+    {% set pass_params = (['featured=1'] if is_featured else []) + (['active=1'] if is_passed else []) %}
     <div class="card-actions">
       <button class="card-action card-action--keep{% if is_kept %} is-active{% endif %}"
               aria-pressed="{{ 'true' if is_kept else 'false' }}"
-              hx-post="/items/{{ item.id }}/keep{% if is_featured %}?featured=1{% endif %}"
+              hx-post="/items/{{ item.id }}/keep{% if keep_params %}?{{ keep_params | join('&') }}{% endif %}"
               hx-target="#feed-card-{{ item.id }}"
               hx-swap="outerHTML">{% if is_kept %}✓ Keep{% else %}Keep{% endif %}</button>
       <button class="card-action card-action--pass{% if is_passed %} is-active{% endif %}"
               aria-pressed="{{ 'true' if is_passed else 'false' }}"
-              hx-post="/items/{{ item.id }}/pass{% if is_featured %}?featured=1{% endif %}"
+              hx-post="/items/{{ item.id }}/pass{% if pass_params %}?{{ pass_params | join('&') }}{% endif %}"
               hx-target="#feed-card-{{ item.id }}"
               hx-swap="outerHTML">{% if is_passed %}✓ Pass{% else %}Pass{% endif %}</button>
     </div>

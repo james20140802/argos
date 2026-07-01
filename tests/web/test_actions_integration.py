@@ -206,9 +206,10 @@ async def test_pass_first_then_repeat_pass_toggles_off():
         assert asset.status == AssetStatus.ARCHIVED
         assert (await _fetch_history(asset.id)) == []
 
-        # Repeat — toggle-off. The route returns 200 (the re-rendered untriaged
-        # card) and the user_asset is removed entirely.
-        repeat = client.post(f"/items/{tech_id}/pass")
+        # Repeat — toggle-off. The rendered ✓ Pass button carries ?active=1, so
+        # the click clears the decision; the route returns 200 (the re-rendered
+        # untriaged card) and the user_asset is removed entirely.
+        repeat = client.post(f"/items/{tech_id}/pass?active=1")
         assert repeat.status_code == 200, repeat.text
 
         async with _session_ctx() as session:
@@ -245,12 +246,43 @@ async def test_toggle_off_cascade_deletes_history_rows():
         assert len(await _fetch_history(asset.id)) == 1
         asset_id = asset.id
 
-        # Toggle off — the asset and its history row are both removed.
-        repeat = client.post(f"/items/{tech_id}/pass")
+        # Toggle off — the rendered ✓ Pass button posts ?active=1, so the asset
+        # and its history row are both removed.
+        repeat = client.post(f"/items/{tech_id}/pass?active=1")
         assert repeat.status_code == 200, repeat.text
 
         assert await _fetch_asset(tech_id) is None
         assert await _fetch_history(asset_id) == []
+    finally:
+        await _cleanup(tech_id)
+
+
+@pytest.mark.asyncio
+async def test_stale_active_click_does_not_recreate_asset():
+    """Regression (finding 2): a stale service-worker-cached feed card can show
+    a ✓ Keep button after the decision was cleared elsewhere. Clicking that
+    stale button (which posts ?active=1) must NOT re-create the asset — the
+    click's intent was to clear, and the desired end state already holds."""
+    tech_id = await _insert_tech_item()
+    try:
+        client = _client_with_real_db()
+
+        # User keeps the item, then it is cleared out-of-band (another tab /
+        # toggle-off) so the DB row is gone while a cached card still shows ✓.
+        assert client.post(f"/items/{tech_id}/keep").status_code == 200
+        assert await _fetch_asset(tech_id) is not None
+        async with _session_ctx() as session:
+            await session.execute(
+                delete(UserAsset).where(UserAsset.tech_id == tech_id)
+            )
+            await session.commit()
+        assert await _fetch_asset(tech_id) is None
+
+        # Clicking the stale ✓ Keep button (active=1) must be an idempotent
+        # clear, not a blind toggle that re-creates the Keep decision.
+        stale = client.post(f"/items/{tech_id}/keep?active=1")
+        assert stale.status_code == 200, stale.text
+        assert await _fetch_asset(tech_id) is None
     finally:
         await _cleanup(tech_id)
 

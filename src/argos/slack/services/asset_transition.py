@@ -81,26 +81,37 @@ async def toggle_asset(
     session: AsyncSession,
     tech_id: uuid.UUID,
     target_status: AssetStatus,
+    *,
+    currently_active: bool,
 ) -> ToggleOutcome:
-    """Toggle a feed triage decision on ``tech_id``.
+    """Apply a feed triage click on ``tech_id``, idempotent against stale cards.
 
-    - No asset, or an asset in a *different* status → set ``target_status``
-      (delegates to :func:`transition_asset`, which creates or switches and logs
-      the transition). Returns ``SET``.
-    - Asset already in ``target_status`` → clear the decision by deleting the
-      UserAsset, returning the item to untriaged (its ``track_history`` rows
-      cascade). Returns ``REMOVED``.
+    ``currently_active`` is the state the *client rendered* — whether the pressed
+    button already showed ``✓`` (i.e. the decision was ``target_status`` when the
+    card was drawn). The action is derived from what the user **saw**, not the
+    live DB row, so a stale card served from the service-worker cache (``/feed``
+    is stale-while-revalidate) cannot invert the user's intent:
 
-    Unlike ``transition_asset`` this never NOOPs: pressing the already-active
-    button is a deliberate un-toggle.
+    - ``currently_active=True`` → the user is *clearing* an active decision.
+      Delete the asset iff it is still in ``target_status``; if the row is
+      already gone (stale card, or cleared in another tab) the desired end state
+      already holds, so this is a harmless no-op. Returns ``REMOVED``.
+    - ``currently_active=False`` → the user is *setting* the decision. Delegates
+      to :func:`transition_asset` (create or switch, logging the transition).
+      Returns ``SET``.
+
+    The guarded delete (only when the live status matches ``target_status``)
+    means a stale ``✓ Keep`` press never wipes a *different* decision the user
+    has since made — e.g. an ``Archived`` row set from another tab.
     """
-    existing = (
-        await session.execute(
-            select(UserAsset).where(UserAsset.tech_id == tech_id)
-        )
-    ).scalar_one_or_none()
-    if existing is not None and existing.status == target_status:
-        await session.delete(existing)
+    if currently_active:
+        existing = (
+            await session.execute(
+                select(UserAsset).where(UserAsset.tech_id == tech_id)
+            )
+        ).scalar_one_or_none()
+        if existing is not None and existing.status == target_status:
+            await session.delete(existing)
         return ToggleOutcome.REMOVED
     await transition_asset(session, tech_id, target_status)
     return ToggleOutcome.SET

@@ -38,7 +38,7 @@ def test_keep_returns_updated_feed_card_partial(monkeypatch):
     item_id = uuid.uuid4()
     captured: dict = {}
 
-    async def _fake_toggle(session, tech_id, target_status):
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
         captured["tech_id"] = tech_id
         captured["target_status"] = target_status
         return ToggleOutcome.SET
@@ -76,7 +76,7 @@ def test_keep_on_featured_card_re_renders_as_hero(monkeypatch):
     a standard grid cell (ARG-175)."""
     item_id = uuid.uuid4()
 
-    async def _fake_toggle(session, tech_id, target_status):
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
         return ToggleOutcome.SET
 
     async def _fake_lookup(session, tech_id):
@@ -103,7 +103,7 @@ def test_pass_returns_updated_feed_card_partial(monkeypatch):
     item_id = uuid.uuid4()
     captured: dict = {}
 
-    async def _fake_toggle(session, tech_id, target_status):
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
         captured["target_status"] = target_status
         return ToggleOutcome.SET
 
@@ -129,7 +129,7 @@ def test_pass_returns_updated_feed_card_partial(monkeypatch):
 def test_keep_unknown_item_returns_404_fragment(monkeypatch):
     item_id = uuid.uuid4()
 
-    async def _fake_toggle(session, tech_id, target_status):
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
         # The lookup miss short-circuits to 404 before any toggle runs.
         raise AssertionError("should not be called")
 
@@ -161,7 +161,7 @@ def test_keep_again_toggles_off_returns_untriaged_card(monkeypatch):
     not the old 409 "already in that state"."""
     item_id = uuid.uuid4()
 
-    async def _fake_toggle(session, tech_id, target_status):
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
         return ToggleOutcome.REMOVED
 
     async def _fake_lookup(session, tech_id):
@@ -184,6 +184,38 @@ def test_keep_again_toggles_off_returns_untriaged_card(monkeypatch):
     assert "✓ Keep" not in resp.text
     assert "is-active" not in resp.text
     assert "<!DOCTYPE html>" not in resp.text
+
+
+def test_active_query_param_threads_currently_active(monkeypatch):
+    """``?active=1`` (the button was rendered pressed) reaches ``toggle_asset``
+    as ``currently_active=True`` so the click is treated as a *clear*, not a
+    blind re-toggle — the guard against stale service-worker-cached cards."""
+    item_id = uuid.uuid4()
+    captured: dict = {}
+
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
+        captured["currently_active"] = currently_active
+        return ToggleOutcome.REMOVED
+
+    async def _fake_lookup(session, tech_id):
+        return {"id": tech_id, "title": "Cleared", "status": None,
+                "category": None, "image_url": None, "summary": None,
+                "source_url": "https://x"}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.toggle_asset": _fake_toggle,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+        },
+    )
+    resp = client.post(f"/items/{item_id}/keep?active=1")
+    assert resp.status_code == 200
+    assert captured["currently_active"] is True
+
+    # Absent param → inactive button → set intent.
+    client.post(f"/items/{item_id}/keep")
+    assert captured["currently_active"] is False
 
 
 def test_untrack_returns_empty_body_to_remove_card(monkeypatch):

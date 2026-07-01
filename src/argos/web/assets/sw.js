@@ -23,8 +23,11 @@
  *     row (argos.css). Bumped so v6 clients pick up the aligned grid.
  * v8: drop the 3-line headline reservation (kept the clamp cap) so the summary
  *     hugs the title with no gap; bottom-pinned buttons still align (argos.css).
+ * v9: toggle buttons carry their pressed state (?active=1) so a stale cached
+ *     /feed card can't invert a Keep/Pass (_feed_card.html). Bumped so v8
+ *     clients replace the cached shell whose buttons lack the param.
  */
-const CACHE_VERSION = 'argos-v8';
+const CACHE_VERSION = 'argos-v9';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.

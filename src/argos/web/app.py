@@ -44,7 +44,9 @@ async def transition_asset(session, tech_id: uuid.UUID, target_status):
     return await _real_transition_asset(session, tech_id, target_status)
 
 
-async def toggle_asset(session, tech_id: uuid.UUID, target_status):
+async def toggle_asset(
+    session, tech_id: uuid.UUID, target_status, *, currently_active: bool = False
+):
     """Lazy shim — delegates to argos.slack.services.asset_transition.toggle_asset.
 
     Kept at module level (like ``transition_asset``) so tests can monkeypatch
@@ -52,7 +54,9 @@ async def toggle_asset(session, tech_id: uuid.UUID, target_status):
     """
     from argos.slack.services.asset_transition import toggle_asset as _real_toggle_asset
 
-    return await _real_toggle_asset(session, tech_id, target_status)
+    return await _real_toggle_asset(
+        session, tech_id, target_status, currently_active=currently_active
+    )
 _TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 _STATIC_DIR = _PACKAGE_DIR / "static"
 _ASSETS_DIR = _PACKAGE_DIR / "assets"
@@ -404,7 +408,13 @@ def build_web_app() -> FastAPI:
         )
 
     async def _toggle_item(
-        request: Request, item_id: str, target_status, session, *, is_featured: bool
+        request: Request,
+        item_id: str,
+        target_status,
+        session,
+        *,
+        is_featured: bool,
+        currently_active: bool = False,
     ) -> HTMLResponse:
         try:
             parsed_id = uuid.UUID(item_id)
@@ -415,9 +425,13 @@ def build_web_app() -> FastAPI:
         if item is None:
             return _error_fragment(request, 404, "not found")
 
-        # Toggle semantics: pressing the already-active button clears the
-        # decision (untriaged) instead of erroring; otherwise it sets/switches.
-        await toggle_asset(session, parsed_id, target_status)
+        # Toggle semantics: ``currently_active`` is the state the *client* drew
+        # (the button showed ✓). Deriving set-vs-clear from what the user saw —
+        # not the live DB row — keeps a stale service-worker-cached card from
+        # inverting the action (see toggle_asset docstring).
+        await toggle_asset(
+            session, parsed_id, target_status, currently_active=currently_active
+        )
 
         # ``_get_session`` only opens and closes the AsyncSession; it does not
         # auto-commit. Without this explicit commit the change is rolled back
@@ -437,12 +451,18 @@ def build_web_app() -> FastAPI:
         request: Request,
         item_id: str,
         featured: bool = False,
+        active: bool = False,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
 
         return await _toggle_item(
-            request, item_id, AssetStatus.KEEP, session, is_featured=featured
+            request,
+            item_id,
+            AssetStatus.KEEP,
+            session,
+            is_featured=featured,
+            currently_active=active,
         )
 
     @app.post("/items/{item_id}/pass", response_class=HTMLResponse)
@@ -450,12 +470,18 @@ def build_web_app() -> FastAPI:
         request: Request,
         item_id: str,
         featured: bool = False,
+        active: bool = False,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
 
         return await _toggle_item(
-            request, item_id, AssetStatus.ARCHIVED, session, is_featured=featured
+            request,
+            item_id,
+            AssetStatus.ARCHIVED,
+            session,
+            is_featured=featured,
+            currently_active=active,
         )
 
     @app.post("/assets/{user_asset_id}/untrack", response_class=HTMLResponse)
