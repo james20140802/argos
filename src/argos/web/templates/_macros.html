@@ -1,0 +1,38 @@
+{# Shared cover renderer for list cards (feed + portfolio).
+
+   Single source of truth for the three-way image branch so the favicon
+   chip / og-image / glyph fallback never drifts between surfaces. Before
+   this macro the portfolio template lacked the favicon branch and stretched
+   a 32px /favicon.ico across the full cover, rendering it blurry.
+
+   Args:
+     image_url  — tech_items.image_url (attacker-controllable; crawled).
+     category   — CategoryType enum or None (tints the fallback gradient).
+     href       — in-app reader URL for the card tap target.
+     source_url — used only to label the favicon chip with its domain.
+#}
+{% macro cover(image_url, category, href, source_url) %}
+{%- set cat = (category.value if category else 'none')|lower -%}
+{%- if image_url and image_url | is_favicon -%}
+<a class="cover cover--favicon cover--{{ cat }}" href="{{ href }}">
+  <span class="scrim" aria-hidden="true"></span>
+  {# image_url is attacker-controllable (crawled): escaped <img src> only, never CSS url(). #}
+  <span class="favicon-chip">
+    <img class="favicon-chip__img" src="{{ image_url }}" alt="" loading="lazy" width="32" height="32">
+    <span class="favicon-chip__domain">{{ source_url | domain }}</span>
+  </span>
+</a>
+{%- elif image_url -%}
+<a class="cover" href="{{ href }}">
+  {# og:image is attacker-controllable (crawled): render via an HTML-escaped
+     <img src> rather than inline CSS url() to avoid CSS-context injection. #}
+  <img class="cover__img" src="{{ image_url }}" alt="" loading="lazy">
+  <span class="scrim" aria-hidden="true"></span>
+</a>
+{%- else -%}
+<a class="cover cover--fallback cover--{{ cat }}" href="{{ href }}">
+  <span class="scrim" aria-hidden="true"></span>
+  <span class="cover__glyph" aria-hidden="true">◎</span>
+</a>
+{%- endif -%}
+{% endmacro %}

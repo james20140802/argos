@@ -52,6 +52,7 @@ class UserAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         "TrackHistory",
         back_populates="user_asset",
         lazy="selectin",
+        cascade="all, delete-orphan",
         passive_deletes=True,
     )
 

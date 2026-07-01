@@ -12,8 +12,22 @@
  * briefly during activation.
  *
  * v2: ARG-171 magazine-grid CSS + /feed shell changes.
+ * v3: observation-log redesign — editorial layout, light/dark theming, left
+ *     rail nav (argos.css rewrite) + new img-fallback.js. Bumped so clients on
+ *     the v2 cache actually receive the new CSS/JS instead of the stale shell.
+ * v4: signal ticker + ultra-wide layout (argos.css). Bumped so v3 clients pick
+ *     up the widened grid / ticker CSS instead of the cached v3 stylesheet.
+ * v5: active (pressed) Keep/Pass button state (argos.css + _feed_card.html).
+ * v6: toggle-off Keep/Pass + emerald/terracotta active colours (argos.css).
+ * v7: equal-height cards — 3-line headline reservation + bottom-pinned action
+ *     row (argos.css). Bumped so v6 clients pick up the aligned grid.
+ * v8: drop the 3-line headline reservation (kept the clamp cap) so the summary
+ *     hugs the title with no gap; bottom-pinned buttons still align (argos.css).
+ * v9: toggle buttons carry their pressed state (?active=1) so a stale cached
+ *     /feed card can't invert a Keep/Pass (_feed_card.html). Bumped so v8
+ *     clients replace the cached shell whose buttons lack the param.
  */
-const CACHE_VERSION = 'argos-v2';
+const CACHE_VERSION = 'argos-v9';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
@@ -25,6 +39,7 @@ const APP_SHELL = [
   '/static/img/icons/icon-192.png',
   '/static/img/icons/icon-512.png',
   '/static/js/htmx.min.js',
+  '/static/js/img-fallback.js',
 ];
 
 self.addEventListener('install', (event) => {

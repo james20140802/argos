@@ -69,9 +69,13 @@ def app_with_child_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     async def _empty_portfolio(session, *, category=None, sort="recency"):
         return PortfolioView(active=[], quiet=[], category=None, sort="recency")
 
+    async def _empty_activity(session, limit=12):
+        return []
+
     app.dependency_overrides[_get_session] = _fake_session
     monkeypatch.setattr("argos.web.app.fetch_feed", _empty_feed)
     monkeypatch.setattr("argos.web.app.fetch_portfolio", _empty_portfolio)
+    monkeypatch.setattr("argos.web.app.fetch_activity", _empty_activity)
 
     app.get("/__test_child__", response_class=HTMLResponse)(_render_child)
 
@@ -136,9 +140,11 @@ def test_active_tab_marked_aria_current(
 ) -> None:
     """The tab matching the current path carries aria-current; the other doesn't."""
     html = app_with_child_template.get(path).text
-    # Exactly one tab is marked current.
-    assert html.count('aria-current="page"') == 1
-    # The active tab's anchor carries it; the inactive one does not.
+    # The active tab is marked current in BOTH responsive navs — the desktop
+    # left rail and the mobile bottom tabbar — which both ship in the markup and
+    # are shown/hidden per breakpoint (only the visible one is in the a11y tree).
+    assert html.count('aria-current="page"') == 2
+    # The active href carries it; the inactive one never does (in either nav).
     assert re.search(rf'href="{re.escape(active_href)}"[^>]*aria-current="page"', html)
     assert not re.search(
         rf'href="{re.escape(inactive_href)}"[^>]*aria-current="page"', html

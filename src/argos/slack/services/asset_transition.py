@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,3 +70,52 @@ async def transition_asset(
         )
     )
     return TransitionOutcome.TRANSITIONED
+
+
+class ToggleOutcome(str, enum.Enum):
+    SET = "set"          # created, or switched into target_status
+    REMOVED = "removed"  # toggled off — the triage decision was cleared
+
+
+async def toggle_asset(
+    session: AsyncSession,
+    tech_id: uuid.UUID,
+    target_status: AssetStatus,
+    *,
+    currently_active: bool,
+) -> ToggleOutcome:
+    """Apply a feed triage click on ``tech_id``, idempotent against stale cards.
+
+    ``currently_active`` is the state the *client rendered* — whether the pressed
+    button already showed ``✓`` (i.e. the decision was ``target_status`` when the
+    card was drawn). The action is derived from what the user **saw**, not the
+    live DB row, so a stale card served from the service-worker cache (``/feed``
+    is stale-while-revalidate) cannot invert the user's intent:
+
+    - ``currently_active=True`` → the user is *clearing* an active decision.
+      Delete the asset iff it is still in ``target_status``; if the row is
+      already gone (stale card, or cleared in another tab) the desired end state
+      already holds, so this is a harmless no-op. Returns ``REMOVED``.
+    - ``currently_active=False`` → the user is *setting* the decision. Delegates
+      to :func:`transition_asset` (create or switch, logging the transition).
+      Returns ``SET``.
+
+    The clear is a single **conditional** ``DELETE ... WHERE tech_id = :id AND
+    status = :target``: it deletes only while the row is *still* in
+    ``target_status``, so a stale ``✓ Keep`` press never wipes a *different*
+    decision the user has since made — e.g. an ``Archived`` row set from another
+    tab. A read-then-``session.delete`` would race (the status read and the
+    delete-by-PK are not atomic); the conditional statement is evaluated against
+    the committed row in one shot. The DB-level ``ON DELETE CASCADE`` on
+    ``track_history.user_asset_id`` removes the asset's history rows.
+    """
+    if currently_active:
+        await session.execute(
+            delete(UserAsset).where(
+                UserAsset.tech_id == tech_id,
+                UserAsset.status == target_status,
+            )
+        )
+        return ToggleOutcome.REMOVED
+    await transition_asset(session, tech_id, target_status)
+    return ToggleOutcome.SET

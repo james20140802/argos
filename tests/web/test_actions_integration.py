@@ -191,9 +191,9 @@ async def test_keep_then_pass_upserts_user_asset_and_writes_history():
 
 
 @pytest.mark.asyncio
-async def test_pass_first_then_repeat_pass_is_noop_no_extra_history():
-    """First Pass creates an Archived row (no history); a duplicate Pass
-    is a NOOP — same row, no new history."""
+async def test_pass_first_then_repeat_pass_toggles_off():
+    """First Pass creates an Archived row (no history); pressing Pass again
+    toggles it OFF — the user_asset is deleted and the item is untriaged."""
     tech_id = await _insert_tech_item()
     try:
         client = _client_with_real_db()
@@ -206,19 +206,115 @@ async def test_pass_first_then_repeat_pass_is_noop_no_extra_history():
         assert asset.status == AssetStatus.ARCHIVED
         assert (await _fetch_history(asset.id)) == []
 
-        # Repeat — handler returns a 409 fragment (NOOP) and must not
-        # add a history row or create a duplicate user_asset.
-        repeat = client.post(f"/items/{tech_id}/pass")
-        assert repeat.status_code == 409, repeat.text
+        # Repeat — toggle-off. The rendered ✓ Pass button carries ?active=1, so
+        # the click clears the decision; the route returns 200 (the re-rendered
+        # untriaged card) and the user_asset is removed entirely.
+        repeat = client.post(f"/items/{tech_id}/pass?active=1")
+        assert repeat.status_code == 200, repeat.text
 
         async with _session_ctx() as session:
-            asset_count = (
+            remaining = (
                 await session.execute(
                     select(UserAsset).where(UserAsset.tech_id == tech_id)
                 )
             ).scalars().all()
-        assert len(asset_count) == 1
-        assert (await _fetch_history(asset.id)) == []
+        assert remaining == []
+    finally:
+        await _cleanup(tech_id)
+
+
+@pytest.mark.asyncio
+async def test_toggle_off_cascade_deletes_history_rows():
+    """Regression: toggling off an asset that already has track_history rows
+    must succeed (the FK cascades), not 500.
+
+    Keep → Pass writes one Keep→Archived history row; pressing Pass again then
+    toggles the (Archived) asset off. Deleting the user_asset must cascade the
+    history row instead of the ORM nulling its NOT NULL user_asset_id — the bug
+    that surfaced only for previously-transitioned items."""
+    tech_id = await _insert_tech_item()
+    try:
+        client = _client_with_real_db()
+
+        assert client.post(f"/items/{tech_id}/keep").status_code == 200
+        pass_resp = client.post(f"/items/{tech_id}/pass")
+        assert pass_resp.status_code == 200, pass_resp.text
+
+        asset = await _fetch_asset(tech_id)
+        assert asset is not None and asset.status == AssetStatus.ARCHIVED
+        # A transition happened, so there is a history row to cascade.
+        assert len(await _fetch_history(asset.id)) == 1
+        asset_id = asset.id
+
+        # Toggle off — the rendered ✓ Pass button posts ?active=1, so the asset
+        # and its history row are both removed.
+        repeat = client.post(f"/items/{tech_id}/pass?active=1")
+        assert repeat.status_code == 200, repeat.text
+
+        assert await _fetch_asset(tech_id) is None
+        assert await _fetch_history(asset_id) == []
+    finally:
+        await _cleanup(tech_id)
+
+
+@pytest.mark.asyncio
+async def test_stale_active_click_does_not_recreate_asset():
+    """Regression (finding 2): a stale service-worker-cached feed card can show
+    a ✓ Keep button after the decision was cleared elsewhere. Clicking that
+    stale button (which posts ?active=1) must NOT re-create the asset — the
+    click's intent was to clear, and the desired end state already holds."""
+    tech_id = await _insert_tech_item()
+    try:
+        client = _client_with_real_db()
+
+        # User keeps the item, then it is cleared out-of-band (another tab /
+        # toggle-off) so the DB row is gone while a cached card still shows ✓.
+        assert client.post(f"/items/{tech_id}/keep").status_code == 200
+        assert await _fetch_asset(tech_id) is not None
+        async with _session_ctx() as session:
+            await session.execute(
+                delete(UserAsset).where(UserAsset.tech_id == tech_id)
+            )
+            await session.commit()
+        assert await _fetch_asset(tech_id) is None
+
+        # Clicking the stale ✓ Keep button (active=1) must be an idempotent
+        # clear, not a blind toggle that re-creates the Keep decision.
+        stale = client.post(f"/items/{tech_id}/keep?active=1")
+        assert stale.status_code == 200, stale.text
+        assert await _fetch_asset(tech_id) is None
+    finally:
+        await _cleanup(tech_id)
+
+
+@pytest.mark.asyncio
+async def test_stale_active_clear_leaves_different_status_untouched():
+    """Regression (finding A): a stale ✓ Keep clear must delete only while the
+    row is *still* Keep. If another tab switched the asset to Archived in the
+    meantime, the conditional DELETE's status predicate spares it — a blind
+    delete-by-PK would have wiped the Archived decision the user never acted on."""
+    tech_id = await _insert_tech_item()
+    try:
+        client = _client_with_real_db()
+
+        # User kept it; then another tab switched the SAME asset to Archived.
+        assert client.post(f"/items/{tech_id}/keep").status_code == 200
+        async with _session_ctx() as session:
+            await session.execute(
+                UserAsset.__table__.update()
+                .where(UserAsset.tech_id == tech_id)
+                .values(status=AssetStatus.ARCHIVED)
+            )
+            await session.commit()
+
+        # The stale ✓ Keep card posts keep?active=1 → conditional DELETE WHERE
+        # status = Keep. The live row is Archived, so nothing is deleted.
+        stale = client.post(f"/items/{tech_id}/keep?active=1")
+        assert stale.status_code == 200, stale.text
+
+        after = await _fetch_asset(tech_id)
+        assert after is not None
+        assert after.status == AssetStatus.ARCHIVED
     finally:
         await _cleanup(tech_id)
 

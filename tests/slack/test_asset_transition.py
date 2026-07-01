@@ -8,7 +8,9 @@ import pytest
 from argos.models.track_history import TrackHistory
 from argos.models.user_asset import AssetStatus, UserAsset
 from argos.slack.services.asset_transition import (
+    ToggleOutcome,
     TransitionOutcome,
+    toggle_asset,
     transition_asset,
 )
 
@@ -107,3 +109,75 @@ async def test_transition_archived_to_keep_logs_history(tech_id):
     assert len(history_rows) == 1
     assert history_rows[0].changed_from == AssetStatus.ARCHIVED.value
     assert history_rows[0].changed_to == AssetStatus.KEEP.value
+
+
+# --- toggle_asset (feed triage toggle) ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_toggle_clear_issues_conditional_delete(tech_id):
+    """currently_active=True issues a single conditional
+    ``DELETE ... WHERE tech_id = :id AND status = :target`` — never an ORM
+    delete-by-PK. The status predicate is what keeps a concurrent switch from
+    being clobbered (verified end-to-end in the DB integration tests)."""
+    from sqlalchemy import Delete
+
+    session = AsyncMock()
+    session.execute = AsyncMock()
+    session.delete = AsyncMock()
+
+    outcome = await toggle_asset(
+        session, tech_id, AssetStatus.KEEP, currently_active=True
+    )
+
+    assert outcome is ToggleOutcome.REMOVED
+    # No ORM delete-by-PK (that path races); a Core conditional DELETE instead.
+    session.delete.assert_not_called()
+    session.execute.assert_awaited_once()
+    stmt = session.execute.await_args.args[0]
+    assert isinstance(stmt, Delete)
+    sql = str(stmt).lower()
+    assert "delete from user_assets" in sql
+    assert "status" in sql and "tech_id" in sql
+
+
+@pytest.mark.asyncio
+async def test_toggle_set_creates_when_inactive(tech_id):
+    """currently_active=False → set (delegates straight to transition_asset)."""
+    insert_res = MagicMock()
+    insert_res.scalar_one_or_none.return_value = uuid.uuid4()  # RETURNING id → CREATED
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=insert_res)
+    session.delete = AsyncMock()
+
+    outcome = await toggle_asset(
+        session, tech_id, AssetStatus.KEEP, currently_active=False
+    )
+
+    assert outcome is ToggleOutcome.SET
+    session.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_toggle_set_switches_when_inactive_and_different_status(tech_id):
+    """Pressing an inactive Keep while the DB holds Archived switches to Keep
+    and logs the transition (not a delete)."""
+    existing = UserAsset(id=uuid.uuid4(), tech_id=tech_id, status=AssetStatus.ARCHIVED)
+    insert_res = MagicMock()
+    insert_res.scalar_one_or_none.return_value = None  # exists → transition path
+    lock_res = MagicMock()
+    lock_res.scalar_one.return_value = existing
+    added: list = []
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[insert_res, lock_res])
+    session.add = lambda obj: added.append(obj)
+    session.delete = AsyncMock()
+
+    outcome = await toggle_asset(
+        session, tech_id, AssetStatus.KEEP, currently_active=False
+    )
+
+    assert outcome is ToggleOutcome.SET
+    assert existing.status is AssetStatus.KEEP
+    session.delete.assert_not_called()
+    assert any(isinstance(obj, TrackHistory) for obj in added)

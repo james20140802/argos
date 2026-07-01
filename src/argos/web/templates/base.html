@@ -3,7 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0b0d12">
+  {# Follow the OS appearance: dark Midnight Observatory by default, a light
+     paper theme under prefers-color-scheme: light. The matching theme-color
+     keeps the iOS status bar / Android chrome in step with the rendered bg. #}
+  <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#fbfbfd" media="(prefers-color-scheme: light)">
   <title>{% block title %}ARGOS{% endblock %}</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="192x192" href="/static/img/icons/icon-192.png">
@@ -24,6 +28,30 @@
   <div class="sky" aria-hidden="true"></div>
   <div class="grain" aria-hidden="true"></div>
 
+  {# Desktop navigation — a fixed left rail (≥768px). On mobile it is hidden in
+     favour of the top masthead + bottom tabbar below, so the two breakpoints
+     get genuinely different chrome instead of the same bar at every width. #}
+  <aside class="rail">
+    <a class="rail__brand" href="/feed">
+      <img class="mark" src="/static/img/logo.svg" alt="" width="28" height="28">
+      <span class="rail__word">
+        <span class="wordmark">ARGOS</span>
+        <span class="kicker">Observatory</span>
+      </span>
+    </a>
+    <nav class="rail__nav" aria-label="기본 내비게이션">
+      <a class="rail__tab" href="/feed"
+         {% if request.url.path == '/feed' or request.url.path.startswith('/feed/') %}aria-current="page"{% endif %}>
+        <span class="ic" aria-hidden="true">◎</span>관측 피드
+      </a>
+      <a class="rail__tab" href="/portfolio"
+         {% if request.url.path == '/portfolio' or request.url.path.startswith('/portfolio/') %}aria-current="page"{% endif %}>
+        <span class="ic" aria-hidden="true">✦</span>포트폴리오
+      </a>
+    </nav>
+  </aside>
+
+  {# Mobile top branding (<768px). #}
   <header class="masthead">
     <img class="mark" src="/static/img/logo.svg" alt="" width="30" height="30">
     <div>
@@ -36,6 +64,7 @@
     {% block content %}{% endblock %}
   </main>
 
+  {# Mobile bottom tab bar (<768px). #}
   <nav class="tabbar" aria-label="기본 내비게이션">
     <a class="tab" href="/feed"
        {% if request.url.path == '/feed' or request.url.path.startswith('/feed/') %}aria-current="page"{% endif %}>
@@ -49,5 +78,6 @@
 
   <script src="/static/js/htmx.min.js" defer></script>
   <script src="/static/js/sw-register.js" defer></script>
+  <script src="/static/js/img-fallback.js" defer></script>
 </body>
 </html>

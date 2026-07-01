@@ -23,6 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from argos.web.services.activity import fetch_activity
 from argos.web.services.detail import fetch_item_detail
 from argos.web.services.feed import fetch_feed
 from argos.web.services.portfolio import fetch_portfolio
@@ -41,6 +42,21 @@ async def transition_asset(session, tech_id: uuid.UUID, target_status):
     )
 
     return await _real_transition_asset(session, tech_id, target_status)
+
+
+async def toggle_asset(
+    session, tech_id: uuid.UUID, target_status, *, currently_active: bool = False
+):
+    """Lazy shim — delegates to argos.slack.services.asset_transition.toggle_asset.
+
+    Kept at module level (like ``transition_asset``) so tests can monkeypatch
+    ``argos.web.app.toggle_asset`` without an eager ``argos.database`` import.
+    """
+    from argos.slack.services.asset_transition import toggle_asset as _real_toggle_asset
+
+    return await _real_toggle_asset(
+        session, tech_id, target_status, currently_active=currently_active
+    )
 _TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 _STATIC_DIR = _PACKAGE_DIR / "static"
 _ASSETS_DIR = _PACKAGE_DIR / "assets"
@@ -152,6 +168,53 @@ def build_web_app() -> FastAPI:
 
     app.state.templates.env.filters["domain"] = _domain_of
 
+    def _is_favicon(url: str | None) -> bool:
+        """Render-time helper: True when a cover URL is a bare favicon.
+
+        Shares ``argos.crawler._og_image.is_favicon_url`` with the backfill so a
+        cache-busting query string (``/favicon.ico?v=2``) still gets the
+        favicon-chip branch instead of being stretched as a full cover image.
+
+        The import stays lazy on purpose: ``from argos.crawler._og_image import
+        …`` executes ``argos.crawler.__init__``, which transitively pulls in
+        ``argos.database``. Hoisting it to registration time would break the
+        ``build_web_app`` import-graph isolation invariant
+        (``test_build_web_app_does_not_import_argos_database``). Python's import
+        cache makes the per-render cost negligible.
+        """
+        from argos.crawler._og_image import is_favicon_url
+
+        return is_favicon_url(url)
+
+    app.state.templates.env.filters["is_favicon"] = _is_favicon
+
+    def _reltime(value) -> str:
+        """Render-time helper: a compact Korean relative time for the ticker.
+
+        Display-only; ``datetime.now`` is acceptable here (not on a code path
+        that needs deterministic output for tests). Falls back to an ISO date
+        for anything older than a week or unparseable.
+        """
+        from datetime import datetime, timezone
+
+        if not isinstance(value, datetime):
+            return ""
+        when = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - when
+        secs = delta.total_seconds()
+        # Negative deltas (clock skew / future timestamps) fall here too.
+        if secs < 60:
+            return "방금"
+        if secs < 3600:
+            return f"{int(secs // 60)}분 전"
+        if secs < 86400:
+            return f"{int(secs // 3600)}시간 전"
+        if secs < 604800:
+            return f"{int(secs // 86400)}일 전"
+        return when.strftime("%Y-%m-%d")
+
+    app.state.templates.env.filters["reltime"] = _reltime
+
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
@@ -227,6 +290,7 @@ def build_web_app() -> FastAPI:
         session,
         *,
         first_page: bool,
+        include_activity: bool = False,
     ) -> HTMLResponse:
         normalized = _normalize_category(category)
         try:
@@ -235,6 +299,9 @@ def build_web_app() -> FastAPI:
             # ``cursor`` is user-controlled query state; a stale/corrupted
             # load-more URL must not 500. Translate it to a controlled 400.
             raise HTTPException(status_code=400, detail="invalid feed cursor") from exc
+        # The signal ticker is full-page chrome (feed.html), never part of the
+        # HTMX "더 보기" fragment — so it's only fetched for the initial render.
+        activity = await fetch_activity(session) if include_activity else []
         return request.app.state.templates.TemplateResponse(
             request,
             template_name,
@@ -246,6 +313,7 @@ def build_web_app() -> FastAPI:
                 # "더 보기" fragment (GET /feed/items) must never re-emit a hero
                 # mid-scroll, so it renders with first_page=False.
                 "first_page": first_page,
+                "activity": activity,
             },
         )
 
@@ -262,6 +330,7 @@ def build_web_app() -> FastAPI:
         return await _render_feed(
             request, "feed.html", category, cursor, session,
             first_page=cursor is None,
+            include_activity=True,
         )
 
     @app.get("/feed/items", response_class=HTMLResponse)
@@ -357,11 +426,15 @@ def build_web_app() -> FastAPI:
             {"item": SimpleNamespace(**item), "is_featured": is_featured},
         )
 
-    async def _transition_item(
-        request: Request, item_id: str, target_status, session, *, is_featured: bool
+    async def _toggle_item(
+        request: Request,
+        item_id: str,
+        target_status,
+        session,
+        *,
+        is_featured: bool,
+        currently_active: bool = False,
     ) -> HTMLResponse:
-        from argos.slack.services.asset_transition import TransitionOutcome
-
         try:
             parsed_id = uuid.UUID(item_id)
         except ValueError:
@@ -371,18 +444,27 @@ def build_web_app() -> FastAPI:
         if item is None:
             return _error_fragment(request, 404, "not found")
 
-        outcome = await transition_asset(session, parsed_id, target_status)
-        if outcome is TransitionOutcome.NOOP:
-            return _error_fragment(request, 409, "already in that state")
+        # Toggle semantics: ``currently_active`` is the state the *client* drew
+        # (the button showed ✓). Deriving set-vs-clear from what the user saw —
+        # not the live DB row — keeps a stale service-worker-cached card from
+        # inverting the action (see toggle_asset docstring).
+        await toggle_asset(
+            session, parsed_id, target_status, currently_active=currently_active
+        )
 
         # ``_get_session`` only opens and closes the AsyncSession; it does not
-        # auto-commit. Without this explicit commit the transition is rolled
-        # back when the request dependency closes, so a reload would still see
-        # the old status. The Slack handlers commit after the same service call.
+        # auto-commit. Without this explicit commit the change is rolled back
+        # when the request dependency closes, so a reload would still see the
+        # old status. The Slack handlers commit after the same service call.
         await session.commit()
 
-        # Reload after transition so the partial sees fresh status.
+        # Reload so the re-rendered card reflects the fresh status (or its
+        # absence, after a toggle-off). A None here means the TechItem row was
+        # deleted between the guard above and this reload — return the 404
+        # fragment rather than let SimpleNamespace(**None) raise a 500.
         item = await _load_feed_card_context(session, parsed_id)
+        if item is None:
+            return _error_fragment(request, 404, "not found")
         return _action_response(
             request, item, "_feed_card.html", is_featured=is_featured
         )
@@ -392,12 +474,18 @@ def build_web_app() -> FastAPI:
         request: Request,
         item_id: str,
         featured: bool = False,
+        active: bool = False,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
 
-        return await _transition_item(
-            request, item_id, AssetStatus.KEEP, session, is_featured=featured
+        return await _toggle_item(
+            request,
+            item_id,
+            AssetStatus.KEEP,
+            session,
+            is_featured=featured,
+            currently_active=active,
         )
 
     @app.post("/items/{item_id}/pass", response_class=HTMLResponse)
@@ -405,12 +493,18 @@ def build_web_app() -> FastAPI:
         request: Request,
         item_id: str,
         featured: bool = False,
+        active: bool = False,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
 
-        return await _transition_item(
-            request, item_id, AssetStatus.ARCHIVED, session, is_featured=featured
+        return await _toggle_item(
+            request,
+            item_id,
+            AssetStatus.ARCHIVED,
+            session,
+            is_featured=featured,
+            currently_active=active,
         )
 
     @app.post("/assets/{user_asset_id}/untrack", response_class=HTMLResponse)
@@ -428,19 +522,24 @@ def build_web_app() -> FastAPI:
             return _error_fragment(request, 404, "not found")
 
         tech_id = await _resolve_user_asset_tech_id(session, parsed_id)
-        if tech_id is None:
-            return _error_fragment(request, 404, "not found")
+        if tech_id is not None:
+            outcome = await transition_asset(session, tech_id, AssetStatus.ARCHIVED)
+            if outcome is not TransitionOutcome.NOOP:
+                # Both a real Keep→Archived transition (TRANSITIONED) and a
+                # freshly-inserted Archived row (CREATED — the UserAsset was
+                # concurrently cleared between resolve and here) mutate state and
+                # must be persisted; the request session does not auto-commit
+                # (see keep/pass above). Only NOOP (already Archived) changed
+                # nothing, so it needs no commit.
+                await session.commit()
 
-        outcome = await transition_asset(session, tech_id, AssetStatus.ARCHIVED)
-        if outcome is TransitionOutcome.NOOP:
-            return _error_fragment(request, 409, "already archived")
-
-        # See keep/pass above: the request session does not auto-commit.
-        await session.commit()
-
-        # Untracking archives the asset, so it drops out of the Keep-only
-        # portfolio. Return an empty body so the HTMX ``outerHTML`` swap removes
-        # the card from the page rather than leaving a stale entry behind.
+        # Untracking archives the asset, dropping it out of the Keep-only
+        # portfolio. A missing row (a stale cached /portfolio card whose asset
+        # was already cleared — e.g. a feed toggle-off deleted the UserAsset) or
+        # an already-Archived row both mean the desired end state already holds.
+        # Return an empty body so the HTMX ``outerHTML`` swap removes the card,
+        # idempotently — a 404/409 error fragment would leave a stale, dead card
+        # displaying an error even though the untrack goal is satisfied.
         return HTMLResponse("", status_code=200)
 
     return app

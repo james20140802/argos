@@ -121,3 +121,140 @@ async def test_backfill_images_null_only_and_non_overwrite():
             )
             await session.commit()
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_backfill_upgrade_favicons(monkeypatch):
+    """``--upgrade-favicons`` replaces a favicon with a real og:image only.
+
+    - A favicon row whose re-crawl yields a real image is upgraded.
+    - A favicon row whose re-crawl yields only a favicon is left untouched.
+    - A row already holding a real image is never selected.
+    """
+    upgrade_id = uuid.uuid4()      # favicon → real image (upgrade)
+    qs_id = uuid.uuid4()           # query-string favicon → real image (upgrade)
+    stuck_id = uuid.uuid4()        # favicon → favicon (leave as-is)
+    real_id = uuid.uuid4()         # already real (never selected)
+    fp_id = uuid.uuid4()           # "/favicon.ico" only in query → never selected
+    real_image = "https://cdn.example.com/og-card.png"
+    qs_real_image = "https://cdn.example.com/qs-og-card.png"
+    kept_real = "https://cdn.example.com/already-real.jpg"
+    # A real cover whose URL *string* ends with "/favicon.ico" but whose path is
+    # "/render" — the LIKE selector matches it, so only the is_favicon_url()
+    # path-check gate keeps it from being re-crawled and clobbered (PR #96 finding).
+    fp_real = "https://fp-arg179.test/render?source=/favicon.ico"
+
+    engine, factory = await _session_factory()
+    try:
+        async with factory() as session:
+            session.add(
+                TechItem(
+                    id=upgrade_id,
+                    title="upgrade fixture",
+                    source_url=f"https://up-arg179.test/{upgrade_id}",
+                    raw_content="fixture",
+                    category=CategoryType.ALPHA,
+                    image_url="https://up-arg179.test/favicon.ico",
+                )
+            )
+            session.add(
+                TechItem(
+                    id=qs_id,
+                    title="query-string favicon fixture",
+                    source_url=f"https://qs-arg179.test/{qs_id}",
+                    raw_content="fixture",
+                    category=CategoryType.ALPHA,
+                    # A cache-busting query string on the favicon must still be
+                    # selected for upgrade (PR #96 finding).
+                    image_url="https://qs-arg179.test/favicon.ico?v=2",
+                )
+            )
+            session.add(
+                TechItem(
+                    id=stuck_id,
+                    title="stuck fixture",
+                    source_url=f"https://stuck-arg179.test/{stuck_id}",
+                    raw_content="fixture",
+                    category=CategoryType.ALPHA,
+                    image_url="https://stuck-arg179.test/favicon.ico",
+                )
+            )
+            session.add(
+                TechItem(
+                    id=real_id,
+                    title="already-real fixture",
+                    source_url=f"https://real-arg179.test/{real_id}",
+                    raw_content="fixture",
+                    category=CategoryType.MAINSTREAM,
+                    image_url=kept_real,
+                )
+            )
+            session.add(
+                TechItem(
+                    id=fp_id,
+                    title="query-only favicon false-positive fixture",
+                    source_url=f"https://fp-arg179.test/{fp_id}",
+                    raw_content="fixture",
+                    category=CategoryType.MAINSTREAM,
+                    image_url=fp_real,
+                )
+            )
+            await session.commit()
+
+        # Re-crawl yields a real image for the upgrade row, a favicon for the
+        # stuck row (resolver found nothing better than the domain favicon).
+        async def _fake_refetch(source_url: str):
+            if str(upgrade_id) in source_url:
+                return real_image
+            if str(qs_id) in source_url:
+                return qs_real_image
+            # If the false-positive row were (wrongly) selected, this real image
+            # would overwrite it — the assertion below proves it never is.
+            if str(fp_id) in source_url:
+                return "https://cdn.example.com/fp-should-not-apply.png"
+            return "https://stuck-arg179.test/favicon.ico"
+
+        import argos.cli as cli
+
+        # ``_backfill_images`` uses the global ``AsyncSessionLocal`` engine. Its
+        # pool may hold a connection bound to a prior test's event loop; dispose
+        # it so the backfill reconnects on this test's loop.
+        from argos.database import engine as _global_engine
+
+        await _global_engine.dispose()
+
+        monkeypatch.setattr(cli, "_refetch_image_url", _fake_refetch)
+        await cli._backfill_images(upgrade_favicons=True)
+
+        async with factory() as session:
+            rows = {
+                r.id: r.image_url
+                for r in (
+                    await session.execute(
+                        select(TechItem).where(
+                            TechItem.id.in_(
+                                [upgrade_id, qs_id, stuck_id, real_id, fp_id]
+                            )
+                        )
+                    )
+                ).scalars()
+            }
+
+        assert rows[upgrade_id] == real_image, "favicon row should upgrade to og:image"
+        assert rows[qs_id] == qs_real_image, "query-string favicon row should upgrade too"
+        assert rows[stuck_id].endswith("/favicon.ico"), "favicon-only row stays favicon"
+        assert rows[real_id] == kept_real, "real-image row is never selected/overwritten"
+        assert rows[fp_id] == fp_real, (
+            "a URL with /favicon.ico only in its query string is a real cover — "
+            "it must not be selected for upgrade or overwritten"
+        )
+
+    finally:
+        async with factory() as session:
+            await session.execute(
+                delete(TechItem).where(
+                    TechItem.id.in_([upgrade_id, qs_id, stuck_id, real_id, fp_id])
+                )
+            )
+            await session.commit()
+        await engine.dispose()
