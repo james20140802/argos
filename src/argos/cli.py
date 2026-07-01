@@ -1062,8 +1062,19 @@ async def _refetch_image_url(source_url: str) -> str | None:
 
 
 def _is_favicon(url: str | None) -> bool:
-    """True when ``url`` is a bare domain favicon (the lowest-priority cover)."""
-    return bool(url) and url.endswith("/favicon.ico")
+    """True when ``url`` is a bare domain favicon (the lowest-priority cover).
+
+    Only the URL *path* is inspected, so a cache-busting query string
+    (``/favicon.ico?v=2`` — e.g. a page whose ``og:image`` points at its own
+    favicon) still counts as a favicon. Otherwise ``--upgrade-favicons`` would
+    persist it as a "real" cover, and the templates — which branch on the same
+    bare ``/favicon.ico`` suffix — would stretch the 32px icon across the card.
+    """
+    if not url:
+        return False
+    from urllib.parse import urlsplit
+
+    return urlsplit(url).path.endswith("/favicon.ico")
 
 
 async def _backfill_images(
