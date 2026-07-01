@@ -138,11 +138,14 @@ async def test_run_full_pipeline_drives_progress_stages(monkeypatch):
     async def _fake_brain(items_in, session, **kwargs):  # noqa: ARG001
         # Simulate the brain pipeline ticking via its callbacks.
         cb_t = kwargs.get("on_triage_item_done")
+        cb_d = kwargs.get("on_digest_item_done")
         cb_e = kwargs.get("on_embed_item_done")
         cb_s = kwargs.get("on_save_item_done")
         for _ in items_in:
             if cb_t:
                 cb_t()
+            if cb_d:
+                cb_d()
             if cb_e:
                 cb_e()
             if cb_s:
@@ -195,9 +198,14 @@ async def test_run_full_pipeline_drives_progress_stages(monkeypatch):
     started = [e[1] for e in events if e[0] == "start"]
     assert "crawl" in started
     assert "triage" in started
-    # Per spec, at least the triage / save stages must tick.
+    # ARG-173: digest (14B) must be wired between triage and embed so the
+    # operator sees a progress bar instead of a silent gap during inference.
+    assert "digest" in started
+    assert started.index("triage") < started.index("digest") < started.index("embed")
+    # Per spec, at least the triage / digest / save stages must tick.
     advance_stages = {e[1] for e in events if e[0] == "advance"}
     assert "triage" in advance_stages
+    assert "digest" in advance_stages
     assert "save" in advance_stages
     assert summary.crawled_total == 3
 
