@@ -191,9 +191,9 @@ async def test_keep_then_pass_upserts_user_asset_and_writes_history():
 
 
 @pytest.mark.asyncio
-async def test_pass_first_then_repeat_pass_is_noop_no_extra_history():
-    """First Pass creates an Archived row (no history); a duplicate Pass
-    is a NOOP — same row, no new history."""
+async def test_pass_first_then_repeat_pass_toggles_off():
+    """First Pass creates an Archived row (no history); pressing Pass again
+    toggles it OFF — the user_asset is deleted and the item is untriaged."""
     tech_id = await _insert_tech_item()
     try:
         client = _client_with_real_db()
@@ -206,19 +206,18 @@ async def test_pass_first_then_repeat_pass_is_noop_no_extra_history():
         assert asset.status == AssetStatus.ARCHIVED
         assert (await _fetch_history(asset.id)) == []
 
-        # Repeat — handler returns a 409 fragment (NOOP) and must not
-        # add a history row or create a duplicate user_asset.
+        # Repeat — toggle-off. The route returns 200 (the re-rendered untriaged
+        # card) and the user_asset is removed entirely.
         repeat = client.post(f"/items/{tech_id}/pass")
-        assert repeat.status_code == 409, repeat.text
+        assert repeat.status_code == 200, repeat.text
 
         async with _session_ctx() as session:
-            asset_count = (
+            remaining = (
                 await session.execute(
                     select(UserAsset).where(UserAsset.tech_id == tech_id)
                 )
             ).scalars().all()
-        assert len(asset_count) == 1
-        assert (await _fetch_history(asset.id)) == []
+        assert remaining == []
     finally:
         await _cleanup(tech_id)
 

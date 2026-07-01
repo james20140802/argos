@@ -18,8 +18,9 @@
  * v4: signal ticker + ultra-wide layout (argos.css). Bumped so v3 clients pick
  *     up the widened grid / ticker CSS instead of the cached v3 stylesheet.
  * v5: active (pressed) Keep/Pass button state (argos.css + _feed_card.html).
+ * v6: toggle-off Keep/Pass + emerald/terracotta active colours (argos.css).
  */
-const CACHE_VERSION = 'argos-v5';
+const CACHE_VERSION = 'argos-v6';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.

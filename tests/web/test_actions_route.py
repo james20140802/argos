@@ -6,7 +6,7 @@ import uuid
 from starlette.testclient import TestClient
 
 from argos.models.user_asset import AssetStatus
-from argos.slack.services.asset_transition import TransitionOutcome
+from argos.slack.services.asset_transition import ToggleOutcome, TransitionOutcome
 from argos.web.app import _get_session, build_web_app
 
 
@@ -38,10 +38,10 @@ def test_keep_returns_updated_feed_card_partial(monkeypatch):
     item_id = uuid.uuid4()
     captured: dict = {}
 
-    async def _fake_transition(session, tech_id, target_status):
+    async def _fake_toggle(session, tech_id, target_status):
         captured["tech_id"] = tech_id
         captured["target_status"] = target_status
-        return TransitionOutcome.CREATED
+        return ToggleOutcome.SET
 
     async def _fake_lookup(session, tech_id):
         # Mirror the real _load_feed_card_context 7-key shape (incl. summary)
@@ -53,13 +53,15 @@ def test_keep_returns_updated_feed_card_partial(monkeypatch):
     client = _client(
         monkeypatch,
         **{
-            "argos.web.app.transition_asset": _fake_transition,
+            "argos.web.app.toggle_asset": _fake_toggle,
             "argos.web.app._load_feed_card_context": _fake_lookup,
         },
     )
     resp = client.post(f"/items/{item_id}/keep")
     assert resp.status_code == 200
     assert "Kept Thing" in resp.text
+    # The Keep button reflects the active state (ARG-... toggle contract).
+    assert "✓ Keep" in resp.text
     # The summary line survives the action re-render (ARG-174/175 contract).
     assert "킵된 한 줄 요약" in resp.text
     # Partial, not full page.
@@ -74,8 +76,8 @@ def test_keep_on_featured_card_re_renders_as_hero(monkeypatch):
     a standard grid cell (ARG-175)."""
     item_id = uuid.uuid4()
 
-    async def _fake_transition(session, tech_id, target_status):
-        return TransitionOutcome.CREATED
+    async def _fake_toggle(session, tech_id, target_status):
+        return ToggleOutcome.SET
 
     async def _fake_lookup(session, tech_id):
         return {"id": tech_id, "title": "Hero Kept", "status": AssetStatus.KEEP,
@@ -85,7 +87,7 @@ def test_keep_on_featured_card_re_renders_as_hero(monkeypatch):
     client = _client(
         monkeypatch,
         **{
-            "argos.web.app.transition_asset": _fake_transition,
+            "argos.web.app.toggle_asset": _fake_toggle,
             "argos.web.app._load_feed_card_context": _fake_lookup,
         },
     )
@@ -101,9 +103,9 @@ def test_pass_returns_updated_feed_card_partial(monkeypatch):
     item_id = uuid.uuid4()
     captured: dict = {}
 
-    async def _fake_transition(session, tech_id, target_status):
+    async def _fake_toggle(session, tech_id, target_status):
         captured["target_status"] = target_status
-        return TransitionOutcome.TRANSITIONED
+        return ToggleOutcome.SET
 
     async def _fake_lookup(session, tech_id):
         return {"id": tech_id, "title": "Passed", "status": AssetStatus.ARCHIVED,
@@ -113,22 +115,22 @@ def test_pass_returns_updated_feed_card_partial(monkeypatch):
     client = _client(
         monkeypatch,
         **{
-            "argos.web.app.transition_asset": _fake_transition,
+            "argos.web.app.toggle_asset": _fake_toggle,
             "argos.web.app._load_feed_card_context": _fake_lookup,
         },
     )
     resp = client.post(f"/items/{item_id}/pass")
     assert resp.status_code == 200
     assert "Passed" in resp.text
+    assert "✓ Pass" in resp.text
     assert captured["target_status"] == AssetStatus.ARCHIVED
 
 
 def test_keep_unknown_item_returns_404_fragment(monkeypatch):
     item_id = uuid.uuid4()
 
-    async def _fake_transition(session, tech_id, target_status):
-        # transition_asset would raise IntegrityError on bad FK, simulate via
-        # lookup miss before calling transition.
+    async def _fake_toggle(session, tech_id, target_status):
+        # The lookup miss short-circuits to 404 before any toggle runs.
         raise AssertionError("should not be called")
 
     async def _fake_lookup_missing(session, tech_id):
@@ -137,7 +139,7 @@ def test_keep_unknown_item_returns_404_fragment(monkeypatch):
     client = _client(
         monkeypatch,
         **{
-            "argos.web.app.transition_asset": _fake_transition,
+            "argos.web.app.toggle_asset": _fake_toggle,
             "argos.web.app._load_feed_card_context": _fake_lookup_missing,
         },
     )
@@ -153,26 +155,34 @@ def test_keep_malformed_uuid_returns_404(monkeypatch):
     assert resp.status_code == 404
 
 
-def test_keep_noop_returns_409_fragment(monkeypatch):
+def test_keep_again_toggles_off_returns_untriaged_card(monkeypatch):
+    """Pressing Keep on an already-Kept item toggles it OFF: the service reports
+    REMOVED and the reloaded card comes back untriaged (200, no active state) —
+    not the old 409 "already in that state"."""
     item_id = uuid.uuid4()
 
-    async def _fake_transition(session, tech_id, target_status):
-        return TransitionOutcome.NOOP
+    async def _fake_toggle(session, tech_id, target_status):
+        return ToggleOutcome.REMOVED
 
     async def _fake_lookup(session, tech_id):
-        return {"id": tech_id, "title": "Already Kept", "status": AssetStatus.KEEP,
+        # After toggle-off there is no user_asset, so status is None.
+        return {"id": tech_id, "title": "Untriaged Again", "status": None,
                 "category": None, "image_url": None, "summary": None,
                 "source_url": "https://x"}
 
     client = _client(
         monkeypatch,
         **{
-            "argos.web.app.transition_asset": _fake_transition,
+            "argos.web.app.toggle_asset": _fake_toggle,
             "argos.web.app._load_feed_card_context": _fake_lookup,
         },
     )
     resp = client.post(f"/items/{item_id}/keep")
-    assert resp.status_code == 409
+    assert resp.status_code == 200
+    assert "Untriaged Again" in resp.text
+    # The Keep button is back to its inactive label — no check, no active class.
+    assert "✓ Keep" not in resp.text
+    assert "is-active" not in resp.text
     assert "<!DOCTYPE html>" not in resp.text
 
 

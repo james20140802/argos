@@ -8,7 +8,9 @@ import pytest
 from argos.models.track_history import TrackHistory
 from argos.models.user_asset import AssetStatus, UserAsset
 from argos.slack.services.asset_transition import (
+    ToggleOutcome,
     TransitionOutcome,
+    toggle_asset,
     transition_asset,
 )
 
@@ -107,3 +109,63 @@ async def test_transition_archived_to_keep_logs_history(tech_id):
     assert len(history_rows) == 1
     assert history_rows[0].changed_from == AssetStatus.ARCHIVED.value
     assert history_rows[0].changed_to == AssetStatus.KEEP.value
+
+
+# --- toggle_asset (feed triage toggle) ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_toggle_off_deletes_when_already_in_target(tech_id):
+    """Pressing the already-active button deletes the asset (untriaged)."""
+    existing = UserAsset(id=uuid.uuid4(), tech_id=tech_id, status=AssetStatus.KEEP)
+    sel = MagicMock()
+    sel.scalar_one_or_none.return_value = existing
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=sel)
+    session.delete = AsyncMock()
+
+    outcome = await toggle_asset(session, tech_id, AssetStatus.KEEP)
+
+    assert outcome is ToggleOutcome.REMOVED
+    session.delete.assert_awaited_once_with(existing)
+
+
+@pytest.mark.asyncio
+async def test_toggle_set_creates_when_missing(tech_id):
+    """No asset → toggle creates it (delegates to transition_asset)."""
+    toggle_sel = MagicMock()
+    toggle_sel.scalar_one_or_none.return_value = None
+    insert_res = MagicMock()
+    insert_res.scalar_one_or_none.return_value = uuid.uuid4()  # RETURNING id → CREATED
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[toggle_sel, insert_res])
+    session.delete = AsyncMock()
+
+    outcome = await toggle_asset(session, tech_id, AssetStatus.KEEP)
+
+    assert outcome is ToggleOutcome.SET
+    session.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_toggle_switches_when_different_status(tech_id):
+    """Asset in a different status → toggle switches it (not a delete)."""
+    existing = UserAsset(id=uuid.uuid4(), tech_id=tech_id, status=AssetStatus.ARCHIVED)
+    toggle_sel = MagicMock()
+    toggle_sel.scalar_one_or_none.return_value = existing
+    insert_res = MagicMock()
+    insert_res.scalar_one_or_none.return_value = None  # exists → transition path
+    lock_res = MagicMock()
+    lock_res.scalar_one.return_value = existing
+    added: list = []
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[toggle_sel, insert_res, lock_res])
+    session.add = lambda obj: added.append(obj)
+    session.delete = AsyncMock()
+
+    outcome = await toggle_asset(session, tech_id, AssetStatus.KEEP)
+
+    assert outcome is ToggleOutcome.SET
+    assert existing.status is AssetStatus.KEEP
+    session.delete.assert_not_called()
+    assert any(isinstance(obj, TrackHistory) for obj in added)

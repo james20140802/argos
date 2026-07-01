@@ -70,3 +70,37 @@ async def transition_asset(
         )
     )
     return TransitionOutcome.TRANSITIONED
+
+
+class ToggleOutcome(str, enum.Enum):
+    SET = "set"          # created, or switched into target_status
+    REMOVED = "removed"  # toggled off — the triage decision was cleared
+
+
+async def toggle_asset(
+    session: AsyncSession,
+    tech_id: uuid.UUID,
+    target_status: AssetStatus,
+) -> ToggleOutcome:
+    """Toggle a feed triage decision on ``tech_id``.
+
+    - No asset, or an asset in a *different* status → set ``target_status``
+      (delegates to :func:`transition_asset`, which creates or switches and logs
+      the transition). Returns ``SET``.
+    - Asset already in ``target_status`` → clear the decision by deleting the
+      UserAsset, returning the item to untriaged (its ``track_history`` rows
+      cascade). Returns ``REMOVED``.
+
+    Unlike ``transition_asset`` this never NOOPs: pressing the already-active
+    button is a deliberate un-toggle.
+    """
+    existing = (
+        await session.execute(
+            select(UserAsset).where(UserAsset.tech_id == tech_id)
+        )
+    ).scalar_one_or_none()
+    if existing is not None and existing.status == target_status:
+        await session.delete(existing)
+        return ToggleOutcome.REMOVED
+    await transition_asset(session, tech_id, target_status)
+    return ToggleOutcome.SET

@@ -42,6 +42,17 @@ async def transition_asset(session, tech_id: uuid.UUID, target_status):
     )
 
     return await _real_transition_asset(session, tech_id, target_status)
+
+
+async def toggle_asset(session, tech_id: uuid.UUID, target_status):
+    """Lazy shim — delegates to argos.slack.services.asset_transition.toggle_asset.
+
+    Kept at module level (like ``transition_asset``) so tests can monkeypatch
+    ``argos.web.app.toggle_asset`` without an eager ``argos.database`` import.
+    """
+    from argos.slack.services.asset_transition import toggle_asset as _real_toggle_asset
+
+    return await _real_toggle_asset(session, tech_id, target_status)
 _TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 _STATIC_DIR = _PACKAGE_DIR / "static"
 _ASSETS_DIR = _PACKAGE_DIR / "assets"
@@ -392,11 +403,9 @@ def build_web_app() -> FastAPI:
             {"item": SimpleNamespace(**item), "is_featured": is_featured},
         )
 
-    async def _transition_item(
+    async def _toggle_item(
         request: Request, item_id: str, target_status, session, *, is_featured: bool
     ) -> HTMLResponse:
-        from argos.slack.services.asset_transition import TransitionOutcome
-
         try:
             parsed_id = uuid.UUID(item_id)
         except ValueError:
@@ -406,17 +415,18 @@ def build_web_app() -> FastAPI:
         if item is None:
             return _error_fragment(request, 404, "not found")
 
-        outcome = await transition_asset(session, parsed_id, target_status)
-        if outcome is TransitionOutcome.NOOP:
-            return _error_fragment(request, 409, "already in that state")
+        # Toggle semantics: pressing the already-active button clears the
+        # decision (untriaged) instead of erroring; otherwise it sets/switches.
+        await toggle_asset(session, parsed_id, target_status)
 
         # ``_get_session`` only opens and closes the AsyncSession; it does not
-        # auto-commit. Without this explicit commit the transition is rolled
-        # back when the request dependency closes, so a reload would still see
-        # the old status. The Slack handlers commit after the same service call.
+        # auto-commit. Without this explicit commit the change is rolled back
+        # when the request dependency closes, so a reload would still see the
+        # old status. The Slack handlers commit after the same service call.
         await session.commit()
 
-        # Reload after transition so the partial sees fresh status.
+        # Reload so the re-rendered card reflects the fresh status (or its
+        # absence, after a toggle-off).
         item = await _load_feed_card_context(session, parsed_id)
         return _action_response(
             request, item, "_feed_card.html", is_featured=is_featured
@@ -431,7 +441,7 @@ def build_web_app() -> FastAPI:
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
 
-        return await _transition_item(
+        return await _toggle_item(
             request, item_id, AssetStatus.KEEP, session, is_featured=featured
         )
 
@@ -444,7 +454,7 @@ def build_web_app() -> FastAPI:
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
 
-        return await _transition_item(
+        return await _toggle_item(
             request, item_id, AssetStatus.ARCHIVED, session, is_featured=featured
         )
 

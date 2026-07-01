@@ -28,6 +28,8 @@
   --brass-hi: #E7C98B;
   --main: #74B7C7;   /* Mainstream */
   --alpha: #B790E4;  /* Alpha */
+  --keep: #57b98a;   /* Keep — muted observatory emerald */
+  --pass: #d0715f;   /* Pass — muted terracotta */
   /* Cover wash sits behind images while they load and under the favicon/glyph
      fallbacks. Token-ised so the light theme can swap it without touching the
      component rules. */
@@ -657,9 +659,9 @@ body {
   padding: 5px 9px; border-radius: 7px;
   border: 1px solid var(--line); color: var(--muted);
 }
-.status-badge--keep { color: var(--brass-hi); border-color: rgba(201, 168, 106, 0.5); }
+.status-badge--keep { color: var(--keep); border-color: rgba(87, 185, 138, 0.5); }
 .status-badge--tracking { color: var(--main); border-color: rgba(116, 183, 199, 0.5); }
-.status-badge--archived { color: var(--faint); }
+.status-badge--archived { color: var(--pass); border-color: rgba(208, 113, 95, 0.45); }
 
 /* "더 보기" HTMX cursor button */
 .load-more {
@@ -695,22 +697,28 @@ body {
 .card-action--untrack:hover { color: var(--faint); border-color: var(--line); }
 .card-action.htmx-request { opacity: 0.5; pointer-events: none; }
 
-/* Active (pressed) triage state — the current status is filled in so a Keep /
-   Pass is unmistakably reflected on the card itself. */
+/* Active (pressed) triage state — the current status is filled in with its own
+   colour (Keep = emerald, Pass = terracotta) so an action is unmistakably
+   reflected on the card. Pressing the active button again toggles it off. */
 .card-action--keep.is-active {
-  color: var(--bg);
-  background: var(--brass);
-  border-color: var(--brass);
+  color: #08140e;
+  background: var(--keep);
+  border-color: var(--keep);
 }
 .card-action--keep.is-active:hover {
-  color: var(--bg);
-  background: var(--brass-hi);
-  border-color: var(--brass-hi);
+  color: #08140e;
+  background: #6cc79a;
+  border-color: #6cc79a;
 }
 .card-action--pass.is-active {
-  color: var(--muted);
-  background: var(--surface);
-  border-color: var(--muted);
+  color: #fff3f0;
+  background: var(--pass);
+  border-color: var(--pass);
+}
+.card-action--pass.is-active:hover {
+  color: #fff3f0;
+  background: #db8371;
+  border-color: #db8371;
 }
 
 /* Inline error returned by an action route (404 / 409) */
