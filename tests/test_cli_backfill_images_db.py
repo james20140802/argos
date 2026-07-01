@@ -121,3 +121,98 @@ async def test_backfill_images_null_only_and_non_overwrite():
             )
             await session.commit()
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_backfill_upgrade_favicons(monkeypatch):
+    """``--upgrade-favicons`` replaces a favicon with a real og:image only.
+
+    - A favicon row whose re-crawl yields a real image is upgraded.
+    - A favicon row whose re-crawl yields only a favicon is left untouched.
+    - A row already holding a real image is never selected.
+    """
+    upgrade_id = uuid.uuid4()      # favicon → real image (upgrade)
+    stuck_id = uuid.uuid4()        # favicon → favicon (leave as-is)
+    real_id = uuid.uuid4()         # already real (never selected)
+    real_image = "https://cdn.example.com/og-card.png"
+    kept_real = "https://cdn.example.com/already-real.jpg"
+
+    engine, factory = await _session_factory()
+    try:
+        async with factory() as session:
+            session.add(
+                TechItem(
+                    id=upgrade_id,
+                    title="upgrade fixture",
+                    source_url=f"https://up-arg179.test/{upgrade_id}",
+                    raw_content="fixture",
+                    category=CategoryType.ALPHA,
+                    image_url="https://up-arg179.test/favicon.ico",
+                )
+            )
+            session.add(
+                TechItem(
+                    id=stuck_id,
+                    title="stuck fixture",
+                    source_url=f"https://stuck-arg179.test/{stuck_id}",
+                    raw_content="fixture",
+                    category=CategoryType.ALPHA,
+                    image_url="https://stuck-arg179.test/favicon.ico",
+                )
+            )
+            session.add(
+                TechItem(
+                    id=real_id,
+                    title="already-real fixture",
+                    source_url=f"https://real-arg179.test/{real_id}",
+                    raw_content="fixture",
+                    category=CategoryType.MAINSTREAM,
+                    image_url=kept_real,
+                )
+            )
+            await session.commit()
+
+        # Re-crawl yields a real image for the upgrade row, a favicon for the
+        # stuck row (resolver found nothing better than the domain favicon).
+        async def _fake_refetch(source_url: str):
+            if str(upgrade_id) in source_url:
+                return real_image
+            return "https://stuck-arg179.test/favicon.ico"
+
+        import argos.cli as cli
+
+        # ``_backfill_images`` uses the global ``AsyncSessionLocal`` engine. Its
+        # pool may hold a connection bound to a prior test's event loop; dispose
+        # it so the backfill reconnects on this test's loop.
+        from argos.database import engine as _global_engine
+
+        await _global_engine.dispose()
+
+        monkeypatch.setattr(cli, "_refetch_image_url", _fake_refetch)
+        await cli._backfill_images(upgrade_favicons=True)
+
+        async with factory() as session:
+            rows = {
+                r.id: r.image_url
+                for r in (
+                    await session.execute(
+                        select(TechItem).where(
+                            TechItem.id.in_([upgrade_id, stuck_id, real_id])
+                        )
+                    )
+                ).scalars()
+            }
+
+        assert rows[upgrade_id] == real_image, "favicon row should upgrade to og:image"
+        assert rows[stuck_id].endswith("/favicon.ico"), "favicon-only row stays favicon"
+        assert rows[real_id] == kept_real, "real-image row is never selected/overwritten"
+
+    finally:
+        async with factory() as session:
+            await session.execute(
+                delete(TechItem).where(
+                    TechItem.id.in_([upgrade_id, stuck_id, real_id])
+                )
+            )
+            await session.commit()
+        await engine.dispose()

@@ -1002,10 +1002,25 @@ def _build_backfill_images_parser(
         action="store_true",
         help="Re-crawl source_url to recover og/body images (network, slow)",
     )
+    bf_p.add_argument(
+        "--upgrade-favicons",
+        action="store_true",
+        help=(
+            "Re-crawl rows whose image_url is a bare /favicon.ico and replace it "
+            "with a real og/twitter/body image when one is found (network, slow). "
+            "Rows that still resolve to a favicon are left untouched. Implies "
+            "--refetch."
+        ),
+    )
 
 
 def _cmd_backfill_images(args: argparse.Namespace) -> int:
-    return asyncio.run(_backfill_images(refetch=bool(getattr(args, "refetch", False))))
+    return asyncio.run(
+        _backfill_images(
+            refetch=bool(getattr(args, "refetch", False)),
+            upgrade_favicons=bool(getattr(args, "upgrade_favicons", False)),
+        )
+    )
 
 
 async def _refetch_image_url(source_url: str) -> str | None:
@@ -1046,47 +1061,102 @@ async def _refetch_image_url(source_url: str) -> str | None:
     return favicon_for_domain(source_url)
 
 
-async def _backfill_images(refetch: bool = False) -> int:
-    """Fill tech_items.image_url for rows where it is NULL.
+def _is_favicon(url: str | None) -> bool:
+    """True when ``url`` is a bare domain favicon (the lowest-priority cover)."""
+    return bool(url) and url.endswith("/favicon.ico")
 
-    Default path (refetch=False): derive a domain favicon with no network call.
-    Refetch path (refetch=True): re-crawl source_url and apply the full chain.
 
-    Non-overwrite guarantee: only NULL rows are selected, and the UPDATE is
-    guarded by ``image_url IS NULL`` so concurrent writers cannot accidentally
-    overwrite a value set between the SELECT and the UPDATE.
+async def _backfill_images(
+    refetch: bool = False, upgrade_favicons: bool = False
+) -> int:
+    """Fill (or upgrade) ``tech_items.image_url``.
+
+    Two selection modes:
+
+    * Default (``upgrade_favicons=False``): target rows where ``image_url`` is
+      NULL. ``refetch=False`` derives a domain favicon with no network call;
+      ``refetch=True`` re-crawls ``source_url`` and applies the full chain.
+      Only NULL rows are touched and the UPDATE is guarded by
+      ``image_url IS NULL`` so a value set between SELECT and UPDATE is never
+      clobbered.
+
+    * Upgrade (``upgrade_favicons=True``, implies ``refetch``): target rows
+      whose ``image_url`` is a bare ``/favicon.ico`` — the earliest crawls and
+      the no-network backfill persisted these, and because the default mode
+      only fills NULLs they were otherwise stuck on the favicon forever. Each
+      is re-crawled; the row is overwritten **only** when a real og/twitter/body
+      image is recovered (the UPDATE is guarded by the old favicon value).
+      Rows that still resolve to a favicon are left as-is.
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import func, select, update
 
     from argos.crawler._og_image import favicon_for_domain
     from argos.models.tech_item import TechItem
 
+    if upgrade_favicons:
+        refetch = True
+        selector = TechItem.image_url.like("%/favicon.ico")
+        guard = TechItem.image_url.like("%/favicon.ico")
+        noun = "favicon"
+    else:
+        selector = TechItem.image_url.is_(None)
+        guard = TechItem.image_url.is_(None)
+        noun = "NULL"
+
+    # Re-crawls are network-bound and independent, so resolve each batch
+    # concurrently (bounded) and commit per batch. Batched commits make
+    # progress durable and visible — the previous single end-of-run commit
+    # discarded everything if the (long) job was interrupted.
+    concurrency = 1 if not refetch else 8
+    batch_size = 50
+
     filled = 0
     async with AsyncSessionLocal() as session:
+        # Newest first: the feed/portfolio surface the most recent items, so
+        # filling those first makes the fix visible soonest during a long run.
         rows = (
             await session.execute(
-                select(TechItem.id, TechItem.source_url).where(
-                    TechItem.image_url.is_(None)
+                select(TechItem.id, TechItem.source_url)
+                .where(selector)
+                .order_by(
+                    func.coalesce(TechItem.published_at, TechItem.created_at).desc()
                 )
             )
         ).all()
-        for tid, source_url in rows:
-            new_url = (
-                await _refetch_image_url(source_url)
-                if refetch
-                else favicon_for_domain(source_url)
-            )
-            if not new_url:
-                continue
-            result = await session.execute(
-                update(TechItem)
-                .where(TechItem.id == tid, TechItem.image_url.is_(None))
-                .values(image_url=new_url)
-            )
-            filled += result.rowcount or 0
-        await session.commit()
 
-    print(f"backfill-images: filled {filled} of {len(rows)} NULL image_url rows")
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _resolve(source_url: str) -> str | None:
+            if not refetch:
+                return favicon_for_domain(source_url)
+            async with sem:
+                return await _refetch_image_url(source_url)
+
+        total = len(rows)
+        for start in range(0, total, batch_size):
+            chunk = rows[start : start + batch_size]
+            resolved = await asyncio.gather(*(_resolve(su) for _, su in chunk))
+            for (tid, _su), new_url in zip(chunk, resolved):
+                if not new_url:
+                    continue
+                # Upgrade mode only replaces a favicon with a *real* image; a
+                # re-resolved favicon is not progress, so skip it.
+                if upgrade_favicons and _is_favicon(new_url):
+                    continue
+                result = await session.execute(
+                    update(TechItem)
+                    .where(TechItem.id == tid, guard)
+                    .values(image_url=new_url)
+                )
+                filled += result.rowcount or 0
+            await session.commit()
+            print(
+                f"backfill-images: {min(start + batch_size, total)}/{total} "
+                f"processed, {filled} filled",
+                flush=True,
+            )
+
+    print(f"backfill-images: filled {filled} of {len(rows)} {noun} image_url rows")
     return EXIT_OK
 
 
