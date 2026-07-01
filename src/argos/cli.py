@@ -1133,15 +1133,23 @@ async def _backfill_images(
     async with AsyncSessionLocal() as session:
         # Newest first: the feed/portfolio surface the most recent items, so
         # filling those first makes the fix visible soonest during a long run.
-        rows = (
+        selected = (
             await session.execute(
-                select(TechItem.id, TechItem.source_url)
+                select(TechItem.id, TechItem.source_url, TechItem.image_url)
                 .where(selector)
                 .order_by(
                     func.coalesce(TechItem.published_at, TechItem.created_at).desc()
                 )
             )
         ).all()
+        if upgrade_favicons:
+            # The LIKE selector is a coarse *superset*: a URL like
+            # ".../render?source=/favicon.ico" ends with the literal string but
+            # its path is "/render", so is_favicon_url() (and the cover
+            # templates) treat it as a real image. Gate the rows through the same
+            # path-only check so a genuine cover is never re-crawled and clobbered.
+            selected = [r for r in selected if _is_favicon(r.image_url)]
+        rows = [(r.id, r.source_url) for r in selected]
 
         sem = asyncio.Semaphore(concurrency)
 

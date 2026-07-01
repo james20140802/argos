@@ -135,9 +135,14 @@ async def test_backfill_upgrade_favicons(monkeypatch):
     qs_id = uuid.uuid4()           # query-string favicon → real image (upgrade)
     stuck_id = uuid.uuid4()        # favicon → favicon (leave as-is)
     real_id = uuid.uuid4()         # already real (never selected)
+    fp_id = uuid.uuid4()           # "/favicon.ico" only in query → never selected
     real_image = "https://cdn.example.com/og-card.png"
     qs_real_image = "https://cdn.example.com/qs-og-card.png"
     kept_real = "https://cdn.example.com/already-real.jpg"
+    # A real cover whose URL *string* ends with "/favicon.ico" but whose path is
+    # "/render" — the LIKE selector matches it, so only the is_favicon_url()
+    # path-check gate keeps it from being re-crawled and clobbered (PR #96 finding).
+    fp_real = "https://fp-arg179.test/render?source=/favicon.ico"
 
     engine, factory = await _session_factory()
     try:
@@ -184,6 +189,16 @@ async def test_backfill_upgrade_favicons(monkeypatch):
                     image_url=kept_real,
                 )
             )
+            session.add(
+                TechItem(
+                    id=fp_id,
+                    title="query-only favicon false-positive fixture",
+                    source_url=f"https://fp-arg179.test/{fp_id}",
+                    raw_content="fixture",
+                    category=CategoryType.MAINSTREAM,
+                    image_url=fp_real,
+                )
+            )
             await session.commit()
 
         # Re-crawl yields a real image for the upgrade row, a favicon for the
@@ -193,6 +208,10 @@ async def test_backfill_upgrade_favicons(monkeypatch):
                 return real_image
             if str(qs_id) in source_url:
                 return qs_real_image
+            # If the false-positive row were (wrongly) selected, this real image
+            # would overwrite it — the assertion below proves it never is.
+            if str(fp_id) in source_url:
+                return "https://cdn.example.com/fp-should-not-apply.png"
             return "https://stuck-arg179.test/favicon.ico"
 
         import argos.cli as cli
@@ -213,7 +232,9 @@ async def test_backfill_upgrade_favicons(monkeypatch):
                 for r in (
                     await session.execute(
                         select(TechItem).where(
-                            TechItem.id.in_([upgrade_id, qs_id, stuck_id, real_id])
+                            TechItem.id.in_(
+                                [upgrade_id, qs_id, stuck_id, real_id, fp_id]
+                            )
                         )
                     )
                 ).scalars()
@@ -223,12 +244,16 @@ async def test_backfill_upgrade_favicons(monkeypatch):
         assert rows[qs_id] == qs_real_image, "query-string favicon row should upgrade too"
         assert rows[stuck_id].endswith("/favicon.ico"), "favicon-only row stays favicon"
         assert rows[real_id] == kept_real, "real-image row is never selected/overwritten"
+        assert rows[fp_id] == fp_real, (
+            "a URL with /favicon.ico only in its query string is a real cover — "
+            "it must not be selected for upgrade or overwritten"
+        )
 
     finally:
         async with factory() as session:
             await session.execute(
                 delete(TechItem).where(
-                    TechItem.id.in_([upgrade_id, qs_id, stuck_id, real_id])
+                    TechItem.id.in_([upgrade_id, qs_id, stuck_id, real_id, fp_id])
                 )
             )
             await session.commit()

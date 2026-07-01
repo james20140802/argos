@@ -174,6 +174,13 @@ def build_web_app() -> FastAPI:
         Shares ``argos.crawler._og_image.is_favicon_url`` with the backfill so a
         cache-busting query string (``/favicon.ico?v=2``) still gets the
         favicon-chip branch instead of being stretched as a full cover image.
+
+        The import stays lazy on purpose: ``from argos.crawler._og_image import
+        …`` executes ``argos.crawler.__init__``, which transitively pulls in
+        ``argos.database``. Hoisting it to registration time would break the
+        ``build_web_app`` import-graph isolation invariant
+        (``test_build_web_app_does_not_import_argos_database``). Python's import
+        cache makes the per-render cost negligible.
         """
         from argos.crawler._og_image import is_favicon_url
 
@@ -195,8 +202,7 @@ def build_web_app() -> FastAPI:
         when = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
         delta = datetime.now(timezone.utc) - when
         secs = delta.total_seconds()
-        if secs < 0:
-            return "방금"
+        # Negative deltas (clock skew / future timestamps) fall here too.
         if secs < 60:
             return "방금"
         if secs < 3600:
@@ -453,8 +459,12 @@ def build_web_app() -> FastAPI:
         await session.commit()
 
         # Reload so the re-rendered card reflects the fresh status (or its
-        # absence, after a toggle-off).
+        # absence, after a toggle-off). A None here means the TechItem row was
+        # deleted between the guard above and this reload — return the 404
+        # fragment rather than let SimpleNamespace(**None) raise a 500.
         item = await _load_feed_card_context(session, parsed_id)
+        if item is None:
+            return _error_fragment(request, 404, "not found")
         return _action_response(
             request, item, "_feed_card.html", is_featured=is_featured
         )
@@ -514,11 +524,14 @@ def build_web_app() -> FastAPI:
         tech_id = await _resolve_user_asset_tech_id(session, parsed_id)
         if tech_id is not None:
             outcome = await transition_asset(session, tech_id, AssetStatus.ARCHIVED)
-            if outcome is TransitionOutcome.TRANSITIONED:
-                # Only a real Keep→Archived transition mutates state; the request
-                # session does not auto-commit (see keep/pass above).
+            if outcome is not TransitionOutcome.NOOP:
+                # Both a real Keep→Archived transition (TRANSITIONED) and a
+                # freshly-inserted Archived row (CREATED — the UserAsset was
+                # concurrently cleared between resolve and here) mutate state and
+                # must be persisted; the request session does not auto-commit
+                # (see keep/pass above). Only NOOP (already Archived) changed
+                # nothing, so it needs no commit.
                 await session.commit()
-            # NOOP (already Archived) changed nothing — no commit needed.
 
         # Untracking archives the asset, dropping it out of the Keep-only
         # portfolio. A missing row (a stale cached /portfolio card whose asset
