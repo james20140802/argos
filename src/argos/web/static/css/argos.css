@@ -312,15 +312,16 @@ body {
   /* Long unbroken tokens (URL-like titles, code) must wrap rather than blow the
      grid track out past the viewport. */
   overflow-wrap: anywhere;
-  /* Reserve three lines for every headline and clamp to three: short titles
-     hold the same height as long ones, so the summary below starts on a common
-     baseline across the row instead of floating up under 1-line titles. */
+  /* Clamp to three lines as a safety cap (a runaway title can't blow a card's
+     height), but do NOT reserve three lines: the headline keeps its natural
+     height so the summary hugs directly beneath it with no awkward gap. Cards
+     still equalise via the grid's row stretch, and the action row still lines
+     up because it's pinned to the bottom of the flexed body below. */
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   line-clamp: 3;
   overflow: hidden;
-  min-height: calc(1.26em * 3);
 }
 .eyebrow__src { overflow-wrap: anywhere; }
 .card .summary {

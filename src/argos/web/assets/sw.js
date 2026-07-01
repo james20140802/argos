@@ -21,8 +21,10 @@
  * v6: toggle-off Keep/Pass + emerald/terracotta active colours (argos.css).
  * v7: equal-height cards — 3-line headline reservation + bottom-pinned action
  *     row (argos.css). Bumped so v6 clients pick up the aligned grid.
+ * v8: drop the 3-line headline reservation (kept the clamp cap) so the summary
+ *     hugs the title with no gap; bottom-pinned buttons still align (argos.css).
  */
-const CACHE_VERSION = 'argos-v7';
+const CACHE_VERSION = 'argos-v8';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
