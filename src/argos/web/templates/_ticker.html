@@ -1,0 +1,27 @@
+{# Signal ticker (feed right rail). A glanceable, reverse-chron digest of the
+   signals the observatory just surfaced — new-item matches against Keep assets
+   and succession alerts — distinct from the discovery feed beside it. #}
+<div class="ticker__head">
+  <span class="ticker__title">관측 신호</span>
+  <span class="ticker__live" aria-hidden="true"><span class="ticker__dot"></span>LATEST</span>
+</div>
+<ol class="ticker__list">
+  {% for a in activity %}
+  <li class="ticker__item">
+    <p class="ticker__meta">
+      <span class="ticker__kind ticker__kind--{{ a.kind }}">{{ '새 신호' if a.kind == 'signal' else '승계' }}</span>
+      <span class="ticker__time">{{ a.changed_at | reltime }}</span>
+    </p>
+    <a class="ticker__link" href="/item/{{ a.tech_id }}">{{ a.tech_title }}</a>
+    {% if a.kind == 'signal' and a.matched_title %}
+    <p class="ticker__sub">
+      {% if a.matched_tech_id %}
+      <a href="/item/{{ a.matched_tech_id }}">↳ {{ a.matched_title }}</a>
+      {% else %}
+      <span>↳ {{ a.matched_title }}</span>
+      {% endif %}
+    </p>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ol>

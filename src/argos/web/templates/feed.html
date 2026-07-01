@@ -4,16 +4,30 @@
    reader/portfolio keep their narrow 760px reading column. #}
 {% block page_class %}page--feed{% endblock %}
 {% block content %}
-<nav class="feed-filter" aria-label="카테고리 필터">
-  <a class="chip{% if not category %} is-active{% endif %}"
-     href="/feed"{% if not category %} aria-current="true"{% endif %}>전체</a>
-  <a class="chip chip--main{% if category == 'Mainstream' %} is-active{% endif %}"
-     href="/feed?category=Mainstream"{% if category == 'Mainstream' %} aria-current="true"{% endif %}>Mainstream</a>
-  <a class="chip chip--alpha{% if category == 'Alpha' %} is-active{% endif %}"
-     href="/feed?category=Alpha"{% if category == 'Alpha' %} aria-current="true"{% endif %}>Alpha</a>
-</nav>
+{# Two-stream layout: the discovery feed (left/main) + the signal ticker
+   (right). The ticker is wide-screen-only chrome — CSS hides it below 1536px so
+   the standard layout is untouched — and is omitted entirely when there are no
+   signals yet. #}
+<div class="feed-shell{% if activity %} feed-shell--with-ticker{% endif %}">
+  <div class="feed-main">
+    <nav class="feed-filter" aria-label="카테고리 필터">
+      <a class="chip{% if not category %} is-active{% endif %}"
+         href="/feed"{% if not category %} aria-current="true"{% endif %}>전체</a>
+      <a class="chip chip--main{% if category == 'Mainstream' %} is-active{% endif %}"
+         href="/feed?category=Mainstream"{% if category == 'Mainstream' %} aria-current="true"{% endif %}>Mainstream</a>
+      <a class="chip chip--alpha{% if category == 'Alpha' %} is-active{% endif %}"
+         href="/feed?category=Alpha"{% if category == 'Alpha' %} aria-current="true"{% endif %}>Alpha</a>
+    </nav>
 
-<div id="feed-list" class="feed-list">
-  {% include "_feed_items.html" %}
+    <div id="feed-list" class="feed-list">
+      {% include "_feed_items.html" %}
+    </div>
+  </div>
+
+  {% if activity %}
+  <aside class="ticker" aria-label="관측 신호">
+    {% include "_ticker.html" %}
+  </aside>
+  {% endif %}
 </div>
 {% endblock %}

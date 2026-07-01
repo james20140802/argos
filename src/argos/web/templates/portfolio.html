@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}포트폴리오 · ARGOS{% endblock %}
+{# Widen the wrap on desktop so the Keep grid can run multi-column instead of
+   one full-width column of oversized covers. #}
+{% block page_class %}page--portfolio{% endblock %}
 {% block content %}
 <nav class="portfolio-filter" aria-label="카테고리 필터">
   <a class="chip{% if not category %} is-active{% endif %}"

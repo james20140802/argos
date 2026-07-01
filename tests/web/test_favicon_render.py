@@ -61,6 +61,11 @@ def _client_with_feed(monkeypatch, page: FeedPage) -> TestClient:
         return page
 
     monkeypatch.setattr("argos.web.app.fetch_feed", _fake_fetch_feed)
+
+    async def _fake_fetch_activity(session, limit=12):
+        return []
+
+    monkeypatch.setattr("argos.web.app.fetch_activity", _fake_fetch_activity)
     return TestClient(app)
 
 

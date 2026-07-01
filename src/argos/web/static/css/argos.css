@@ -13,16 +13,25 @@
 
 /* === 1. Tokens === */
 :root {
+  color-scheme: light dark;   /* honour the OS appearance for form controls etc. */
   --bg: #0b0d12;
   --bg2: #0e1118;
+  --surface: rgba(236, 231, 221, 0.04);   /* faint raised plane on dark */
+  --surface-2: #1b2030;
+  --surface-3: #2a3145;
   --ink: #ECE7DD;
   --muted: #8b9098;
   --faint: #5b6068;
   --line: rgba(236, 231, 221, 0.09);
+  --hairline: rgba(236, 231, 221, 0.14);
   --brass: #C9A86A;
   --brass-hi: #E7C98B;
   --main: #74B7C7;   /* Mainstream */
   --alpha: #B790E4;  /* Alpha */
+  /* Cover wash sits behind images while they load and under the favicon/glyph
+     fallbacks. Token-ised so the light theme can swap it without touching the
+     component rules. */
+  --cover-bg: rgba(236, 231, 221, 0.04);
 }
 
 /* === 2. @font-face — paths are relative to this file === */
@@ -142,6 +151,62 @@ body {
   padding: 8px 20px 96px; /* bottom padding clears the fixed tabbar */
 }
 
+/* ── Desktop left rail (≥768px) ───────────────────────────────────────────
+   Below 768px the rail is hidden and the mobile masthead + bottom tabbar do
+   the work. At 768px and up the rail takes over as a fixed vertical sidebar,
+   the mobile chrome is hidden, and the content column shifts right. This is
+   what makes the desktop layout genuinely different from mobile rather than a
+   bottom phone bar stretched across a wide screen. */
+.rail { display: none; }
+
+@media (min-width: 768px) {
+  /* ``body`` prefix lifts these to (0,1,1) so they beat the base
+     ``.tabbar { display: flex }`` / ``.masthead`` rules that appear LATER in
+     the source — a plain ``.tabbar`` here would lose on source order because a
+     media query adds no specificity. */
+  body .masthead { display: none; }
+  body .tabbar { display: none; }
+
+  body { padding-left: 232px; }
+  .page { padding-top: 30px; padding-bottom: 64px; }
+
+  .rail {
+    display: flex; flex-direction: column; gap: 40px;
+    position: fixed; left: 0; top: 0; bottom: 0; z-index: 3;
+    width: 232px; padding: 34px 22px;
+    border-right: 1px solid var(--line);
+    background: linear-gradient(180deg, var(--bg2), var(--bg));
+  }
+  .rail__brand {
+    display: flex; align-items: center; gap: 11px;
+    text-decoration: none;
+  }
+  .rail__brand .mark { filter: drop-shadow(0 0 8px rgba(201, 168, 106, 0.35)); }
+  .rail__word { display: flex; flex-direction: column; gap: 4px; }
+  .rail__word .wordmark {
+    font: 600 16px/1 "Fraunces", serif;
+    letter-spacing: 0.24em; text-indent: 0.24em; color: var(--ink);
+  }
+  .rail__word .kicker {
+    font: 500 8px/1 "IBM Plex Mono", monospace;
+    letter-spacing: 0.34em; color: var(--brass); text-transform: uppercase;
+  }
+  .rail__nav { display: flex; flex-direction: column; gap: 4px; }
+  .rail__tab {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 13px; border-radius: 11px;
+    font: 500 14px/1 "IBM Plex Sans KR", sans-serif;
+    color: var(--muted); text-decoration: none;
+    transition: color 0.2s, background 0.2s;
+  }
+  .rail__tab .ic { font-size: 15px; width: 18px; text-align: center; }
+  .rail__tab:hover { color: var(--ink); background: var(--surface); }
+  .rail__tab[aria-current="page"] {
+    color: var(--ink); background: var(--surface);
+  }
+  .rail__tab[aria-current="page"] .ic { color: var(--brass); }
+}
+
 /* Category tag — small-caps style for Mainstream / Alpha */
 .tag {
   font: 600 9.5px/1 "IBM Plex Sans KR", sans-serif;
@@ -192,31 +257,81 @@ body {
   color: var(--ink);
 }
 
-/* Card — news / portfolio item */
+/* Card — news / portfolio item.
+   Editorial (Apple Newsroom) treatment: no surrounding box or border. The
+   image IS the card — a rounded cover plate — with the eyebrow, headline and
+   summary set directly on the page surface beneath it. The old bordered/​
+   gradient panel is what made the grid read as a generic "card wall"; dropping
+   it is most of the magazine feel. */
 .card {
-  border-radius: 18px; border: 1px solid var(--line); overflow: hidden;
-  background: linear-gradient(180deg, rgba(236, 231, 221, 0.04), rgba(236, 231, 221, 0.012));
+  display: flex;
+  flex-direction: column;
+  background: none;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+  /* Grid items default to min-width:auto (= min-content). The aspect-ratio
+     cover then refuses to shrink below its intrinsic size and blows the track
+     out. min-width:0 lets the card honour its 1fr share. */
+  min-width: 0;
 }
 .card .cover {
-  position: relative; height: 150px;
-  background-size: cover; background-position: center;
+  position: relative;
+  display: block;            /* the cover is an <a> (inline by default) */
+  aspect-ratio: 16 / 10;
+  border-radius: 14px;
+  overflow: hidden;
+  background-color: var(--cover-bg);
+  background-size: cover;
+  background-position: center;
+  transition: transform 0.4s cubic-bezier(0.2, 0.7, 0.2, 1),
+              box-shadow 0.4s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.card:hover .cover {
+  transform: translateY(-4px);
+  box-shadow: 0 18px 40px -22px rgba(0, 0, 0, 0.7);
 }
 .card .cover .scrim { position: absolute; inset: 0; }
-.card .body { padding: 14px 15px 13px; }
+.card .body { padding: 0; min-width: 0; }
 .card .headline {
-  font: 600 18.5px/1.28 "Fraunces", "Gowun Batang", serif;
+  font: 600 20px/1.26 "Fraunces", "Gowun Batang", serif;
   font-optical-sizing: auto;
-  letter-spacing: -0.01em; margin: 0 0 8px;
+  letter-spacing: -0.012em; margin: 0 0 8px;
+  /* Long unbroken tokens (URL-like titles, code) must wrap rather than blow the
+     grid track out past the viewport. */
+  overflow-wrap: anywhere;
 }
+.eyebrow__src { overflow-wrap: anywhere; }
 .card .summary {
-  font: 400 13px/1.6 "IBM Plex Sans KR", sans-serif;
-  color: #a3a8b1; margin: 0 0 14px;
-  /* One-line clamp on standard grid cards; the featured hero overrides to 2. */
+  font: 400 13.5px/1.6 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); margin: 0 0 14px;
+  /* Two-line clamp on standard grid cards; the featured hero overrides to 3. */
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
+}
+
+/* Editorial eyebrow — the mono "instrument readout" above each headline:
+   CATEGORY · domain · status. Category is tinted; the rest is faint. */
+.eyebrow {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font: 600 10.5px/1.2 "IBM Plex Mono", monospace;
+  letter-spacing: 0.13em; text-transform: uppercase;
+  color: var(--faint);
+  margin: 14px 0 9px;
+}
+.eyebrow__cat { color: var(--brass); }
+.eyebrow--mainstream .eyebrow__cat { color: var(--main); }
+.eyebrow--alpha .eyebrow__cat { color: var(--alpha); }
+.eyebrow__cat::after {
+  content: ""; display: inline-block;
+  width: 3px; height: 3px; margin-left: 8px; vertical-align: middle;
+  border-radius: 50%; background: currentColor; opacity: 0.6;
+}
+.eyebrow__src {
+  color: var(--muted); text-transform: none; letter-spacing: 0.02em;
 }
 
 /* Glass bottom tabbar — fixed at viewport bottom */
@@ -285,14 +400,16 @@ body {
 .chip--main.is-active { background: var(--main); border-color: var(--main); }
 .chip--alpha.is-active { background: var(--alpha); border-color: var(--alpha); }
 
-/* Magazine grid (ARG-175). Mobile is a single column — identical to the
-   previous flex column. Tablet/desktop widen to 2/3 columns in the media
-   queries below. The featured hero, empty-state line, and 더 보기 button each
-   span the full row regardless of column count. */
+/* Editorial grid (ARG-175 → observation-log redesign). Mobile is a single
+   airy column; tablet/desktop widen to 2/3 columns. The featured hero, empty
+   state, and 더 보기 button each span the full row regardless of column count.
+   Generous row-gap gives the borderless cards room to read as a publication
+   rather than a tight card wall. */
 .feed-list {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 16px;
+  column-gap: 22px;
+  row-gap: 38px;
 }
 .feed-list > .feed-empty,
 .feed-list > .load-more,
@@ -304,39 +421,177 @@ body {
   color: var(--muted); text-align: center; padding: 48px 0;
 }
 
-/* Featured hero — first card of the first page only (ARG-175). Taller cover,
-   larger headline, and a 2-line summary clamp vs the 1-line standard card. */
-.card--featured .cover { height: 220px; }
-.card--featured .headline { font-size: 23px; }
+/* Featured hero — the lead story (first card, first page only). A cinematic
+   wide cover and an outsized serif headline establish the masthead hierarchy
+   the references (Apple Newsroom / NYT) lead with. */
+.card--featured {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--hairline);
+}
+.card--featured .cover { aspect-ratio: 16 / 9; border-radius: 16px; }
+.card--featured .headline { font-size: 28px; line-height: 1.16; }
 .card--featured .summary {
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  font-size: 14px;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  font-size: 15px;
+  max-width: 62ch;
 }
 
-/* Tablet — 2 columns, wrap widened past the 760px mobile column. */
+/* Tablet — 2 columns. */
 @media (min-width: 768px) {
-  .page--feed { max-width: 980px; }
-  .feed-list { grid-template-columns: repeat(2, 1fr); gap: 18px; }
-  .card--featured .cover { height: 340px; }
-  .card--featured .headline { font-size: 28px; }
+  .page--feed { max-width: 1000px; }
+  .feed-list { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 26px; row-gap: 44px; }
+  .card--featured { display: grid; grid-template-columns: 1.5fr 1fr; gap: 28px; align-items: center; }
+  .card--featured .cover { aspect-ratio: 16 / 10; margin: 0; }
+  .card--featured .body { align-self: center; }
+  .card--featured .headline { font-size: 34px; }
 }
 
-/* Desktop — 3 columns, wrap widened to a magazine width. */
-@media (min-width: 1100px) {
-  .page--feed { max-width: 1200px; }
-  .feed-list { grid-template-columns: repeat(3, 1fr); gap: 20px; }
+/* Desktop — a three-tier editorial rhythm at magazine width (Apple Newsroom):
+   tier 1 hero (full row, 2-up split), tier 2 two "feature" cards (2-up, larger),
+   tier 3 the standard 3-up grid. A 6-column track lets each tier span cleanly
+   (6 / 3 / 2). Tiers are addressed positionally via :nth-child so they survive
+   an HTMX single-card action re-render without threading a per-card flag.
+   Source order matters: the standard span is first, the feature nth-child spans
+   override it (higher specificity), and the hero span is last so it wins
+   child 1. */
+@media (min-width: 1200px) {
+  .page--feed { max-width: 1280px; }
+  .feed-list {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    column-gap: 30px; row-gap: 52px;
+  }
+  .feed-list > .card { grid-column: span 2; }                /* tier 3 — 3-up */
+  .feed-list > .card:nth-child(2),
+  .feed-list > .card:nth-child(3) { grid-column: span 3; }   /* tier 2 — 2-up feature */
+  .feed-list > .card--featured { grid-column: 1 / -1; }      /* tier 1 — hero */
+
+  .card--featured { grid-template-columns: 1.6fr 1fr; }
+  .card--featured .headline { font-size: 40px; }
+
+  /* Feature cards sit a step above the 3-up grid — wider cover, larger type. */
+  .feed-list > .card:nth-child(2) .cover,
+  .feed-list > .card:nth-child(3) .cover { aspect-ratio: 16 / 9; }
+  .feed-list > .card:nth-child(2) .headline,
+  .feed-list > .card:nth-child(3) .headline { font-size: 25px; }
+  .feed-list > .card:nth-child(2) .summary,
+  .feed-list > .card:nth-child(3) .summary { font-size: 14.5px; }
 }
 
-/* Card cover is a link — keep it block-level and image-covered */
-.card .cover { display: block; }
+/* ── Signal ticker (feed right rail) ──────────────────────────────────────
+   A second stream beside the discovery feed: the most recent signals the
+   observatory surfaced (new-item matches + succession alerts). It is wide-
+   screen-only chrome — hidden below 1536px so the standard feed layout is
+   completely untouched — and the feed page degrades to a single column. */
+.feed-main { min-width: 0; }
+.ticker { display: none; }
+
+@media (min-width: 1536px) {
+  .page--feed { max-width: 1600px; }
+  .feed-shell--with-ticker {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 48px;
+    align-items: start;
+  }
+  /* The ticker pins and scrolls independently — a live monitor that stays in
+     view as the long feed scrolls past. Its scrollbar is hidden (it reads as
+     chrome, not a scroll region); the wheel/trackpad still scrolls it. */
+  .ticker {
+    display: block;
+    position: sticky;
+    top: 30px;
+    max-height: calc(100vh - 60px);
+    overflow-y: auto;
+    padding-left: 4px;
+    scrollbar-width: none;        /* Firefox */
+    -ms-overflow-style: none;     /* legacy Edge */
+  }
+  .ticker::-webkit-scrollbar { width: 0; height: 0; display: none; }  /* WebKit */
+}
+
+/* Ultra-wide (≥1920px, external monitors) — reclaim the empty gutters: a wider
+   wrap, a 4-up standard grid (8-col track), and a roomier ticker. */
+@media (min-width: 1920px) {
+  .page--feed { max-width: 1880px; }
+  .feed-shell--with-ticker { grid-template-columns: minmax(0, 1fr) 384px; gap: 56px; }
+  .feed-list { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  .feed-list > .card { grid-column: span 2; }                 /* tier 3 — 4-up */
+  .feed-list > .card:nth-child(2),
+  .feed-list > .card:nth-child(3) { grid-column: span 4; }    /* tier 2 — 2-up */
+  .feed-list > .card--featured { grid-column: 1 / -1; }       /* tier 1 — hero */
+}
+
+.ticker__head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 0 0 16px; padding-bottom: 14px;
+  border-bottom: 1px solid var(--hairline);
+}
+.ticker__title {
+  font: 600 11px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.22em; text-transform: uppercase; color: var(--brass);
+}
+.ticker__live {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 600 9px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.18em; color: var(--faint);
+}
+.ticker__dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--main); box-shadow: 0 0 8px var(--main);
+  animation: ticker-pulse 2.2s ease-in-out infinite;
+}
+@keyframes ticker-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .ticker__dot { animation: none; } }
+
+.ticker__list { list-style: none; margin: 0; padding: 0; }
+.ticker__item { padding: 15px 0; border-bottom: 1px solid var(--line); }
+.ticker__item:last-child { border-bottom: none; }
+.ticker__meta { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+.ticker__kind {
+  font: 600 8.5px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 6px; border: 1px solid;
+}
+.ticker__kind--signal {
+  color: var(--main); border-color: rgba(116, 183, 199, 0.4);
+  background: rgba(116, 183, 199, 0.08);
+}
+.ticker__kind--succession {
+  color: var(--alpha); border-color: rgba(183, 144, 228, 0.4);
+  background: rgba(183, 144, 228, 0.08);
+}
+.ticker__time {
+  font: 400 10.5px/1 "IBM Plex Mono", monospace; color: var(--faint);
+}
+.ticker__link {
+  display: block;
+  font: 500 14px/1.42 "IBM Plex Sans KR", sans-serif;
+  color: var(--ink); text-decoration: none; overflow-wrap: anywhere;
+  transition: color 0.15s;
+}
+.ticker__link:hover { color: var(--brass-hi); }
+.ticker__sub { margin: 6px 0 0; }
+.ticker__sub a, .ticker__sub span {
+  font: 400 12px/1.45 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); text-decoration: none; overflow-wrap: anywhere;
+}
+.ticker__sub a:hover { color: var(--main); }
+
+/* The favicon-chip and glyph fallbacks center their contents. These selectors
+   are (0,2,0) — equal to the base ``.card .cover`` rule — and sit later in the
+   source, so they win and restore flex centering inside a card. */
+.card .cover--favicon,
+.card .cover--fallback {
+  display: flex; align-items: center; justify-content: center;
+}
 /* og:image rendered as an <img> (not inline-CSS background) for safe escaping */
 .card .cover .cover__img {
   position: absolute; inset: 0;
   width: 100%; height: 100%;
   object-fit: cover;
 }
-.card .headline a { color: var(--ink); text-decoration: none; }
+.card .headline a { color: var(--ink); text-decoration: none; transition: color 0.15s; }
 .card .headline a:hover { color: var(--brass-hi); }
 
 /* Cover scrim — darken bottom so any future overlay text stays legible */
@@ -474,9 +729,22 @@ body {
   margin: 0 0 14px;
 }
 
-/* Card list inside each section */
+/* Card list inside each section — a single airy column on mobile, widening to
+   a 2-up (then 3-up) grid on desktop so Keep covers don't balloon to full
+   content width. */
 .portfolio-list {
-  display: flex; flex-direction: column; gap: 16px;
+  display: grid;
+  grid-template-columns: 1fr;
+  column-gap: 24px;
+  row-gap: 34px;
+}
+@media (min-width: 768px) {
+  .page--portfolio { max-width: 1000px; }
+  .portfolio-list { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 26px; row-gap: 40px; }
+}
+@media (min-width: 1200px) {
+  .page--portfolio { max-width: 1240px; }
+  .portfolio-list { grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 30px; row-gap: 46px; }
 }
 
 /* Signal / lineage count badges */
@@ -779,4 +1047,90 @@ body {
   align-self: center;
   font: 400 11px/1 "IBM Plex Mono", monospace;
   color: var(--faint); white-space: nowrap;
+}
+
+/* ============================================================================
+   8. Light theme — follows prefers-color-scheme: light (the OS appearance).
+   The reference brief (Apple Newsroom) is a bright paper surface; this block
+   re-points the design tokens and overrides the handful of components that
+   bake in a translucent light-on-dark wash (which would vanish on a light bg).
+   Source order puts it last so equal-specificity overrides win.
+   ========================================================================== */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fbfbfd;
+    --bg2: #ffffff;
+    --surface: rgba(0, 0, 0, 0.045);
+    --surface-2: #eceef2;
+    --surface-3: #dfe3ea;
+    --ink: #1d1d1f;
+    --muted: #515154;
+    --faint: #86868b;
+    --line: rgba(0, 0, 0, 0.10);
+    --hairline: rgba(0, 0, 0, 0.14);
+    --brass: #8a6a2a;
+    --brass-hi: #6f521d;
+    --main: #1f6f86;
+    --alpha: #6a3fa0;
+    --cover-bg: #eef0f3;
+  }
+
+  body {
+    background:
+      radial-gradient(120% 60% at 50% -8%, rgba(201, 168, 106, 0.07), transparent 55%),
+      linear-gradient(180deg, #ffffff, #f5f5f7 60%);
+  }
+  /* The constellation + grain belong to the night-sky theme; on paper they
+     read as noise, so drop them. */
+  .sky, .grain { display: none; }
+
+  /* Category tag (detail meta) — flip the light-on-dark fill to a tinted chip. */
+  .tag.main {
+    color: var(--main);
+    border-color: rgba(31, 111, 134, 0.35);
+    background: rgba(31, 111, 134, 0.10);
+  }
+  .tag.alpha {
+    color: var(--alpha);
+    border-color: rgba(106, 63, 160, 0.35);
+    background: rgba(106, 63, 160, 0.10);
+  }
+
+  /* Translucent panels that assumed a dark base. */
+  .chip,
+  .card-action,
+  .load-more,
+  .action-error,
+  .pf-badge,
+  .status-badge { background: rgba(0, 0, 0, 0.04); }
+
+  /* Borderless card hover lift — a soft paper shadow, not a black bloom. */
+  .card:hover .cover { box-shadow: 0 16px 36px -20px rgba(0, 0, 0, 0.28); }
+
+  /* Image-less fallback covers — light-tinted instead of fading to night. */
+  .cover--fallback {
+    background: radial-gradient(120% 90% at 50% 0%, rgba(0, 0, 0, 0.05), transparent 70%);
+  }
+  .cover--fallback.cover--mainstream {
+    background: radial-gradient(120% 90% at 50% 0%, rgba(31, 111, 134, 0.16), transparent 70%);
+  }
+  .cover--fallback.cover--alpha {
+    background: radial-gradient(120% 90% at 50% 0%, rgba(106, 63, 160, 0.16), transparent 70%);
+  }
+  .detail-hero--fallback {
+    background: radial-gradient(120% 90% at 50% 0%, rgba(0, 0, 0, 0.05), transparent 70%);
+  }
+  .detail-hero--mainstream {
+    background: radial-gradient(120% 90% at 50% 0%, rgba(31, 111, 134, 0.16), transparent 70%);
+  }
+  .detail-hero--alpha {
+    background: radial-gradient(120% 90% at 50% 0%, rgba(106, 63, 160, 0.16), transparent 70%);
+  }
+
+  /* Favicon chip — a light glass pill with ink text on paper. */
+  .favicon-chip { background: rgba(255, 255, 255, 0.72); border: 1px solid var(--line); }
+  .favicon-chip__domain { color: var(--ink); }
+
+  /* Detail reader surfaces that tinted off a dark base. */
+  .genealogy-entry { background: rgba(0, 0, 0, 0.025); }
 }

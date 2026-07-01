@@ -1,3 +1,4 @@
+{% from "_macros.html" import cover %}
 {# Single feed card — the source of truth for both the initial feed list
    (_feed_items.html loops + includes this) and the HTMX Keep/Pass action
    swaps returned by POST /items/{id}/keep|pass (ARG-136 / ARG-139).
@@ -8,48 +9,29 @@
    ``is_featured`` is supplied only by the first-page list loop (ARG-175); it
    is undefined — and thus falsy — on the bare Keep/Pass action re-render, so
    the magazine hero degrades to a standard card there. #}
+{% set cat = (item.category.value if item.category else 'none')|lower %}
 <article class="card rise{% if is_featured %} card--featured{% endif %}" id="feed-card-{{ item.id }}"
          style="--d: {{ card_delay | default('0.00') }}s">
   {# Card taps open the in-app reader (ARG-138); "원문 보기" on the detail
      page handles the external source_url redirect. #}
-  {% if item.image_url and item.image_url.endswith('/favicon.ico') %}
-  <a class="cover cover--favicon cover--{{ (item.category.value if item.category else 'none')|lower }}"
-     href="/item/{{ item.id }}">
-    <span class="scrim" aria-hidden="true"></span>
-    {# image_url is attacker-controllable (crawled): escaped <img src> only, never CSS url(). #}
-    <span class="favicon-chip">
-      <img class="favicon-chip__img" src="{{ item.image_url }}" alt="" loading="lazy" width="32" height="32">
-      <span class="favicon-chip__domain">{{ item.source_url | domain }}</span>
-    </span>
-  </a>
-  {% elif item.image_url %}
-  <a class="cover" href="/item/{{ item.id }}">
-    {# og:image is attacker-controllable (crawled): render via an HTML-escaped
-       <img src> rather than inline CSS url() to avoid CSS-context injection. #}
-    <img class="cover__img" src="{{ item.image_url }}" alt="" loading="lazy">
-    <span class="scrim" aria-hidden="true"></span>
-  </a>
-  {% else %}
-  <a class="cover cover--fallback cover--{{ (item.category.value if item.category else 'none')|lower }}"
-     href="/item/{{ item.id }}">
-    <span class="scrim" aria-hidden="true"></span>
-    <span class="cover__glyph" aria-hidden="true">◎</span>
-  </a>
-  {% endif %}
+  {{ cover(item.image_url, item.category, "/item/" ~ item.id, item.source_url) }}
   <div class="body">
-    <div class="meta">
+    {# Editorial eyebrow: category (tinted) · source domain · optional status.
+       The mono "instrument readout" line that anchors the headline. #}
+    <p class="eyebrow eyebrow--{{ cat }}">
       {% if item.category %}
-      <span class="tag {{ 'main' if item.category.value == 'Mainstream' else 'alpha' }}">{{ item.category.value }}</span>
+      <span class="eyebrow__cat">{{ item.category.value }}</span>
       {% endif %}
+      <span class="eyebrow__src">{{ item.source_url | domain }}</span>
       {% if item.status %}
       <span class="status-badge status-badge--{{ item.status.value|lower }}">{{ item.status.value }}</span>
       {% endif %}
-    </div>
+    </p>
     <h2 class="headline">
       <a href="/item/{{ item.id }}">{{ item.title }}</a>
     </h2>
-    {# Triage-generated one-liner; auto-escaped. CSS line-clamps it (2 lines on
-       the featured hero, 1 line on standard cards). Omitted entirely when the
+    {# Triage-generated one-liner; auto-escaped. CSS line-clamps it (3 lines on
+       the featured hero, 2 on standard cards). Omitted entirely when the
        column is null so no empty element reserves space. #}
     {% if item.summary %}
     <p class="summary">{{ item.summary }}</p>

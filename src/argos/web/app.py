@@ -23,6 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from argos.web.services.activity import fetch_activity
 from argos.web.services.detail import fetch_item_detail
 from argos.web.services.feed import fetch_feed
 from argos.web.services.portfolio import fetch_portfolio
@@ -152,6 +153,34 @@ def build_web_app() -> FastAPI:
 
     app.state.templates.env.filters["domain"] = _domain_of
 
+    def _reltime(value) -> str:
+        """Render-time helper: a compact Korean relative time for the ticker.
+
+        Display-only; ``datetime.now`` is acceptable here (not on a code path
+        that needs deterministic output for tests). Falls back to an ISO date
+        for anything older than a week or unparseable.
+        """
+        from datetime import datetime, timezone
+
+        if not isinstance(value, datetime):
+            return ""
+        when = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - when
+        secs = delta.total_seconds()
+        if secs < 0:
+            return "방금"
+        if secs < 60:
+            return "방금"
+        if secs < 3600:
+            return f"{int(secs // 60)}분 전"
+        if secs < 86400:
+            return f"{int(secs // 3600)}시간 전"
+        if secs < 604800:
+            return f"{int(secs // 86400)}일 전"
+        return when.strftime("%Y-%m-%d")
+
+    app.state.templates.env.filters["reltime"] = _reltime
+
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
@@ -227,6 +256,7 @@ def build_web_app() -> FastAPI:
         session,
         *,
         first_page: bool,
+        include_activity: bool = False,
     ) -> HTMLResponse:
         normalized = _normalize_category(category)
         try:
@@ -235,6 +265,9 @@ def build_web_app() -> FastAPI:
             # ``cursor`` is user-controlled query state; a stale/corrupted
             # load-more URL must not 500. Translate it to a controlled 400.
             raise HTTPException(status_code=400, detail="invalid feed cursor") from exc
+        # The signal ticker is full-page chrome (feed.html), never part of the
+        # HTMX "더 보기" fragment — so it's only fetched for the initial render.
+        activity = await fetch_activity(session) if include_activity else []
         return request.app.state.templates.TemplateResponse(
             request,
             template_name,
@@ -246,6 +279,7 @@ def build_web_app() -> FastAPI:
                 # "더 보기" fragment (GET /feed/items) must never re-emit a hero
                 # mid-scroll, so it renders with first_page=False.
                 "first_page": first_page,
+                "activity": activity,
             },
         )
 
@@ -262,6 +296,7 @@ def build_web_app() -> FastAPI:
         return await _render_feed(
             request, "feed.html", category, cursor, session,
             first_page=cursor is None,
+            include_activity=True,
         )
 
     @app.get("/feed/items", response_class=HTMLResponse)

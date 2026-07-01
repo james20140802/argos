@@ -53,6 +53,11 @@ def _client_with_feed(monkeypatch, page: FeedPage, capture: list | None = None) 
         return page
 
     monkeypatch.setattr("argos.web.app.fetch_feed", _fake_fetch_feed)
+
+    async def _fake_fetch_activity(session, limit=12):
+        return []
+
+    monkeypatch.setattr("argos.web.app.fetch_activity", _fake_fetch_activity)
     return TestClient(app)
 
 
@@ -107,8 +112,9 @@ def test_feed_renders_category_tags(monkeypatch):
     body = client.get("/feed").text
     assert "Alpha" in body
     assert "Mainstream" in body
-    # Category-specific tag modifier classes from argos.css.
-    assert "tag alpha" in body or "tag main" in body
+    # Category now renders as a tinted editorial eyebrow (observation-log
+    # redesign) rather than a pill tag.
+    assert "eyebrow--alpha" in body or "eyebrow--mainstream" in body
 
 
 def test_feed_shows_asset_status_badge(monkeypatch):

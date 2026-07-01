@@ -12,8 +12,13 @@
  * briefly during activation.
  *
  * v2: ARG-171 magazine-grid CSS + /feed shell changes.
+ * v3: observation-log redesign — editorial layout, light/dark theming, left
+ *     rail nav (argos.css rewrite) + new img-fallback.js. Bumped so clients on
+ *     the v2 cache actually receive the new CSS/JS instead of the stale shell.
+ * v4: signal ticker + ultra-wide layout (argos.css). Bumped so v3 clients pick
+ *     up the widened grid / ticker CSS instead of the cached v3 stylesheet.
  */
-const CACHE_VERSION = 'argos-v2';
+const CACHE_VERSION = 'argos-v4';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
@@ -25,6 +30,7 @@ const APP_SHELL = [
   '/static/img/icons/icon-192.png',
   '/static/img/icons/icon-512.png',
   '/static/js/htmx.min.js',
+  '/static/js/img-fallback.js',
 ];
 
 self.addEventListener('install', (event) => {
