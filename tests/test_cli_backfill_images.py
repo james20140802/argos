@@ -5,6 +5,7 @@ and the internal `_backfill_images` coroutine exactly like `test_cli_add.py`.
 """
 from __future__ import annotations
 
+from collections import namedtuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from argos.cli import main
@@ -13,6 +14,16 @@ from argos.cli import main
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Mirrors the SQLAlchemy Row shape of the SELECT in `_backfill_images`:
+# `select(TechItem.id, TechItem.source_url, TechItem.image_url)`. The code
+# reads these columns by attribute (r.id / r.source_url / r.image_url), so the
+# mock rows must be attribute-accessible — a plain tuple is not.
+_Row = namedtuple("_Row", ["id", "source_url", "image_url"])
+
+
+def _row(source_url: str, image_url: str | None = None):
+    return _Row(id=MagicMock(), source_url=source_url, image_url=image_url)
 
 
 def _make_session_ctx():
@@ -65,7 +76,7 @@ def test_backfill_images_default_path_calls_favicon_no_network(capsys):
     session, session_ctx = _make_session_ctx()
 
     # Simulate one NULL row
-    row = (MagicMock(), "https://example.com/article")
+    row = _row("https://example.com/article")
     session.execute = AsyncMock(
         side_effect=[
             # first call: SELECT rows with image_url IS NULL
@@ -98,7 +109,7 @@ def test_backfill_images_refetch_path_calls_fetch(capsys):
     """--refetch path calls _fetch_url_content (the network path)."""
     session, session_ctx = _make_session_ctx()
 
-    row = (MagicMock(), "https://example.com/article")
+    row = _row("https://example.com/article")
     session.execute = AsyncMock(
         side_effect=[
             MagicMock(**{"all.return_value": [row]}),
@@ -134,7 +145,7 @@ def test_backfill_images_refetch_skips_unsafe_url(capsys):
     falls back to the favicon instead of issuing the request."""
     session, session_ctx = _make_session_ctx()
 
-    row = (MagicMock(), "http://169.254.169.254/latest/meta-data/")
+    row = _row("http://169.254.169.254/latest/meta-data/")
     session.execute = AsyncMock(
         side_effect=[
             MagicMock(**{"all.return_value": [row]}),
