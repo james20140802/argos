@@ -1187,6 +1187,112 @@ async def _backfill_images(
     return EXIT_OK
 
 
+def _build_backfill_digests_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos backfill-digests`` subcommand (ARG-183)."""
+    bf_p = sub.add_parser(
+        "backfill-digests",
+        help="Generate longform digest for items where digest IS NULL (LLM, slow)",
+        parents=[common],
+        description=(
+            "Fill tech_items.digest where it is NULL and raw_content is present. "
+            "Uses the digest LLM (qwen3:14b by default) — slow, one call per row. "
+            "Existing non-NULL digests are never overwritten. Idempotent: re-runs "
+            "only touch rows still NULL."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bf_p.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Process at most N rows this run (default: all)",
+    )
+    bf_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report how many rows would be processed, without calling the LLM",
+    )
+
+
+def _cmd_backfill_digests(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _backfill_digests(
+            limit=getattr(args, "limit", None),
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    )
+
+
+async def _backfill_digests(limit: int | None = None, dry_run: bool = False) -> int:
+    """Fill NULL tech_items.digest rows via the digest LLM, one row at a time.
+
+    Per-row failure isolation: a row whose generation raises is logged and
+    skipped, never aborting the run. The UPDATE is guarded by ``digest IS NULL``
+    so a value set between SELECT and UPDATE is never clobbered.
+    """
+    from sqlalchemy import select, update
+
+    from argos.brain.llm_client import get_digest_llm_client
+    from argos.brain.nodes.digest import generate_digest
+    from argos.models.tech_item import TechItem
+
+    async with AsyncSessionLocal() as session:
+        stmt = select(
+            TechItem.id, TechItem.raw_content, TechItem.summary
+        ).where(
+            TechItem.digest.is_(None),
+            TechItem.raw_content.isnot(None),
+        ).order_by(TechItem.created_at.asc())
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        rows = (await session.execute(stmt)).all()
+
+    print(f"backfill-digests: {len(rows)} candidate row(s).")
+    if dry_run or not rows:
+        return 0
+
+    client = get_digest_llm_client()
+    filled = 0
+    skipped = 0
+    try:
+        for row in rows:
+            try:
+                digest = await generate_digest(
+                    row.raw_content, summary=row.summary,
+                    client=client, keep_alive="5m",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "backfill-digests: generation failed for %s: %r", row.id, exc
+                )
+                skipped += 1
+                continue
+            if digest is None:
+                skipped += 1
+                continue
+            async with AsyncSessionLocal() as write_session:
+                await write_session.execute(
+                    update(TechItem)
+                    .where(TechItem.id == row.id, TechItem.digest.is_(None))
+                    .values(digest=digest)
+                )
+                await write_session.commit()
+            filled += 1
+            print(f"  ✓ {row.id} ({filled}/{len(rows)})")
+    finally:
+        try:
+            await client.unload("large")
+        except Exception:  # noqa: BLE001
+            pass
+
+    print(f"backfill-digests done: filled={filled}, skipped={skipped}.")
+    return 0
+
+
 def _build_add_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -1530,6 +1636,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _build_add_parser(sub, common)
     _build_backfill_images_parser(sub, common)
+    _build_backfill_digests_parser(sub, common)
     _build_config_parser(sub)
     _build_doctor_parser(sub)
     _build_init_parser(sub)
@@ -1634,6 +1741,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_backfill_images(args)
+    if args.command == "backfill-digests":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_backfill_digests(args)
     return 1
 
 
