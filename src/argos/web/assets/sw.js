@@ -19,8 +19,10 @@
  *     up the widened grid / ticker CSS instead of the cached v3 stylesheet.
  * v5: active (pressed) Keep/Pass button state (argos.css + _feed_card.html).
  * v6: toggle-off Keep/Pass + emerald/terracotta active colours (argos.css).
+ * v7: equal-height cards — 3-line headline reservation + bottom-pinned action
+ *     row (argos.css). Bumped so v6 clients pick up the aligned grid.
  */
-const CACHE_VERSION = 'argos-v6';
+const CACHE_VERSION = 'argos-v7';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.

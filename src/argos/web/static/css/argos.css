@@ -295,6 +295,16 @@ body {
 }
 .card .cover .scrim { position: absolute; inset: 0; }
 .card .body { padding: 0; min-width: 0; }
+/* Standard grid cards flex their body so the action row can pin to the bottom
+   (margin-top:auto below): with the grid stretching every card in a row to a
+   common height, the Keep/Pass buttons then line up across the row regardless
+   of how many lines the title or summary took. The featured hero is a
+   side-by-side grid, so it opts out. */
+.card:not(.card--featured) .body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+}
 .card .headline {
   font: 600 20px/1.26 "Fraunces", "Gowun Batang", serif;
   font-optical-sizing: auto;
@@ -302,6 +312,15 @@ body {
   /* Long unbroken tokens (URL-like titles, code) must wrap rather than blow the
      grid track out past the viewport. */
   overflow-wrap: anywhere;
+  /* Reserve three lines for every headline and clamp to three: short titles
+     hold the same height as long ones, so the summary below starts on a common
+     baseline across the row instead of floating up under 1-line titles. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  min-height: calc(1.26em * 3);
 }
 .eyebrow__src { overflow-wrap: anywhere; }
 .card .summary {
@@ -431,7 +450,16 @@ body {
   border-bottom: 1px solid var(--hairline);
 }
 .card--featured .cover { aspect-ratio: 16 / 9; border-radius: 16px; }
-.card--featured .headline { font-size: 28px; line-height: 1.16; }
+/* The hero stands alone in its row, so it opts out of the 3-line reservation
+   and clamp that align the standard grid — its headline sizes to its content. */
+.card--featured .headline {
+  font-size: 28px; line-height: 1.16;
+  display: block;
+  -webkit-line-clamp: none;
+  line-clamp: none;
+  overflow: visible;
+  min-height: 0;
+}
 .card--featured .summary {
   -webkit-line-clamp: 3;
   line-clamp: 3;
@@ -681,6 +709,10 @@ body {
   display: flex; gap: 8px; flex-wrap: wrap;
   margin-top: 12px;
 }
+/* Pin the action row to the bottom of the flexed body so buttons align across
+   a row of unequal-length cards. (The hero body isn't a flex column, so its
+   auto margin is inert there.) */
+.card:not(.card--featured) .card-actions { margin-top: auto; }
 .card-action {
   flex: 1 1 0; min-width: 72px;
   padding: 9px 12px;

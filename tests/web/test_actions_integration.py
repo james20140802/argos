@@ -223,6 +223,39 @@ async def test_pass_first_then_repeat_pass_toggles_off():
 
 
 @pytest.mark.asyncio
+async def test_toggle_off_cascade_deletes_history_rows():
+    """Regression: toggling off an asset that already has track_history rows
+    must succeed (the FK cascades), not 500.
+
+    Keep → Pass writes one Keep→Archived history row; pressing Pass again then
+    toggles the (Archived) asset off. Deleting the user_asset must cascade the
+    history row instead of the ORM nulling its NOT NULL user_asset_id — the bug
+    that surfaced only for previously-transitioned items."""
+    tech_id = await _insert_tech_item()
+    try:
+        client = _client_with_real_db()
+
+        assert client.post(f"/items/{tech_id}/keep").status_code == 200
+        pass_resp = client.post(f"/items/{tech_id}/pass")
+        assert pass_resp.status_code == 200, pass_resp.text
+
+        asset = await _fetch_asset(tech_id)
+        assert asset is not None and asset.status == AssetStatus.ARCHIVED
+        # A transition happened, so there is a history row to cascade.
+        assert len(await _fetch_history(asset.id)) == 1
+        asset_id = asset.id
+
+        # Toggle off — the asset and its history row are both removed.
+        repeat = client.post(f"/items/{tech_id}/pass")
+        assert repeat.status_code == 200, repeat.text
+
+        assert await _fetch_asset(tech_id) is None
+        assert await _fetch_history(asset_id) == []
+    finally:
+        await _cleanup(tech_id)
+
+
+@pytest.mark.asyncio
 async def test_untrack_archives_kept_asset_and_writes_history():
     """Untrack on a previously Kept asset archives it via the user_asset
     id route and writes one Keep→Archived history row."""
