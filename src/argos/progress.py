@@ -44,6 +44,7 @@ _STAGE_LABELS: dict[str, str] = {
     "crawl": "Crawling",
     "preflight": "Preflight filter",
     "triage": "Triage (8B)",
+    "digest": "Digest (14B)",
     "embed": "Embedding",
     "genealogy": "Genealogy (32B)",
     "save": "Saving",

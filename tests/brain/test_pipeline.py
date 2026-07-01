@@ -151,6 +151,42 @@ async def test_run_brain_pipeline_returns_early_when_triage_fails(monkeypatch):
     save_mock.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_run_brain_pipeline_calls_digest_between_triage_and_embed(monkeypatch):
+    """digest_node가 triage 통과 후 embed 전에 호출되어 state에 digest를 남긴다."""
+    import argos.brain.pipeline as pipe
+
+    calls = []
+
+    async def fake_triage(state):
+        calls.append("triage")
+        return {**state, "is_valid": True, "trust_score": 0.9, "category": None}
+
+    async def fake_digest(state):
+        calls.append("digest")
+        return {**state, "digest": "롱폼 본문"}
+
+    async def fake_embed(state, session):
+        calls.append("embed")
+        return {**state, "genealogy_skipped": True}
+
+    saved = {}
+
+    async def fake_save(state, session, **kw):
+        saved.update(state)
+        return {**state, "saved": True}
+
+    monkeypatch.setattr(pipe, "triage_node", fake_triage)
+    monkeypatch.setattr(pipe, "digest_node", fake_digest)
+    monkeypatch.setattr(pipe, "embed_and_search_node", fake_embed)
+    monkeypatch.setattr(pipe, "save_node", fake_save)
+
+    await pipe.run_brain_pipeline("raw", "https://e.com", session=object())
+
+    assert calls == ["triage", "digest", "embed"]
+    assert saved["digest"] == "롱폼 본문"
+
+
 # ---------------------------------------------------------------------------
 # run_brain_pipeline — source_category forwarding (ARG-54)
 # ---------------------------------------------------------------------------

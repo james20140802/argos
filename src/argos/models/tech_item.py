@@ -25,6 +25,8 @@ class TechItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     image_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     raw_content: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ARG-173: 상세 페이지 롱폼 다이제스트(3~5문단). NULL이면 summary로 fallback.
+    digest: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
     category: Mapped[CategoryType] = mapped_column(
         Enum(

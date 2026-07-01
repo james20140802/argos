@@ -124,6 +124,8 @@ class ItemDetailView:
     similar: list[SimilarItem] = field(default_factory=list)
     signal_alerts: list[SignalAlert] = field(default_factory=list)
     related_history: list[HistoryEntry] = field(default_factory=list)
+    # ARG-173: 롱폼 다이제스트. 기본값 None이라 digest를 넘기지 않는 기존 호출부/테스트는 무영향.
+    digest: Optional[str] = None
 
 
 async def _fetch_predecessors(
@@ -345,6 +347,7 @@ async def fetch_item_detail(
         TechItem.source_url,
         TechItem.image_url,
         TechItem.summary,
+        TechItem.digest,
         TechItem.category,
         TechItem.trust_score,
         TechItem.published_at,
@@ -367,6 +370,7 @@ async def fetch_item_detail(
         source_url=row.source_url,
         image_url=row.image_url,
         summary=row.summary,
+        digest=row.digest,
         category=row.category,
         trust_score=row.trust_score,
         published_at=row.published_at,

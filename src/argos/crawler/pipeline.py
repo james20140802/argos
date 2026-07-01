@@ -329,6 +329,9 @@ async def run_full_pipeline(
     # up front — Rich handles None gracefully as a spinner-only bar.
     if progress is not None:
         _ps("triage", total=len(valid_items))
+        # digest runs on the same full item set as triage (batch_digest_states
+        # ticks on_item_done once per state, valid or not — mirrors triage).
+        _ps("digest", total=len(valid_items))
         _ps("embed")
         _ps("genealogy")
         _ps("save", total=len(valid_items))
@@ -336,11 +339,13 @@ async def run_full_pipeline(
             valid_items,
             session,
             on_triage_item_done=progress.callback_for("triage"),
+            on_digest_item_done=progress.callback_for("digest"),
             on_embed_item_done=progress.callback_for("embed"),
             on_genealogy_item_done=progress.callback_for("genealogy"),
             on_save_item_done=progress.callback_for("save"),
         )
         _pf("triage")
+        _pf("digest")
         _pf("embed")
         _pf("genealogy")
         _pf("save")

@@ -49,6 +49,14 @@
   </section>
   {% endif %}
 
+  {% if item.digest %}
+  <section class="detail-digest">
+    {% for para in item.digest.split('\n\n') %}
+    {% if para.strip() %}<p>{{ para.strip() }}</p>{% endif %}
+    {% endfor %}
+  </section>
+  {% endif %}
+
   <p class="detail-source">
     <a class="detail-source__link"
        href="{{ item.source_url }}"

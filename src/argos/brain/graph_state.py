@@ -37,3 +37,7 @@ class BrainState(TypedDict):
     # og:image URL extracted by the fetcher (ARG-135). None when the source
     # had no og:image / twitter:image meta or the value failed validation.
     image_url: NotRequired[str | None]
+    # Longform digest produced by digest_node (ARG-173). NotRequired so existing
+    # state initializers need not set it; save_node reads via state.get("digest").
+    # None when the node skipped (thin content), failed, or output was rejected.
+    digest: NotRequired[str | None]

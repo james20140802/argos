@@ -78,6 +78,7 @@ async def save_node(
         source_url=state["source_url"],
         raw_content=state["raw_text"],
         summary=state.get("summary"),
+        digest=state.get("digest"),
         # Use triage-decided category, falling back to ALPHA as a safe default
         # in case it was not set (e.g. state produced by an older code path).
         category=state.get("category") or CategoryType.ALPHA,

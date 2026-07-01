@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 from pydantic import BaseModel, StrictBool, field_validator
+from argos.brain._language import language_directive
 from argos.brain.graph_state import BrainState
 from argos.brain.llm_client import get_llm_client
 from argos.config import settings
@@ -23,7 +24,7 @@ category must be one of "Mainstream" or "Alpha". Mainstream = mature, widely ado
 {source_hint_block}Respond ONLY with valid JSON: {schema}
 {interests_block}
 Text:
-{text}"""
+{text}{language_reminder}"""
 
 _SCHEMA_BASE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "...", "category": "Mainstream"|"Alpha"}}'
 _SCHEMA_WITH_RELEVANCE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "...", "category": "Mainstream"|"Alpha", "is_relevant": true/false}}'
@@ -200,12 +201,14 @@ async def _triage_one(state: BrainState, client, keep_alive) -> BrainState:
     source_hint_block = _build_source_hint_block(state.get("source_category"))
     schema = _SCHEMA_WITH_RELEVANCE if topics else _SCHEMA_BASE
     triage_text = (state["raw_text"] or "")[:_TRIAGE_TEXT_MAX_CHARS]
+    _language = settings.user.slack.summary_language or "English"
     prompt = _TRIAGE_PROMPT.format(
         text=triage_text,
-        language=settings.user.slack.summary_language or "English",
+        language=_language,
         interests_block=interests_block,
         source_hint_block=source_hint_block,
         schema=schema,
+        language_reminder=language_directive(_language),
     )
     try:
         raw = await client.query(

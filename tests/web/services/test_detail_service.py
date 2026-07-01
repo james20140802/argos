@@ -246,6 +246,49 @@ async def test_fetch_similar_ranks_keep_assets_by_proximity_to_current_item() ->
         await engine.dispose()
 
 
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_item_detail_returns_digest() -> None:
+    """ARG-182: fetch_item_detail exposes the digest column (ARG-173/Task 1)."""
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    seeded_id: uuid.UUID | None = None
+    try:
+        async with Session() as session:
+            item = TechItem(
+                title="arg182-digest",
+                source_url=f"https://example.com/arg182/{uuid.uuid4()}",
+                raw_content="x" * 2000,
+                summary="s",
+                digest="롱폼 본문",
+                category=CategoryType.ALPHA,
+                trust_score=0.7,
+            )
+            session.add(item)
+            await session.flush()
+            seeded_id = item.id
+            await session.commit()
+
+        async with Session() as session:
+            view = await fetch_item_detail(session, seeded_id)
+            assert view is not None
+            assert view.digest == "롱폼 본문"
+    finally:
+        async with Session() as session:
+            if seeded_id is not None:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id == seeded_id)
+                )
+            await session.commit()
+        await engine.dispose()
+
+
 def test_similar_limit_default_is_five() -> None:
     from argos.web.services.detail import SIMILAR_LIMIT
 

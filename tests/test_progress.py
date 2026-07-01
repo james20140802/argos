@@ -13,7 +13,7 @@ from typing import cast
 
 from rich.console import Console
 
-from argos.progress import ProgressReporter
+from argos.progress import _STAGE_LABELS, ProgressReporter
 
 
 # Conservative ANSI CSI matcher: ESC [ <params> <final-byte>
@@ -26,6 +26,17 @@ def _strip_ansi(text: str) -> str:
 
 def _has_ansi(text: str) -> bool:
     return bool(_ANSI_RE.search(text))
+
+
+# ---------------------------------------------------------------------------
+# Stage labels
+# ---------------------------------------------------------------------------
+
+
+def test_digest_stage_has_label():
+    """ARG-173: the digest stage (14B longform pass) must render a real label,
+    not fall back to the raw-name capitalisation used for unknown stages."""
+    assert _STAGE_LABELS["digest"] == "Digest (14B)"
 
 
 # ---------------------------------------------------------------------------
