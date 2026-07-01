@@ -21,6 +21,7 @@ def _view(
     title: str = "GPT-5 launches with multimodal reasoning",
     image_url: str | None = None,
     summary: str | None = "It's the next milestone.",
+    digest: str | None = None,
     category: CategoryType | None = CategoryType.MAINSTREAM,
     trust_score: float | None = 0.82,
     source_url: str = "https://example.com/gpt5",
@@ -31,6 +32,7 @@ def _view(
         source_url=source_url,
         image_url=image_url,
         summary=summary,
+        digest=digest,
         category=category,
         trust_score=trust_score,
         published_at=None,
@@ -156,6 +158,33 @@ def test_item_detail_returns_404_for_malformed_uuid(monkeypatch):
     assert "관측 대상이 없습니다" in resp.text
     # Service must never be called with a non-UUID.
     assert capture == []
+
+
+def test_detail_renders_digest_paragraphs(monkeypatch):
+    view = _view(digest="첫 문단 내용입니다.\n\n둘째 문단 내용입니다.")
+    client = _client_with_detail(monkeypatch, view)
+    resp = client.get(f"/item/{view.id}")
+    assert resp.status_code == 200
+    assert "첫 문단 내용입니다." in resp.text
+    assert "둘째 문단 내용입니다." in resp.text
+    # 두 문단이 별도 <p>로 렌더
+    assert resp.text.count("첫 문단 내용입니다.") == 1
+
+
+def test_detail_without_digest_shows_only_summary(monkeypatch):
+    view = _view(summary="한 줄 리드.", digest=None)
+    client = _client_with_detail(monkeypatch, view)
+    resp = client.get(f"/item/{view.id}")
+    assert resp.status_code == 200
+    assert "한 줄 리드." in resp.text
+
+
+def test_detail_digest_is_html_escaped(monkeypatch):
+    view = _view(digest="<script>alert(1)</script>" + "정상 본문 " * 20)
+    client = _client_with_detail(monkeypatch, view)
+    resp = client.get(f"/item/{view.id}")
+    assert "<script>alert(1)</script>" not in resp.text
+    assert "&lt;script&gt;" in resp.text
 
 
 def test_item_detail_inherits_base_layout(monkeypatch):
