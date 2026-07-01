@@ -59,13 +59,13 @@ async def _run_and_reply(
             )
             return
 
-        language = settings.user.slack.summary_language
+        language = settings.user.slack.summary_language or "English"
         prompt = _DEEP_DIVE_PROMPT.format(
             title=item.title,
             source_url=item.source_url,
             raw_content=item.raw_content[:3000],
             language=language,
-            language_reminder=language_directive(language or "English"),
+            language_reminder=language_directive(language),
         )
 
         llm = get_llm_client()
