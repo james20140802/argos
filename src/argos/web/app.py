@@ -168,6 +168,19 @@ def build_web_app() -> FastAPI:
 
     app.state.templates.env.filters["domain"] = _domain_of
 
+    def _is_favicon(url: str | None) -> bool:
+        """Render-time helper: True when a cover URL is a bare favicon.
+
+        Shares ``argos.crawler._og_image.is_favicon_url`` with the backfill so a
+        cache-busting query string (``/favicon.ico?v=2``) still gets the
+        favicon-chip branch instead of being stretched as a full cover image.
+        """
+        from argos.crawler._og_image import is_favicon_url
+
+        return is_favicon_url(url)
+
+    app.state.templates.env.filters["is_favicon"] = _is_favicon
+
     def _reltime(value) -> str:
         """Render-time helper: a compact Korean relative time for the ticker.
 

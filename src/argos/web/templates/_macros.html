@@ -13,7 +13,7 @@
 #}
 {% macro cover(image_url, category, href, source_url) %}
 {%- set cat = (category.value if category else 'none')|lower -%}
-{%- if image_url and image_url.endswith('/favicon.ico') -%}
+{%- if image_url and image_url | is_favicon -%}
 <a class="cover cover--favicon cover--{{ cat }}" href="{{ href }}">
   <span class="scrim" aria-hidden="true"></span>
   {# image_url is attacker-controllable (crawled): escaped <img src> only, never CSS url(). #}

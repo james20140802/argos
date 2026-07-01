@@ -2,7 +2,7 @@
 {% block title %}{{ item.title }} · ARGOS{% endblock %}
 {% block content %}
 <article class="detail">
-  {% if item.image_url and item.image_url.endswith('/favicon.ico') %}
+  {% if item.image_url and item.image_url | is_favicon %}
   <div class="detail-hero detail-hero--favicon detail-hero--{{ (item.category.value if item.category else 'none')|lower }}">
     <span class="detail-hero__scrim" aria-hidden="true"></span>
     {# image_url is attacker-controllable (crawled): escaped <img src> only, never CSS url(). #}

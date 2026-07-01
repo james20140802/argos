@@ -150,6 +150,22 @@ def test_feed_favicon_only_does_not_render_cover_img(monkeypatch):
     assert "cover__img" not in body
 
 
+def test_feed_query_string_favicon_renders_chip_not_cover(monkeypatch):
+    """A favicon with a cache-busting query string (?v=2) must still take the
+    favicon-chip branch, not be stretched as cover__img (PR #96 finding)."""
+    item = _feed_item(
+        image_url="https://example.com/favicon.ico?v=2",
+        source_url="https://example.com/post",
+    )
+    page = FeedPage(items=[item], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+
+    assert "cover--favicon" in body
+    assert "favicon-chip" in body
+    assert "cover__img" not in body
+
+
 def test_feed_real_image_renders_cover_img(monkeypatch):
     """Real-image item: normal cover__img, no favicon branch."""
     item = _feed_item(
@@ -205,6 +221,21 @@ def test_detail_favicon_only_renders_chip_and_domain(monkeypatch):
     assert re.search(r'favicon-chip__domain"[^>]*>\s*example\.com', body)
     # detail-hero__glyph class only appears in the fallback branch.
     assert "detail-hero__glyph" not in body
+
+
+def test_detail_query_string_favicon_renders_chip_not_hero_img(monkeypatch):
+    """A query-string favicon on the detail hero takes the favicon-chip branch,
+    not detail-hero__img (PR #96 finding)."""
+    view = _detail_view(
+        image_url="https://example.com/favicon.ico?v=2",
+        source_url="https://example.com/post",
+    )
+    client = _client_with_detail(monkeypatch, view)
+    body = client.get(f"/item/{view.id}").text
+
+    assert "detail-hero--favicon" in body
+    assert "favicon-chip" in body
+    assert "detail-hero__img" not in body
 
 
 def test_detail_real_image_renders_hero_img(monkeypatch):

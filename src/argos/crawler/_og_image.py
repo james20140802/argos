@@ -19,7 +19,13 @@ from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
-__all__ = ["extract_og_image", "resolve_image", "favicon_for_domain", "ResolvedImage"]
+__all__ = [
+    "extract_og_image",
+    "resolve_image",
+    "favicon_for_domain",
+    "is_favicon_url",
+    "ResolvedImage",
+]
 
 _MIN_IMG_DIM = 100
 
@@ -157,6 +163,25 @@ def favicon_for_domain(base_url: str) -> str | None:
     if parts.scheme.lower() not in _ALLOWED_SCHEMES or not parts.netloc:
         return None
     return _validate(f"{parts.scheme.lower()}://{parts.netloc}/favicon.ico")
+
+
+def is_favicon_url(url: str | None) -> bool:
+    """True when ``url`` is a bare ``/favicon.ico`` cover (the lowest priority).
+
+    Only the URL *path* is inspected, so a cache-busting query string
+    (``/favicon.ico?v=2`` — e.g. a page whose ``og:image`` points at its own
+    favicon) still counts as a favicon. This is the single source of truth for
+    the "is this cover just a favicon?" decision: the ``--upgrade-favicons``
+    backfill and the cover templates both branch on it, so they must agree —
+    otherwise a query-string favicon would be persisted / rendered as a full
+    cover image and the 32px icon would be stretched across the card.
+    """
+    if not url:
+        return False
+    try:
+        return urlsplit(url).path.endswith("/favicon.ico")
+    except ValueError:
+        return False
 
 
 def resolve_image(html: str, base_url: str) -> ResolvedImage:
