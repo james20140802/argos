@@ -7,6 +7,11 @@ rather than to one item. This is the live "what the observatory just picked up"
 stream that sits beside the discovery feed (a distinct stream, not a copy of the
 newest-items feed).
 
+Scoped to assets that are *currently* ``Keep`` — mirroring the portfolio signal
+counts (``portfolio.py`` filters ``UserAsset.status == KEEP``). An asset that was
+Kept (accruing signal history) and later Passed/Archived keeps its old signal
+rows, but those must not keep surfacing as live 관측 신호 once tracking stopped.
+
 Ordinary status transitions (Keep / Pass / Archive) are intentionally excluded:
 the ticker is about *signals the system surfaced*, not the user's own actions.
 """
@@ -23,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.models.tech_item import TechItem
 from argos.models.track_history import TrackHistory
-from argos.models.user_asset import UserAsset
+from argos.models.user_asset import AssetStatus, UserAsset
 
 
 # How many signal rows the ticker shows. The rail is a glanceable digest, not a
@@ -78,7 +83,10 @@ async def fetch_activity(
             ),
             isouter=True,
         )
-        .where(TrackHistory.changed_to.in_((SIGNAL_MATCHED, SUCCESSION_ALERTED)))
+        .where(
+            UserAsset.status == AssetStatus.KEEP,
+            TrackHistory.changed_to.in_((SIGNAL_MATCHED, SUCCESSION_ALERTED)),
+        )
         .order_by(TrackHistory.changed_at.desc())
         .limit(limit)
     )
