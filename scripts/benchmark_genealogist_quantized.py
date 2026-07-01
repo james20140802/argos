@@ -31,6 +31,7 @@ from sqlalchemy import select
 # ---------------------------------------------------------------------------
 # Reuse the canonical genealogist prompt — do not duplicate
 # ---------------------------------------------------------------------------
+from argos.brain._language import language_directive
 from argos.brain.nodes.genealogist import _GENEALOGIST_PROMPT as GENEALOGIST_PROMPT
 from argos.brain.ollama_client import LARGE_MODEL_TIMEOUT, query_ollama
 from argos.database import AsyncSessionLocal
@@ -120,6 +121,7 @@ async def run_benchmark(
             new_tech=raw_content[:1000],
             existing_techs="(benchmark mode — no similarity context)",
             language=_language,
+            language_reminder=language_directive(_language),
         )
 
         start = time.perf_counter()
