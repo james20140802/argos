@@ -161,3 +161,17 @@ def get_genealogist_llm_client() -> OllamaClient:
     if backend == "ollama":
         return OllamaClient(settings=settings, large_model=settings.user.genealogist.model)
     raise ValueError(f"Unknown LLM backend: {backend!r}")
+
+
+def get_digest_llm_client() -> OllamaClient:
+    """Return an OllamaClient whose large role resolves to digest.model.
+
+    Reuses the "large" slot override pattern (like genealogist) so the digest
+    model is independently configurable and never collides with the 8B triage
+    "small" slot or the 32B deep-dive default.
+    """
+    settings = _get_settings()
+    backend = settings.user.llm.backend
+    if backend == "ollama":
+        return OllamaClient(settings=settings, large_model=settings.user.digest.model)
+    raise ValueError(f"Unknown LLM backend: {backend!r}")
