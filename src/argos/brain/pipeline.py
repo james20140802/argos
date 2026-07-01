@@ -8,6 +8,7 @@ from typing import Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 from argos.brain.graph_state import BrainState
 from argos.brain.nodes.triage import triage_node, batch_triage_states
+from argos.brain.nodes.digest import digest_node, batch_digest_states
 from argos.brain.nodes.embed import embed_and_search_node, batch_embed_and_search_node
 from argos.brain.nodes.genealogist import genealogist_node
 from argos.brain.nodes.save import save_node
@@ -52,14 +53,19 @@ async def run_brain_pipeline(
     if not triaged["is_valid"]:
         return triaged
 
+    # ARG-173: longform digest from raw_content (14B), between triage and embed.
+    # digest does not depend on embed/genealogy results, so running it here keeps
+    # the 32B genealogist swap isolated to its own branch.
+    digested = await digest_node(triaged)
+
     # Run embed_and_search first so we can decide whether to spend VRAM on the
     # 32B prewarm. On cold start the genealogist branch is skipped and we never
     # need to load the large model.
-    embedded = await embed_and_search_node(triaged, session=session)
+    embedded = await embed_and_search_node(digested, session=session)
     if embedded.get("genealogy_skipped"):
         return await save_node(embedded, session=session)
 
-    trust_score = triaged.get("trust_score")
+    trust_score = digested.get("trust_score")
     from argos.config import settings as _settings
     threshold = _settings.user.genealogist.trust_skip_threshold
     if trust_score is not None and trust_score < threshold:
@@ -107,6 +113,7 @@ async def run_batch_brain_pipeline(
     session: AsyncSession,
     *,
     on_triage_item_done: Callable[[], None] | None = None,
+    on_digest_item_done: Callable[[], None] | None = None,
     on_embed_item_done: Callable[[], None] | None = None,
     on_genealogy_item_done: Callable[[], None] | None = None,
     on_save_item_done: Callable[[], None] | None = None,
@@ -123,11 +130,12 @@ async def run_batch_brain_pipeline(
     ----------
     items, session:
         See module-level usage.
-    on_triage_item_done, on_embed_item_done, on_genealogy_item_done,
-    on_save_item_done:
+    on_triage_item_done, on_digest_item_done, on_embed_item_done,
+    on_genealogy_item_done, on_save_item_done:
         Optional zero-arg callbacks for per-item progress reporting in each
-        stage. ``on_triage_item_done`` / ``on_embed_item_done`` are forwarded
-        to ``batch_triage_states`` / ``batch_embed_and_search_node``;
+        stage. ``on_triage_item_done`` / ``on_digest_item_done`` /
+        ``on_embed_item_done`` are forwarded to ``batch_triage_states`` /
+        ``batch_digest_states`` / ``batch_embed_and_search_node``;
         ``on_genealogy_item_done`` fires inside the genealogy loop once per
         candidate; ``on_save_item_done`` fires once per state in the save
         loop (including invalid states that are skipped, so the bar reflects
@@ -148,9 +156,15 @@ async def run_batch_brain_pipeline(
         states, on_item_done=on_triage_item_done
     )
 
+    # ── Stage 1.5: batch digest (14B loaded once) ─────────────────────────
+    # ARG-173. Invalid states pass through untouched (no LLM call).
+    digested_states = await batch_digest_states(
+        triaged_states, on_item_done=on_digest_item_done
+    )
+
     # ── Stage 2: batch embed + similarity search ──────────────────────────
     embedded_states = await batch_embed_and_search_node(
-        triaged_states, session, on_item_done=on_embed_item_done
+        digested_states, session, on_item_done=on_embed_item_done
     )
 
     # ── Stage 3: trust-score gate + batch genealogy (32B loaded once) ─────
