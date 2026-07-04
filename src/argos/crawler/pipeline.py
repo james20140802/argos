@@ -387,17 +387,24 @@ async def run_full_pipeline(
     # ── Stage 6: remove processed rows from queue ─────────────────────────
     # Items where save_node raised (is_valid=True, saved=False) stay in the
     # queue so a transient DB error triggers a retry on the next run.
-    # Triage-rejected items (is_valid=False) are deleted — they are not tech
-    # items and retrying them wastes compute.
-    save_failed_urls: set[str] = {
+    # Items where triage hit an Ollama infra error (triage_error set, ARG-190)
+    # also stay in the queue so they get retried instead of being silently
+    # dropped as rejections.
+    # Genuinely triage-rejected items (is_valid=False, no triage_error) are
+    # deleted — they are not tech items and retrying them wastes compute.
+    retained_urls: set[str] = {
         s["source_url"]
         for s in results
-        if s.get("is_valid") and not s.get("saved") and s.get("source_url")
+        if s.get("source_url")
+        and (
+            (s.get("is_valid") and not s.get("saved"))  # save-failed: retry
+            or s.get("triage_error")                     # infra error (ARG-190): retry
+        )
     }
     urls_to_delete = [
         row.source_url
         for row in queue_rows
-        if row.source_url not in save_failed_urls
+        if row.source_url not in retained_urls
     ]
     await _delete_from_queue(session, urls_to_delete)
     queue_remaining = await _queue_count(session)
