@@ -63,12 +63,14 @@ async def test_model_lock_serializes_calls():
 
 @pytest.mark.asyncio
 async def test_query_ollama_raises_on_http_error():
+    """A 5xx response (e.g. Ollama VRAM OOM) is an infra failure (ARG-190/ARG-214)."""
     with respx.mock:
         respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
             return_value=httpx.Response(500, json={"error": "internal server error"})
         )
-        with pytest.raises(httpx.HTTPStatusError):
-            from argos.brain.ollama_client import query_ollama
+        from argos.brain.ollama_client import OllamaInfraError, query_ollama
+
+        with pytest.raises(OllamaInfraError):
             await query_ollama("qwen3:8b", "test prompt")
 
 

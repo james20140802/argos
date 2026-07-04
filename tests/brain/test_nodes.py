@@ -337,6 +337,72 @@ async def test_triage_node_category_none_on_parse_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_triage_node_sets_triage_error_on_infra_failure(monkeypatch):
+    """OllamaInfraError from client.query must set triage_error (truthy) and is_valid=False."""
+    from argos.brain.nodes import triage as triage_module
+    from argos.brain.ollama_client import OllamaInfraError
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+
+    class _InfraClient:
+        async def query(self, model_role, prompt, **kwargs):
+            raise OllamaInfraError("ollama down")
+
+        async def unload(self, model_role):
+            return None
+
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _InfraClient())
+
+    result = await triage_node(_state(raw_text="anything"))
+    assert result["triage_error"] == "ollama down"
+    assert result["is_valid"] is False
+
+
+@pytest.mark.asyncio
+async def test_triage_node_no_triage_error_on_genuine_rejection(monkeypatch):
+    """A legitimate is_valid=false LLM verdict must leave triage_error falsy."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+
+    payload = '{"is_valid": false, "reason": "pure marketing", "trust_score": 0.1}'
+
+    class _RejectingClient:
+        async def query(self, model_role, prompt, **kwargs):
+            return payload
+
+        async def unload(self, model_role):
+            return None
+
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _RejectingClient())
+
+    result = await triage_node(_state(raw_text="anything"))
+    assert not result.get("triage_error")
+    assert result["is_valid"] is False
+
+
+@pytest.mark.asyncio
+async def test_triage_node_no_triage_error_on_parse_failure(monkeypatch):
+    """A non-JSON LLM response (parse failure) must leave triage_error falsy (non-infra)."""
+    from argos.brain.nodes import triage as triage_module
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+
+    class _BrokenClient:
+        async def query(self, model_role, prompt, **kwargs):
+            return "not json at all"
+
+        async def unload(self, model_role):
+            return None
+
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _BrokenClient())
+
+    result = await triage_node(_state(raw_text="anything"))
+    assert not result.get("triage_error")
+    assert result["is_valid"] is False
+
+
+@pytest.mark.asyncio
 async def test_triage_node_source_hint_in_prompt_when_present(monkeypatch):
     """When state has source_category, the prompt must include the source hint."""
     from argos.brain.nodes import triage as triage_module
