@@ -72,6 +72,17 @@ def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, **kwargs)  # type: ignore[call-overload]
 
 
+def _env_with_pgpassword(password: str) -> dict[str, str]:
+    """Environment for docker exec calls that need the DB password.
+
+    The password is deliberately kept out of argv: ``docker exec -e PGPASSWORD``
+    (no ``=value``) makes the docker CLI forward the variable from its own
+    environment, so the secret never appears in ``ps`` output or in
+    :func:`_run`'s debug logging of the command line.
+    """
+    return {**os.environ, "PGPASSWORD": password}
+
+
 def docker_available() -> bool:
     """True when a ``docker`` binary is on PATH."""
     return shutil.which("docker") is not None
@@ -132,7 +143,7 @@ def create_backup(
         "docker",
         "exec",
         "-e",
-        f"PGPASSWORD={secrets.POSTGRES_PASSWORD}",
+        "PGPASSWORD",
         container,
         "pg_dump",
         "-U",
@@ -144,7 +155,13 @@ def create_backup(
 
     try:
         with open(tmp_dest, "wb") as f:
-            proc = _run(cmd, stdout=f, stderr=subprocess.PIPE, check=False)
+            proc = _run(
+                cmd,
+                stdout=f,
+                stderr=subprocess.PIPE,
+                check=False,
+                env=_env_with_pgpassword(secrets.POSTGRES_PASSWORD),
+            )
     except OSError as exc:
         tmp_dest.unlink(missing_ok=True)
         raise BackupError(f"failed to invoke docker exec: {exc}") from exc
@@ -219,7 +236,7 @@ def restore_backup(
             "docker",
             "exec",
             "-e",
-            f"PGPASSWORD={secrets.POSTGRES_PASSWORD}",
+            "PGPASSWORD",
             container,
             "pg_restore",
             "-U",
@@ -232,7 +249,13 @@ def restore_backup(
             restore_cmd += ["--clean", "--if-exists"]
         restore_cmd.append(remote_path)
 
-        proc = _run(restore_cmd, capture_output=True, text=True, check=False)
+        proc = _run(
+            restore_cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_env_with_pgpassword(secrets.POSTGRES_PASSWORD),
+        )
         if proc.returncode != 0:
             stderr = (proc.stderr or proc.stdout or "").strip()
             raise BackupError(f"pg_restore failed (exit {proc.returncode}): {stderr or '(no output)'}")

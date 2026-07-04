@@ -106,6 +106,32 @@ def test_create_backup_writes_dump_and_returns_path(monkeypatch, tmp_path):
     assert list(tmp_path.glob("*.part")) == []
 
 
+def test_create_backup_keeps_password_out_of_argv(monkeypatch, tmp_path):
+    """The DB password must never enter argv (ps exposure + _run debug logging).
+
+    Regression pin for CodeQL py/clear-text-logging-sensitive-data: docker
+    exec gets a bare `-e PGPASSWORD` and the value travels only via the
+    subprocess env.
+    """
+    monkeypatch.setattr(backup, "container_running", lambda container=backup.DEFAULT_CONTAINER_NAME: True)
+
+    seen: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["env"] = kwargs.get("env")
+        kwargs["stdout"].write(b"fake-dump-bytes")
+        return _completed(0)
+
+    monkeypatch.setattr(backup, "_run", fake_run)
+
+    backup.create_backup(output_dir=tmp_path)
+
+    assert "PGPASSWORD" in seen["cmd"]
+    assert not any(arg.startswith("PGPASSWORD=") for arg in seen["cmd"])
+    assert seen["env"]["PGPASSWORD"] == backup.settings.secrets.POSTGRES_PASSWORD
+
+
 def test_create_backup_raises_and_cleans_up_on_pg_dump_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(backup, "container_running", lambda container=backup.DEFAULT_CONTAINER_NAME: True)
 
@@ -223,6 +249,28 @@ def test_restore_backup_happy_path_cps_execs_and_cleans_up(monkeypatch, tmp_path
 
     # cleanup call removes the staged file inside the container.
     assert calls[2] == ["docker", "exec", "argos-db", "rm", "-f", "/tmp/argos-x.dump"]
+
+
+def test_restore_backup_keeps_password_out_of_argv(monkeypatch, tmp_path):
+    """Same secret-hygiene pin as the backup variant, for pg_restore."""
+    dump = tmp_path / "argos-x.dump"
+    dump.write_bytes(b"data")
+    monkeypatch.setattr(backup, "container_running", lambda container=backup.DEFAULT_CONTAINER_NAME: True)
+
+    calls: list[tuple[list[str], object]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs.get("env")))
+        return _completed(0)
+
+    monkeypatch.setattr(backup, "_run", fake_run)
+
+    backup.restore_backup(dump)
+
+    restore_cmd, restore_env = calls[1]
+    assert "PGPASSWORD" in restore_cmd
+    assert not any(arg.startswith("PGPASSWORD=") for arg in restore_cmd)
+    assert restore_env["PGPASSWORD"] == backup.settings.secrets.POSTGRES_PASSWORD
 
 
 def test_restore_backup_no_clean_omits_clean_flags(monkeypatch, tmp_path):
