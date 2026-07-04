@@ -1,28 +1,16 @@
 """Unit + integration tests for argos.web.services.detail (ARG-158)."""
 from __future__ import annotations
 
-import socket
 import uuid
 
 import pytest
-from sqlalchemy.engine.url import make_url
 
 from argos.config import settings
 from argos.web.services.detail import ItemDetailView, fetch_item_detail
+from tests.conftest import db_reachable as _db_reachable
 
 
 _DB_URL: str = settings.database_url
-
-
-def _db_reachable(url: str) -> bool:
-    parsed = make_url(url)
-    host = parsed.host or "localhost"
-    port = parsed.port or 5432
-    try:
-        with socket.create_connection((host, port), timeout=1):
-            return True
-    except OSError:
-        return False
 
 
 pytestmark_db = pytest.mark.skipif(

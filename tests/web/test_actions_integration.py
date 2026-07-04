@@ -19,13 +19,11 @@ so nothing leaks between tests — consistent with the project-wide
 """
 from __future__ import annotations
 
-import socket
 import uuid
 from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import delete, select
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from starlette.testclient import TestClient
@@ -35,20 +33,10 @@ from argos.models.tech_item import CategoryType, TechItem
 from argos.models.track_history import TrackHistory
 from argos.models.user_asset import AssetStatus, UserAsset
 from argos.web.app import _get_session, build_web_app
+from tests.conftest import db_reachable as _db_reachable
 
 # Captured at import so wizard tests that mutate settings can't change it.
 _DB_URL: str = settings.database_url
-
-
-def _db_reachable(url: str) -> bool:
-    parsed = make_url(url)
-    host = parsed.host or "localhost"
-    port = parsed.port or 5432
-    try:
-        with socket.create_connection((host, port), timeout=1):
-            return True
-    except OSError:
-        return False
 
 
 @pytest.fixture(scope="module", autouse=True)

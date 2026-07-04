@@ -22,7 +22,6 @@ pooled connections are shared across pytest-asyncio function-scope event loops.
 """
 from __future__ import annotations
 
-import socket
 import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
@@ -30,7 +29,6 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -43,27 +41,12 @@ from argos.slack.services.track_check import (
     match_signals,
     post_signal_update,
 )
+from tests.conftest import db_reachable as _db_reachable
 
 # Capture the database URL at import time so that wizard tests which call
 # database.rebuild() (and mutate os.environ + settings.secrets) cannot
 # change the URL seen by these E2E tests.
 _DB_URL: str = settings.database_url
-
-
-def _db_reachable(url: str) -> bool:
-    """Return True if a TCP connection to the DB host:port succeeds quickly.
-
-    Used to skip (rather than fail) these tests when no pgvector DB is
-    running — e.g. the Release CI runner, which has no Docker service.
-    """
-    parsed = make_url(url)
-    host = parsed.host or "localhost"
-    port = parsed.port or 5432
-    try:
-        with socket.create_connection((host, port), timeout=1):
-            return True
-    except OSError:
-        return False
 
 
 @pytest.fixture(scope="module", autouse=True)

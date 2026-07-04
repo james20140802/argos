@@ -1,12 +1,10 @@
 """Unit + integration tests for argos.web.services.feed (ARG-155)."""
 from __future__ import annotations
 
-import socket
 import uuid
 from datetime import datetime, timezone, timedelta
 
 import pytest
-from sqlalchemy.engine.url import make_url
 
 from argos.config import settings
 from argos.web.services.feed import (
@@ -15,6 +13,7 @@ from argos.web.services.feed import (
     fetch_feed,
     PAGE_SIZE,
 )
+from tests.conftest import db_reachable as _db_reachable
 
 
 # --------------------------------------------------------------------- #
@@ -60,17 +59,6 @@ def test_decode_cursor_rejects_garbage() -> None:
 _DB_URL: str = settings.database_url
 
 
-def _db_reachable(url: str) -> bool:
-    parsed = make_url(url)
-    host = parsed.host or "localhost"
-    port = parsed.port or 5432
-    try:
-        with socket.create_connection((host, port), timeout=1):
-            return True
-    except OSError:
-        return False
-
-
 pytestmark_db = pytest.mark.skipif(
     not _db_reachable(_DB_URL),
     reason="pgvector DB not reachable — skipping ARG-155 DB-backed tests",
@@ -92,10 +80,10 @@ async def test_fetch_feed_orders_newest_first_and_paginates_with_cursor() -> Non
     engine = create_async_engine(_DB_URL, poolclass=NullPool)
     Session = async_sessionmaker(bind=engine, expire_on_commit=False)
 
+    ids: list[uuid.UUID] = []
     try:
         # Seed 5 tech items spread out in published_at.
         async with Session() as session:
-            ids: list[uuid.UUID] = []
             base_t = datetime(2026, 6, 14, 0, 0, tzinfo=timezone.utc)
             for i in range(5):
                 item = TechItem(
@@ -121,15 +109,16 @@ async def test_fetch_feed_orders_newest_first_and_paginates_with_cursor() -> Non
             page2 = await fetch_feed(session, cursor=page1.next_cursor, limit=3)
             page2_seeded = [it.id for it in page2.items if it.id in seeded_ids]
             assert list(reversed(ids))[3:5] == page2_seeded[:2]
-
-        # Cleanup so reruns stay clean.
-        async with Session() as session:
-            for tid in ids:
-                obj = await session.get(TechItem, tid)
-                if obj is not None:
-                    await session.delete(obj)
-            await session.commit()
     finally:
+        # Cleanup so reruns stay clean — in `finally` (not after the asserts)
+        # so a failed assertion never leaks seeded rows (ARG-191).
+        if ids:
+            async with Session() as session:
+                for tid in ids:
+                    obj = await session.get(TechItem, tid)
+                    if obj is not None:
+                        await session.delete(obj)
+                await session.commit()
         await engine.dispose()
 
 
