@@ -52,6 +52,7 @@ v0.3.0 — Argos Web (PWA) & Digest Pipeline. 107 commits since v0.2.4.
 
 ```bash
 uv run alembic upgrade head
+ollama pull qwen3:14b   # digest model — not pulled by `argos init`; backfill-digests silently fills nothing without it
 uv run argos backfill-digests
 uv run argos backfill-images
 ```
