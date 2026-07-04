@@ -134,7 +134,10 @@ def create_backup(
     _require_container(container)
 
     out_dir = output_dir or default_backup_dir()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise BackupError(f"cannot create backup directory {out_dir}: {exc}") from exc
     dest = out_dir / _timestamped_filename()
     tmp_dest = dest.with_name(dest.name + ".part")
 

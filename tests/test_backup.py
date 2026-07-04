@@ -106,6 +106,19 @@ def test_create_backup_writes_dump_and_returns_path(monkeypatch, tmp_path):
     assert list(tmp_path.glob("*.part")) == []
 
 
+def test_create_backup_wraps_unwritable_output_dir_in_backup_error(monkeypatch, tmp_path):
+    """An --output-dir that cannot be created must surface as BackupError,
+    not a raw OSError traceback (the CLI only catches BackupError)."""
+    monkeypatch.setattr(backup, "container_running", lambda container=backup.DEFAULT_CONTAINER_NAME: True)
+    monkeypatch.setattr(backup, "_run", lambda cmd, **kw: _completed(0))
+
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("file, not a directory")
+
+    with pytest.raises(backup.BackupError, match="cannot create backup directory"):
+        backup.create_backup(output_dir=blocker / "backups")
+
+
 def test_create_backup_keeps_password_out_of_argv(monkeypatch, tmp_path):
     """The DB password must never enter argv (ps exposure + _run debug logging).
 
