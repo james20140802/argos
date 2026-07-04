@@ -409,3 +409,37 @@ uv run alembic downgrade -1
 # DB 종료
 docker compose down
 ```
+
+## Backup & Restore (`argos backup` / `argos restore`)
+
+`./pgdata`는 bind mount 한 장에 수개월치 크롤링·triage·embedding·genealogist 결과가 쌓입니다.
+디스크 고장, `docker compose down -v`, 잘못된 마이그레이션이면 그대로 영구 손실이므로
+정기적으로(또는 위험한 작업 전에) 덤프를 떠 두세요.
+
+내부적으로 `docker exec <container> pg_dump/pg_restore`를 사용합니다 (호스트에 Postgres
+클라이언트가 없어도 동작). 컨테이너는 이름(`docker-compose.yml`의 `container_name: argos-db`)으로
+지정하므로, `docker compose exec`와 달리 워크트리/클론 디렉터리 이름이 달라도 항상 같은 DB를 찾습니다.
+
+```bash
+# 백업 — 커스텀 포맷(-Fc) 덤프를 ~/.local/share/argos/backups/ 에 타임스탬프 파일명으로 생성
+uv run argos backup
+
+# 오래된 덤프는 최신 N개만 남기고 정리
+uv run argos backup --keep 10
+
+# 다른 컨테이너명 / 출력 경로를 쓰는 경우
+uv run argos backup --container my-argos-db --output-dir /Volumes/backup/argos
+
+# 복원 — 대상 DB를 덮어씁니다. 확인 프롬프트가 뜨며, --yes 로 스킵 가능
+uv run argos restore ~/.local/share/argos/backups/argos-20260704-070000-123456.dump
+
+# 스크립트/cron 등 비대화형 환경
+uv run argos restore <dump> --yes
+```
+
+`argos restore`는 기본적으로 `pg_restore --clean --if-exists`로 기존 객체를 지우고 다시 만드므로
+**파괴적**입니다 — 운영 중인 DB에 실행하기 전 반드시 백업을 먼저 뜨세요. `--no-clean`을 주면 기존
+데이터를 지우지 않고 추가로만 복원합니다 (스키마 충돌 시 실패할 수 있음).
+
+launchd로 백업을 스케줄링하는 것은(예: 매일 새벽 `argos backup --keep 14`) 이번 범위 밖이며,
+당분간은 수동 실행 또는 사용자 정의 cron/launchd 잡으로 커버하세요.
