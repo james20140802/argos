@@ -1,0 +1,35 @@
+{# Detail-page Keep/Pass/Untrack action bar (ARG-184).
+
+   Rendered both by item_detail.html (initial page load) and as the HTMX
+   swap target for POST /items/{id}/keep|pass?context=detail and
+   POST /assets/{id}/untrack?context=detail. Passing ``context=detail`` on
+   those routes is what makes them return THIS partial instead of the feed's
+   ``_feed_card.html`` — the detail page has exactly one card on screen, so
+   it needs its own standalone fragment rather than a full card re-render.
+
+   Once an item is Kept, the Keep button is replaced by Untrack (mirrors the
+   portfolio's one-way "release from Keep" action) rather than staying a
+   togglable ✓ Keep — Pass stays a toggle in both states, same as the feed. #}
+{% set is_kept = item.status and item.status.value == 'Keep' %}
+{% set is_passed = item.status and item.status.value == 'Archived' %}
+{% set untrack_params = ['context=detail', 'tech_id=' ~ item.id] %}
+{% set pass_params = ['context=detail'] + (['active=1'] if is_passed else []) %}
+<div class="card-actions detail-actions" id="item-actions-{{ item.id }}">
+  {% if is_kept %}
+  <button class="card-action card-action--untrack"
+          hx-post="/assets/{{ item.asset_id }}/untrack?{{ untrack_params | join('&') }}"
+          hx-target="#item-actions-{{ item.id }}"
+          hx-swap="outerHTML">Untrack</button>
+  {% else %}
+  <button class="card-action card-action--keep"
+          aria-pressed="false"
+          hx-post="/items/{{ item.id }}/keep?context=detail"
+          hx-target="#item-actions-{{ item.id }}"
+          hx-swap="outerHTML">Keep</button>
+  {% endif %}
+  <button class="card-action card-action--pass{% if is_passed %} is-active{% endif %}"
+          aria-pressed="{{ 'true' if is_passed else 'false' }}"
+          hx-post="/items/{{ item.id }}/pass?{{ pass_params | join('&') }}"
+          hx-target="#item-actions-{{ item.id }}"
+          hx-swap="outerHTML">{% if is_passed %}✓ Pass{% else %}Pass{% endif %}</button>
+</div>

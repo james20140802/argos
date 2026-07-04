@@ -10,7 +10,6 @@ CLAUDE.md "Release CI runs pytest with no DB").
 """
 from __future__ import annotations
 
-import socket
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -18,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import delete
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -27,6 +25,7 @@ from argos.models.tech_item import CategoryType, TechItem
 from argos.models.track_history import TrackHistory
 from argos.models.user_asset import AssetStatus, UserAsset
 from argos.web.services.activity import fetch_activity
+from tests.conftest import db_reachable as _db_reachable
 
 _DB_URL: str = settings.database_url
 
@@ -56,17 +55,6 @@ async def test_activity_query_filters_to_current_keep_assets() -> None:
 # ------------------------------------------------------------------ #
 # DB integration: Keep-scoping end-to-end
 # ------------------------------------------------------------------ #
-
-def _db_reachable(url: str) -> bool:
-    parsed = make_url(url)
-    host = parsed.host or "localhost"
-    port = parsed.port or 5432
-    try:
-        with socket.create_connection((host, port), timeout=1):
-            return True
-    except OSError:
-        return False
-
 
 @asynccontextmanager
 async def _session_ctx():

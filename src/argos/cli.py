@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover — py<3.11 fallback
 
 from pydantic import ValidationError
 
-from argos import config_store
+from argos import backup, config_store
 from argos.config import UserConfig, settings
 from argos.crawler.pipeline import run_full_pipeline
 from argos.database import AsyncSessionLocal
@@ -492,6 +492,114 @@ def _cmd_config_migrate_env(args: argparse.Namespace) -> int:
             f"Run: chmod 600 {dest}",
             file=sys.stderr,
         )
+    return EXIT_OK
+
+
+def _build_backup_parser(sub: argparse._SubParsersAction) -> None:
+    """Wire the ``argos backup`` subcommand (ARG-192)."""
+    backup_p = sub.add_parser(
+        "backup",
+        help="Dump the Postgres DB via `docker exec ... pg_dump -Fc`",
+        description=(
+            "Create a custom-format (pg_dump -Fc) dump of the Argos database by "
+            "shelling out to `docker exec <container> pg_dump`. The dump lands in "
+            "the XDG data directory (~/.local/share/argos/backups/) with a "
+            "timestamped filename. Restore it later with `argos restore <dump>`."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    backup_p.add_argument(
+        "--container",
+        default=backup.DEFAULT_CONTAINER_NAME,
+        help=f"Docker container name to exec into (default: {backup.DEFAULT_CONTAINER_NAME})",
+    )
+    backup_p.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="DIR",
+        help="Directory to write the dump into (default: ~/.local/share/argos/backups)",
+    )
+    backup_p.add_argument(
+        "--keep",
+        type=int,
+        default=None,
+        metavar="N",
+        help="After a successful backup, delete older dumps beyond the N most recent",
+    )
+
+
+def _cmd_backup(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir).expanduser() if args.output_dir else None
+    try:
+        dest = backup.create_backup(
+            container=args.container,
+            output_dir=output_dir,
+            keep=args.keep,
+        )
+    except backup.BackupError as exc:
+        print(f"backup 실패: {exc}", file=sys.stderr)
+        return EXIT_GENERIC
+    print(f"✅ backup 완료: {dest}")
+    return EXIT_OK
+
+
+def _build_restore_parser(sub: argparse._SubParsersAction) -> None:
+    """Wire the ``argos restore`` subcommand (ARG-192)."""
+    restore_p = sub.add_parser(
+        "restore",
+        help="Restore a pg_dump archive into the Postgres DB (DESTRUCTIVE)",
+        description=(
+            "Restore a dump created by `argos backup` via `docker exec ... pg_restore`.\n\n"
+            "DESTRUCTIVE: by default this drops and recreates existing objects "
+            "(--clean --if-exists) before restoring, overwriting current data in the "
+            "target database. Prompts for confirmation unless --yes is passed."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    restore_p.add_argument("dump", help="Path to a dump file created by `argos backup`")
+    restore_p.add_argument(
+        "--container",
+        default=backup.DEFAULT_CONTAINER_NAME,
+        help=f"Docker container name to exec into (default: {backup.DEFAULT_CONTAINER_NAME})",
+    )
+    restore_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation prompt",
+    )
+    restore_p.add_argument(
+        "--no-clean",
+        action="store_true",
+        help="Skip pg_restore --clean --if-exists (restore additively instead of overwriting)",
+    )
+
+
+def _cmd_restore(args: argparse.Namespace) -> int:
+    dump_path = Path(args.dump).expanduser()
+    if not dump_path.exists():
+        print(f"restore 실패: 파일을 찾을 수 없습니다: {dump_path}", file=sys.stderr)
+        return EXIT_GENERIC
+
+    if not args.yes:
+        print(
+            f"⚠️  '{args.container}' 컨테이너의 DB를 '{dump_path}' 내용으로 덮어씁니다. "
+            "기존 데이터는 삭제됩니다."
+        )
+        reply = input("계속하시겠습니까? [y/N] ").strip().lower()
+        if reply not in ("y", "yes"):
+            print("취소되었습니다.")
+            return EXIT_GENERIC
+
+    try:
+        backup.restore_backup(
+            dump_path,
+            container=args.container,
+            clean=not args.no_clean,
+        )
+    except backup.BackupError as exc:
+        print(f"restore 실패: {exc}", file=sys.stderr)
+        return EXIT_GENERIC
+    print(f"✅ restore 완료: {dump_path}")
     return EXIT_OK
 
 
@@ -1637,6 +1745,8 @@ def main(argv: list[str] | None = None) -> int:
     _build_add_parser(sub, common)
     _build_backfill_images_parser(sub, common)
     _build_backfill_digests_parser(sub, common)
+    _build_backup_parser(sub)
+    _build_restore_parser(sub)
     _build_config_parser(sub)
     _build_doctor_parser(sub)
     _build_init_parser(sub)
@@ -1746,6 +1856,10 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_backfill_digests(args)
+    if args.command == "backup":
+        return _cmd_backup(args)
+    if args.command == "restore":
+        return _cmd_restore(args)
     return 1
 
 

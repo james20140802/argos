@@ -43,6 +43,8 @@
     <h1 class="detail-title">{{ item.title }}</h1>
   </header>
 
+  {% include "_detail_actions.html" %}
+
   {% if item.summary %}
   <section class="detail-summary">
     <p>{{ item.summary }}</p>

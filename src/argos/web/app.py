@@ -88,7 +88,10 @@ async def _load_feed_card_context(session, tech_id: uuid.UUID):
     """Fetch the minimal shape the feed-card partial needs after a transition.
 
     Returns a mapping with keys (id, title, status, category, image_url,
-    summary, source_url) or None if the tech_item does not exist.
+    summary, source_url, asset_id) or None if the tech_item does not exist.
+    ``asset_id`` (the user_asset row id, ARG-184) is only used by the detail
+    page's action bar — to build the /assets/{id}/untrack URL — and is
+    ignored by the feed-card partial.
     """
     from sqlalchemy import select
 
@@ -113,6 +116,7 @@ async def _load_feed_card_context(session, tech_id: uuid.UUID):
         "image_url": getattr(tech_item, "image_url", None),
         "summary": getattr(tech_item, "summary", None),
         "source_url": tech_item.source_url,
+        "asset_id": user_asset.id if user_asset else None,
     }
 
 
@@ -434,6 +438,7 @@ def build_web_app() -> FastAPI:
         *,
         is_featured: bool,
         currently_active: bool = False,
+        partial_name: str = "_feed_card.html",
     ) -> HTMLResponse:
         try:
             parsed_id = uuid.UUID(item_id)
@@ -466,8 +471,16 @@ def build_web_app() -> FastAPI:
         if item is None:
             return _error_fragment(request, 404, "not found")
         return _action_response(
-            request, item, "_feed_card.html", is_featured=is_featured
+            request, item, partial_name, is_featured=is_featured
         )
+
+    # ``context=detail`` (ARG-184) tells keep/pass/untrack to re-render the
+    # item-detail page's standalone action bar (``_detail_actions.html``)
+    # instead of a feed-card fragment. It is opt-in via a query param so the
+    # feed's existing hx-post calls (which never send it) are byte-for-byte
+    # unaffected — the default keeps returning ``_feed_card.html``.
+    def _partial_for(context: str) -> str:
+        return "_detail_actions.html" if context == "detail" else "_feed_card.html"
 
     @app.post("/items/{item_id}/keep", response_class=HTMLResponse)
     async def keep_item(
@@ -475,6 +488,7 @@ def build_web_app() -> FastAPI:
         item_id: str,
         featured: bool = False,
         active: bool = False,
+        context: str = "feed",
         session=Depends(_get_session),
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
@@ -486,6 +500,7 @@ def build_web_app() -> FastAPI:
             session,
             is_featured=featured,
             currently_active=active,
+            partial_name=_partial_for(context),
         )
 
     @app.post("/items/{item_id}/pass", response_class=HTMLResponse)
@@ -494,6 +509,7 @@ def build_web_app() -> FastAPI:
         item_id: str,
         featured: bool = False,
         active: bool = False,
+        context: str = "feed",
         session=Depends(_get_session),
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
@@ -505,12 +521,15 @@ def build_web_app() -> FastAPI:
             session,
             is_featured=featured,
             currently_active=active,
+            partial_name=_partial_for(context),
         )
 
     @app.post("/assets/{user_asset_id}/untrack", response_class=HTMLResponse)
     async def untrack_asset(
         request: Request,
         user_asset_id: str,
+        context: str = "feed",
+        tech_id: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
@@ -521,9 +540,11 @@ def build_web_app() -> FastAPI:
         except ValueError:
             return _error_fragment(request, 404, "not found")
 
-        tech_id = await _resolve_user_asset_tech_id(session, parsed_id)
-        if tech_id is not None:
-            outcome = await transition_asset(session, tech_id, AssetStatus.ARCHIVED)
+        resolved_tech_id = await _resolve_user_asset_tech_id(session, parsed_id)
+        if resolved_tech_id is not None:
+            outcome = await transition_asset(
+                session, resolved_tech_id, AssetStatus.ARCHIVED
+            )
             if outcome is not TransitionOutcome.NOOP:
                 # Both a real Keep→Archived transition (TRANSITIONED) and a
                 # freshly-inserted Archived row (CREATED — the UserAsset was
@@ -532,6 +553,25 @@ def build_web_app() -> FastAPI:
                 # (see keep/pass above). Only NOOP (already Archived) changed
                 # nothing, so it needs no commit.
                 await session.commit()
+
+        if context == "detail":
+            # The detail page has exactly one card on screen, so untracking
+            # can't just delete it like the portfolio does — it re-renders the
+            # action bar in place instead (ARG-184). ``tech_id`` is threaded
+            # through as a query param because a stale/already-cleared
+            # ``user_asset_id`` cannot be resolved back to it after the fact.
+            detail_tech_id = resolved_tech_id
+            if detail_tech_id is None and tech_id is not None:
+                try:
+                    detail_tech_id = uuid.UUID(tech_id)
+                except ValueError:
+                    return _error_fragment(request, 404, "not found")
+            if detail_tech_id is None:
+                return _error_fragment(request, 404, "not found")
+            item = await _load_feed_card_context(session, detail_tech_id)
+            if item is None:
+                return _error_fragment(request, 404, "not found")
+            return _action_response(request, item, "_detail_actions.html")
 
         # Untracking archives the asset, dropping it out of the Keep-only
         # portfolio. A missing row (a stale cached /portfolio card whose asset

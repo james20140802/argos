@@ -126,6 +126,10 @@ class ItemDetailView:
     related_history: list[HistoryEntry] = field(default_factory=list)
     # ARG-173: 롱폼 다이제스트. 기본값 None이라 digest를 넘기지 않는 기존 호출부/테스트는 무영향.
     digest: Optional[str] = None
+    # ARG-184: Keep/Pass/Untrack 액션 버튼을 상세 페이지에서 렌더링하기 위한
+    # user_asset 상태 + id. 둘 다 기본값 None이라 기존 호출부/테스트는 무영향.
+    status: Optional[AssetStatus] = None
+    asset_id: Optional[uuid.UUID] = None
 
 
 async def _fetch_predecessors(
@@ -341,17 +345,26 @@ async def fetch_item_detail(
     item_id: uuid.UUID,
 ) -> Optional[ItemDetailView]:
     """Return the detail view for ``item_id`` or ``None`` when unknown."""
-    stmt = select(
-        TechItem.id,
-        TechItem.title,
-        TechItem.source_url,
-        TechItem.image_url,
-        TechItem.summary,
-        TechItem.digest,
-        TechItem.category,
-        TechItem.trust_score,
-        TechItem.published_at,
-    ).where(TechItem.id == item_id)
+    stmt = (
+        select(
+            TechItem.id,
+            TechItem.title,
+            TechItem.source_url,
+            TechItem.image_url,
+            TechItem.summary,
+            TechItem.digest,
+            TechItem.category,
+            TechItem.trust_score,
+            TechItem.published_at,
+            UserAsset.id.label("asset_id"),
+            UserAsset.status.label("status"),
+        )
+        # LEFT JOIN: most tech_items have no user_asset (untriaged) — the
+        # detail page's Keep/Pass/Untrack action bar (ARG-184) still needs to
+        # render with status=None/asset_id=None in that case.
+        .join(UserAsset, UserAsset.tech_id == TechItem.id, isouter=True)
+        .where(TechItem.id == item_id)
+    )
 
     row = (await session.execute(stmt)).first()
     if row is None:
@@ -379,4 +392,6 @@ async def fetch_item_detail(
         similar=similar,
         signal_alerts=signal_alerts,
         related_history=related_history,
+        status=row.status,
+        asset_id=row.asset_id,
     )
