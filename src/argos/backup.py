@@ -63,7 +63,10 @@ def default_backup_dir() -> Path:
 
 
 def _timestamped_filename(prefix: str = "argos") -> str:
-    ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    # Microseconds keep concurrent/double-run invocations from deriving the
+    # same dump path; exclusive temp-file creation in create_backup backstops
+    # the (theoretical) remaining collision.
+    ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     return f"{prefix}-{ts}{_DUMP_SUFFIX}"
 
 
@@ -156,11 +159,23 @@ def create_backup(
         "-Fc",
     ]
 
+    # "x" (exclusive create) makes two racing invocations fail loudly on the
+    # second open instead of interleaving writes into one temp inode. On that
+    # failure the temp file belongs to the other run — do NOT unlink it.
     try:
-        with open(tmp_dest, "wb") as f:
+        tmp_file = open(tmp_dest, "xb")
+    except FileExistsError as exc:
+        raise BackupError(
+            f"temp dump file already exists ({tmp_dest}) — another backup appears to be in flight"
+        ) from exc
+    except OSError as exc:
+        raise BackupError(f"failed to create temp dump file {tmp_dest}: {exc}") from exc
+
+    try:
+        with tmp_file:
             proc = _run(
                 cmd,
-                stdout=f,
+                stdout=tmp_file,
                 stderr=subprocess.PIPE,
                 check=False,
                 env=_env_with_pgpassword(secrets.POSTGRES_PASSWORD),

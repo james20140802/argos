@@ -379,7 +379,7 @@ uv run argos backup --keep 10
 uv run argos backup --container my-argos-db --output-dir /Volumes/backup/argos
 
 # 복원 — 대상 DB를 덮어씁니다. 확인 프롬프트가 뜨며, --yes 로 스킵 가능
-uv run argos restore ~/.local/share/argos/backups/argos-20260704-070000.dump
+uv run argos restore ~/.local/share/argos/backups/argos-20260704-070000-123456.dump
 
 # 스크립트/cron 등 비대화형 환경
 uv run argos restore <dump> --yes

@@ -119,6 +119,40 @@ def test_create_backup_wraps_unwritable_output_dir_in_backup_error(monkeypatch, 
         backup.create_backup(output_dir=blocker / "backups")
 
 
+def test_create_backup_rapid_double_run_yields_distinct_dumps(monkeypatch, tmp_path):
+    """Two back-to-back backups must never derive the same dump path
+    (filenames carry microseconds)."""
+    monkeypatch.setattr(backup, "container_running", lambda container=backup.DEFAULT_CONTAINER_NAME: True)
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write(b"bytes")
+        return _completed(0)
+
+    monkeypatch.setattr(backup, "_run", fake_run)
+
+    first = backup.create_backup(output_dir=tmp_path)
+    second = backup.create_backup(output_dir=tmp_path)
+
+    assert first != second
+    assert first.exists() and second.exists()
+
+
+def test_create_backup_refuses_to_clobber_in_flight_temp_file(monkeypatch, tmp_path):
+    """A pre-existing .part (a concurrent run's in-flight dump) must raise
+    BackupError and be left untouched — never unlinked or overwritten."""
+    monkeypatch.setattr(backup, "container_running", lambda container=backup.DEFAULT_CONTAINER_NAME: True)
+    monkeypatch.setattr(backup, "_run", lambda cmd, **kw: _completed(0))
+    monkeypatch.setattr(backup, "_timestamped_filename", lambda prefix="argos": "argos-fixed.dump")
+
+    in_flight = tmp_path / "argos-fixed.dump.part"
+    in_flight.write_bytes(b"other run's partial dump")
+
+    with pytest.raises(backup.BackupError, match="another backup appears to be in flight"):
+        backup.create_backup(output_dir=tmp_path)
+
+    assert in_flight.read_bytes() == b"other run's partial dump"
+
+
 def test_create_backup_keeps_password_out_of_argv(monkeypatch, tmp_path):
     """The DB password must never enter argv (ps exposure + _run debug logging).
 
