@@ -1198,3 +1198,96 @@ body {
   /* Detail reader surfaces that tinted off a dark base. */
   .genealogy-entry { background: rgba(0, 0, 0, 0.025); }
 }
+
+/* ---------------------------------------------------------------------------
+   Settings page (ARG-186)
+   A single-column config editor: an allowlist of user-preference fields plus a
+   read-only, masked dump of everything else. Reuses the design tokens and the
+   .load-more / .card-action surface language.
+--------------------------------------------------------------------------- */
+.page--settings { max-width: 720px; }
+
+.settings__head { margin-bottom: 22px; }
+.settings__title {
+  font: 600 26px/1.1 "Fraunces", serif;
+  color: var(--ink); margin: 0 0 6px;
+}
+.settings__lede {
+  font: 400 14px/1.6 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); margin: 0; max-width: 52ch;
+}
+.settings__lede code, .settings-readonly__note code {
+  font: 500 12px/1 "IBM Plex Mono", monospace;
+  color: var(--brass);
+}
+
+.settings-banner {
+  margin-bottom: 18px; padding: 11px 14px;
+  font: 500 13px/1.4 "IBM Plex Sans KR", sans-serif;
+  color: #08140e; background: var(--keep);
+  border-radius: 10px;
+}
+
+.settings-form {
+  display: flex; flex-direction: column; gap: 18px;
+  margin-bottom: 40px;
+}
+.setting-field { display: flex; flex-direction: column; gap: 5px; }
+.setting-field__label {
+  font: 500 13px/1.3 "IBM Plex Sans KR", sans-serif;
+  color: var(--ink);
+}
+.setting-field__input {
+  width: 100%; padding: 11px 13px;
+  font: 400 14px/1.3 "IBM Plex Sans KR", sans-serif;
+  color: var(--ink);
+  background: rgba(236, 231, 221, 0.03);
+  border: 1px solid var(--line); border-radius: 10px;
+  transition: border-color 0.2s;
+}
+.setting-field__input:focus {
+  outline: none; border-color: var(--brass);
+}
+.setting-field__check { width: 18px; height: 18px; accent-color: var(--brass); }
+.setting-field__key {
+  font: 400 11px/1 "IBM Plex Mono", monospace;
+  color: var(--faint); letter-spacing: 0.04em;
+}
+.setting-field--error .setting-field__input { border-color: var(--pass); }
+.field-error {
+  font: 500 12px/1.4 "IBM Plex Sans KR", sans-serif;
+  color: var(--pass);
+}
+
+.settings-form__actions { margin-top: 4px; }
+.settings-save {
+  padding: 11px 26px; cursor: pointer;
+  font: 600 12px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: #08140e; background: var(--brass);
+  border: 1px solid var(--brass); border-radius: 10px;
+  transition: background 0.2s, border-color 0.2s;
+}
+.settings-save:hover { background: var(--brass-hi); border-color: var(--brass-hi); }
+
+.settings-readonly__title {
+  font: 600 15px/1.2 "IBM Plex Sans KR", sans-serif;
+  color: var(--ink); margin: 0 0 6px;
+}
+.settings-readonly__note {
+  font: 400 13px/1.6 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); margin: 0 0 14px; max-width: 52ch;
+}
+.settings-readonly__scroll { overflow-x: auto; }
+.settings-readonly__table {
+  width: 100%; border-collapse: collapse;
+  font: 400 12px/1.4 "IBM Plex Mono", monospace;
+}
+.settings-readonly__table th,
+.settings-readonly__table td {
+  padding: 8px 12px; text-align: left; vertical-align: top;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.settings-readonly__table th { color: var(--muted); font-weight: 400; }
+.settings-readonly__table td { color: var(--ink); }

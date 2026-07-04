@@ -27,6 +27,11 @@ from argos.web.services.activity import fetch_activity
 from argos.web.services.detail import fetch_item_detail
 from argos.web.services.feed import fetch_feed
 from argos.web.services.portfolio import fetch_portfolio
+from argos.web.services.settings import (
+    EDITABLE_FIELDS,
+    apply_settings,
+    load_settings_view,
+)
 
 _PACKAGE_DIR = Path(__file__).parent  # noqa: E402 — module-level lazy shims below
 
@@ -581,5 +586,43 @@ def build_web_app() -> FastAPI:
         # idempotently — a 404/409 error fragment would leave a stale, dead card
         # displaying an error even though the untrack goal is satisfied.
         return HTMLResponse("", status_code=200)
+
+    # ---- Settings (ARG-186) ------------------------------------------------
+    # No DB session: settings read/write only ``config.toml`` via config_store.
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings(request: Request) -> HTMLResponse:
+        saved = request.query_params.get("saved") == "1"
+        view = load_settings_view(saved=saved)
+        return request.app.state.templates.TemplateResponse(
+            request, "settings.html", {"view": view}
+        )
+
+    @app.post("/settings")
+    async def save_settings(request: Request) -> Response:
+        form = await request.form()
+        updates: dict[str, str] = {}
+        for spec in EDITABLE_FIELDS:
+            if spec.kind == "bool":
+                # A checkbox submits its value only when checked; absence = off.
+                # The full form always renders every checkbox, so absence is an
+                # intentional uncheck.
+                updates[spec.key] = "true" if spec.key in form else "false"
+            elif spec.key in form:
+                # Only update non-bool fields the form actually carried. The full
+                # settings form submits every input (empty strings included), so
+                # this is a no-op for a real browser but keeps a partial POST from
+                # blanking untouched fields (e.g. briefing.weekdays min_length=1).
+                updates[spec.key] = str(form[spec.key])
+
+        errors = apply_settings(updates)
+        if errors:
+            # Post-Redirect-Get is skipped on failure: re-render in place so the
+            # user keeps their typed values and sees inline field errors.
+            view = load_settings_view(submitted=updates, errors=errors)
+            return request.app.state.templates.TemplateResponse(
+                request, "settings.html", {"view": view}, status_code=400
+            )
+        # PRG: redirect so a refresh doesn't re-POST the form.
+        return RedirectResponse("/settings?saved=1", status_code=303)
 
     return app

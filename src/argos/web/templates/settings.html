@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}설정 · ARGOS{% endblock %}
+{% block page_class %}page--settings{% endblock %}
+{% block content %}
+<div class="settings">
+  <header class="settings__head">
+    <h1 class="settings__title">설정</h1>
+    <p class="settings__lede">
+      관심 토픽·브리핑 스케줄 등 사용자 취향 값을 여기서 수정하면
+      <code>config.toml</code>에 반영됩니다.
+    </p>
+  </header>
+
+  {% if view.saved %}
+  <div class="settings-banner" role="status">저장되었습니다.</div>
+  {% endif %}
+
+  <form class="settings-form" method="post" action="/settings">
+    {% for field in view.editable %}
+    <div class="setting-field{% if field.error %} setting-field--error{% endif %}">
+      <label class="setting-field__label" for="f-{{ field.key }}">{{ field.label }}</label>
+      {% if field.kind == "bool" %}
+      <input class="setting-field__check" type="checkbox" id="f-{{ field.key }}"
+             name="{{ field.key }}"{% if field.value == "true" %} checked{% endif %}>
+      {% elif field.kind == "int" %}
+      <input class="setting-field__input" type="number" id="f-{{ field.key }}"
+             name="{{ field.key }}" value="{{ field.value }}" inputmode="numeric">
+      {% else %}
+      <input class="setting-field__input" type="text" id="f-{{ field.key }}"
+             name="{{ field.key }}" value="{{ field.value }}">
+      {% endif %}
+      <span class="setting-field__key">{{ field.key }}</span>
+      {% if field.error %}
+      <span class="field-error" role="alert">{{ field.error }}</span>
+      {% endif %}
+    </div>
+    {% endfor %}
+    <div class="settings-form__actions">
+      <button type="submit" class="settings-save">저장</button>
+    </div>
+  </form>
+
+  <section class="settings-readonly" aria-labelledby="ro-heading">
+    <h2 id="ro-heading" class="settings-readonly__title">읽기 전용</h2>
+    <p class="settings-readonly__note">
+      소스(RSS/SPA)와 시크릿(<code>***</code>)은 웹에서 편집할 수 없습니다.
+      시크릿은 <code>argos config</code> CLI 또는 <code>argos init</code>으로 관리하세요.
+    </p>
+    <div class="settings-readonly__scroll">
+      <table class="settings-readonly__table">
+        <tbody>
+          {% for key, value in view.readonly %}
+          <tr>
+            <th scope="row">{{ key }}</th>
+            <td>{{ value }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}
