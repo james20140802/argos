@@ -92,10 +92,10 @@ async def test_fetch_feed_orders_newest_first_and_paginates_with_cursor() -> Non
     engine = create_async_engine(_DB_URL, poolclass=NullPool)
     Session = async_sessionmaker(bind=engine, expire_on_commit=False)
 
+    ids: list[uuid.UUID] = []
     try:
         # Seed 5 tech items spread out in published_at.
         async with Session() as session:
-            ids: list[uuid.UUID] = []
             base_t = datetime(2026, 6, 14, 0, 0, tzinfo=timezone.utc)
             for i in range(5):
                 item = TechItem(
@@ -121,15 +121,16 @@ async def test_fetch_feed_orders_newest_first_and_paginates_with_cursor() -> Non
             page2 = await fetch_feed(session, cursor=page1.next_cursor, limit=3)
             page2_seeded = [it.id for it in page2.items if it.id in seeded_ids]
             assert list(reversed(ids))[3:5] == page2_seeded[:2]
-
-        # Cleanup so reruns stay clean.
-        async with Session() as session:
-            for tid in ids:
-                obj = await session.get(TechItem, tid)
-                if obj is not None:
-                    await session.delete(obj)
-            await session.commit()
     finally:
+        # Cleanup so reruns stay clean — in `finally` (not after the asserts)
+        # so a failed assertion never leaks seeded rows (ARG-191).
+        if ids:
+            async with Session() as session:
+                for tid in ids:
+                    obj = await session.get(TechItem, tid)
+                    if obj is not None:
+                        await session.delete(obj)
+                await session.commit()
         await engine.dispose()
 
 
