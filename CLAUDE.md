@@ -90,7 +90,7 @@ uv run argos schedule uninstall                   # Bootout both plists (idempot
 # Times configured via:  briefing.time, briefing.weekdays, run.time
 
 # Tests
-uv run pytest tests/ -v                           # Run all tests
+uv run pytest tests/ -q --tb=short                # Run all tests (-v는 특정 실패 파고들 때만 — tests/CLAUDE.md 참고)
 uv run ruff check src tests                       # Lint
 ```
 
