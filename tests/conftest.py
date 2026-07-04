@@ -29,6 +29,7 @@ dev DB에는 이 conftest에서 절대 쓰기(CREATE/DROP/INSERT/...)를 하지 
 
 from __future__ import annotations
 
+import functools
 import os
 import socket
 import uuid
@@ -118,29 +119,102 @@ def _server_reachable(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-def db_reachable(url: str) -> bool:
-    """True if the Postgres server behind ``url`` (a SQLAlchemy URL string)
-    accepts TCP connections.
+@functools.lru_cache(maxsize=None)
+def _admin_reset_capable(
+    host: str,
+    port: int,
+    user: str | None,
+    password: str | None,
+    timeout: float = 2.0,
+) -> bool:
+    """True only if the configured credentials can actually open an
+    authenticated admin connection to the ``postgres`` maintenance DB *and*
+    are allowed to create databases (``rolcreatedb`` or superuser).
 
-    Only checks TCP reachability — not auth or database existence — matching
-    the pre-existing per-file skip helpers this centralizes. Shared here so
-    individual DB-backed test modules don't each redefine the same helper.
+    TCP reachability alone is not enough: an unrelated local Postgres may be
+    listening on the same host/port while the Argos credentials fail to
+    authenticate or lack ``CREATEDB`` (common on developer machines). Probing
+    the full precondition here means the ``_isolated_test_database`` reset and
+    every DB-backed test's ``skipif(not db_reachable(...))`` guard agree — so
+    such an environment cleanly *skips* DB tests instead of crashing the whole
+    suite (including pure unit tests) at session setup.
+
+    Memoized: credentials are constant for a run, so the network probe runs at
+    most once even though ``db_reachable`` is evaluated per DB-backed module.
+    """
+    import asyncio
+
+    async def _probe() -> bool:
+        import asyncpg
+
+        try:
+            conn = await asyncpg.connect(
+                host=host,
+                port=port,
+                user=user,
+                password=password,
+                database="postgres",
+                timeout=timeout,
+            )
+        except (OSError, asyncpg.PostgresError, asyncio.TimeoutError):
+            return False
+        try:
+            # rolsuper implies CREATEDB even when rolcreatedb is false.
+            return bool(
+                await conn.fetchval(
+                    "SELECT rolcreatedb OR rolsuper FROM pg_roles "
+                    "WHERE rolname = current_user"
+                )
+            )
+        except asyncpg.PostgresError:
+            return False
+        finally:
+            await conn.close()
+
+    try:
+        return asyncio.run(_probe())
+    except Exception:
+        return False
+
+
+def db_reachable(url: str) -> bool:
+    """True if the Postgres server behind ``url`` (a SQLAlchemy URL string) is
+    genuinely usable for the isolated-test-DB workflow: TCP-reachable **and**
+    the configured credentials can authenticate and create databases.
+
+    This is stricter than a bare TCP probe on purpose — see
+    ``_admin_reset_capable``. DB-backed test modules import this as their
+    ``skipif`` guard, so gating on the same precondition the session fixture
+    needs keeps them in lockstep: a foreign/unauthorized Postgres on the
+    configured host/port makes DB tests skip rather than error.
     """
     from sqlalchemy.engine.url import make_url
 
     parsed = make_url(url)
     host = parsed.host or "localhost"
     port = parsed.port or 5432
-    return _server_reachable(host, port)
+    if not _server_reachable(host, port):
+        return False
+    return _admin_reset_capable(host, port, parsed.username, parsed.password)
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _isolated_test_database():
     """(Re)create the scratch test DB once per pytest session.
 
-    No-op when Postgres is unreachable (e.g. Release CI, which runs pytest
-    with no DB service) — DB-backed tests self-skip via their own
-    ``skipif(not db_reachable(...))`` guards, unaffected by this fixture.
+    No-op unless the configured Postgres is genuinely usable — i.e. the same
+    ``db_reachable`` precondition (TCP + auth + CREATEDB) that DB-backed tests
+    gate their ``skipif`` on. This means:
+
+    * Release CI (no DB service): TCP fails → no-op, DB tests self-skip.
+    * A developer machine with an *unrelated* Postgres on the configured
+      host/port (mismatched Argos creds, or an app user without ``CREATEDB``):
+      the auth/privilege probe fails → no-op, DB tests self-skip. The suite is
+      never taken down at session setup — pure unit tests still run.
+
+    The DROP/CREATE is additionally wrapped so any residual admin error
+    (e.g. a race that revokes ``CREATEDB`` between probe and reset) degrades to
+    a warning + no-op rather than crashing every test's setup.
     """
     from argos.config import settings
 
@@ -151,7 +225,7 @@ def _isolated_test_database():
     host = parsed.host or "localhost"
     port = parsed.port or 5432
 
-    if not _server_reachable(host, port):
+    if not db_reachable(db_url):
         yield
         return
 
@@ -202,7 +276,25 @@ def _isolated_test_database():
         finally:
             await engine.dispose()
 
-    asyncio.run(_reset())
+    try:
+        asyncio.run(_reset())
+    except Exception as exc:  # pragma: no cover - defensive setup guard
+        import asyncpg
+
+        if isinstance(exc, (OSError, asyncpg.PostgresError)):
+            import warnings
+
+            warnings.warn(
+                f"Skipping isolated-test-DB reset: admin reset failed against "
+                f"{host}:{port} ({type(exc).__name__}: {exc}). DB-backed tests "
+                f"will fail/skip via their own guards; unit tests are "
+                f"unaffected.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            yield
+            return
+        raise
     yield
 
 
