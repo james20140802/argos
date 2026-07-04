@@ -7,14 +7,15 @@ Argos is a local-first Slack bot that automatically tracks AI technology trends,
 - **GitHub:** https://github.com/james20140802/argos
 - **Linear:** https://linear.app/sangchu/project/argos-be0d97316a41 (team: Sangchu, prefix: SAN)
 
-## Architecture (4 Epics)
+## Architecture (5 Epics)
 
 | Epic                 | Scope                                              | Key Tech                                                  |
 | -------------------- | -------------------------------------------------- | --------------------------------------------------------- |
 | 1 - Local Infra      | Docker PostgreSQL + pgvector, ORM, migrations      | pgvector/pgvector:pg16, SQLAlchemy 2.0 async, Alembic     |
-| 2 - Crawler          | Static (GitHub/HN) + Dynamic (Playwright) fetchers | httpx, Playwright, readability-lxml                       |
-| 3 - Processing Brain | Triage → Embed → Genealogist → Save pipeline       | Ollama (Qwen3-8B / 32B), LangGraph, nomic-embed-text      |
-| 4 - Slack Interface  | Daily briefing, Keep/Pass/Deep Dive actions        | slack_bolt AsyncApp, Socket Mode, Block Kit               |
+| 2 - Crawler          | Static (GitHub/HN/arXiv/RSS) + Dynamic (Playwright/SPA) fetchers | httpx, Playwright, readability-lxml               |
+| 3 - Processing Brain | Triage → Embed → Genealogist → Digest → Save pipeline | Ollama (Qwen3-8B / 14B / 32B), LangGraph, nomic-embed-text |
+| 4 - Slack Interface  | Daily/weekly briefing, Keep/Pass/Deep Dive actions, signal & succession alerts | slack_bolt AsyncApp, Socket Mode, Block Kit |
+| 5 - Web (PWA)        | Local FastAPI web layer for browsing the feed/portfolio from other devices | FastAPI, uvicorn, Jinja2, HTMX, Tailscale (HTTPS transport) |
 
 ## Project Structure
 
@@ -47,10 +48,14 @@ argos/
 
 ## Database Schema (ERD)
 
-- **tech_items** — id(UUID PK), title, source_url(unique), raw_content, embedding(Vector 768), category(Mainstream|Alpha), trust_score, created_at, updated_at
+- **tech_items** — id(UUID PK), title, source_url(unique), image_url, raw_content,
+  summary, digest, embedding(Vector 768), category(Mainstream|Alpha), trust_score,
+  published_at, briefed_at, created_at, updated_at
 - **tech_succession** — id(UUID PK), predecessor_id(FK→tech_items), successor_id(FK→tech_items), relation_type(Replace|Enhance|Fork), reasoning
 - **user_assets** — id(UUID PK), tech_id(FK→tech_items), status(Keep|Tracking|Archived), last_monitored_at
 - **track_history** — id(UUID PK), user_asset_id(FK→user_assets), changed_from, changed_to, changed_at
+- **crawl_queue** — staging table for freshly crawled items not yet processed by the brain
+  pipeline (daily-limit throttle, ARG-93)
 
 All FK deletions use CASCADE. All tables have UUID primary keys.
 
@@ -79,7 +84,14 @@ uv run argos init --reconfigure slack             # Re-run one section: infra/sl
 uv run argos run [--url URL]...                   # Crawl → brain → save pipeline
 uv run argos add <URL> [URL ...]                  # Manually inject URL(s) into the brain pipeline
 uv run argos slack                                # Start Slack bot in Socket Mode
-uv run argos brief [--channel CID]                # Dispatch today's briefing
+uv run argos brief [--channel CID] [--weekly]     # Dispatch today's (or weekly) briefing
+uv run argos web [--host] [--port]                # Start local FastAPI web app (PWA), binds 127.0.0.1 only
+uv run argos search <query> [--limit] [--category] [--status]  # Semantic search over tech_items (pgvector)
+uv run argos portfolio [--category] [--sort]      # Display your Keep portfolio
+uv run argos stats [--days]                       # Collection-status dashboard
+uv run argos backfill-images [--refetch] [--upgrade-favicons]  # Fill missing image_url (favicon by default)
+uv run argos backfill-digests [--limit] [--dry-run]  # Generate longform digest for rows where NULL (LLM, slow)
+uv run argos config {path,get,set,list,migrate-env}  # Read/update ~/.config/argos/config.toml
 
 # launchd scheduler (macOS) — see src/argos/scheduler.py
 uv run argos schedule install                     # Render + bootstrap both plists from config
@@ -100,7 +112,7 @@ uv run ruff check src tests                       # Lint
 - **SQLAlchemy 2.0 style:** Use `Mapped`, `mapped_column`, `DeclarativeBase`. No legacy 1.x patterns.
 - **Embedding dimension:** Vector(768) — matches nomic-embed-text. If switching models, update `tech_item.py` and create a new Alembic migration.
 - **Enum values:** Use PascalCase for all enum values (Mainstream, Alpha, Replace, Enhance, Fork, Keep, Tracking, Archived).
-- **Python version:** Target >=3.10. Use `from __future__ import annotations` where needed for newer type syntax.
+- **Python version:** Target >=3.10,<3.13. Use `from __future__ import annotations` where needed for newer type syntax.
 - **Slack handlers:** Ack within 3s, then do real work in the background. Hold the Ollama model lock across unload→query for Deep Dive so the 8B/32B swap is atomic. Asset status changes use upsert to stay concurrency-safe; every transition is logged to `track_history`. Briefings post one threaded message per item, replies stay in-thread.
 
 ## Git Workflow
