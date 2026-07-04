@@ -79,7 +79,14 @@ uv run argos init --reconfigure slack             # Re-run one section: infra/sl
 uv run argos run [--url URL]...                   # Crawl → brain → save pipeline
 uv run argos add <URL> [URL ...]                  # Manually inject URL(s) into the brain pipeline
 uv run argos slack                                # Start Slack bot in Socket Mode
-uv run argos brief [--channel CID]                # Dispatch today's briefing
+uv run argos brief [--channel CID] [--weekly]     # Dispatch today's (or weekly) briefing
+uv run argos web [--host] [--port]                # Start local FastAPI web app (PWA), binds 127.0.0.1 only
+uv run argos search <query> [--limit] [--category] [--status]  # Semantic search over tech_items (pgvector)
+uv run argos portfolio [--category] [--sort]      # Display your Keep portfolio
+uv run argos stats [--days]                       # Collection-status dashboard
+uv run argos backfill-images [--refetch] [--upgrade-favicons]  # Fill missing image_url (favicon by default)
+uv run argos backfill-digests [--limit] [--dry-run]  # Generate longform digest for rows where NULL (LLM, slow)
+uv run argos config {path,get,set,list,migrate-env}  # Read/update ~/.config/argos/config.toml
 
 # launchd scheduler (macOS) — see src/argos/scheduler.py
 uv run argos schedule install                     # Render + bootstrap both plists from config

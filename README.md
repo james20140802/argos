@@ -298,6 +298,58 @@ uv run argos config set briefing.limit_per_category 5
 
 설정을 바꾼 뒤 스케줄 시각/요일이 영향받는다면 `uv run argos schedule install`을 다시 돌려 플리스트를 갱신하세요.
 
+## CLI Reference
+
+전체 서브커맨드 목록은 `uv run argos --help` 로, 개별 옵션은 `uv run argos <command> --help` 로 항상 최신 상태를 확인할 수 있습니다. 자주 쓰는 나머지 커맨드는 다음과 같습니다.
+
+### `argos search` — 시맨틱 검색
+
+쿼리를 `nomic-embed-text`로 임베딩해 pgvector 코사인 유사도가 가장 가까운 `tech_items`를 반환합니다.
+
+```bash
+uv run argos search "RAG"
+uv run argos search "RAG" --category alpha --status keep --limit 20
+```
+
+### `argos portfolio` — Keep 포트폴리오 조회
+
+Keep 상태로 마킹한 항목을 카테고리별로 묶어 보여줍니다.
+
+```bash
+uv run argos portfolio
+uv run argos portfolio --category alpha
+uv run argos portfolio --sort trust      # 기본은 date(최신순)
+```
+
+### `argos stats` — 수집 현황 대시보드
+
+수집 건수, 브레인/트리아지 결과, 포트폴리오·트랙 알림 통계를 요약합니다.
+
+```bash
+uv run argos stats
+uv run argos stats --days 30             # 기본 7일
+```
+
+### `argos backfill-images` — 이미지 백필
+
+`image_url`이 비어 있는 항목을 채웁니다. 기본은 네트워크 호출 없이 도메인 파비콘을 채우고, 값이 이미 있는 행은 절대 덮어쓰지 않습니다.
+
+```bash
+uv run argos backfill-images                    # 파비콘만 (네트워크 없음)
+uv run argos backfill-images --refetch          # source_url 재크롤 후 og/body 이미지 전체 폴백 체인 (느림)
+uv run argos backfill-images --upgrade-favicons # 파비콘으로 남은 행만 재크롤해 실제 이미지로 승격 (--refetch 내포)
+```
+
+### `argos backfill-digests` — 롱폼 다이제스트 백필
+
+`digest`가 NULL이고 `raw_content`가 있는 행에 대해 다이제스트 LLM(기본 `qwen3:14b`, config로 조정 가능)을 한 행씩 호출합니다. 느리고, 이미 값이 있는 행은 건드리지 않습니다.
+
+```bash
+uv run argos backfill-digests --dry-run   # 처리 대상 행 수만 확인 (LLM 호출 없음)
+uv run argos backfill-digests --limit 50  # 최대 50행만 처리
+uv run argos backfill-digests             # 전체 처리
+```
+
 ## Testing
 
 ```bash
