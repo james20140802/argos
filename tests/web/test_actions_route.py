@@ -273,6 +273,210 @@ def test_untrack_malformed_uuid_returns_404(monkeypatch):
     assert resp.status_code == 404
 
 
+# --- ARG-184: ?context=detail re-renders the detail-page action bar ------ #
+
+
+def test_keep_with_detail_context_returns_detail_actions_partial(monkeypatch):
+    """``?context=detail`` (sent only by the item-detail page's action bar)
+    must return the standalone ``_detail_actions.html`` fragment — never the
+    feed's ``_feed_card.html`` — so a detail-page Keep click doesn't splice a
+    full feed card into the single-item page."""
+    item_id = uuid.uuid4()
+
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
+        return ToggleOutcome.SET
+
+    async def _fake_lookup(session, tech_id):
+        return {"id": tech_id, "title": "Kept Thing", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": "요약",
+                "source_url": "https://x", "asset_id": uuid.uuid4()}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.toggle_asset": _fake_toggle,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+        },
+    )
+    resp = client.post(f"/items/{item_id}/keep?context=detail")
+    assert resp.status_code == 200
+    body = resp.text
+    assert f'id="item-actions-{item_id}"' in body
+    # The detail action bar never contains the feed card's markup.
+    assert "headline" not in body
+    assert "eyebrow" not in body
+    assert "card--featured" not in body
+    # Kept → Untrack replaces the Keep button.
+    assert "Untrack" in body
+
+
+def test_pass_with_detail_context_returns_detail_actions_partial(monkeypatch):
+    item_id = uuid.uuid4()
+
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
+        return ToggleOutcome.SET
+
+    async def _fake_lookup(session, tech_id):
+        return {"id": tech_id, "title": "Passed", "status": AssetStatus.ARCHIVED,
+                "category": None, "image_url": None, "summary": None,
+                "source_url": "https://x", "asset_id": None}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.toggle_asset": _fake_toggle,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+        },
+    )
+    resp = client.post(f"/items/{item_id}/pass?context=detail")
+    assert resp.status_code == 200
+    body = resp.text
+    assert f'id="item-actions-{item_id}"' in body
+    assert "✓ Pass" in body
+    assert "headline" not in body
+
+
+def test_keep_without_context_still_returns_feed_card_partial(monkeypatch):
+    """Plain (no ``context``) requests — i.e. every existing feed hx-post —
+    keep returning the feed-card fragment. Guards ARG-184 against regressing
+    the feed's Keep/Pass behavior."""
+    item_id = uuid.uuid4()
+
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
+        return ToggleOutcome.SET
+
+    async def _fake_lookup(session, tech_id):
+        return {"id": tech_id, "title": "Kept Thing", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": "요약",
+                "source_url": "https://x", "asset_id": uuid.uuid4()}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.toggle_asset": _fake_toggle,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+        },
+    )
+    resp = client.post(f"/items/{item_id}/keep")
+    assert resp.status_code == 200
+    body = resp.text
+    assert f'id="feed-card-{item_id}"' in body
+    assert f'id="item-actions-{item_id}"' not in body
+
+
+def test_untrack_with_detail_context_rerenders_action_bar(monkeypatch):
+    """From the detail page, Untrack re-renders the action bar (now showing
+    a plain Keep button again, since the asset moved to Archived) instead of
+    returning an empty body — there is only one card on that page, so
+    "removing" it like the portfolio does would leave no actions at all."""
+    user_asset_id = uuid.uuid4()
+    tech_id = uuid.uuid4()
+
+    async def _fake_resolve(session, ua_id):
+        assert ua_id == user_asset_id
+        return tech_id
+
+    async def _fake_transition(session, t_id, target_status):
+        return TransitionOutcome.TRANSITIONED
+
+    async def _fake_lookup(session, t_id):
+        assert t_id == tech_id
+        return {"id": t_id, "title": "Untracked", "status": AssetStatus.ARCHIVED,
+                "category": None, "image_url": None, "summary": None,
+                "source_url": "https://x", "asset_id": user_asset_id}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
+            "argos.web.app.transition_asset": _fake_transition,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+        },
+    )
+    resp = client.post(
+        f"/assets/{user_asset_id}/untrack?context=detail&tech_id={tech_id}"
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert body != ""
+    assert f'id="item-actions-{tech_id}"' in body
+    # No longer Keep, so the bar shows Keep (not Untrack) + an active Pass.
+    assert "Untrack" not in body
+    assert "✓ Pass" in body
+
+
+def test_untrack_with_detail_context_falls_back_to_query_tech_id(monkeypatch):
+    """A stale user_asset_id that no longer resolves (e.g. the row was already
+    cleared) still re-renders the detail action bar using the ``tech_id``
+    threaded through the URL, rather than erroring on a page that's still
+    showing a live item."""
+    user_asset_id = uuid.uuid4()
+    tech_id = uuid.uuid4()
+
+    async def _fake_resolve(session, ua_id):
+        return None
+
+    async def _fake_lookup(session, t_id):
+        assert t_id == tech_id
+        return {"id": t_id, "title": "Still Here", "status": None,
+                "category": None, "image_url": None, "summary": None,
+                "source_url": "https://x", "asset_id": None}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+        },
+    )
+    resp = client.post(
+        f"/assets/{user_asset_id}/untrack?context=detail&tech_id={tech_id}"
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert f'id="item-actions-{tech_id}"' in body
+    assert "Untrack" not in body
+
+
+def test_untrack_with_detail_context_and_no_resolvable_tech_id_404s(monkeypatch):
+    user_asset_id = uuid.uuid4()
+
+    async def _fake_resolve(session, ua_id):
+        return None
+
+    client = _client(
+        monkeypatch,
+        **{"argos.web.app._resolve_user_asset_tech_id": _fake_resolve},
+    )
+    resp = client.post(f"/assets/{user_asset_id}/untrack?context=detail")
+    assert resp.status_code == 404
+
+
+def test_untrack_without_context_still_returns_empty_body(monkeypatch):
+    """Plain (no ``context``) untrack — i.e. the portfolio's hx-post — keeps
+    returning an empty 200 so its outerHTML swap removes the card, unchanged
+    by ARG-184."""
+    user_asset_id = uuid.uuid4()
+    tech_id = uuid.uuid4()
+
+    async def _fake_resolve(session, ua_id):
+        return tech_id
+
+    async def _fake_transition(session, t_id, target_status):
+        return TransitionOutcome.TRANSITIONED
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
+            "argos.web.app.transition_asset": _fake_transition,
+        },
+    )
+    resp = client.post(f"/assets/{user_asset_id}/untrack")
+    assert resp.status_code == 200
+    assert resp.text == ""
+
+
 def test_untrack_already_archived_removes_stale_card(monkeypatch):
     """A stale card for an asset already Archived (NOOP) is also removed: it is
     no longer a live Keep, so the Keep-only portfolio card is stale. Empty 200

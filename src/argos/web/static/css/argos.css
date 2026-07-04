@@ -896,6 +896,11 @@ body {
   color: var(--brass-hi); letter-spacing: 0.04em;
 }
 
+/* Keep/Pass/Untrack action bar (ARG-184) — shares .card-action styling with
+   the feed/portfolio cards; only the row's own margin differs since the
+   detail page isn't a flexed .card. */
+.detail-actions { margin: 0; max-width: 320px; }
+
 /* Summary block */
 .detail-summary {
   font: 400 15.5px/1.75 "Gowun Batang", "IBM Plex Sans KR", serif;

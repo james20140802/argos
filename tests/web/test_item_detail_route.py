@@ -12,6 +12,7 @@ import uuid
 from starlette.testclient import TestClient
 
 from argos.models.tech_item import CategoryType
+from argos.models.user_asset import AssetStatus
 from argos.web.app import _get_session, build_web_app
 from argos.web.services.detail import ItemDetailView
 
@@ -25,6 +26,8 @@ def _view(
     category: CategoryType | None = CategoryType.MAINSTREAM,
     trust_score: float | None = 0.82,
     source_url: str = "https://example.com/gpt5",
+    status: AssetStatus | None = None,
+    asset_id: uuid.UUID | None = None,
 ) -> ItemDetailView:
     return ItemDetailView(
         id=uuid.uuid4(),
@@ -36,6 +39,8 @@ def _view(
         category=category,
         trust_score=trust_score,
         published_at=None,
+        status=status,
+        asset_id=asset_id,
     )
 
 
@@ -200,3 +205,66 @@ def test_item_detail_inherits_base_layout(monkeypatch):
     assert "ARGOS" in body
     assert "관측 피드" in body
     assert "포트폴리오" in body
+
+
+# --- ARG-184: Keep/Pass/Untrack action bar on the detail page ------------ #
+
+
+def test_item_detail_untriaged_renders_keep_and_pass_buttons(monkeypatch):
+    """An item with no user_asset shows plain (inactive) Keep + Pass buttons,
+    each hx-posting to the existing feed action routes with ``context=detail``
+    so the response re-renders this action bar, not a feed-card fragment."""
+    view = _view(status=None, asset_id=None)
+    client = _client_with_detail(monkeypatch, view)
+
+    resp = client.get(f"/item/{view.id}")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert f"/items/{view.id}/keep?context=detail" in body
+    assert f"/items/{view.id}/pass?context=detail" in body
+    assert "✓ Keep" not in body
+    assert "✓ Pass" not in body
+    assert "Untrack" not in body
+    assert f"item-actions-{view.id}" in body
+
+
+def test_item_detail_kept_item_shows_untrack_instead_of_keep(monkeypatch):
+    """Once Kept, the Keep button is replaced by Untrack (mirrors the
+    portfolio's one-way release action) and posts to /assets/{asset_id}/untrack
+    with both context=detail and the tech_id needed to re-resolve on a stale
+    user_asset_id."""
+    asset_id = uuid.uuid4()
+    view = _view(status=AssetStatus.KEEP, asset_id=asset_id)
+    client = _client_with_detail(monkeypatch, view)
+
+    resp = client.get(f"/item/{view.id}")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert f"/assets/{asset_id}/untrack" in body
+    assert "context=detail" in body
+    assert f"tech_id={view.id}" in body
+    assert f"/items/{view.id}/keep" not in body
+    # Pass stays available (inactive) so the user can switch the decision.
+    assert f"/items/{view.id}/pass?context=detail" in body
+    assert "✓ Pass" not in body
+
+
+def test_item_detail_passed_item_shows_active_pass_button(monkeypatch):
+    """A previously-Passed item renders the Pass button pressed (✓ Pass) with
+    ``active=1`` so a re-click clears it, mirroring the feed card contract."""
+    view = _view(status=AssetStatus.ARCHIVED, asset_id=uuid.uuid4())
+    client = _client_with_detail(monkeypatch, view)
+
+    resp = client.get(f"/item/{view.id}")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "✓ Pass" in body
+    # Jinja autoescapes the ``&`` joiner in the query string (matches the
+    # feed card's own ``join('&')`` pattern).
+    assert f"/items/{view.id}/pass?context=detail&amp;active=1" in body
+    # Not Kept, so the Keep button (not Untrack) is shown.
+    assert f"/items/{view.id}/keep?context=detail" in body
+    assert "Untrack" not in body
