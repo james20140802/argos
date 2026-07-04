@@ -26,8 +26,10 @@
  * v9: toggle buttons carry their pressed state (?active=1) so a stale cached
  *     /feed card can't invert a Keep/Pass (_feed_card.html). Bumped so v8
  *     clients replace the cached shell whose buttons lack the param.
+ * v10: detail-page action bar styles (argos.css). Bumped so v9 clients pick up
+ *     the .detail-actions CSS instead of the cached stylesheet.
  */
-const CACHE_VERSION = 'argos-v9';
+const CACHE_VERSION = 'argos-v10';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
