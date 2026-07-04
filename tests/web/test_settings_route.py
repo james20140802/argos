@@ -46,15 +46,59 @@ def test_post_valid_redirects_and_persists(cfg):
 
     resp = client.post(
         "/settings",
-        # weekly_enabled is sent checked so the noop-on-absence uncheck doesn't
-        # flip the default; we only mean to change briefing.time here.
-        data={"briefing.time": "08:15", "briefing.weekly_enabled": "on"},
+        data={"briefing.time": "08:15"},
         follow_redirects=False,
     )
 
     assert resp.status_code == 303
     assert resp.headers["location"] == "/settings?saved=1"
     assert _load_toml(cfg)["briefing"]["time"] == "08:15"
+
+
+def test_explicit_config_path_wins_over_default(tmp_path, monkeypatch):
+    # The daemon started with `argos web --config <active>` must have its
+    # settings page read/write <active>, not the default path.
+    default_path = tmp_path / "default.toml"
+    active_path = tmp_path / "active.toml"
+    monkeypatch.setattr(config_store, "default_config_path", lambda: default_path)
+    client = TestClient(build_web_app(config_path=active_path))
+
+    resp = client.post(
+        "/settings", data={"briefing.time": "08:15"}, follow_redirects=False
+    )
+
+    assert resp.status_code == 303
+    assert _load_toml(active_path)["briefing"]["time"] == "08:15"
+    assert not default_path.exists()  # default file untouched
+
+
+def test_checkbox_uncheck_with_marker_disables_bool(cfg):
+    # weekly_enabled defaults to True; a full-form POST whose checkbox is absent
+    # but whose hidden marker is present is an intentional uncheck.
+    client = TestClient(build_web_app())
+
+    resp = client.post(
+        "/settings",
+        data={"briefing.weekly_enabled__present": "1"},  # marker, checkbox off
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert config_store.get_value(cfg, "briefing.weekly_enabled") is False
+
+
+def test_partial_post_without_marker_leaves_bool_untouched(cfg):
+    # A partial / non-browser POST that omits the checkbox marker must not flip
+    # weekly_enabled off as a side effect of changing an unrelated field.
+    config_store.set_value(cfg, "briefing.weekly_enabled", "true")
+    client = TestClient(build_web_app())
+
+    resp = client.post(
+        "/settings", data={"briefing.time": "08:15"}, follow_redirects=False
+    )
+
+    assert resp.status_code == 303
+    assert config_store.get_value(cfg, "briefing.weekly_enabled") is True
 
 
 def test_get_after_save_shows_success_banner(cfg):

@@ -20,6 +20,9 @@
     <div class="setting-field{% if field.error %} setting-field--error{% endif %}">
       <label class="setting-field__label" for="f-{{ field.key }}">{{ field.label }}</label>
       {% if field.kind == "bool" %}
+      {# Hidden marker: proves this checkbox was on the submitted form, so the
+         server can tell an intentional uncheck from a partial POST. #}
+      <input type="hidden" name="{{ field.key }}__present" value="1">
       <input class="setting-field__check" type="checkbox" id="f-{{ field.key }}"
              name="{{ field.key }}"{% if field.value == "true" %} checked{% endif %}>
       {% elif field.kind == "int" %}

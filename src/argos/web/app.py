@@ -145,12 +145,17 @@ async def _resolve_user_asset_tech_id(session, user_asset_id: uuid.UUID):
     return row[0]
 
 
-def build_web_app() -> FastAPI:
+def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
     """Build and return the Argos FastAPI app.
 
     The app mounts ``/static`` from ``src/argos/web/static/`` and stores
     a configured Jinja2 templates environment on ``app.state.templates``
     so request handlers added by later issues can render views.
+
+    ``config_path`` is the active ``config.toml`` the settings page reads and
+    writes. ``_cmd_web`` passes the ``--config``-resolved path so the web UI
+    edits the same file the running daemon / scheduled jobs use; when ``None``
+    the settings service falls back to ``config_store.default_config_path()``.
     """
     app = FastAPI(
         title="Argos Web",
@@ -592,7 +597,7 @@ def build_web_app() -> FastAPI:
     @app.get("/settings", response_class=HTMLResponse)
     async def settings(request: Request) -> HTMLResponse:
         saved = request.query_params.get("saved") == "1"
-        view = load_settings_view(saved=saved)
+        view = load_settings_view(config_path, saved=saved)
         return request.app.state.templates.TemplateResponse(
             request, "settings.html", {"view": view}
         )
@@ -603,10 +608,15 @@ def build_web_app() -> FastAPI:
         updates: dict[str, str] = {}
         for spec in EDITABLE_FIELDS:
             if spec.kind == "bool":
-                # A checkbox submits its value only when checked; absence = off.
-                # The full form always renders every checkbox, so absence is an
-                # intentional uncheck.
-                updates[spec.key] = "true" if spec.key in form else "false"
+                # A checkbox posts its value only when checked, so absence alone
+                # is ambiguous: an intentional uncheck vs. a partial POST that
+                # never carried the field. The template emits a hidden
+                # ``<key>__present`` marker next to every checkbox, so we only
+                # treat absence as an uncheck when that marker proves the field
+                # was actually on this form. A partial/non-browser POST that
+                # omits the marker leaves the bool untouched.
+                if f"{spec.key}__present" in form:
+                    updates[spec.key] = "true" if spec.key in form else "false"
             elif spec.key in form:
                 # Only update non-bool fields the form actually carried. The full
                 # settings form submits every input (empty strings included), so
@@ -614,11 +624,11 @@ def build_web_app() -> FastAPI:
                 # blanking untouched fields (e.g. briefing.weekdays min_length=1).
                 updates[spec.key] = str(form[spec.key])
 
-        errors = apply_settings(updates)
+        errors = apply_settings(updates, config_path)
         if errors:
             # Post-Redirect-Get is skipped on failure: re-render in place so the
             # user keeps their typed values and sees inline field errors.
-            view = load_settings_view(submitted=updates, errors=errors)
+            view = load_settings_view(config_path, submitted=updates, errors=errors)
             return request.app.state.templates.TemplateResponse(
                 request, "settings.html", {"view": view}, status_code=400
             )
