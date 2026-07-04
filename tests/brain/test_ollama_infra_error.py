@@ -7,11 +7,6 @@ from argos.brain import ollama_client
 from argos.brain.ollama_client import OllamaInfraError
 
 
-class _Resp:
-    def __init__(self, status_code):
-        self.status_code = status_code
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "exc",
@@ -27,8 +22,9 @@ async def test_query_ollama_wraps_infra_failures(monkeypatch, exc):
         raise exc
 
     monkeypatch.setattr(ollama_client, "_generate", _boom)
-    with pytest.raises(OllamaInfraError):
+    with pytest.raises(OllamaInfraError) as excinfo:
         await ollama_client.query_ollama("qwen3:8b", "hi")
+    assert excinfo.value.__cause__ is exc
 
 
 @pytest.mark.asyncio
