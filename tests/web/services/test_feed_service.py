@@ -1,12 +1,10 @@
 """Unit + integration tests for argos.web.services.feed (ARG-155)."""
 from __future__ import annotations
 
-import socket
 import uuid
 from datetime import datetime, timezone, timedelta
 
 import pytest
-from sqlalchemy.engine.url import make_url
 
 from argos.config import settings
 from argos.web.services.feed import (
@@ -15,6 +13,7 @@ from argos.web.services.feed import (
     fetch_feed,
     PAGE_SIZE,
 )
+from tests.conftest import db_reachable as _db_reachable
 
 
 # --------------------------------------------------------------------- #
@@ -58,17 +57,6 @@ def test_decode_cursor_rejects_garbage() -> None:
 # --------------------------------------------------------------------- #
 
 _DB_URL: str = settings.database_url
-
-
-def _db_reachable(url: str) -> bool:
-    parsed = make_url(url)
-    host = parsed.host or "localhost"
-    port = parsed.port or 5432
-    try:
-        with socket.create_connection((host, port), timeout=1):
-            return True
-    except OSError:
-        return False
 
 
 pytestmark_db = pytest.mark.skipif(
