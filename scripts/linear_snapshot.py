@@ -25,6 +25,8 @@ import urllib.request
 API_URL = "https://api.linear.app/graphql"
 DEFAULT_TEAM = "Argos"  # 팀 이름 (Sangchu는 워크스페이스 이름, 팀 key는 ARG)
 
+# 중첩 컬렉션(labels/children/relations)은 Linear 기본값(첫 50개)만 오므로
+# pageInfo를 함께 받아 잘림을 출력의 "truncated" 필드로 명시한다.
 LIST_QUERY = """
 query($filter: IssueFilter, $after: String) {
   issues(filter: $filter, first: 100, after: $after) {
@@ -33,28 +35,31 @@ query($filter: IssueFilter, $after: String) {
       identifier title url description
       state { name }
       assignee { displayName }
-      labels { nodes { name } }
+      labels { pageInfo { hasNextPage } nodes { name } }
       parent { identifier }
-      children { nodes { identifier } }
-      relations { nodes { type relatedIssue { identifier } } }
-      inverseRelations { nodes { type issue { identifier } } }
+      children { pageInfo { hasNextPage } nodes { identifier } }
+      relations { pageInfo { hasNextPage } nodes { type relatedIssue { identifier } } }
+      inverseRelations { pageInfo { hasNextPage } nodes { type issue { identifier } } }
     }
   }
 }
 """
 
 ISSUE_QUERY = """
-query($id: String!) {
+query($id: String!, $commentsAfter: String) {
   issue(id: $id) {
     identifier title url description
     state { name }
     assignee { displayName }
-    labels { nodes { name } }
+    labels { pageInfo { hasNextPage } nodes { name } }
     parent { identifier title }
-    children { nodes { identifier title state { name } } }
-    relations { nodes { type relatedIssue { identifier } } }
-    inverseRelations { nodes { type issue { identifier } } }
-    comments(first: 50) { nodes { createdAt user { displayName } body } }
+    children { pageInfo { hasNextPage } nodes { identifier title state { name } } }
+    relations { pageInfo { hasNextPage } nodes { type relatedIssue { identifier } } }
+    inverseRelations { pageInfo { hasNextPage } nodes { type issue { identifier } } }
+    comments(first: 100, after: $commentsAfter) {
+      pageInfo { hasNextPage endCursor }
+      nodes { createdAt user { displayName } body }
+    }
   }
 }
 """
@@ -96,6 +101,13 @@ def compact_issue(n: dict, with_description: bool) -> dict:
             if r["type"] == "blocks" and r.get("issue")
         ],
         "url": n["url"],
+        # 첫 페이지(50개)를 넘겨 잘린 중첩 컬렉션 목록 — 비어 있지 않으면
+        # 해당 필드는 불완전하므로 소비자가 MCP/개별 조회로 보완해야 한다.
+        "truncated": [
+            f
+            for f in ("labels", "children", "relations", "inverseRelations")
+            if n.get(f, {}).get("pageInfo", {}).get("hasNextPage")
+        ],
     }
     if with_description:
         out["description"] = n.get("description")
@@ -124,9 +136,16 @@ def list_issues(args: argparse.Namespace) -> dict:
 
 
 def single_issue(args: argparse.Namespace) -> dict:
-    n = gql(ISSUE_QUERY, {"id": args.issue})["issue"]
+    n = gql(ISSUE_QUERY, {"id": args.issue, "commentsAfter": None})["issue"]
     if n is None:
         sys.exit(f"이슈를 찾을 수 없음: {args.issue}")
+    # 코멘트는 의사결정 기록이라 잘림 표시로 때우지 않고 끝까지 페이지네이션
+    comment_nodes = list(n["comments"]["nodes"])
+    page = n["comments"]["pageInfo"]
+    while page["hasNextPage"]:
+        more = gql(ISSUE_QUERY, {"id": args.issue, "commentsAfter": page["endCursor"]})
+        comment_nodes.extend(more["issue"]["comments"]["nodes"])
+        page = more["issue"]["comments"]["pageInfo"]
     out = compact_issue(n, with_description=True)
     out["children"] = [
         {"id": c["identifier"], "title": c["title"], "state": c["state"]["name"]}
@@ -138,7 +157,7 @@ def single_issue(args: argparse.Namespace) -> dict:
             "by": (c.get("user") or {}).get("displayName"),
             "body": c["body"],
         }
-        for c in n["comments"]["nodes"]
+        for c in comment_nodes
     ]
     return out
 
