@@ -19,6 +19,12 @@ DB-backed 테스트는 개발자의 실제 dev DB(``settings.database_url`` → 
 
 dev DB에는 이 conftest에서 절대 쓰기(CREATE/DROP/INSERT/...)를 하지 않는다 —
 건드리는 것은 오직 ``POSTGRES_DB``로 지정된 스크래치 DB 뿐이다.
+
+3. 위 (1)에서 ``POSTGRES_DB``를 덮어쓰기 **직전**, 실제 dev DB명(env var →
+   .env 파일 → 하드코드 기본값 ``argos`` 순)을 별도로 읽어 스크래치 DB명과
+   비교한다. 둘이 같으면(예: 개발자 셸에 ``ARGOS_TEST_DB_NAME=argos``가 export
+   돼 있는 경우) pytest 컬렉션 단계에서 즉시 ``RuntimeError``로 중단한다 —
+   그렇지 않으면 (2)의 세션 fixture가 dev DB를 DROP해 버린다.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ import os
 import socket
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +43,69 @@ import pytest
 # module-level singletons resolved once at import time.
 # --------------------------------------------------------------------- #
 TEST_DB_NAME = os.environ.get("ARGOS_TEST_DB_NAME", "argos_test")
+
+# Well-known dev DB name (argos.config.Secrets.POSTGRES_DB default). Hard
+# reject this regardless of what the real .env resolves to — it's the one
+# name we know for certain is never safe to DROP/CREATE as a scratch DB.
+_HARDCODED_DEV_DB_NAME = "argos"
+
+
+def _resolve_env_file() -> Path | None:
+    """Mirror ``argos.config._resolve_env_file`` without importing
+    ``argos.config`` — importing it here would freeze its module-level
+    ``settings`` singleton against whatever ``POSTGRES_DB`` is in
+    ``os.environ`` *before* we've had a chance to override it below, which
+    would silently defeat this file's entire isolation mechanism for every
+    test module that does ``from argos.config import settings``.
+    """
+    env_file_override = os.environ.get("ARGOS_ENV_FILE")
+    if env_file_override:
+        return Path(env_file_override)
+
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    xdg_base = Path(xdg) if xdg else Path.home() / ".config"
+    xdg_path = xdg_base / "argos" / ".env"
+    if xdg_path.exists():
+        return xdg_path
+
+    cwd_env = Path(".env")
+    if cwd_env.exists():
+        return cwd_env
+
+    return None
+
+
+def _real_dev_db_name() -> str:
+    """Resolve the dev DB name the app would actually connect to, following
+    the same precedence as ``argos.config.Secrets`` (explicit env var > .env
+    file > hardcoded field default) — without importing ``argos.config``.
+    """
+    env_value = os.environ.get("POSTGRES_DB")
+    if env_value:
+        return env_value
+
+    env_file = _resolve_env_file()
+    if env_file is not None:
+        from dotenv import dotenv_values
+
+        file_value = dotenv_values(env_file).get("POSTGRES_DB")
+        if file_value:
+            return file_value
+
+    return _HARDCODED_DEV_DB_NAME  # argos.config.Secrets.POSTGRES_DB default
+
+
+_real_dev_db_name_resolved = _real_dev_db_name()
+if TEST_DB_NAME in (_HARDCODED_DEV_DB_NAME, _real_dev_db_name_resolved):
+    raise RuntimeError(
+        f"ARGOS_TEST_DB_NAME={TEST_DB_NAME!r} collides with the dev database "
+        f"name ({_real_dev_db_name_resolved!r}). The isolated-test-DB fixture "
+        f"in this file runs `DROP DATABASE IF EXISTS \"{TEST_DB_NAME}\" WITH "
+        f"(FORCE)` at session start — running it against the dev DB would "
+        f"destroy it. Set ARGOS_TEST_DB_NAME to a distinct scratch DB name "
+        f"(default: argos_test)."
+    )
+
 os.environ["POSTGRES_DB"] = TEST_DB_NAME
 
 
