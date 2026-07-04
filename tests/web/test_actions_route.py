@@ -438,6 +438,59 @@ def test_untrack_with_detail_context_falls_back_to_query_tech_id(monkeypatch):
     assert "Untrack" not in body
 
 
+def test_untrack_with_detail_context_falls_back_to_unrelated_tech_id(monkeypatch):
+    """A stale ``user_asset_id`` (already-cleared, so it no longer resolves)
+    combined with a ``tech_id`` query param pointing at a real but *unrelated*
+    tech_item still renders that unrelated item's action bar — the fallback
+    has no way to cross-check ``tech_id`` against the page the request
+    originated from, since a cleared asset can no longer be resolved back to
+    the original item. This pins that as the current (known) behavior.
+
+    The one thing that must never happen is a state mutation running against
+    the forged id: when ``resolved_tech_id`` is ``None``, ``transition_asset``
+    is skipped entirely — the fallback only affects what gets *rendered*,
+    never what gets *archived*. Assert that explicitly here rather than
+    relying on it being implied by the resolve mock returning ``None``."""
+    user_asset_id = uuid.uuid4()
+    unrelated_tech_id = uuid.uuid4()
+    transition_calls = []
+
+    async def _fake_resolve(session, ua_id):
+        return None
+
+    async def _fake_transition(session, t_id, target_status):
+        transition_calls.append(t_id)
+        return TransitionOutcome.TRANSITIONED
+
+    async def _fake_lookup(session, t_id):
+        assert t_id == unrelated_tech_id
+        return {"id": t_id, "title": "Unrelated Item", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": None,
+                "source_url": "https://unrelated", "asset_id": uuid.uuid4()}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
+            "argos.web.app.transition_asset": _fake_transition,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+        },
+    )
+    resp = client.post(
+        f"/assets/{user_asset_id}/untrack?context=detail&tech_id={unrelated_tech_id}"
+    )
+
+    # No mutation ran against the forged/unrelated id.
+    assert transition_calls == []
+    assert resp.status_code == 200
+    body = resp.text
+    # Known behavior: the fragment renders for the unrelated tech_id, not the
+    # item the page was originally showing — this is the DOM id mismatch the
+    # fallback can produce when tech_id doesn't match the original page.
+    assert f'id="item-actions-{unrelated_tech_id}"' in body
+    assert "Untrack" in body  # AssetStatus.KEEP renders the Untrack button
+
+
 def test_untrack_with_detail_context_and_no_resolvable_tech_id_404s(monkeypatch):
     user_asset_id = uuid.uuid4()
 
