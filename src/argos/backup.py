@@ -162,8 +162,13 @@ def create_backup(
     # "x" (exclusive create) makes two racing invocations fail loudly on the
     # second open instead of interleaving writes into one temp inode. On that
     # failure the temp file belongs to the other run — do NOT unlink it.
+    #
+    # The 0o600 opener overrides the process umask: a bare "xb" would create
+    # the file 0644 under the common umask 022, leaving a dump of the entire
+    # database world/group-readable on a shared host. Path.replace preserves
+    # the mode onto the final .dump, so the restrictive bits carry through.
     try:
-        tmp_file = open(tmp_dest, "xb")
+        tmp_file = open(tmp_dest, "xb", opener=lambda path, flags: os.open(path, flags, 0o600))
     except FileExistsError as exc:
         raise BackupError(
             f"temp dump file already exists ({tmp_dest}) — another backup appears to be in flight"
@@ -262,6 +267,13 @@ def restore_backup(
             "-d",
             secrets.POSTGRES_DB,
             "--no-owner",
+            # Wrap the whole restore in one transaction: pg_restore's default is
+            # to keep going after SQL errors, so a mid-restore failure (bad
+            # archive, permissions issue, disk-full) with --clean would leave the
+            # DB partially dropped/restored. --single-transaction rolls the whole
+            # thing back on any error (it implies --exit-on-error), so the DB is
+            # either fully restored or left untouched.
+            "--single-transaction",
         ]
         if clean:
             restore_cmd += ["--clean", "--if-exists"]

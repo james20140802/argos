@@ -6,6 +6,8 @@ docker/subprocess/DB calls happen in this file.
 """
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -292,6 +294,9 @@ def test_restore_backup_happy_path_cps_execs_and_cleans_up(monkeypatch, tmp_path
     assert "pg_restore" in calls[1]
     assert "--clean" in calls[1]
     assert "--if-exists" in calls[1]
+    # Atomic restore: the whole thing runs in one transaction so a mid-restore
+    # failure rolls back instead of leaving the DB partially dropped/restored.
+    assert "--single-transaction" in calls[1]
     assert calls[1][-1] == "/tmp/argos-x.dump"
 
     # cleanup call removes the staged file inside the container.
@@ -332,6 +337,32 @@ def test_restore_backup_no_clean_omits_clean_flags(monkeypatch, tmp_path):
 
     assert "--clean" not in calls[1]
     assert "--if-exists" not in calls[1]
+    # Atomicity is independent of --clean: a partial add-on restore is just as
+    # unwanted, so --single-transaction stays on either way.
+    assert "--single-transaction" in calls[1]
+
+
+def test_create_backup_dump_file_is_private(monkeypatch, tmp_path):
+    """A dump holds the whole database — it must be created 0600, not left
+    world/group-readable by the process umask (0644 under the common 022)."""
+    monkeypatch.setattr(backup, "container_running", lambda container=backup.DEFAULT_CONTAINER_NAME: True)
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write(b"secret-db-bytes")
+        return _completed(0)
+
+    monkeypatch.setattr(backup, "_run", fake_run)
+
+    # Force a permissive umask so a bare "xb" open would yield 0644; the opener
+    # must clamp to 0600 regardless.
+    old_umask = os.umask(0o022)
+    try:
+        dest = backup.create_backup(output_dir=tmp_path)
+    finally:
+        os.umask(old_umask)
+
+    mode = stat.S_IMODE(dest.stat().st_mode)
+    assert mode == 0o600, f"dump created with mode {oct(mode)}, expected 0o600"
 
 
 def test_restore_backup_cp_failure_raises_before_exec(monkeypatch, tmp_path):
