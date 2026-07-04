@@ -289,3 +289,90 @@ async def test_run_works_without_injected_console():
         # Must not raise; rc must be 0.
         rc = await _run([], verbose=False)
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# ARG-216: non-zero exit + warning log when triage_error is present in results
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_returns_nonzero_on_infra_error():
+    """When any result carries a truthy triage_error, _run returns non-zero
+    and logs a warning (Ollama-down infra failure, queue preserved for retry).
+
+    Note: _run calls logging.basicConfig(force=True), which detaches pytest's
+    caplog handler from the root logger before the warning is emitted. So we
+    attach our own handler directly to the "argos.cli" logger (basicConfig
+    only clears root's handlers, not named loggers') to capture the record.
+    """
+
+    async def _infra_pipeline(session, dynamic_urls=None, *, progress=None):
+        results = [
+            {
+                "is_valid": False,
+                "triage_error": "ollama down",
+                "source_url": "https://a.com",
+            }
+        ]
+        return results, _make_summary()
+
+    records: list[logging.LogRecord] = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    cli_logger = logging.getLogger("argos.cli")
+    handler = _ListHandler(level=logging.WARNING)
+    cli_logger.addHandler(handler)
+    try:
+        with (
+            patch("argos.cli.AsyncSessionLocal", return_value=_make_mock_session()),
+            patch("argos.cli.run_full_pipeline", new=_infra_pipeline),
+        ):
+            from argos.cli import _run
+
+            rc = await _run([], verbose=False)
+    finally:
+        cli_logger.removeHandler(handler)
+
+    assert rc != 0
+    assert any("infra error" in r.getMessage().lower() for r in records)
+
+
+@pytest.mark.asyncio
+async def test_run_returns_zero_on_empty_results():
+    """An empty queue (no items at all) must still return 0 — no false-red."""
+
+    async def _empty_pipeline(session, dynamic_urls=None, *, progress=None):
+        return [], _make_summary()
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=_make_mock_session()),
+        patch("argos.cli.run_full_pipeline", new=_empty_pipeline),
+    ):
+        from argos.cli import _run
+
+        rc = await _run([], verbose=False)
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_run_returns_zero_on_all_invalid_no_infra():
+    """An all-invalid batch with no triage_error (e.g. malformed URLs) is not
+    an infra error — must NOT be gated on triage_pass == 0, and must return 0.
+    """
+
+    async def _invalid_pipeline(session, dynamic_urls=None, *, progress=None):
+        results = [{"is_valid": False, "source_url": "https://a.com"}]
+        return results, _make_summary()
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=_make_mock_session()),
+        patch("argos.cli.run_full_pipeline", new=_invalid_pipeline),
+    ):
+        from argos.cli import _run
+
+        rc = await _run([], verbose=False)
+    assert rc == 0
