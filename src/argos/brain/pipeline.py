@@ -233,6 +233,14 @@ async def run_batch_brain_pipeline(
                 logger.warning("run_batch_brain_pipeline: state missing source_url, skipping")
                 results.append(s)
                 continue
+            if s.get("triage_error"):
+                # Ollama-down rows are is_valid=False and never persist
+                # (save_node no-ops), so running the save path would only set
+                # saved=True after an empty flush — inflating saved_new with
+                # phantom inserts. Skip it; Stage 6 still retains the row for
+                # retry via triage_error. (ARG-190)
+                results.append(s)
+                continue
             try:
                 async with session.begin_nested():
                     saved = await save_node(s, session=session, flush=False)

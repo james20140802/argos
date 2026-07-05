@@ -326,6 +326,40 @@ async def test_batch_pipeline_cold_start_skips_genealogy(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_batch_pipeline_infra_error_row_not_marked_saved(monkeypatch):
+    """An Ollama-infra-error row (triage_error set, is_valid=False) must skip
+    the save path: save_node is never called and saved stays falsy, so the run
+    summary does not count it as a phantom insert. (ARG-190)"""
+    infra = _batch_state(is_valid=False, triage_error="ollama down", trust_score=None)
+
+    monkeypatch.setattr(
+        brain_pipeline, "batch_triage_states", AsyncMock(return_value=[infra])
+    )
+    monkeypatch.setattr(
+        brain_pipeline,
+        "batch_embed_and_search_node",
+        AsyncMock(return_value=[infra]),
+    )
+    save_spy = AsyncMock()
+    monkeypatch.setattr(brain_pipeline, "save_node", save_spy)
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
+
+    session = MagicMock()
+    session.begin_nested = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=None),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+    session.flush = AsyncMock()
+
+    results = await brain_pipeline.run_batch_brain_pipeline([_item()], session)
+
+    assert len(results) == 1
+    assert not results[0].get("saved")  # not counted as saved_new
+    assert results[0]["triage_error"] == "ollama down"  # still retained by Stage 6
+    save_spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_batch_pipeline_trust_gate_skips_genealogy(monkeypatch):
     """Items below trust_skip_threshold skip genealogy with reason='low_trust'."""
     low_trust = _batch_state(trust_score=0.2, related_tech_ids=["abc"])
