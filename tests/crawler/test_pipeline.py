@@ -436,10 +436,11 @@ async def test_stage6_retains_infra_error_rows(mocker, patched_queue) -> None:
 
     await pipeline.run_full_pipeline(AsyncMock())
 
-    deleted = pipeline._delete_from_queue.call_args.args[1]
-    assert "https://infra.com" not in deleted
-    assert "https://savefail.com" not in deleted
-    assert "https://invalid.com" in deleted
+    # Exact set-equality (no `url in deleted`) asserts precisely which rows
+    # Stage 6 deleted, and avoids the `<url> in <Any>` shape CodeQL misreads
+    # as an incomplete URL-substring sanitization check (alert #12).
+    deleted = set(pipeline._delete_from_queue.call_args.args[1])
+    assert deleted == {"https://invalid.com"}
 
 
 @pytest.mark.asyncio
