@@ -105,6 +105,32 @@ class SettingsView:
     saved: bool = False
 
 
+_TIME_KEYS: frozenset[str] = frozenset(
+    f.key for f in EDITABLE_FIELDS if f.kind == "time"
+)
+
+
+def _normalize_time(raw: str) -> Optional[str]:
+    """Return a zero-padded ``HH:MM`` string, or ``None`` if ``raw`` is not a
+    valid 24-hour time.
+
+    Mirrors ``scheduler._parse_hhmm``'s acceptance (a single-digit hour like
+    ``6:00`` is valid) but canonicalises to the ``HH:MM`` form that a native
+    ``<input type="time">`` requires — otherwise the control renders empty and a
+    subsequent save would post an empty string, corrupting the scheduler input.
+    """
+    raw = raw.strip()
+    if ":" not in raw:
+        return None
+    hh, _, mm = raw.partition(":")
+    if not hh.isdigit() or not mm.isdigit() or len(mm) != 2:
+        return None
+    hour, minute = int(hh), int(mm)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
 def _format_value(value: object) -> str:
     """Render a live config value as the string form the form input expects."""
     if isinstance(value, bool):
@@ -139,6 +165,11 @@ def load_settings_view(
             value = submitted[spec.key]
         else:
             value = _format_value(config_store.get_value(resolved, spec.key))
+            # Native <input type="time"> only populates from a zero-padded
+            # HH:MM; canonicalise a CLI-set value like "6:00" so it shows up
+            # (and isn't silently blanked on the next save).
+            if spec.kind == "time":
+                value = _normalize_time(value) or value
         editable.append(
             SettingField(
                 key=spec.key,
@@ -203,6 +234,16 @@ def apply_settings(
         if spec.key not in updates:
             continue
         raw = updates[spec.key]
+        if spec.kind == "time":
+            # A native time control posts an empty string when its value isn't a
+            # valid HH:MM (e.g. the user cleared it). Persisting "" would break
+            # the next `argos schedule install`, so validate here — the config
+            # model stores these as plain strings and won't catch it.
+            normalized = _normalize_time(raw)
+            if normalized is None:
+                errors[spec.key] = "시각은 HH:MM (24시간) 형식으로 입력하세요."
+                continue
+            raw = normalized
         try:
             current = _format_value(config_store.get_value(resolved, spec.key))
             if raw == current:

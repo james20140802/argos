@@ -161,6 +161,29 @@ def test_get_renders_richer_controls(cfg):
     assert 'name="briefing.weekly_weekday"' in body and "<select" in body
 
 
+def test_post_empty_time_rerenders_400(cfg):
+    # A cleared native time input posts "" — the route must reject it (not
+    # persist an empty string that would break `argos schedule install`).
+    config_store.set_value(cfg, "briefing.time", "07:00")
+    client = TestClient(build_web_app(), raise_server_exceptions=False)
+
+    resp = client.post(
+        "/settings", data={"briefing.time": ""}, follow_redirects=False
+    )
+
+    assert resp.status_code == 400
+    assert 'class="field-error"' in resp.text
+    assert _load_toml(cfg)["briefing"]["time"] == "07:00"  # unchanged
+
+
+def test_get_shows_schedule_install_hint(cfg):
+    client = TestClient(build_web_app())
+
+    body = client.get("/settings").text
+
+    assert "argos schedule install" in body
+
+
 def test_get_after_save_shows_success_banner(cfg):
     client = TestClient(build_web_app())
 

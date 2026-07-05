@@ -1324,6 +1324,18 @@ body {
   color: var(--pass);
 }
 
+.settings-hint {
+  margin: 2px 0 0; padding: 11px 13px;
+  font: 400 12.5px/1.55 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted);
+  background: rgba(201, 168, 106, 0.06);
+  border: 1px solid var(--line); border-left: 2px solid var(--brass);
+  border-radius: 8px;
+}
+.settings-hint code {
+  font: 500 11.5px/1 "IBM Plex Mono", monospace; color: var(--brass);
+}
+
 .settings-form__actions { margin-top: 4px; }
 .settings-save {
   padding: 11px 26px; cursor: pointer;

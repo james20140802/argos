@@ -121,6 +121,49 @@ def test_load_view_formats_sources_as_bare_urls(tmp_path):
     assert "https://www.anthropic.com/news" in sources
 
 
+def test_load_view_normalizes_unpadded_time_for_native_input(tmp_path):
+    cfg = tmp_path / "config.toml"
+    # `scheduler._parse_hhmm` accepts "6:00", but a native <input type="time">
+    # only populates from a zero-padded HH:MM — normalize so it isn't blank.
+    config_store.set_value(cfg, "briefing.time", "6:00")
+
+    view = load_settings_view(cfg)
+    fields = {f.key: f for f in view.editable}
+
+    assert fields["briefing.time"].value == "06:00"
+
+
+def test_apply_empty_time_is_rejected_not_persisted(tmp_path):
+    cfg = tmp_path / "config.toml"
+    config_store.set_value(cfg, "briefing.time", "07:00")
+
+    # A cleared native time input posts "" — persisting it would break the next
+    # `argos schedule install`, so it must be rejected.
+    errors = apply_settings({"briefing.time": ""}, cfg)
+
+    assert "briefing.time" in errors
+    assert _load_toml(cfg)["briefing"]["time"] == "07:00"  # unchanged
+
+
+def test_apply_invalid_time_is_rejected(tmp_path):
+    cfg = tmp_path / "config.toml"
+    config_store.set_value(cfg, "run.time", "06:00")
+
+    errors = apply_settings({"run.time": "25:99"}, cfg)
+
+    assert "run.time" in errors
+    assert _load_toml(cfg)["run"]["time"] == "06:00"
+
+
+def test_apply_canonicalizes_unpadded_time(tmp_path):
+    cfg = tmp_path / "config.toml"
+
+    errors = apply_settings({"briefing.time": "6:05"}, cfg)
+
+    assert errors == {}
+    assert _load_toml(cfg)["briefing"]["time"] == "06:05"
+
+
 def test_apply_unchanged_value_is_a_noop(tmp_path):
     cfg = tmp_path / "config.toml"
     config_store.set_value(cfg, "briefing.time", "07:00")

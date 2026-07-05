@@ -82,6 +82,11 @@
       {% endif %}
     </div>
     {% endfor %}
+    <p class="settings-hint">
+      브리핑·수집 시각과 요일 변경은 <code>config.toml</code>에 저장되지만,
+      launchd 스케줄에 반영하려면 <code>argos schedule install</code>을 다시
+      실행해야 합니다.
+    </p>
     <div class="settings-form__actions">
       <button type="submit" class="settings-save">저장</button>
     </div>
