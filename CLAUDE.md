@@ -5,7 +5,7 @@
 Argos is a local-first Slack bot that automatically tracks AI technology trends, filters hype from substance, and manages a personal "tech asset" portfolio. It runs entirely on a MacBook Pro M1 Max 32GB with **zero cloud cost**.
 
 - **GitHub:** https://github.com/james20140802/argos
-- **Linear:** https://linear.app/sangchu/project/argos-be0d97316a41 (team: Sangchu, prefix: SAN)
+- **Linear:** https://linear.app/sangchu/project/argos-be0d97316a41 (workspace: Sangchu, team: Argos, prefix: ARG)
 
 ## Architecture (5 Epics)
 
@@ -102,7 +102,7 @@ uv run argos schedule uninstall                   # Bootout both plists (idempot
 # Times configured via:  briefing.time, briefing.weekdays, run.time
 
 # Tests
-uv run pytest tests/ -v                           # Run all tests
+uv run pytest tests/ -q --tb=short                # Run all tests (-v는 특정 실패 파고들 때만 — tests/CLAUDE.md 참고)
 uv run ruff check src tests                       # Lint
 ```
 
@@ -114,6 +114,32 @@ uv run ruff check src tests                       # Lint
 - **Enum values:** Use PascalCase for all enum values (Mainstream, Alpha, Replace, Enhance, Fork, Keep, Tracking, Archived).
 - **Python version:** Target >=3.10,<3.13. Use `from __future__ import annotations` where needed for newer type syntax.
 - **Slack handlers:** Ack within 3s, then do real work in the background. Hold the Ollama model lock across unload→query for Deep Dive so the 8B/32B swap is atomic. Asset status changes use upsert to stay concurrency-safe; every transition is logged to `track_history`. Briefings post one threaded message per item, replies stay in-thread.
+
+## Linear 이슈 & PR 작성 관례 — 행동의 언어
+
+이슈/PR 본문은 **행동의 언어**로 쓴다: 사용자가 앱을 만져서 참/거짓을 판정할 수 있는 문장만. 구조의 언어(파일 경로, 노드 배선, 모델명, 라이브러리 선택)는 구현자의 재량이므로 본문에 넣지 않는다. 판단 기준 두 개: (1) *이 문장을 나중에 검토 체크리스트로 그대로 쓸 수 있는가* → 본문에 쓴다. (2) *이 문장과 다르게 구현해도 의도가 충족될 수 있는가* → 본문에서 뺀다(힌트로 강등).
+
+### 부모 이슈 본문 구조
+
+- **불편 (Problem):** 지금 무엇이 불편한가 — 사용자 경험 기준 1~3문장.
+- **성공 장면 (Scenarios):** "~하면 ~가 보인다/된다" 시나리오 2~5개. 가능하면 입력 → 기대 결과 예시 포함 (예시는 가장 압축된 의도 전달 수단).
+- **실패 예시:** 지금 상태, 또는 흔히 나올 잘못된 해석 ("이건 아님").
+- **완료 기준 (AC):** 성공 장면을 체크박스로. 각 항목은 구현을 몰라도 판정 가능해야 한다.
+- **깨지면 안 되는 것 (Constraints):** 기존 동작 유지, 새 의존성/모델 다운로드 제한, VRAM 예산 등. 기준: "이게 깨지면 다른 게 다 돼도 의도가 깨지는가." 기술 세부가 진짜 제약일 때만 **왜**와 함께 여기 적는다 (예: "임베딩 차원 768 고정 — nomic-embed-text와 일치").
+- **안 해도 되는 것 (Non-goals):** 범위 밖 명시.
+
+구현 아이디어(영향 파일 후보, 설계 스케치)가 있으면 버리지 말고 이슈 **코멘트**에 `구현 힌트 (non-binding — 따를 의무 없음)` 라벨을 붙여 분리한다. 본문에 섞으면 나중에 구현이 힌트와 다르게 갔을 때 위반인지 재량인지 판정할 수 없게 된다.
+
+### PR 본문 구조
+
+PR 본문은 구현 설명서가 아니라 **검증 지도**다. 구현 요약보다 먼저:
+
+1. **무엇이 달라지나** — 머지 시 사용자가 관찰할 행동 변화 2~4문장.
+2. **AC Mapping** — 연결된 이슈의 AC **원문 그대로** × 판정(✅/⚠️/❌) × 증거(테스트·commit·수동 확인).
+3. **이슈와 달라진 것 / 승인 안 된 결정** — 새 의존성·다운로드·스키마·기존 동작 변경·이슈 힌트와 다른 접근. 없으면 "없음" 명시.
+4. **직접 확인하는 법** — diff 없이 판정 가능한 명령 + 기대 결과 3~5단계.
+
+Implementation Summary는 그 뒤에 참고용으로만.
 
 ## Git Workflow
 
