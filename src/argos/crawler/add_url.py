@@ -423,6 +423,17 @@ async def add_url(url: str, session: AsyncSession) -> AddUrlResult:
         )
 
     # ── 7. Translate brain state to result ────────────────────────────────
+    if state.get("triage_error"):
+        # Ollama was down during triage (ARG-190): the item was never judged,
+        # so it also carries is_valid=False. Surface it as a retryable ERROR —
+        # not a content REJECTED, which would wrongly tell the user their URL
+        # isn't a substantive tech signal. Re-running `argos add` retries it.
+        return AddUrlResult(
+            url=final_url,
+            status=AddUrlStatus.ERROR,
+            reason=f"Ollama unavailable during triage: {state['triage_error']}",
+        )
+
     if not state.get("is_valid"):
         # Triage rejected; nothing was written.
         return AddUrlResult(

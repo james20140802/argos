@@ -310,6 +310,12 @@ async def _run(
                     )
     elapsed = time.monotonic() - start
     _print_run_summary(summary, elapsed)
+    if any(s.get("triage_error") for s in results):
+        logging.getLogger(__name__).warning(
+            "argos run: Ollama infra error during triage; crawl queue preserved "
+            "for retry, reporting non-zero exit."
+        )
+        return 1
     return 0
 
 

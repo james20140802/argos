@@ -41,3 +41,8 @@ class BrainState(TypedDict):
     # state initializers need not set it; save_node reads via state.get("digest").
     # None when the node skipped (thin content), failed, or output was rejected.
     digest: NotRequired[str | None]
+    # Set by _triage_one ONLY when the Ollama call fails for infrastructure
+    # reasons (OllamaInfraError: connection/timeout/OOM). None/absent on success
+    # and on genuine is_valid=False rejections. Consumers (pipeline Stage 6,
+    # CLI _run) key retention/exit-code off this, never off is_valid. (ARG-190)
+    triage_error: NotRequired[str | None]

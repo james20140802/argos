@@ -13,6 +13,16 @@ DEFAULT_NUM_CTX = 4096
 _MODEL_LOCK = asyncio.Lock()
 
 
+class OllamaInfraError(Exception):
+    """Raised when a call to Ollama fails for infrastructure reasons.
+
+    Covers connection failures, timeouts, and server errors (HTTP 5xx —
+    Ollama returns 500 on VRAM OOM). Distinct from a legitimate model
+    response that fails parsing/validation downstream (ARG-190/ARG-214):
+    those are not infra failures and must not raise this type.
+    """
+
+
 def _base_url() -> str:
     """Return the Ollama base URL from config, falling back to the default."""
     try:
@@ -65,7 +75,20 @@ async def query_ollama(
     think: bool | None = None,
 ) -> str:
     async with _MODEL_LOCK:
-        return await _generate(model, prompt, keep_alive, timeout, num_ctx, think)
+        try:
+            return await _generate(model, prompt, keep_alive, timeout, num_ctx, think)
+        except httpx.HTTPStatusError as exc:
+            # raise_for_status() failure: 5xx (incl. Ollama's 500 on VRAM OOM)
+            # is infra; 4xx is a real request bug and must surface untouched.
+            if exc.response.status_code >= 500:
+                raise OllamaInfraError(str(exc)) from exc
+            raise
+        except httpx.TransportError as exc:
+            # Covers ConnectError/ConnectTimeout, every read/write timeout, and
+            # dropped-connection errors (ReadError, WriteError, RemoteProtocolError)
+            # Ollama raises when it resets the socket mid-request under OOM/crash.
+            # All are infra failures the pipeline must retain+retry, not drop. (ARG-190)
+            raise OllamaInfraError(str(exc)) from exc
 
 
 async def unload_model(model: str) -> None:

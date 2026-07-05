@@ -412,6 +412,38 @@ async def test_run_full_pipeline_summary_counts_saved_and_triage(mocker, patched
 
 
 @pytest.mark.asyncio
+async def test_stage6_retains_infra_error_rows(mocker, patched_queue) -> None:
+    """Stage 6 must retain infra-error rows (triage_error set) alongside
+    save-failed rows, while still deleting genuine triage rejections (ARG-215)."""
+    crawl_items = [
+        {"title": "t1", "source_url": "https://infra.com", "raw_content": "a", "_source": "hackernews"},
+        {"title": "t2", "source_url": "https://savefail.com", "raw_content": "b", "_source": "hackernews"},
+        {"title": "t3", "source_url": "https://invalid.com", "raw_content": "c", "_source": "hackernews"},
+    ]
+    results = [
+        {"is_valid": False, "saved": False, "triage_error": "ollama down",
+         "source_url": "https://infra.com", "raw_text": ""},
+        {"is_valid": True, "saved": False,
+         "source_url": "https://savefail.com", "raw_text": ""},
+        {"is_valid": False, "saved": False,
+         "source_url": "https://invalid.com", "raw_text": ""},
+    ]
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
+    mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=results),
+    )
+
+    await pipeline.run_full_pipeline(AsyncMock())
+
+    # Exact set-equality (no `url in deleted`) asserts precisely which rows
+    # Stage 6 deleted, and avoids the `<url> in <Any>` shape CodeQL misreads
+    # as an incomplete URL-substring sanitization check (alert #12).
+    deleted = set(pipeline._delete_from_queue.call_args.args[1])
+    assert deleted == {"https://invalid.com"}
+
+
+@pytest.mark.asyncio
 async def test_run_static_pipeline_tags_items_with_source(mocker) -> None:
     gh = [
         {"title": "gh-1", "source_url": "https://github.com/a/b", "raw_content": "x"},
