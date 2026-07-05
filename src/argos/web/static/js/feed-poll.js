@@ -93,9 +93,13 @@
         : null;
 
       if (refresh && typeof refresh.then === "function") {
-        refresh.then(function () {
-          hidePill();
-          window.scrollTo({ top: 0 });
+        refresh.then(function (ok) {
+          if (ok) {
+            hidePill();
+            window.scrollTo({ top: 0 });
+          }
+          // ok === false → refresh failed silently; leave the pill up so
+          // the user can retry instead of hiding it over stale content.
         });
       } else {
         location.reload();

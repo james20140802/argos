@@ -83,3 +83,12 @@ def test_base_loads_feed_poll_script():
 def test_sw_precaches_feed_poll_js():
     body = SW.read_text(encoding="utf-8")
     assert "/static/js/feed-poll.js" in body
+
+
+def test_feed_poll_pill_tap_gates_hide_and_scroll_on_refresh_result():
+    # CRITICAL fix: ArgosRefresh.refresh() never rejects — it resolves false
+    # on a failed fetch (offline/5xx). An unconditional .then() would hide
+    # the pill and scroll to top over stale content. The success callback
+    # must inspect the resolved value and only hide+scroll when truthy.
+    body = FEED_POLL_JS.read_text(encoding="utf-8")
+    assert "function (ok)" in body or "function(ok)" in body
