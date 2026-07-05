@@ -48,6 +48,10 @@
          {% if request.url.path == '/portfolio' or request.url.path.startswith('/portfolio/') %}aria-current="page"{% endif %}>
         <span class="ic" aria-hidden="true">✦</span>포트폴리오
       </a>
+      <a class="rail__tab" href="/settings"
+         {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>
+        <span class="ic" aria-hidden="true">⚙</span>설정
+      </a>
     </nav>
   </aside>
 
@@ -73,6 +77,10 @@
     <a class="tab" href="/portfolio"
        {% if request.url.path == '/portfolio' or request.url.path.startswith('/portfolio/') %}aria-current="page"{% endif %}>
       <span class="ic" aria-hidden="true">✦</span>포트폴리오
+    </a>
+    <a class="tab" href="/settings"
+       {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>
+      <span class="ic" aria-hidden="true">⚙</span>설정
     </a>
   </nav>
 

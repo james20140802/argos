@@ -1,0 +1,293 @@
+"""Read/write service backing the 설정 screen (ARG-186).
+
+A thin web layer on top of :mod:`argos.config_store` — the same dotted-key
+read/write/mask primitives that back the ``argos config`` CLI. The web page
+only ever exposes a small allowlist of *user-preference* fields for editing
+(:data:`EDITABLE_FIELDS`); everything else (sources, secrets, advanced knobs)
+is shown read-only with ``config_store``'s existing masking.
+
+This module deliberately touches no database — it wraps ``config_store``,
+which is pure ``tomllib``/pydantic — so importing it from ``argos.web.app`` at
+module scope keeps the ``build_web_app`` import graph free of ``argos.database``
+(guarded by ``test_build_web_app_does_not_import_argos_database``).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, Optional
+
+try:
+    import tomllib
+except ImportError:  # pragma: no cover - Python <3.11
+    import tomli as tomllib  # type: ignore[no-redef]
+
+from pydantic import ValidationError
+
+from argos import config_store
+
+# ``text``   free-form string  → text input
+# ``list``   free-form CSV      → text input, split on commas
+# ``int``    integer            → number input
+# ``bool``   flag               → toggle switch
+# ``time``   "HH:MM"            → native time picker
+# ``select`` one of ``options`` → dropdown
+# ``weekdays`` subset of days   → toggle-button group (multi-select)
+FieldKind = Literal["text", "list", "int", "bool", "time", "select", "weekdays"]
+
+# ``(value, label)`` option pairs. ``value`` is the string persisted to config;
+# ``label`` is what the UI shows.
+Option = tuple[str, str]
+
+# 3-letter weekday names, matching BriefingConfig.weekdays / weekly_weekday and
+# the scheduler's Sun=0..Sat=6 table. Monday-first for the UI, Korean labels.
+WEEKDAY_OPTIONS: tuple[Option, ...] = (
+    ("Mon", "월"), ("Tue", "화"), ("Wed", "수"), ("Thu", "목"),
+    ("Fri", "금"), ("Sat", "토"), ("Sun", "일"),
+)
+
+# summary_language is a free-form string in the model, but in practice it is one
+# of a handful of languages — offer them as a dropdown. If the on-disk value is
+# something else it is preserved (the template appends it as an extra option).
+LANGUAGE_OPTIONS: tuple[Option, ...] = (
+    ("Korean", "한국어"), ("English", "English"),
+    ("Japanese", "日本語"), ("Chinese", "中文"),
+)
+
+# Read-only source lists (nested-model lists) show only their URL field rather
+# than the raw pydantic repr (``url='…' category='…'``).
+_SOURCE_URL_FIELD: dict[str, str] = {
+    "rss.feeds": "url",
+    "spa.sources": "listing_url",
+}
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    """Static description of one editable config field."""
+
+    key: str
+    label: str
+    kind: FieldKind
+    options: tuple[str, ...] = ()
+
+
+# Single source of truth for which config keys the web page may edit. Every key
+# here is non-secret (``config_store.is_secret`` is False) and coercible by
+# ``config_store.set_value`` (scalar / ``list[str]`` — not the nested-model
+# lists ``rss.feeds`` / ``spa.sources``, which stay read-only in v1).
+EDITABLE_FIELDS: tuple[FieldSpec, ...] = (
+    FieldSpec("interests.topics", "관심 토픽", "list"),
+    FieldSpec("interests.exclusions", "제외 토픽", "list"),
+    FieldSpec("briefing.time", "일일 브리핑 시각", "time"),
+    FieldSpec("briefing.weekdays", "브리핑 요일", "weekdays", WEEKDAY_OPTIONS),
+    FieldSpec("briefing.limit_per_category", "카테고리별 항목 수", "int"),
+    FieldSpec("briefing.lookback_days", "조회 기간 (일)", "int"),
+    FieldSpec("briefing.weekly_enabled", "주간 브리핑 사용", "bool"),
+    FieldSpec("briefing.weekly_weekday", "주간 브리핑 요일", "select", WEEKDAY_OPTIONS),
+    FieldSpec("run.time", "수집 실행 시각", "time"),
+    FieldSpec("run.daily_limit", "일일 수집 한도", "int"),
+    FieldSpec("slack.summary_language", "요약 언어", "select", LANGUAGE_OPTIONS),
+)
+
+_EDITABLE_KEYS: frozenset[str] = frozenset(f.key for f in EDITABLE_FIELDS)
+
+
+@dataclass(frozen=True)
+class SettingField:
+    key: str
+    label: str
+    kind: FieldKind
+    value: str
+    options: tuple[str, ...] = ()
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class SettingsView:
+    editable: list[SettingField]
+    readonly: list[tuple[str, str]]
+    saved: bool = False
+
+
+_TIME_KEYS: frozenset[str] = frozenset(
+    f.key for f in EDITABLE_FIELDS if f.kind == "time"
+)
+
+
+def _normalize_time(raw: str) -> Optional[str]:
+    """Return a zero-padded ``HH:MM`` string, or ``None`` if ``raw`` is not a
+    valid 24-hour time.
+
+    Mirrors ``scheduler._parse_hhmm``'s acceptance (a single-digit hour like
+    ``6:00`` is valid) but canonicalises to the ``HH:MM`` form that a native
+    ``<input type="time">`` requires — otherwise the control renders empty and a
+    subsequent save would post an empty string, corrupting the scheduler input.
+    """
+    raw = raw.strip()
+    if ":" not in raw:
+        return None
+    hh, _, mm = raw.partition(":")
+    if not hh.isdigit() or not mm.isdigit() or len(mm) != 2:
+        return None
+    hour, minute = int(hh), int(mm)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _format_value(value: object) -> str:
+    """Render a live config value as the string form the form input expects."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return ",".join(str(v) for v in value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def load_settings_view(
+    path: Optional[Path] = None,
+    *,
+    submitted: Optional[dict[str, str]] = None,
+    errors: Optional[dict[str, str]] = None,
+    saved: bool = False,
+) -> SettingsView:
+    """Build the view model for GET /settings (and error re-renders of POST).
+
+    ``submitted``/``errors`` are supplied only when re-rendering after a failed
+    save: the field keeps the value the user typed (not the on-disk value) and
+    shows the inline validation error.
+    """
+    resolved = path or config_store.default_config_path()
+    submitted = submitted or {}
+    errors = errors or {}
+
+    editable: list[SettingField] = []
+    for spec in EDITABLE_FIELDS:
+        if spec.key in submitted:
+            value = submitted[spec.key]
+        else:
+            value = _format_value(config_store.get_value(resolved, spec.key))
+            # Native <input type="time"> only populates from a zero-padded
+            # HH:MM; canonicalise a CLI-set value like "6:00" so it shows up
+            # (and isn't silently blanked on the next save).
+            if spec.kind == "time":
+                value = _normalize_time(value) or value
+        editable.append(
+            SettingField(
+                key=spec.key,
+                label=spec.label,
+                kind=spec.kind,
+                value=value,
+                options=spec.options,
+                error=errors.get(spec.key),
+            )
+        )
+
+    # Everything the page does not edit, shown read-only with config_store's
+    # secret/token masking. Editable keys are dropped to avoid duplication.
+    readonly: list[tuple[str, str]] = []
+    for key, value in config_store.list_entries(resolved):
+        if key in _EDITABLE_KEYS:
+            continue
+        if key in _SOURCE_URL_FIELD:
+            value = _format_sources(resolved, key)
+        readonly.append((key, value))
+
+    return SettingsView(editable=editable, readonly=readonly, saved=saved)
+
+
+def _format_sources(path: Path, key: str) -> str:
+    """Render a nested-model source list as one URL per line.
+
+    ``config_store.list_entries`` stringifies ``rss.feeds`` / ``spa.sources`` as
+    the raw pydantic repr (``url='…' category='…'``). For a read-only display we
+    only want the URLs, newline-separated so each source is legible.
+    """
+    field = _SOURCE_URL_FIELD[key]
+    try:
+        items = config_store.get_value(path, key)
+    except (config_store.UnknownKeyError, OSError):
+        return ""
+    if not isinstance(items, list):
+        return ""
+    urls = [str(getattr(item, field, "")) for item in items]
+    return "\n".join(u for u in urls if u)
+
+
+def _raw_disk_value(path: Path, dotted_key: str) -> Optional[str]:
+    """Return the value *literally on disk* for ``dotted_key`` (string form), or
+    ``None`` when it is absent / the file can't be parsed.
+
+    The no-op skip in :func:`apply_settings` must compare against what the file
+    actually holds — not ``config_store.get_value``, which loads via
+    ``UserConfig.load`` and silently falls back to *all* defaults when the file
+    is schema-invalid (e.g. a stray ``limit_per_category = 0``). Comparing to the
+    merged/fallback value would mask an invalid on-disk entry: the form shows the
+    default, the user "saves" that default, the value looks unchanged, the write
+    is skipped, and the bad value survives to break the next unrelated edit.
+    """
+    try:
+        data: object = config_store.load_raw(path)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    for part in dotted_key.split("."):
+        if not isinstance(data, dict) or part not in data:
+            return None
+        data = data[part]
+    return _format_value(data)
+
+
+def apply_settings(
+    updates: dict[str, str], path: Optional[Path] = None
+) -> dict[str, str]:
+    """Persist submitted edits via ``config_store.set_value``.
+
+    Only keys in :data:`EDITABLE_FIELDS` are written — any other key (a secret
+    or advanced field slipped into the form) is ignored, so the web page can
+    never write outside its allowlist. Returns ``{key: message}`` for fields
+    that failed validation (empty dict on full success).
+
+    Note: ``set_value`` writes the file per key, so if a later key fails after
+    an earlier one succeeded, the earlier change is already persisted (partial
+    apply). Each ``set_value`` re-validates the whole model before writing, so
+    the *failing* key itself leaves the file unchanged. Acceptable for v1.
+    """
+    resolved = path or config_store.default_config_path()
+    errors: dict[str, str] = {}
+
+    for spec in EDITABLE_FIELDS:
+        if spec.key not in updates:
+            continue
+        raw = updates[spec.key]
+        if spec.kind == "time":
+            # A native time control posts an empty string when its value isn't a
+            # valid HH:MM (e.g. the user cleared it). Persisting "" would break
+            # the next `argos schedule install`, so validate here — the config
+            # model stores these as plain strings and won't catch it.
+            normalized = _normalize_time(raw)
+            if normalized is None:
+                errors[spec.key] = "시각은 HH:MM (24시간) 형식으로 입력하세요."
+                continue
+            raw = normalized
+        try:
+            # Compare against the value literally on disk — not the
+            # defaults-merged get_value, which would hide a schema-invalid
+            # on-disk entry and let this shortcut skip the repairing write.
+            current = _raw_disk_value(resolved, spec.key)
+            if current is not None and raw == current:
+                continue
+            config_store.set_value(resolved, spec.key, raw)
+        except config_store.SecretKeyError:
+            # Should never happen for allowlist keys, but be defensive.
+            errors[spec.key] = "시크릿 값은 웹에서 편집할 수 없습니다."
+        except config_store.UnknownKeyError:
+            errors[spec.key] = "알 수 없는 설정 키입니다."
+        except (ValidationError, ValueError) as exc:
+            errors[spec.key] = str(exc).strip().splitlines()[0]
+        except OSError:
+            errors[spec.key] = "설정 파일을 쓰지 못했습니다."
+
+    return errors

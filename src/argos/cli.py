@@ -812,7 +812,9 @@ def _cmd_web(args: argparse.Namespace) -> int:
     host = args.host or settings.user.web.host
     port = args.port if args.port is not None else settings.user.web.port
 
-    app = build_web_app()
+    # Thread the active config path (default or --config) into the app so the
+    # settings page reads/writes the same file the running daemon uses.
+    app = build_web_app(config_path=_resolve_config_path(args))
     uvicorn.run(app, host=host, port=port)
     return 0
 

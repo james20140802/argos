@@ -97,6 +97,10 @@
 /* === 3. Base === */
 * { box-sizing: border-box; }
 html, body { margin: 0; }
+/* Reserve the vertical-scrollbar gutter on BOTH edges so a classic (non-overlay)
+   scrollbar can't eat into the right side only — otherwise the centered .page
+   column shifts left and reads as asymmetric L/R padding on scrollable pages. */
+html { scrollbar-gutter: stable both-edges; }
 body {
   min-height: 100vh;
   background:
@@ -1197,4 +1201,185 @@ body {
 
   /* Detail reader surfaces that tinted off a dark base. */
   .genealogy-entry { background: rgba(0, 0, 0, 0.025); }
+}
+
+/* ---------------------------------------------------------------------------
+   Settings page (ARG-186)
+   A single-column config editor: an allowlist of user-preference fields plus a
+   read-only, masked dump of everything else. Reuses the design tokens and the
+   .load-more / .card-action surface language.
+--------------------------------------------------------------------------- */
+.page--settings { max-width: 720px; }
+.nowrap { white-space: nowrap; }
+
+.settings__head { margin-bottom: 22px; }
+.settings__title {
+  font: 600 26px/1.1 "Fraunces", serif;
+  color: var(--ink); margin: 0 0 6px;
+}
+.settings__lede {
+  font: 400 14px/1.6 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); margin: 0; max-width: 52ch;
+}
+.settings__lede code, .settings-readonly__note code {
+  font: 500 12px/1 "IBM Plex Mono", monospace;
+  color: var(--brass);
+}
+
+.settings-banner {
+  margin-bottom: 18px; padding: 11px 14px;
+  font: 500 13px/1.4 "IBM Plex Sans KR", sans-serif;
+  color: #08140e; background: var(--keep);
+  border-radius: 10px;
+}
+
+.settings-form {
+  display: flex; flex-direction: column; gap: 20px;
+  margin-bottom: 40px;
+}
+.setting-field { display: flex; flex-direction: column; gap: 7px; }
+.setting-field__label {
+  font: 500 13px/1.3 "IBM Plex Sans KR", sans-serif;
+  color: var(--ink);
+}
+.setting-field__input {
+  width: 100%; padding: 11px 13px;
+  font: 400 14px/1.3 "IBM Plex Sans KR", sans-serif;
+  color: var(--ink);
+  background: rgba(236, 231, 221, 0.03);
+  border: 1px solid var(--line); border-radius: 10px;
+  transition: border-color 0.2s;
+}
+.setting-field__input:focus {
+  outline: none; border-color: var(--brass);
+}
+/* Time picker sits narrow — it never needs the full row width. */
+.setting-field__time { width: auto; min-width: 148px; }
+.setting-field--int .setting-field__input { width: auto; min-width: 148px; }
+
+/* Native select restyled to match the text inputs, with a custom chevron. */
+.setting-field__select {
+  width: auto; min-width: 180px; max-width: 100%;
+  appearance: none; -webkit-appearance: none;
+  padding-right: 38px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none' stroke='%238b9098' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M1 1.5l5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 14px center;
+}
+
+/* Toggle switch (bool field). Hides the native checkbox, draws a pill track. */
+.setting-toggle {
+  display: inline-flex; align-items: center; gap: 12px; cursor: pointer;
+}
+.setting-toggle__input { position: absolute; opacity: 0; width: 0; height: 0; }
+.setting-toggle__track {
+  position: relative; flex: 0 0 auto;
+  width: 44px; height: 26px; border-radius: 999px;
+  background: var(--line); border: 1px solid var(--line);
+  transition: background 0.2s, border-color 0.2s;
+}
+.setting-toggle__track::after {
+  content: ""; position: absolute; top: 3px; left: 3px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--muted); transition: transform 0.2s, background 0.2s;
+}
+.setting-toggle__input:checked + .setting-toggle__track {
+  background: var(--brass); border-color: var(--brass);
+}
+.setting-toggle__input:checked + .setting-toggle__track::after {
+  transform: translateX(18px); background: #08140e;
+}
+.setting-toggle__input:focus-visible + .setting-toggle__track {
+  outline: 2px solid var(--brass); outline-offset: 2px;
+}
+.setting-toggle__text {
+  font: 500 13px/1.3 "IBM Plex Sans KR", sans-serif; color: var(--ink);
+}
+
+/* Weekday multi-select: a row of square toggle buttons. */
+.daypicker { display: flex; flex-wrap: wrap; gap: 6px; }
+.daypicker__day input { position: absolute; opacity: 0; width: 0; height: 0; }
+.daypicker__day span {
+  display: grid; place-items: center;
+  width: 40px; height: 40px; border-radius: 10px;
+  font: 500 14px/1 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); user-select: none; cursor: pointer;
+  background: rgba(236, 231, 221, 0.03);
+  border: 1px solid var(--line);
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.daypicker__day input:not(:checked) + span:hover {
+  color: var(--ink); border-color: var(--brass);
+}
+.daypicker__day input:checked + span {
+  color: #08140e; font-weight: 600;
+  background: var(--brass); border-color: var(--brass);
+}
+.daypicker__day input:focus-visible + span {
+  outline: 2px solid var(--brass); outline-offset: 2px;
+}
+
+.setting-field__key {
+  font: 400 11px/1 "IBM Plex Mono", monospace;
+  color: var(--faint); letter-spacing: 0.04em;
+}
+.setting-field--error .setting-field__input { border-color: var(--pass); }
+.field-error {
+  font: 500 12px/1.4 "IBM Plex Sans KR", sans-serif;
+  color: var(--pass);
+}
+
+.settings-hint {
+  margin: 2px 0 0; padding: 11px 13px;
+  font: 400 12.5px/1.55 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted);
+  background: rgba(201, 168, 106, 0.06);
+  border: 1px solid var(--line); border-left: 2px solid var(--brass);
+  border-radius: 8px;
+}
+.settings-hint code {
+  font: 500 11.5px/1 "IBM Plex Mono", monospace; color: var(--brass);
+}
+
+.settings-form__actions { margin-top: 4px; }
+.settings-save {
+  padding: 11px 26px; cursor: pointer;
+  font: 600 12px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: #08140e; background: var(--brass);
+  border: 1px solid var(--brass); border-radius: 10px;
+  transition: background 0.2s, border-color 0.2s;
+}
+.settings-save:hover { background: var(--brass-hi); border-color: var(--brass-hi); }
+
+.settings-readonly__title {
+  font: 600 15px/1.2 "IBM Plex Sans KR", sans-serif;
+  color: var(--ink); margin: 0 0 6px;
+}
+.settings-readonly__note {
+  font: 400 13px/1.6 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); margin: 0 0 14px; max-width: 52ch;
+}
+/* Key/value pairs. Stacks on mobile, two columns from 560px. Values wrap
+   (no horizontal scroll) so nothing is clipped, and honor newlines between
+   multiple source URLs via pre-line. */
+.settings-readonly__list { margin: 0; }
+.settings-readonly__row {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 10px 0; border-bottom: 1px solid var(--line);
+}
+.settings-readonly__key {
+  font: 400 12px/1.5 "IBM Plex Mono", monospace;
+  color: var(--muted); overflow-wrap: anywhere;
+}
+.settings-readonly__val {
+  margin: 0;
+  font: 400 12px/1.5 "IBM Plex Mono", monospace;
+  color: var(--ink);
+  white-space: pre-line; overflow-wrap: anywhere;
+}
+@media (min-width: 560px) {
+  .settings-readonly__row {
+    display: grid; grid-template-columns: minmax(0, 34%) minmax(0, 1fr);
+    gap: 16px; align-items: baseline;
+  }
 }

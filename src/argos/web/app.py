@@ -27,6 +27,11 @@ from argos.web.services.activity import fetch_activity
 from argos.web.services.detail import fetch_item_detail
 from argos.web.services.feed import fetch_feed
 from argos.web.services.portfolio import fetch_portfolio
+from argos.web.services.settings import (
+    EDITABLE_FIELDS,
+    apply_settings,
+    load_settings_view,
+)
 
 _PACKAGE_DIR = Path(__file__).parent  # noqa: E402 — module-level lazy shims below
 
@@ -140,12 +145,17 @@ async def _resolve_user_asset_tech_id(session, user_asset_id: uuid.UUID):
     return row[0]
 
 
-def build_web_app() -> FastAPI:
+def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
     """Build and return the Argos FastAPI app.
 
     The app mounts ``/static`` from ``src/argos/web/static/`` and stores
     a configured Jinja2 templates environment on ``app.state.templates``
     so request handlers added by later issues can render views.
+
+    ``config_path`` is the active ``config.toml`` the settings page reads and
+    writes. ``_cmd_web`` passes the ``--config``-resolved path so the web UI
+    edits the same file the running daemon / scheduled jobs use; when ``None``
+    the settings service falls back to ``config_store.default_config_path()``.
     """
     app = FastAPI(
         title="Argos Web",
@@ -581,5 +591,55 @@ def build_web_app() -> FastAPI:
         # idempotently — a 404/409 error fragment would leave a stale, dead card
         # displaying an error even though the untrack goal is satisfied.
         return HTMLResponse("", status_code=200)
+
+    # ---- Settings (ARG-186) ------------------------------------------------
+    # No DB session: settings read/write only ``config.toml`` via config_store.
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings(request: Request) -> HTMLResponse:
+        saved = request.query_params.get("saved") == "1"
+        view = load_settings_view(config_path, saved=saved)
+        return request.app.state.templates.TemplateResponse(
+            request, "settings.html", {"view": view}
+        )
+
+    @app.post("/settings")
+    async def save_settings(request: Request) -> Response:
+        form = await request.form()
+        updates: dict[str, str] = {}
+        for spec in EDITABLE_FIELDS:
+            if spec.kind == "bool":
+                # A checkbox posts its value only when checked, so absence alone
+                # is ambiguous: an intentional uncheck vs. a partial POST that
+                # never carried the field. The template emits a hidden
+                # ``<key>__present`` marker next to every checkbox, so we only
+                # treat absence as an uncheck when that marker proves the field
+                # was actually on this form. A partial/non-browser POST that
+                # omits the marker leaves the bool untouched.
+                if f"{spec.key}__present" in form:
+                    updates[spec.key] = "true" if spec.key in form else "false"
+            elif spec.kind == "weekdays":
+                # A toggle-button group posts one entry per checked day (and
+                # nothing when all are off). Like the bool checkbox it carries a
+                # hidden ``<key>__present`` marker so an all-off submission is a
+                # real (validation-rejected) empty list, not a partial POST.
+                if f"{spec.key}__present" in form:
+                    updates[spec.key] = ",".join(form.getlist(spec.key))
+            elif spec.key in form:
+                # Only update non-bool fields the form actually carried. The full
+                # settings form submits every input (empty strings included), so
+                # this is a no-op for a real browser but keeps a partial POST from
+                # blanking untouched fields (e.g. briefing.weekdays min_length=1).
+                updates[spec.key] = str(form[spec.key])
+
+        errors = apply_settings(updates, config_path)
+        if errors:
+            # Post-Redirect-Get is skipped on failure: re-render in place so the
+            # user keeps their typed values and sees inline field errors.
+            view = load_settings_view(config_path, submitted=updates, errors=errors)
+            return request.app.state.templates.TemplateResponse(
+                request, "settings.html", {"view": view}, status_code=400
+            )
+        # PRG: redirect so a refresh doesn't re-POST the form.
+        return RedirectResponse("/settings?saved=1", status_code=303)
 
     return app
