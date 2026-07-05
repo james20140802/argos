@@ -56,6 +56,19 @@ def test_sw_message_listener_writes_shell_cache():
     assert "cache.put" in body or ".put(" in body
 
 
+def test_sw_message_listener_validates_origin_and_app_shell_routes():
+    # IMPORTANT fix: the message handler must mirror the fetch handler's
+    # gate before writing arbitrary posted url/html into the shell cache —
+    # same-origin check + APP_SHELL_ROUTES allowlist — instead of trusting
+    # any posted data.url. Assert the allowlist check now appears at least
+    # twice (fetch gate + message gate) and the message handler resolves the
+    # posted url against self.location.origin.
+    body = SW.read_text(encoding="utf-8")
+    assert "argos-shell-refresh" in body
+    assert body.count("APP_SHELL_ROUTES.includes") >= 2
+    assert "self.location.origin" in body
+
+
 # --------------------------------------------------------------------- #
 # New-items poll pill (ARG-203)
 # --------------------------------------------------------------------- #
@@ -92,3 +105,22 @@ def test_feed_poll_pill_tap_gates_hide_and_scroll_on_refresh_result():
     # must inspect the resolved value and only hide+scroll when truthy.
     body = FEED_POLL_JS.read_text(encoding="utf-8")
     assert "function (ok)" in body or "function(ok)" in body
+    assert "if (ok)" in body or "if (result)" in body
+
+
+def test_feed_poll_reads_cursor_live_not_from_stale_captured_node():
+    # CRITICAL fix: refresh.js's currentEl.replaceWith(freshEl) detaches the
+    # original #feed-list node on every refresh (pill tap / header button /
+    # pull-to-refresh), and the replacement carries an updated
+    # data-latest-cursor. A cursor read that closes over a load-time
+    # querySelector result keeps reading the detached node's stale cursor
+    # forever, so count_new_since never advances and the pill re-appears for
+    # items already on screen. The poll path must re-query #feed-list live on
+    # every tick instead of reusing a single captured reference.
+    body = FEED_POLL_JS.read_text(encoding="utf-8")
+    assert "getAttribute(\"data-latest-cursor\")" in body or "getAttribute('data-latest-cursor')" in body
+    # The live re-query must happen inside a helper/poll function, not just
+    # once at top-level load time — i.e. #feed-list must be queried at least
+    # twice (once for the load-time "is this a feed page" bail, again per poll).
+    assert body.count("#feed-list") >= 2
+    assert "currentCursor" in body

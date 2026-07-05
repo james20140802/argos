@@ -67,6 +67,13 @@ self.addEventListener('message', (event) => {
   if (!data || data.type !== 'argos-shell-refresh') return;
   if (!data.url || typeof data.html !== 'string') return;
 
+  // Mirror the fetch handler's gate (defense-in-depth): only same-origin
+  // app-shell routes may be written into the shell cache. Without this, a
+  // posted url/html pair of arbitrary origin/path would be trusted blindly.
+  const u = new URL(data.url, self.location.origin);
+  if (u.origin !== self.location.origin) return;
+  if (!APP_SHELL_ROUTES.includes(u.pathname)) return;
+
   event.waitUntil(
     caches.open(CACHE_VERSION).then((cache) =>
       cache.put(

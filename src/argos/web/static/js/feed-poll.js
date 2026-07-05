@@ -14,13 +14,24 @@
 
   var POLL_INTERVAL_MS = 60000;
 
-  var list = document.querySelector("#feed-list[data-latest-cursor]");
-  if (!list) return;
+  // Load-time bail: only start polling at all if this is a feed page.
+  if (!document.querySelector("#feed-list[data-latest-cursor]")) return;
 
   var pill = document.querySelector("[data-new-items-pill]");
   var countEl = pill ? pill.querySelector("[data-new-items-count]") : null;
 
   var timerId = null;
+
+  // refresh.js's currentEl.replaceWith(freshEl) detaches the original
+  // #feed-list node on every refresh (pill tap / header button /
+  // pull-to-refresh) and inserts a NEW node carrying an updated
+  // data-latest-cursor. A cursor captured once at load time would keep
+  // reading the detached node forever, so the poll must re-query the live
+  // node on every tick instead.
+  function currentCursor() {
+    var el = document.querySelector("#feed-list[data-latest-cursor]");
+    return el ? el.getAttribute("data-latest-cursor") : null;
+  }
 
   function currentCategory() {
     var params = new URLSearchParams(location.search);
@@ -39,7 +50,7 @@
   }
 
   function poll() {
-    var cursor = list.getAttribute("data-latest-cursor");
+    var cursor = currentCursor();
     if (!cursor) return;
 
     var url = "/feed/poll?cursor=" + encodeURIComponent(cursor);
