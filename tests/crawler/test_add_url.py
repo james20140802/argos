@@ -264,6 +264,37 @@ async def test_triage_rejected_returns_rejected_status() -> None:
     assert r.reason and "triage" in r.reason.lower()
 
 
+async def test_triage_infra_error_returns_error_not_rejected() -> None:
+    """Ollama-down during triage sets triage_error (is_valid=False); the single
+    add path must report ERROR (retryable), not REJECTED — otherwise the user
+    is told their URL isn't a tech signal when Ollama was simply down. (ARG-190)"""
+    session = _make_session()
+    brain_state = {
+        "is_valid": False,
+        "saved": False,
+        "triage_error": "ollama down",
+        "source_url": "https://example.com/page",
+    }
+    with (
+        _patch_safe_url(True),
+        _patch_robots(True),
+        _patch_dedup_lookup(None),
+        _patch_fetch(
+            {
+                "title": "t",
+                "raw_content": "body",
+                "source_url": "https://example.com/page",
+            }
+        ),
+        _patch_brain(brain_state),
+    ):
+        r = await add_url("https://example.com/page", session)
+
+    assert r.status is AddUrlStatus.ERROR
+    assert r.tech_item_id is None
+    assert r.reason and "ollama" in r.reason.lower()
+
+
 async def test_save_failed_returns_error_status() -> None:
     """is_valid=True + saved=False AND no row in DB => true save failure."""
     session = _make_session()
