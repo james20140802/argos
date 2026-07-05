@@ -471,6 +471,26 @@ body {
   .refresh-spinner::before { animation: none; }
 }
 
+/* New-items poll pill (ARG-203) — sits sticky above the feed list so it stays
+   reachable after scrolling into a long feed. Hidden by default (the [hidden]
+   attribute); feed-poll.js only toggles that attribute, it never touches the
+   feed list DOM directly. */
+.new-items-pill {
+  position: sticky; top: 12px; z-index: 20;
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 auto 16px; width: fit-content;
+  padding: 8px 16px;
+  font: 500 13px/1 "IBM Plex Sans KR", sans-serif;
+  color: var(--surface-2);
+  background: var(--brass-hi);
+  border: none; border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.new-items-pill:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.32); }
+.new-items-pill[hidden] { display: none; }
+
 /* Editorial grid (ARG-175 → observation-log redesign). Mobile is a single
    airy column; tablet/desktop widen to 2/3 columns. The featured hero, empty
    state, and 더 보기 button each span the full row regardless of column count.

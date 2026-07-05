@@ -46,7 +46,7 @@ def test_portfolio_refresh_scoped_to_dedicated_container():
 def test_sw_precaches_refresh_js_and_bumps_version():
     body = SW.read_text(encoding="utf-8")
     assert "/static/js/refresh.js" in body
-    assert "argos-v11" in body               # 최신+1 범프
+    assert "argos-v12" in body               # 최신+1 범프 (T2가 v11 → v12로 재범프)
     assert "argos-shell-refresh" in body     # message 리스너
 
 
@@ -54,3 +54,32 @@ def test_sw_message_listener_writes_shell_cache():
     body = SW.read_text(encoding="utf-8")
     assert "addEventListener('message'" in body or 'addEventListener("message"' in body
     assert "cache.put" in body or ".put(" in body
+
+
+# --------------------------------------------------------------------- #
+# New-items poll pill (ARG-203)
+# --------------------------------------------------------------------- #
+
+FEED_POLL_JS = PKG / "static" / "js" / "feed-poll.js"
+
+
+def test_feed_poll_js_exists_and_polls():
+    body = FEED_POLL_JS.read_text(encoding="utf-8")
+    assert "/feed/poll" in body
+    assert "visibilitychange" in body or "visibilityState" in body
+    assert "new_count" in body
+
+
+def test_feed_template_has_pill_and_latest_cursor():
+    body = FEED.read_text(encoding="utf-8")
+    assert "data-latest-cursor" in body
+    assert "new-items-pill" in body
+
+
+def test_base_loads_feed_poll_script():
+    assert "/static/js/feed-poll.js" in BASE.read_text(encoding="utf-8")
+
+
+def test_sw_precaches_feed_poll_js():
+    body = SW.read_text(encoding="utf-8")
+    assert "/static/js/feed-poll.js" in body

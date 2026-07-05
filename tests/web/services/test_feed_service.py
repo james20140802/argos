@@ -8,6 +8,7 @@ import pytest
 
 from argos.config import settings
 from argos.web.services.feed import (
+    count_new_since,
     decode_cursor,
     encode_cursor,
     fetch_feed,
@@ -234,6 +235,76 @@ async def test_fetch_feed_returns_summary_and_none_when_null() -> None:
             )
             assert by_id[seeded_ids[0]].summary == "한 줄 요약입니다."
             assert by_id[seeded_ids[1]].summary is None
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_count_new_since_counts_only_items_after_cursor() -> None:
+    """ARG-203: count_new_since must count items sorting strictly after the
+    cursor position (or tied on sort_at with a greater id), matching
+    fetch_feed's ordering rule inverted."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    # Far-future timestamps so this trio is unambiguously ordered relative to
+    # any pre-existing dev-DB rows (mirrors the ARG-174 test's technique).
+    base_t = datetime(2099, 6, 1, 0, 0, tzinfo=timezone.utc)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            older = TechItem(
+                title="arg203-older",
+                source_url=f"https://example.com/arg203/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.MAINSTREAM,
+                published_at=base_t,
+            )
+            newer1 = TechItem(
+                title="arg203-newer1",
+                source_url=f"https://example.com/arg203/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.MAINSTREAM,
+                published_at=base_t + timedelta(hours=1),
+            )
+            newer2 = TechItem(
+                title="arg203-newer2",
+                source_url=f"https://example.com/arg203/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                published_at=base_t + timedelta(hours=2),
+            )
+            session.add_all([older, newer1, newer2])
+            await session.flush()
+            seeded_ids = [older.id, newer1.id, newer2.id]
+            await session.commit()
+
+        cursor = encode_cursor(older.published_at, older.id)
+
+        async with Session() as session:
+            n = await count_new_since(session, cursor=cursor)
+            assert n >= 2  # at least the two seeded newer rows
+
+            n_alpha = await count_new_since(session, category="Alpha", cursor=cursor)
+            assert n_alpha >= 1
+
+        with pytest.raises(ValueError):
+            async with Session() as session:
+                await count_new_since(session, cursor="garbage")
     finally:
         from sqlalchemy import delete as sa_delete
 

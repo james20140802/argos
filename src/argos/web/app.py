@@ -25,7 +25,7 @@ from fastapi.templating import Jinja2Templates
 
 from argos.web.services.activity import fetch_activity
 from argos.web.services.detail import fetch_item_detail
-from argos.web.services.feed import fetch_feed
+from argos.web.services.feed import count_new_since, encode_cursor, fetch_feed
 from argos.web.services.portfolio import fetch_portfolio
 from argos.web.services.settings import (
     EDITABLE_FIELDS,
@@ -316,6 +316,15 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         # The signal ticker is full-page chrome (feed.html), never part of the
         # HTMX "더 보기" fragment — so it's only fetched for the initial render.
         activity = await fetch_activity(session) if include_activity else []
+        # feed-poll.js (ARG-203) reads #feed-list[data-latest-cursor] to know
+        # what to poll "newer than". Only meaningful on the genuine first page
+        # — a mid-feed "더 보기" fragment or a direct cursor hit has no single
+        # "latest" position to anchor polling on, so it's left unset there.
+        latest_cursor = (
+            encode_cursor(page.items[0].sort_at, page.items[0].id)
+            if first_page and page.items
+            else ""
+        )
         return request.app.state.templates.TemplateResponse(
             request,
             template_name,
@@ -328,6 +337,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
                 # mid-scroll, so it renders with first_page=False.
                 "first_page": first_page,
                 "activity": activity,
+                "latest_cursor": latest_cursor,
             },
         )
 
@@ -357,6 +367,26 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         return await _render_feed(
             request, "_feed_items.html", category, cursor, session, first_page=False
         )
+
+    @app.get("/feed/poll")
+    async def feed_poll(
+        request: Request,
+        cursor: Optional[str] = None,
+        category: Optional[str] = None,
+        session=Depends(_get_session),
+    ) -> JSONResponse:
+        # ``cursor`` is declared Optional (rather than a bare required ``str``)
+        # so a missing value gets the same controlled 400 as a malformed one,
+        # instead of FastAPI's default 422 — the AC only specifies "invalid
+        # cursor → 400", and this keeps both failure modes on one status code.
+        normalized = _normalize_category(category)
+        if cursor is None:
+            raise HTTPException(status_code=400, detail="invalid feed cursor")
+        try:
+            new_count = await count_new_since(session, category=normalized, cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid feed cursor") from exc
+        return JSONResponse({"new_count": new_count})
 
     async def _render_portfolio(
         request: Request,

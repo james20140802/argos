@@ -31,8 +31,10 @@
  * v11: pull-to-refresh + desktop refresh button (refresh.js, ARG-202). Adds
  *     the new script to the precache and a message listener that lets
  *     refresh.js push freshly fetched shell HTML back into this cache.
+ * v12: new-items poll pill (feed-poll.js, ARG-203). Bumped so v11 clients
+ *     precache the new polling script instead of missing it entirely.
  */
-const CACHE_VERSION = 'argos-v11';
+const CACHE_VERSION = 'argos-v12';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
@@ -46,6 +48,7 @@ const APP_SHELL = [
   '/static/js/htmx.min.js',
   '/static/js/img-fallback.js',
   '/static/js/refresh.js',
+  '/static/js/feed-poll.js',
 ];
 
 self.addEventListener('install', (event) => {

@@ -22,7 +22,15 @@
       </button>
     </nav>
 
-    <div id="feed-list" class="feed-list">
+    {# New-items poll pill (ARG-203) — hidden until feed-poll.js finds items
+       newer than data-latest-cursor. Tapping it triggers a full refresh
+       (ArgosRefresh.refresh('feed')) + scroll-to-top; polling itself never
+       mutates the DOM, it only toggles this pill's visibility. #}
+    <button type="button" class="new-items-pill" hidden data-new-items-pill>
+      <span aria-hidden="true">↑</span> 새 항목 <span data-new-items-count>0</span>개
+    </button>
+
+    <div id="feed-list" class="feed-list" data-latest-cursor="{{ latest_cursor|default('') }}">
       {% include "_feed_items.html" %}
     </div>
   </div>
