@@ -97,6 +97,10 @@
 /* === 3. Base === */
 * { box-sizing: border-box; }
 html, body { margin: 0; }
+/* Reserve the vertical-scrollbar gutter on BOTH edges so a classic (non-overlay)
+   scrollbar can't eat into the right side only — otherwise the centered .page
+   column shifts left and reads as asymmetric L/R padding on scrollable pages. */
+html { scrollbar-gutter: stable both-edges; }
 body {
   min-height: 100vh;
   background:
