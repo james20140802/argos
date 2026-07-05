@@ -359,6 +359,31 @@ async def test_triage_node_sets_triage_error_on_infra_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_triage_node_triage_error_truthy_on_empty_message(monkeypatch):
+    """An OllamaInfraError with an empty message (e.g. a bare ReadError) must
+    still yield a truthy triage_error, else Stage 6/CLI treat it as a genuine
+    rejection and drop the row + exit 0. (ARG-190)"""
+    from argos.brain.nodes import triage as triage_module
+    from argos.brain.ollama_client import OllamaInfraError
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+
+    class _InfraClient:
+        async def query(self, model_role, prompt, **kwargs):
+            raise OllamaInfraError("")
+
+        async def unload(self, model_role):
+            return None
+
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _InfraClient())
+
+    result = await triage_node(_state(raw_text="anything"))
+    assert result["triage_error"]  # truthy — falls back to class name
+    assert result["triage_error"] == "OllamaInfraError"
+    assert result["is_valid"] is False
+
+
+@pytest.mark.asyncio
 async def test_triage_node_no_triage_error_on_genuine_rejection(monkeypatch):
     """A legitimate is_valid=false LLM verdict must leave triage_error falsy."""
     from argos.brain.nodes import triage as triage_module

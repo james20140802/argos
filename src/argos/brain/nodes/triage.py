@@ -217,9 +217,13 @@ async def _triage_one(state: BrainState, client, keep_alive) -> BrainState:
         )
     except OllamaInfraError as exc:
         logger.warning("triage_node infra error: %r", exc)
+        # Stage 6 and CLI _run key retention/exit-code off truthiness of
+        # triage_error, so it MUST be non-empty even when the wrapped httpx
+        # exception carries no message (e.g. a bare ReadError). (ARG-190)
+        triage_error = str(exc) or type(exc).__name__
         return {
             **state,
-            "triage_error": str(exc),
+            "triage_error": triage_error,
             "is_valid": False,
             "trust_score": None,
             "summary": None,
