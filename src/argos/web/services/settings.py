@@ -17,6 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
 
+try:
+    import tomllib
+except ImportError:  # pragma: no cover - Python <3.11
+    import tomli as tomllib  # type: ignore[no-redef]
+
 from pydantic import ValidationError
 
 from argos import config_store
@@ -212,6 +217,29 @@ def _format_sources(path: Path, key: str) -> str:
     return "\n".join(u for u in urls if u)
 
 
+def _raw_disk_value(path: Path, dotted_key: str) -> Optional[str]:
+    """Return the value *literally on disk* for ``dotted_key`` (string form), or
+    ``None`` when it is absent / the file can't be parsed.
+
+    The no-op skip in :func:`apply_settings` must compare against what the file
+    actually holds — not ``config_store.get_value``, which loads via
+    ``UserConfig.load`` and silently falls back to *all* defaults when the file
+    is schema-invalid (e.g. a stray ``limit_per_category = 0``). Comparing to the
+    merged/fallback value would mask an invalid on-disk entry: the form shows the
+    default, the user "saves" that default, the value looks unchanged, the write
+    is skipped, and the bad value survives to break the next unrelated edit.
+    """
+    try:
+        data: object = config_store.load_raw(path)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    for part in dotted_key.split("."):
+        if not isinstance(data, dict) or part not in data:
+            return None
+        data = data[part]
+    return _format_value(data)
+
+
 def apply_settings(
     updates: dict[str, str], path: Optional[Path] = None
 ) -> dict[str, str]:
@@ -245,8 +273,11 @@ def apply_settings(
                 continue
             raw = normalized
         try:
-            current = _format_value(config_store.get_value(resolved, spec.key))
-            if raw == current:
+            # Compare against the value literally on disk — not the
+            # defaults-merged get_value, which would hide a schema-invalid
+            # on-disk entry and let this shortcut skip the repairing write.
+            current = _raw_disk_value(resolved, spec.key)
+            if current is not None and raw == current:
                 continue
             config_store.set_value(resolved, spec.key, raw)
         except config_store.SecretKeyError:

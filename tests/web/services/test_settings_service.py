@@ -164,6 +164,21 @@ def test_apply_canonicalizes_unpadded_time(tmp_path):
     assert _load_toml(cfg)["briefing"]["time"] == "06:05"
 
 
+def test_apply_repairs_schema_invalid_on_disk_value_not_skipped(tmp_path):
+    cfg = tmp_path / "config.toml"
+    # A schema-invalid value on disk (ge=1 violated). UserConfig.load silently
+    # falls back to *all* defaults, so get_value/the form would show 10. Saving
+    # that 10 must actually write (repair the file) — the no-op shortcut must
+    # compare against the raw on-disk "0", not the fallback 10, or the bad value
+    # would survive and break the next unrelated edit.
+    cfg.write_text("[briefing]\nlimit_per_category = 0\n", encoding="utf-8")
+
+    errors = apply_settings({"briefing.limit_per_category": "10"}, cfg)
+
+    assert errors == {}
+    assert _load_toml(cfg)["briefing"]["limit_per_category"] == 10  # repaired
+
+
 def test_apply_unchanged_value_is_a_noop(tmp_path):
     cfg = tmp_path / "config.toml"
     config_store.set_value(cfg, "briefing.time", "07:00")
