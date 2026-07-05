@@ -21,7 +21,40 @@ from pydantic import ValidationError
 
 from argos import config_store
 
-FieldKind = Literal["text", "list", "int", "bool"]
+# ``text``   free-form string  → text input
+# ``list``   free-form CSV      → text input, split on commas
+# ``int``    integer            → number input
+# ``bool``   flag               → toggle switch
+# ``time``   "HH:MM"            → native time picker
+# ``select`` one of ``options`` → dropdown
+# ``weekdays`` subset of days   → toggle-button group (multi-select)
+FieldKind = Literal["text", "list", "int", "bool", "time", "select", "weekdays"]
+
+# ``(value, label)`` option pairs. ``value`` is the string persisted to config;
+# ``label`` is what the UI shows.
+Option = tuple[str, str]
+
+# 3-letter weekday names, matching BriefingConfig.weekdays / weekly_weekday and
+# the scheduler's Sun=0..Sat=6 table. Monday-first for the UI, Korean labels.
+WEEKDAY_OPTIONS: tuple[Option, ...] = (
+    ("Mon", "월"), ("Tue", "화"), ("Wed", "수"), ("Thu", "목"),
+    ("Fri", "금"), ("Sat", "토"), ("Sun", "일"),
+)
+
+# summary_language is a free-form string in the model, but in practice it is one
+# of a handful of languages — offer them as a dropdown. If the on-disk value is
+# something else it is preserved (the template appends it as an extra option).
+LANGUAGE_OPTIONS: tuple[Option, ...] = (
+    ("Korean", "한국어"), ("English", "English"),
+    ("Japanese", "日本語"), ("Chinese", "中文"),
+)
+
+# Read-only source lists (nested-model lists) show only their URL field rather
+# than the raw pydantic repr (``url='…' category='…'``).
+_SOURCE_URL_FIELD: dict[str, str] = {
+    "rss.feeds": "url",
+    "spa.sources": "listing_url",
+}
 
 
 @dataclass(frozen=True)
@@ -31,6 +64,7 @@ class FieldSpec:
     key: str
     label: str
     kind: FieldKind
+    options: tuple[str, ...] = ()
 
 
 # Single source of truth for which config keys the web page may edit. Every key
@@ -38,17 +72,17 @@ class FieldSpec:
 # ``config_store.set_value`` (scalar / ``list[str]`` — not the nested-model
 # lists ``rss.feeds`` / ``spa.sources``, which stay read-only in v1).
 EDITABLE_FIELDS: tuple[FieldSpec, ...] = (
-    FieldSpec("interests.topics", "관심 토픽 (쉼표 구분)", "list"),
-    FieldSpec("interests.exclusions", "제외 토픽 (쉼표 구분)", "list"),
-    FieldSpec("briefing.time", "일일 브리핑 시각 (HH:MM)", "text"),
-    FieldSpec("briefing.weekdays", "브리핑 요일 (쉼표 구분)", "list"),
+    FieldSpec("interests.topics", "관심 토픽", "list"),
+    FieldSpec("interests.exclusions", "제외 토픽", "list"),
+    FieldSpec("briefing.time", "일일 브리핑 시각", "time"),
+    FieldSpec("briefing.weekdays", "브리핑 요일", "weekdays", WEEKDAY_OPTIONS),
     FieldSpec("briefing.limit_per_category", "카테고리별 항목 수", "int"),
     FieldSpec("briefing.lookback_days", "조회 기간 (일)", "int"),
     FieldSpec("briefing.weekly_enabled", "주간 브리핑 사용", "bool"),
-    FieldSpec("briefing.weekly_weekday", "주간 브리핑 요일", "text"),
-    FieldSpec("run.time", "수집 실행 시각 (HH:MM)", "text"),
+    FieldSpec("briefing.weekly_weekday", "주간 브리핑 요일", "select", WEEKDAY_OPTIONS),
+    FieldSpec("run.time", "수집 실행 시각", "time"),
     FieldSpec("run.daily_limit", "일일 수집 한도", "int"),
-    FieldSpec("slack.summary_language", "요약 언어", "text"),
+    FieldSpec("slack.summary_language", "요약 언어", "select", LANGUAGE_OPTIONS),
 )
 
 _EDITABLE_KEYS: frozenset[str] = frozenset(f.key for f in EDITABLE_FIELDS)
@@ -60,6 +94,7 @@ class SettingField:
     label: str
     kind: FieldKind
     value: str
+    options: tuple[str, ...] = ()
     error: Optional[str] = None
 
 
@@ -110,19 +145,40 @@ def load_settings_view(
                 label=spec.label,
                 kind=spec.kind,
                 value=value,
+                options=spec.options,
                 error=errors.get(spec.key),
             )
         )
 
     # Everything the page does not edit, shown read-only with config_store's
     # secret/token masking. Editable keys are dropped to avoid duplication.
-    readonly = [
-        (key, value)
-        for key, value in config_store.list_entries(resolved)
-        if key not in _EDITABLE_KEYS
-    ]
+    readonly: list[tuple[str, str]] = []
+    for key, value in config_store.list_entries(resolved):
+        if key in _EDITABLE_KEYS:
+            continue
+        if key in _SOURCE_URL_FIELD:
+            value = _format_sources(resolved, key)
+        readonly.append((key, value))
 
     return SettingsView(editable=editable, readonly=readonly, saved=saved)
+
+
+def _format_sources(path: Path, key: str) -> str:
+    """Render a nested-model source list as one URL per line.
+
+    ``config_store.list_entries`` stringifies ``rss.feeds`` / ``spa.sources`` as
+    the raw pydantic repr (``url='…' category='…'``). For a read-only display we
+    only want the URLs, newline-separated so each source is legible.
+    """
+    field = _SOURCE_URL_FIELD[key]
+    try:
+        items = config_store.get_value(path, key)
+    except (config_store.UnknownKeyError, OSError):
+        return ""
+    if not isinstance(items, list):
+        return ""
+    urls = [str(getattr(item, field, "")) for item in items]
+    return "\n".join(u for u in urls if u)
 
 
 def apply_settings(

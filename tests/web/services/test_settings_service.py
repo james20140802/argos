@@ -102,6 +102,25 @@ def test_apply_ignores_non_allowlist_and_secret_keys(tmp_path):
         assert "ollama" not in data
 
 
+def test_load_view_formats_sources_as_bare_urls(tmp_path):
+    cfg = tmp_path / "config.toml"
+    # Defaults ship several RSS feeds and one SPA source. The read-only display
+    # must show only the URLs — not the raw pydantic repr (``url='…' …``).
+    view = load_settings_view(cfg)
+    readonly = dict(view.readonly)
+
+    feeds = readonly["rss.feeds"]
+    assert "url=" not in feeds
+    assert "category=" not in feeds
+    assert "https://openai.com/blog/rss.xml" in feeds
+    # One URL per line so multiple feeds stay legible.
+    assert feeds.count("\n") >= 1
+
+    sources = readonly["spa.sources"]
+    assert "listing_url=" not in sources
+    assert "https://www.anthropic.com/news" in sources
+
+
 def test_apply_unchanged_value_is_a_noop(tmp_path):
     cfg = tmp_path / "config.toml"
     config_store.set_value(cfg, "briefing.time", "07:00")

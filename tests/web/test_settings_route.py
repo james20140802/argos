@@ -101,6 +101,66 @@ def test_partial_post_without_marker_leaves_bool_untouched(cfg):
     assert config_store.get_value(cfg, "briefing.weekly_enabled") is True
 
 
+def test_post_weekdays_multi_checkbox_joins_to_list(cfg):
+    # The weekday toggle group posts one entry per checked day; the server joins
+    # them into the list[str] the model expects.
+    client = TestClient(build_web_app())
+
+    resp = client.post(
+        "/settings",
+        data={
+            "briefing.weekdays__present": "1",
+            "briefing.weekdays": ["Mon", "Wed", "Fri"],
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert _load_toml(cfg)["briefing"]["weekdays"] == ["Mon", "Wed", "Fri"]
+
+
+def test_post_weekdays_all_off_is_validation_error(cfg):
+    # All days unchecked (marker present, no values) is an intentional empty
+    # list → BriefingConfig.weekdays min_length=1 rejects it with a 400.
+    config_store.set_value(cfg, "briefing.weekdays", "Mon,Tue")
+    client = TestClient(build_web_app(), raise_server_exceptions=False)
+
+    resp = client.post(
+        "/settings",
+        data={"briefing.weekdays__present": "1"},  # marker only, all days off
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 400
+    assert 'class="field-error"' in resp.text
+    # The rejected value never reaches disk.
+    assert _load_toml(cfg)["briefing"]["weekdays"] == ["Mon", "Tue"]
+
+
+def test_post_partial_without_weekdays_marker_leaves_days_untouched(cfg):
+    # A partial POST that never carried the weekday group must not blank it.
+    config_store.set_value(cfg, "briefing.weekdays", "Mon,Tue")
+    client = TestClient(build_web_app())
+
+    resp = client.post(
+        "/settings", data={"briefing.time": "08:15"}, follow_redirects=False
+    )
+
+    assert resp.status_code == 303
+    assert _load_toml(cfg)["briefing"]["weekdays"] == ["Mon", "Tue"]
+
+
+def test_get_renders_richer_controls(cfg):
+    # The form uses purpose-built controls, not a text box for everything.
+    client = TestClient(build_web_app())
+
+    body = client.get("/settings").text
+
+    assert 'type="time"' in body  # briefing.time / run.time
+    assert 'class="daypicker"' in body  # briefing.weekdays toggle group
+    assert 'name="briefing.weekly_weekday"' in body and "<select" in body
+
+
 def test_get_after_save_shows_success_banner(cfg):
     client = TestClient(build_web_app())
 

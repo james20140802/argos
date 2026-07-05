@@ -617,6 +617,13 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
                 # omits the marker leaves the bool untouched.
                 if f"{spec.key}__present" in form:
                     updates[spec.key] = "true" if spec.key in form else "false"
+            elif spec.kind == "weekdays":
+                # A toggle-button group posts one entry per checked day (and
+                # nothing when all are off). Like the bool checkbox it carries a
+                # hidden ``<key>__present`` marker so an all-off submission is a
+                # real (validation-rejected) empty list, not a partial POST.
+                if f"{spec.key}__present" in form:
+                    updates[spec.key] = ",".join(form.getlist(spec.key))
             elif spec.key in form:
                 # Only update non-bool fields the form actually carried. The full
                 # settings form submits every input (empty strings included), so

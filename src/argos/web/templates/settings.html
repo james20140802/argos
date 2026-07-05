@@ -7,7 +7,7 @@
     <h1 class="settings__title">설정</h1>
     <p class="settings__lede">
       관심 토픽·브리핑 스케줄 등 사용자 취향 값을 여기서 수정하면
-      <code>config.toml</code>에 반영됩니다.
+      <span class="nowrap"><code>config.toml</code>에</span> 반영됩니다.
     </p>
   </header>
 
@@ -17,21 +17,65 @@
 
   <form class="settings-form" method="post" action="/settings">
     {% for field in view.editable %}
-    <div class="setting-field{% if field.error %} setting-field--error{% endif %}">
-      <label class="setting-field__label" for="f-{{ field.key }}">{{ field.label }}</label>
+    <div class="setting-field setting-field--{{ field.kind }}{% if field.error %} setting-field--error{% endif %}">
+
       {% if field.kind == "bool" %}
-      {# Hidden marker: proves this checkbox was on the submitted form, so the
-         server can tell an intentional uncheck from a partial POST. #}
+      {# Toggle switch. Hidden marker proves the checkbox was on the submitted
+         form, so the server can tell an intentional uncheck from a partial POST. #}
       <input type="hidden" name="{{ field.key }}__present" value="1">
-      <input class="setting-field__check" type="checkbox" id="f-{{ field.key }}"
-             name="{{ field.key }}"{% if field.value == "true" %} checked{% endif %}>
+      <label class="setting-toggle">
+        <input class="setting-toggle__input" type="checkbox" id="f-{{ field.key }}"
+               name="{{ field.key }}"{% if field.value == "true" %} checked{% endif %}>
+        <span class="setting-toggle__track" aria-hidden="true"></span>
+        <span class="setting-toggle__text">{{ field.label }}</span>
+      </label>
+
+      {% elif field.kind == "weekdays" %}
+      {# Multi-select toggle-button group. Hidden marker (like bool) lets the
+         server treat an all-off submission as a real empty list. #}
+      <span class="setting-field__label" id="lbl-{{ field.key }}">{{ field.label }}</span>
+      <input type="hidden" name="{{ field.key }}__present" value="1">
+      {% set selected = field.value.split(",") %}
+      <div class="daypicker" role="group" aria-labelledby="lbl-{{ field.key }}">
+        {% for value, text in field.options %}
+        <label class="daypicker__day">
+          <input type="checkbox" name="{{ field.key }}" value="{{ value }}"
+                 {% if value in selected %}checked{% endif %}>
+          <span>{{ text }}</span>
+        </label>
+        {% endfor %}
+      </div>
+
+      {% else %}
+      <label class="setting-field__label" for="f-{{ field.key }}">{{ field.label }}</label>
+
+      {% if field.kind == "select" %}
+      <select class="setting-field__input setting-field__select" id="f-{{ field.key }}"
+              name="{{ field.key }}">
+        {% set known = field.options | map(attribute=0) | list %}
+        {% if field.value and field.value not in known %}
+        <option value="{{ field.value }}" selected>{{ field.value }}</option>
+        {% endif %}
+        {% for value, text in field.options %}
+        <option value="{{ value }}"{% if value == field.value %} selected{% endif %}>{{ text }}</option>
+        {% endfor %}
+      </select>
+
+      {% elif field.kind == "time" %}
+      <input class="setting-field__input setting-field__time" type="time" id="f-{{ field.key }}"
+             name="{{ field.key }}" value="{{ field.value }}">
+
       {% elif field.kind == "int" %}
       <input class="setting-field__input" type="number" id="f-{{ field.key }}"
-             name="{{ field.key }}" value="{{ field.value }}" inputmode="numeric">
+             name="{{ field.key }}" value="{{ field.value }}" inputmode="numeric" min="0">
+
       {% else %}
       <input class="setting-field__input" type="text" id="f-{{ field.key }}"
-             name="{{ field.key }}" value="{{ field.value }}">
+             name="{{ field.key }}" value="{{ field.value }}"
+             {% if field.kind == "list" %}placeholder="쉼표로 구분"{% endif %}>
       {% endif %}
+      {% endif %}
+
       <span class="setting-field__key">{{ field.key }}</span>
       {% if field.error %}
       <span class="field-error" role="alert">{{ field.error }}</span>
@@ -49,18 +93,14 @@
       소스(RSS/SPA)와 시크릿(<code>***</code>)은 웹에서 편집할 수 없습니다.
       시크릿은 <code>argos config</code> CLI 또는 <code>argos init</code>으로 관리하세요.
     </p>
-    <div class="settings-readonly__scroll">
-      <table class="settings-readonly__table">
-        <tbody>
-          {% for key, value in view.readonly %}
-          <tr>
-            <th scope="row">{{ key }}</th>
-            <td>{{ value }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+    <dl class="settings-readonly__list">
+      {% for key, value in view.readonly %}
+      <div class="settings-readonly__row">
+        <dt class="settings-readonly__key">{{ key }}</dt>
+        <dd class="settings-readonly__val">{{ value }}</dd>
+      </div>
+      {% endfor %}
+    </dl>
   </section>
 </div>
 {% endblock %}
