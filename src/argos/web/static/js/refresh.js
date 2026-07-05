@@ -15,7 +15,7 @@
 
   var CONTAINER_SELECTORS = {
     feed: "#feed-list",
-    portfolio: "main.page",
+    portfolio: "#portfolio-list",
   };
 
   function getContainerSelector(kind) {
@@ -105,8 +105,8 @@
 
   function currentKind() {
     var path = location.pathname;
-    if (path === "/feed" || path.indexOf("/feed") === 0) return "feed";
-    if (path === "/portfolio" || path.indexOf("/portfolio") === 0) return "portfolio";
+    if (path === "/feed" || path.indexOf("/feed/") === 0) return "feed";
+    if (path === "/portfolio" || path.indexOf("/portfolio/") === 0) return "portfolio";
     return null;
   }
 

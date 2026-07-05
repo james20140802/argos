@@ -27,6 +27,7 @@
      {% if sort == 'trust' %}aria-current="true"{% endif %}>신뢰도</a>
 </nav>
 
+<div id="portfolio-list">
 {% if not view.active and not view.quiet %}
 <p class="portfolio-empty">아직 Keep한 자산이 없습니다. 관측 피드에서 마음에 드는 항목을 Keep 해보세요.</p>
 {% else %}
@@ -45,4 +46,5 @@
 </section>
 {% endif %}
 {% endif %}
+</div>
 {% endblock %}

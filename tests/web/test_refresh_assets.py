@@ -31,6 +31,18 @@ def test_feed_and_portfolio_have_refresh_button():
     assert 'data-refresh="portfolio"' in PORTFOLIO.read_text(encoding="utf-8")
 
 
+def test_portfolio_refresh_scoped_to_dedicated_container():
+    # CRITICAL fix: portfolio refresh must NOT swap the shared main.page shell
+    # (which also contains the filter nav + refresh button itself). It must
+    # swap a dedicated #portfolio-list container, mirroring feed's #feed-list.
+    portfolio_body = PORTFOLIO.read_text(encoding="utf-8")
+    assert 'id="portfolio-list"' in portfolio_body
+
+    refresh_body = REFRESH_JS.read_text(encoding="utf-8")
+    assert "#portfolio-list" in refresh_body
+    assert "main.page" not in refresh_body
+
+
 def test_sw_precaches_refresh_js_and_bumps_version():
     body = SW.read_text(encoding="utf-8")
     assert "/static/js/refresh.js" in body
