@@ -14,6 +14,9 @@
   <a class="chip chip--alpha{% if category == 'Alpha' %} is-active{% endif %}"
      href="/portfolio?category=Alpha{% if sort != 'recency' %}&sort={{ sort }}{% endif %}"
      {% if category == 'Alpha' %}aria-current="true"{% endif %}>Alpha</a>
+  <button type="button" class="refresh-btn" data-refresh="portfolio" aria-label="새로고침">
+    <span class="ic" aria-hidden="true">⟳</span>
+  </button>
 </nav>
 <nav class="portfolio-sort" aria-label="정렬">
   <a class="chip{% if sort == 'recency' %} is-active{% endif %}"

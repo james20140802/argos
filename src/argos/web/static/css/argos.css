@@ -426,6 +426,51 @@ body {
 .chip--main.is-active { background: var(--main); border-color: var(--main); }
 .chip--alpha.is-active { background: var(--alpha); border-color: var(--alpha); }
 
+/* Desktop refresh button (ARG-202) — sits inline with the filter chips on
+   /feed and /portfolio. Cache-bypass re-fetch of the current route via
+   refresh.js; the .ic glyph spins while a refresh is in flight. */
+.refresh-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; margin-left: auto;
+  padding: 0; cursor: pointer;
+  color: var(--muted);
+  background: rgba(236, 231, 221, 0.03);
+  border: 1px solid var(--line); border-radius: 999px;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.refresh-btn:hover { color: var(--ink); border-color: var(--hairline); }
+.refresh-btn .ic { font-size: 15px; line-height: 1; transition: transform 0.2s; }
+.refresh-btn.is-refreshing .ic { animation: refresh-spin 0.8s linear infinite; }
+
+/* Pull-to-refresh spinner (ARG-202) — fixed under the masthead, hidden until
+   a downward pull past the threshold arms it in refresh.js. */
+.refresh-spinner {
+  position: fixed; top: 8px; left: 50%; z-index: 40;
+  width: 30px; height: 30px;
+  transform: translateX(-50%) translateY(-48px);
+  opacity: 0; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--brass);
+  background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 999px;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.refresh-spinner::before {
+  content: '⟳'; font-size: 15px; line-height: 1;
+  animation: refresh-spin 0.8s linear infinite;
+}
+.refresh-spinner.is-active {
+  opacity: 1; transform: translateX(-50%) translateY(0);
+}
+@keyframes refresh-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .refresh-btn.is-refreshing .ic { animation: none; }
+  .refresh-spinner::before { animation: none; }
+}
+
 /* Editorial grid (ARG-175 → observation-log redesign). Mobile is a single
    airy column; tablet/desktop widen to 2/3 columns. The featured hero, empty
    state, and 더 보기 button each span the full row regardless of column count.

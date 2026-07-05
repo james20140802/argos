@@ -28,8 +28,11 @@
  *     clients replace the cached shell whose buttons lack the param.
  * v10: detail-page action bar styles (argos.css). Bumped so v9 clients pick up
  *     the .detail-actions CSS instead of the cached stylesheet.
+ * v11: pull-to-refresh + desktop refresh button (refresh.js, ARG-202). Adds
+ *     the new script to the precache and a message listener that lets
+ *     refresh.js push freshly fetched shell HTML back into this cache.
  */
-const CACHE_VERSION = 'argos-v10';
+const CACHE_VERSION = 'argos-v11';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
@@ -42,6 +45,7 @@ const APP_SHELL = [
   '/static/img/icons/icon-512.png',
   '/static/js/htmx.min.js',
   '/static/js/img-fallback.js',
+  '/static/js/refresh.js',
 ];
 
 self.addEventListener('install', (event) => {
@@ -49,6 +53,27 @@ self.addEventListener('install', (event) => {
     caches.open(CACHE_VERSION).then((cache) => cache.addAll(APP_SHELL)),
   );
   self.skipWaiting();
+});
+
+// refresh.js (ARG-202) posts freshly fetched shell HTML here after a
+// cache-bypassing manual refresh, so a later revisit (served from this SW's
+// cache) shows the updated page instead of the shell cached before the
+// refresh happened.
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (!data || data.type !== 'argos-shell-refresh') return;
+  if (!data.url || typeof data.html !== 'string') return;
+
+  event.waitUntil(
+    caches.open(CACHE_VERSION).then((cache) =>
+      cache.put(
+        new Request(data.url),
+        new Response(data.html, {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        }),
+      ),
+    ),
+  );
 });
 
 self.addEventListener('activate', (event) => {
