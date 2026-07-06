@@ -102,12 +102,22 @@
 
   // --- Pull-to-refresh gesture (mobile). ---
   // Only arms when the touch starts at the very top of the scroll container,
-  // so it never fights the page's normal scroll and coexists with the
-  // browser's native overscroll-refresh.
-  var PTR_THRESHOLD = 70;
+  // so it never fights the page's normal scroll. The content column follows
+  // the finger down (damped); releasing past the threshold KEEPS the pulled
+  // gap open (held at PTR_HOLD) with the ring spinning inside it until the
+  // refresh settles, then the content eases back up. Releasing short of the
+  // threshold springs straight back with no request.
+  var PTR_THRESHOLD = 70; // finger travel (px) required to trigger a refresh
+  var PTR_HOLD = 56;      // gap (px) held open while the refresh is in flight
+  var PTR_MAX = 96;       // cap on the damped pull distance
+  var PTR_DAMPING = 0.5;
+  var SPINNER_SIZE = 30;  // keep in sync with .refresh-spinner width/height
+
   var touchStartY = null;
   var ptrArmed = false;
-  var ptrTriggered = false;
+  var ptrRefreshing = false;
+  var ptrPastThreshold = false;
+  var ptrBaseTop = 0;
 
   function currentKind() {
     var path = location.pathname;
@@ -116,9 +126,34 @@
     return null;
   }
 
+  function ptrContent() {
+    return document.querySelector("main");
+  }
+
+  function setPull(px, animate) {
+    var el = ptrContent();
+    if (!el) return;
+    el.style.transition = animate ? "transform 0.25s ease" : "none";
+    el.style.transform = px > 0 ? "translateY(" + px + "px)" : "translateY(0)";
+  }
+
+  function clearPull() {
+    var el = ptrContent();
+    if (!el) return;
+    el.style.transition = "";
+    el.style.transform = "";
+  }
+
   function showSpinner() {
     var el = document.querySelector(".refresh-spinner");
-    if (el) el.classList.add("is-active");
+    if (!el) return;
+    if (ptrBaseTop > 0) {
+      // Center the ring inside the PTR_HOLD-tall gap that the pulled-down
+      // content opens beneath its resting top (captured at touchstart,
+      // before any transform skews getBoundingClientRect).
+      el.style.top = Math.round(ptrBaseTop + (PTR_HOLD - SPINNER_SIZE) / 2) + "px";
+    }
+    el.classList.add("is-active");
   }
 
   function hideSpinner() {
@@ -126,14 +161,28 @@
     if (el) el.classList.remove("is-active");
   }
 
+  function settlePull() {
+    setPull(0, true);
+    hideSpinner();
+    window.setTimeout(clearPull, 300);
+  }
+
   document.addEventListener(
     "touchstart",
     function (event) {
       if (!event.touches || event.touches.length !== 1) return;
+      if (ptrRefreshing) {
+        ptrArmed = false;
+        return;
+      }
       var scroller = document.scrollingElement || document.documentElement;
-      ptrArmed = scroller && scroller.scrollTop === 0;
-      ptrTriggered = false;
+      ptrArmed = !!(scroller && scroller.scrollTop === 0 && currentKind());
+      ptrPastThreshold = false;
       touchStartY = ptrArmed ? event.touches[0].clientY : null;
+      if (ptrArmed) {
+        var content = ptrContent();
+        ptrBaseTop = content ? content.getBoundingClientRect().top : 0;
+      }
     },
     { passive: true }
   );
@@ -141,28 +190,56 @@
   document.addEventListener(
     "touchmove",
     function (event) {
-      if (!ptrArmed || ptrTriggered || touchStartY === null) return;
+      if (!ptrArmed || ptrRefreshing || touchStartY === null) return;
       if (!event.touches || event.touches.length !== 1) return;
+      var scroller = document.scrollingElement || document.documentElement;
+      if (scroller && scroller.scrollTop > 0) {
+        // The gesture turned into a normal scroll — stand down.
+        ptrPastThreshold = false;
+        setPull(0, false);
+        return;
+      }
       var delta = event.touches[0].clientY - touchStartY;
-      if (delta > PTR_THRESHOLD) {
-        var kind = currentKind();
-        if (!kind) return;
-        ptrTriggered = true;
+      if (delta <= 0) {
+        ptrPastThreshold = false;
+        setPull(0, false);
+        hideSpinner();
+        return;
+      }
+      var pulled = Math.min(PTR_MAX, delta * PTR_DAMPING);
+      setPull(pulled, false);
+      ptrPastThreshold = delta > PTR_THRESHOLD;
+      if (pulled > 8) {
         showSpinner();
-        refresh(kind).then(hideSpinner);
+      } else {
+        hideSpinner();
       }
     },
     { passive: true }
   );
 
-  document.addEventListener(
-    "touchend",
-    function () {
-      ptrArmed = false;
-      touchStartY = null;
-    },
-    { passive: true }
-  );
+  function onTouchFinish() {
+    if (!ptrArmed) return;
+    ptrArmed = false;
+    touchStartY = null;
+    if (ptrRefreshing) return;
+    var kind = currentKind();
+    if (ptrPastThreshold && kind) {
+      ptrRefreshing = true;
+      setPull(PTR_HOLD, true);
+      showSpinner();
+      refresh(kind).then(function () {
+        ptrRefreshing = false;
+        settlePull();
+      });
+    } else {
+      settlePull();
+    }
+    ptrPastThreshold = false;
+  }
+
+  document.addEventListener("touchend", onTouchFinish, { passive: true });
+  document.addEventListener("touchcancel", onTouchFinish, { passive: true });
 
   window.ArgosRefresh = { refresh: refresh };
 })();

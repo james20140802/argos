@@ -43,6 +43,47 @@ def test_portfolio_refresh_scoped_to_dedicated_container():
     assert "main.page" not in refresh_body
 
 
+def test_refresh_button_uses_svg_icon_not_text_glyph():
+    # UX feedback (2026-07-06): the ⟳ text glyph read as cheap — the button
+    # carries a stroke SVG icon instead, on both pages.
+    for tpl in (FEED, PORTFOLIO):
+        body = tpl.read_text(encoding="utf-8")
+        assert "<svg" in body
+        assert "⟳" not in body
+
+
+def test_refresh_progress_is_a_rotating_ring_not_glyph():
+    # UX feedback: in-flight progress is a border-ring spinner (button ::after
+    # + .refresh-spinner::before), not a spinning text glyph.
+    css = (PKG / "static" / "css" / "argos.css").read_text(encoding="utf-8")
+    assert ".refresh-btn.is-refreshing::after" in css
+    assert "⟳" not in css
+
+
+def test_refresh_button_floats_bottom_right_desktop_only():
+    # UX feedback: the desktop button is a floating action at the viewport's
+    # bottom-right, and hidden on mobile where pull-to-refresh covers it.
+    css = (PKG / "static" / "css" / "argos.css").read_text(encoding="utf-8")
+    btn_block = css.split(".refresh-btn")[1]
+    assert "display: none" in btn_block          # mobile default
+    fab = css.split("Desktop refresh button")[1].split(".refresh-spinner")[0]
+    assert "position: fixed" in fab
+    assert "bottom" in fab and "right" in fab
+
+
+def test_ptr_holds_pulled_gap_while_refreshing():
+    # UX feedback: releasing past the threshold must KEEP the pulled-down gap
+    # open (content held at PTR_HOLD via translateY) until the refresh
+    # resolves, instead of snapping back immediately.
+    body = REFRESH_JS.read_text(encoding="utf-8")
+    assert "PTR_HOLD" in body
+    assert "translateY" in body
+    assert "touchcancel" in body
+    finish = body.split("function onTouchFinish()")[1]
+    assert "PTR_HOLD" in finish  # the hold is applied at gesture end...
+    assert "refresh(kind)" in finish  # ...and released only after refresh()
+
+
 def test_refresh_reprocesses_swapped_list_for_htmx():
     # P2 fix (Codex review): the fresh list comes from DOMParser, so HTMX's
     # initial document scan never saw it. Without htmx.process(freshEl) the
@@ -55,7 +96,7 @@ def test_refresh_reprocesses_swapped_list_for_htmx():
 def test_sw_precaches_refresh_js_and_bumps_version():
     body = SW.read_text(encoding="utf-8")
     assert "/static/js/refresh.js" in body
-    assert "argos-v12" in body               # 최신+1 범프 (T2가 v11 → v12로 재범프)
+    assert "argos-v13" in body               # v12 → v13 (아이콘/스피너/PTR 개편)
     assert "argos-shell-refresh" in body     # message 리스너
 
 
