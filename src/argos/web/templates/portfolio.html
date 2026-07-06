@@ -15,6 +15,12 @@
      href="/portfolio?category=Alpha{% if sort != 'recency' %}&sort={{ sort }}{% endif %}"
      {% if category == 'Alpha' %}aria-current="true"{% endif %}>Alpha</a>
 </nav>
+
+{# Floating refresh action — desktop(≥768px) only; mobile relies on the
+   pull-to-refresh gesture. #}
+<button type="button" class="refresh-btn" data-refresh="portfolio" aria-label="새로고침">
+  <span class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></span>
+</button>
 <nav class="portfolio-sort" aria-label="정렬">
   <a class="chip{% if sort == 'recency' %} is-active{% endif %}"
      href="/portfolio?sort=recency{% if category %}&category={{ category }}{% endif %}"
@@ -24,6 +30,7 @@
      {% if sort == 'trust' %}aria-current="true"{% endif %}>신뢰도</a>
 </nav>
 
+<div id="portfolio-list">
 {% if not view.active and not view.quiet %}
 <p class="portfolio-empty">아직 Keep한 자산이 없습니다. 관측 피드에서 마음에 드는 항목을 Keep 해보세요.</p>
 {% else %}
@@ -42,4 +49,5 @@
 </section>
 {% endif %}
 {% endif %}
+</div>
 {% endblock %}

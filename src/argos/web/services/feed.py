@@ -139,3 +139,32 @@ async def fetch_feed(
         next_cursor = encode_cursor(last.sort_at, last.id)
 
     return FeedPage(items=items, next_cursor=next_cursor)
+
+
+async def count_new_since(
+    session: AsyncSession,
+    *,
+    category: Optional[Category] = None,
+    cursor: str,
+) -> int:
+    """Count feed items newer than ``cursor`` (ARG-203 polling endpoint).
+
+    Mirrors ``fetch_feed``'s ordering rule (``sort_expr`` desc, ``id`` desc) but
+    inverted: an item is "new" when it sorts *after* the cursor position, i.e.
+    ``sort_expr > cur_sort`` or a tie broken by a greater id. ``decode_cursor``
+    raises ``ValueError`` on a malformed token — that propagates so the route
+    can translate it into a 400.
+    """
+    cur_sort, cur_id = decode_cursor(cursor)
+    sort_expr = func.coalesce(TechItem.published_at, TechItem.created_at)
+
+    stmt = select(func.count()).select_from(TechItem).where(
+        (sort_expr > cur_sort) | ((sort_expr == cur_sort) & (TechItem.id > cur_id))
+    )
+
+    if category is not None:
+        if category not in ("Mainstream", "Alpha"):
+            raise ValueError(f"invalid category: {category!r}")
+        stmt = stmt.where(TechItem.category == CategoryType(category))
+
+    return (await session.execute(stmt)).scalar_one()

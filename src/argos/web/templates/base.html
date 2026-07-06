@@ -64,6 +64,8 @@
     </div>
   </header>
 
+  <div class="refresh-spinner" aria-hidden="true"></div>
+
   <main class="page {% block page_class %}{% endblock %}">
     {% block content %}{% endblock %}
   </main>
@@ -87,5 +89,7 @@
   <script src="/static/js/htmx.min.js" defer></script>
   <script src="/static/js/sw-register.js" defer></script>
   <script src="/static/js/img-fallback.js" defer></script>
+  <script src="/static/js/refresh.js" defer></script>
+  <script src="/static/js/feed-poll.js" defer></script>
 </body>
 </html>

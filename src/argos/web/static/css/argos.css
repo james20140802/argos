@@ -100,7 +100,12 @@ html, body { margin: 0; }
 /* Reserve the vertical-scrollbar gutter on BOTH edges so a classic (non-overlay)
    scrollbar can't eat into the right side only — otherwise the centered .page
    column shifts left and reads as asymmetric L/R padding on scrollable pages. */
-html { scrollbar-gutter: stable both-edges; }
+html {
+  scrollbar-gutter: stable both-edges;
+  /* Suppress the browser's native pull-to-refresh/overscroll glow so the
+     custom held-gap PTR in refresh.js owns the gesture on /feed·/portfolio. */
+  overscroll-behavior-y: contain;
+}
 body {
   min-height: 100vh;
   background:
@@ -425,6 +430,91 @@ body {
 }
 .chip--main.is-active { background: var(--main); border-color: var(--main); }
 .chip--alpha.is-active { background: var(--alpha); border-color: var(--alpha); }
+
+/* Desktop refresh button (ARG-202) — a floating action pinned to the
+   viewport's bottom-right on /feed and /portfolio, desktop(≥768px) only:
+   mobile covers the same intent with the pull-to-refresh gesture, so the
+   button stays hidden there. While a refresh is in flight the icon is
+   swapped for a rotating ring (::after). */
+.refresh-btn { display: none; }
+@media (min-width: 768px) {
+  .refresh-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    position: fixed; right: 32px; bottom: 32px; z-index: 30;
+    width: 46px; height: 46px;
+    padding: 0; cursor: pointer;
+    color: var(--muted);
+    background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 999px;
+    box-shadow: 0 8px 22px rgba(9, 8, 6, 0.28);
+    transition: color 0.2s, border-color 0.2s, transform 0.2s;
+  }
+  .refresh-btn:hover {
+    color: var(--brass); border-color: var(--hairline);
+    transform: translateY(-1px);
+  }
+}
+.refresh-btn .ic { display: block; width: 19px; height: 19px; }
+.refresh-btn .ic svg { display: block; width: 100%; height: 100%; }
+.refresh-btn.is-refreshing .ic { display: none; }
+.refresh-btn.is-refreshing::after {
+  content: ""; width: 17px; height: 17px; border-radius: 50%;
+  border: 2px solid currentColor; border-top-color: transparent;
+  animation: refresh-spin 0.7s linear infinite;
+}
+
+/* Pull-to-refresh spinner (ARG-202) — a ring that rides inside the gap the
+   pulled-down content opens up. refresh.js sets its inline `top` to the
+   content's resting offset each gesture, then toggles .is-active; the held
+   translateY on the content keeps the gap (and this ring) visible until the
+   refresh settles. */
+.refresh-spinner {
+  position: fixed; top: 8px; left: 50%; z-index: 40;
+  width: 30px; height: 30px;
+  transform: translateX(-50%) translateY(-48px);
+  opacity: 0; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--brass);
+  background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 999px;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.refresh-spinner::before {
+  content: ""; width: 15px; height: 15px; border-radius: 50%;
+  border: 2px solid currentColor; border-top-color: transparent;
+  animation: refresh-spin 0.8s linear infinite;
+}
+.refresh-spinner.is-active {
+  opacity: 1; transform: translateX(-50%) translateY(0);
+}
+@keyframes refresh-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .refresh-btn.is-refreshing::after { animation: none; }
+  .refresh-spinner::before { animation: none; }
+}
+
+/* New-items poll pill (ARG-203) — sits sticky above the feed list so it stays
+   reachable after scrolling into a long feed. Hidden by default (the [hidden]
+   attribute); feed-poll.js only toggles that attribute, it never touches the
+   feed list DOM directly. */
+.new-items-pill {
+  position: sticky; top: 12px; z-index: 20;
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 auto 16px; width: fit-content;
+  padding: 8px 16px;
+  font: 500 13px/1 "IBM Plex Sans KR", sans-serif;
+  color: var(--surface-2);
+  background: var(--brass-hi);
+  border: none; border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.new-items-pill:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.32); }
+.new-items-pill[hidden] { display: none; }
 
 /* Editorial grid (ARG-175 → observation-log redesign). Mobile is a single
    airy column; tablet/desktop widen to 2/3 columns. The featured hero, empty
