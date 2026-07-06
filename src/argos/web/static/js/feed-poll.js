@@ -69,6 +69,11 @@
         var newCount = data.new_count || 0;
         if (newCount > 0) {
           showPill(newCount);
+        } else {
+          // The user may have refreshed via the header button or
+          // pull-to-refresh instead of tapping the pill; the feed is
+          // current now, so a lingering pill would be stale.
+          hidePill();
         }
       })
       .catch(function (err) {
