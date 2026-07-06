@@ -43,6 +43,15 @@ def test_portfolio_refresh_scoped_to_dedicated_container():
     assert "main.page" not in refresh_body
 
 
+def test_refresh_reprocesses_swapped_list_for_htmx():
+    # P2 fix (Codex review): the fresh list comes from DOMParser, so HTMX's
+    # initial document scan never saw it. Without htmx.process(freshEl) the
+    # hx-post/hx-get controls inside (#feed-list Keep/Pass + load-more,
+    # #portfolio-list Untrack) go inert after any refresh.
+    body = REFRESH_JS.read_text(encoding="utf-8")
+    assert "htmx.process" in body
+
+
 def test_sw_precaches_refresh_js_and_bumps_version():
     body = SW.read_text(encoding="utf-8")
     assert "/static/js/refresh.js" in body
@@ -106,6 +115,16 @@ def test_feed_poll_pill_tap_gates_hide_and_scroll_on_refresh_result():
     body = FEED_POLL_JS.read_text(encoding="utf-8")
     assert "function (ok)" in body or "function(ok)" in body
     assert "if (ok)" in body or "if (result)" in body
+
+
+def test_feed_poll_hides_pill_when_no_newer_items():
+    # P3 fix (Codex review): if the user refreshes via the header button or
+    # pull-to-refresh while the pill is up, the next poll returns
+    # new_count: 0 — the pill must be hidden then, not left stale.
+    body = FEED_POLL_JS.read_text(encoding="utf-8")
+    assert "hidePill()" in body
+    poll_fn = body.split("function poll()")[1].split("function start()")[0]
+    assert "hidePill()" in poll_fn
 
 
 def test_feed_poll_reads_cursor_live_not_from_stale_captured_node():
