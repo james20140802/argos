@@ -405,7 +405,6 @@ async def test_fetch_portfolio_recency_paginates_without_overlap() -> None:
     Session = async_sessionmaker(bind=engine, expire_on_commit=False)
 
     tech_ids: list[uuid.UUID] = []
-    seen: list[uuid.UUID] = []
     try:
         async with Session() as session:
             base = datetime(2099, 3, 1, 0, 0, tzinfo=timezone.utc)
@@ -432,7 +431,6 @@ async def test_fetch_portfolio_recency_paginates_without_overlap() -> None:
             got1 = [a.tech_id for a in (page1.active + page1.quiet) if a.tech_id in our_tech]
             assert len(got1) == 2
             assert page1.next_cursor is not None
-            seen.extend(got1)
 
             page2 = await fetch_portfolio(
                 session, sort="recency", cursor=page1.next_cursor, limit=2
