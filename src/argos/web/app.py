@@ -13,6 +13,7 @@ foundation only ships /healthz so deployments can probe liveness.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,7 @@ from argos.web.services.settings import (
 )
 
 _PACKAGE_DIR = Path(__file__).parent  # noqa: E402 — module-level lazy shims below
+_log = logging.getLogger("argos.web")
 
 
 async def transition_asset(session, tech_id: uuid.UUID, target_status):
@@ -397,6 +399,22 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         return request.app.state.templates.TemplateResponse(
             request, "not_found.html", {}, status_code=404
         )
+
+    def _render_error(request: Request, request_id: str) -> HTMLResponse:
+        return request.app.state.templates.TemplateResponse(
+            request, "error.html", {"request_id": request_id}, status_code=500
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception(request: Request, exc: Exception) -> HTMLResponse:
+        # Unhandled exceptions only — HTTPException (404/400/...) is routed
+        # through Starlette's separate HTTPException middleware and never
+        # reaches this handler, so the themed 404 page above is unaffected.
+        # The stacktrace goes to the log only; the response body carries
+        # nothing but a short request id.
+        request_id = uuid.uuid4().hex[:8]
+        _log.exception("unhandled error [%s] on %s", request_id, request.url.path)
+        return _render_error(request, request_id)
 
     @app.get("/item/{item_id}", response_class=HTMLResponse)
     async def item_detail(
