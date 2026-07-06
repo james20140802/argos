@@ -64,6 +64,12 @@
             var currentEl = document.querySelector(selector);
             if (freshEl && currentEl) {
               currentEl.replaceWith(freshEl);
+              // freshEl came from DOMParser, so HTMX never scanned it: the
+              // hx-post/hx-get controls inside (Keep/Pass, load-more,
+              // Untrack) stay inert until explicitly processed.
+              if (window.htmx && typeof window.htmx.process === "function") {
+                window.htmx.process(freshEl);
+              }
             }
             notifyServiceWorker(url, html);
             return true;
