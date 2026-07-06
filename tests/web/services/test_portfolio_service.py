@@ -374,3 +374,77 @@ async def test_trust_sort_tiebreak_on_ua_id_desc() -> None:
     page = view.active + view.quiet
     assert len(page) == 1
     assert page[0].id == larger_id
+
+
+# --------------------------------------------------------------------- #
+# DB-backed keyset pagination (self-skip on Release CI which has no PG)
+# --------------------------------------------------------------------- #
+
+from argos.config import settings as _settings  # noqa: E402
+from tests.conftest import db_reachable as _db_reachable  # noqa: E402
+
+_DB_URL: str = _settings.database_url
+
+_pytestmark_db = pytest.mark.skipif(
+    not _db_reachable(_DB_URL),
+    reason="pgvector DB not reachable — skipping ARG-187 DB-backed tests",
+)
+
+
+@_pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_portfolio_recency_paginates_without_overlap() -> None:
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+    from argos.models.user_asset import AssetStatus, UserAsset
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    tech_ids: list[uuid.UUID] = []
+    seen: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            base = datetime(2099, 3, 1, 0, 0, tzinfo=timezone.utc)
+            for i in range(5):
+                t = TechItem(
+                    title=f"arg187-{i}",
+                    source_url=f"https://example.com/arg187/{uuid.uuid4()}",
+                    raw_content="x",
+                    category=CategoryType.MAINSTREAM,
+                    trust_score=0.5,
+                )
+                session.add(t)
+                await session.flush()
+                tech_ids.append(t.id)
+                ua = UserAsset(tech_id=t.id, status=AssetStatus.KEEP)
+                # Stagger created_at so recency order is deterministic.
+                ua.created_at = base + timedelta(hours=i)
+                session.add(ua)
+            await session.commit()
+            our_tech = set(tech_ids)
+
+        async with Session() as session:
+            page1 = await fetch_portfolio(session, sort="recency", limit=2)
+            got1 = [a.tech_id for a in (page1.active + page1.quiet) if a.tech_id in our_tech]
+            assert len(got1) == 2
+            assert page1.next_cursor is not None
+            seen.extend(got1)
+
+            page2 = await fetch_portfolio(
+                session, sort="recency", cursor=page1.next_cursor, limit=2
+            )
+            got2 = [a.tech_id for a in (page2.active + page2.quiet) if a.tech_id in our_tech]
+            # No overlap between consecutive pages.
+            assert set(got1).isdisjoint(set(got2))
+    finally:
+        async with Session() as session:
+            if tech_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(tech_ids))
+                )
+            await session.commit()
+        await engine.dispose()
