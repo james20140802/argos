@@ -9,6 +9,8 @@ A single SQL query computes all aggregates to avoid N+1 round-trips.
 """
 from __future__ import annotations
 
+import base64
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -28,6 +30,45 @@ from argos.models.user_asset import AssetStatus, UserAsset
 # ------------------------------------------------------------------ #
 
 RECENT_SIGNAL_WINDOW: timedelta = timedelta(days=7)
+
+PAGE_SIZE: int = 20
+
+
+def encode_portfolio_cursor(
+    kept_since: datetime, ua_id: uuid.UUID, trust_score: Optional[float]
+) -> str:
+    """Opaque keyset cursor for the portfolio sort position.
+
+    Carries the full compound key so both sort modes can page from it:
+    ``kept_since`` + ``ua_id`` (recency, and the tie-breaker for trust) plus
+    ``trust_score`` (the trust-sort primary key; may be ``None``).
+    """
+    if kept_since.tzinfo is None:
+        kept_since = kept_since.replace(tzinfo=timezone.utc)
+    payload = {
+        "k": kept_since.astimezone(timezone.utc).isoformat(),
+        "u": ua_id.hex,
+        "t": trust_score,
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_portfolio_cursor(token: str) -> tuple[datetime, uuid.UUID, Optional[float]]:
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+        kept = datetime.fromisoformat(payload["k"])
+        if kept.tzinfo is None:
+            kept = kept.replace(tzinfo=timezone.utc)
+        ua_id = uuid.UUID(payload["u"])
+        trust = payload["t"]
+        if trust is not None:
+            trust = float(trust)
+        return kept, ua_id, trust
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid portfolio cursor: {token!r}") from exc
 
 
 # ------------------------------------------------------------------ #
@@ -59,6 +100,7 @@ class PortfolioView:
     quiet: list[PortfolioAsset]    # the rest
     category: Optional[PortfolioCategory]
     sort: PortfolioSort
+    next_cursor: Optional[str] = None
 
 
 # ------------------------------------------------------------------ #
@@ -70,6 +112,8 @@ async def fetch_portfolio(
     *,
     category: Optional[PortfolioCategory] = None,
     sort: PortfolioSort = "recency",
+    cursor: Optional[str] = None,
+    limit: int = PAGE_SIZE,
 ) -> PortfolioView:
     """Return Keep assets partitioned into active and quiet groups.
 
@@ -131,9 +175,10 @@ async def fetch_portfolio(
         order_exprs = [
             TechItem.trust_score.desc().nulls_last(),
             UserAsset.created_at.desc(),
+            UserAsset.id.desc(),
         ]
     else:  # recency
-        order_exprs = [UserAsset.created_at.desc()]
+        order_exprs = [UserAsset.created_at.desc(), UserAsset.id.desc()]
 
     stmt = (
         select(
@@ -156,6 +201,27 @@ async def fetch_portfolio(
 
     if category is not None:
         stmt = stmt.where(TechItem.category == CategoryType(category))
+
+    if cursor is not None:
+        cur_kept, cur_ua, cur_trust = decode_portfolio_cursor(cursor)
+        kept_tie = (UserAsset.created_at < cur_kept) | (
+            (UserAsset.created_at == cur_kept) & (UserAsset.id < cur_ua)
+        )
+        if sort == "trust":
+            if cur_trust is None:
+                # Cursor is in the NULLS-LAST tail: only other null-trust rows
+                # can sort after it.
+                stmt = stmt.where(TechItem.trust_score.is_(None) & kept_tie)
+            else:
+                stmt = stmt.where(
+                    TechItem.trust_score.is_(None)
+                    | (TechItem.trust_score < cur_trust)
+                    | ((TechItem.trust_score == cur_trust) & kept_tie)
+                )
+        else:  # recency
+            stmt = stmt.where(kept_tie)
+
+    stmt = stmt.limit(limit + 1)
 
     result = await session.execute(stmt)
     rows = result.all()
@@ -193,8 +259,19 @@ async def fetch_portfolio(
 
     assets.sort(key=_sort_key)
 
-    # ---- partition ----
-    active = [a for a in assets if a.signal_count > 0 or a.lineage_count > 0]
-    quiet = [a for a in assets if a.signal_count == 0 and a.lineage_count == 0]
+    # ---- trim to one page; the (limit+1)-th row only signals "more" ----
+    has_more = len(assets) > limit
+    page = assets[:limit]
+    next_cursor = (
+        encode_portfolio_cursor(page[-1].kept_since, page[-1].id, page[-1].trust_score)
+        if has_more and page
+        else None
+    )
 
-    return PortfolioView(active=active, quiet=quiet, category=category, sort=sort)
+    # ---- partition the loaded page (active/quiet split within this page) ----
+    active = [a for a in page if a.signal_count > 0 or a.lineage_count > 0]
+    quiet = [a for a in page if a.signal_count == 0 and a.lineage_count == 0]
+
+    return PortfolioView(
+        active=active, quiet=quiet, category=category, sort=sort, next_cursor=next_cursor
+    )

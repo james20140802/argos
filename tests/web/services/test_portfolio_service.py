@@ -236,3 +236,101 @@ async def test_signal_subqueries_filter_on_sentinels() -> None:
     assert SIGNAL_MATCHED in sql
     # changed_to predicate is applied (the IN-list against the sentinels)
     assert "changed_to" in sql
+
+
+# ------------------------------------------------------------------ #
+# Test 12-16: cursor helpers (ARG-187)
+# ------------------------------------------------------------------ #
+
+def test_portfolio_page_size_is_20() -> None:
+    from argos.web.services.portfolio import PAGE_SIZE
+    assert PAGE_SIZE == 20
+
+
+def test_portfolio_cursor_round_trips_with_trust_score() -> None:
+    from argos.web.services.portfolio import (
+        decode_portfolio_cursor,
+        encode_portfolio_cursor,
+    )
+    kept = datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc)
+    ua_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    token = encode_portfolio_cursor(kept, ua_id, 0.75)
+    dk, dua, dts = decode_portfolio_cursor(token)
+    assert dk == kept
+    assert dua == ua_id
+    assert dts == 0.75
+
+
+def test_portfolio_cursor_round_trips_with_null_trust() -> None:
+    from argos.web.services.portfolio import (
+        decode_portfolio_cursor,
+        encode_portfolio_cursor,
+    )
+    kept = datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc)
+    ua_id = uuid.uuid4()
+    token = encode_portfolio_cursor(kept, ua_id, None)
+    dk, dua, dts = decode_portfolio_cursor(token)
+    assert dk == kept
+    assert dua == ua_id
+    assert dts is None
+
+
+def test_portfolio_cursor_is_opaque_base64() -> None:
+    from argos.web.services.portfolio import encode_portfolio_cursor
+    kept = datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc)
+    ua_id = uuid.uuid4()
+    token = encode_portfolio_cursor(kept, ua_id, 0.5)
+    assert isinstance(token, str)
+    assert "2026-06-14" not in token
+    assert str(ua_id) not in token
+
+
+def test_decode_portfolio_cursor_rejects_garbage() -> None:
+    from argos.web.services.portfolio import decode_portfolio_cursor
+    with pytest.raises(ValueError):
+        decode_portfolio_cursor("not-a-valid-cursor")
+
+
+# ------------------------------------------------------------------ #
+# Test 17-19: paginated fetch_portfolio (ARG-187)
+# ------------------------------------------------------------------ #
+
+@pytest.mark.asyncio
+async def test_fetch_portfolio_no_next_cursor_when_page_not_full() -> None:
+    session = _make_session([_make_row(title="Only")])
+    view = await fetch_portfolio(session, limit=20)
+    assert view.next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_portfolio_sets_next_cursor_when_more_rows() -> None:
+    # limit+1 rows returned → page is trimmed to `limit` and a cursor is set.
+    rows = [
+        _make_row(
+            title=f"row-{i}",
+            kept_since=_utc(f"2026-01-{(i % 27) + 1:02d}T00:00:00"),
+            signal_count=0,
+            lineage_count=0,
+        )
+        for i in range(3)
+    ]
+    session = _make_session(rows)
+    view = await fetch_portfolio(session, sort="recency", limit=2)
+    # Exactly `limit` assets are surfaced (2), the 3rd row is the overflow probe.
+    assert len(view.active) + len(view.quiet) == 2
+    assert view.next_cursor is not None
+    # The cursor round-trips back to a valid position.
+    from argos.web.services.portfolio import decode_portfolio_cursor
+    decode_portfolio_cursor(view.next_cursor)
+
+
+@pytest.mark.asyncio
+async def test_fetch_portfolio_partition_survives_pagination() -> None:
+    # An active row + a quiet row within one page keep their groups.
+    active = _make_row(title="Act", signal_count=1)
+    quiet = _make_row(title="Qui", signal_count=0, lineage_count=0)
+    session = _make_session([active, quiet])
+    view = await fetch_portfolio(session, limit=20)
+    assert [a.title for a in view.active] == ["Act"]
+    assert [a.title for a in view.quiet] == ["Qui"]
+    assert view.next_cursor is None
