@@ -392,23 +392,30 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
 
     async def _render_portfolio(
         request: Request,
+        template_name: str,
         category: Optional[str],
         sort: Optional[str],
+        cursor: Optional[str],
         session,
     ) -> HTMLResponse:
         normalized_category = _normalize_category(category)
         normalized_sort = sort if sort in _VALID_SORTS else "recency"
         try:
             view = await fetch_portfolio(
-                session, category=normalized_category, sort=normalized_sort
+                session,
+                category=normalized_category,
+                sort=normalized_sort,
+                cursor=cursor,
             )
         except ValueError as exc:
+            # ``cursor`` is user-controlled query state; a stale/corrupted
+            # load-more URL must not 500. Translate it to a controlled 400.
             raise HTTPException(
                 status_code=400, detail="invalid portfolio query"
             ) from exc
         return request.app.state.templates.TemplateResponse(
             request,
-            "portfolio.html",
+            template_name,
             {
                 "view": view,
                 "category": normalized_category,
@@ -421,9 +428,24 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         request: Request,
         category: Optional[str] = None,
         sort: Optional[str] = None,
+        cursor: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
-        return await _render_portfolio(request, category, sort, session)
+        return await _render_portfolio(
+            request, "portfolio.html", category, sort, cursor, session
+        )
+
+    @app.get("/portfolio/items", response_class=HTMLResponse)
+    async def portfolio_items(
+        request: Request,
+        category: Optional[str] = None,
+        sort: Optional[str] = None,
+        cursor: Optional[str] = None,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        return await _render_portfolio(
+            request, "_portfolio_items.html", category, sort, cursor, session
+        )
 
     def _render_not_found(request: Request) -> HTMLResponse:
         return request.app.state.templates.TemplateResponse(
