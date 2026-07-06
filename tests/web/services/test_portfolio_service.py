@@ -334,3 +334,43 @@ async def test_fetch_portfolio_partition_survives_pagination() -> None:
     assert [a.title for a in view.active] == ["Act"]
     assert [a.title for a in view.quiet] == ["Qui"]
     assert view.next_cursor is None
+
+
+# ------------------------------------------------------------------ #
+# Test 20: Python _sort_key tiebreak must match SQL's UserAsset.id DESC
+# ------------------------------------------------------------------ #
+
+@pytest.mark.asyncio
+async def test_trust_sort_tiebreak_on_ua_id_desc() -> None:
+    # Two rows collide on both trust_score and kept_since — the only thing
+    # that can break the tie is ua_id. SQL orders `UserAsset.id.desc()`, so
+    # the larger id must win page 1. We deliberately hand `_make_session`
+    # the rows in the "wrong" order (smaller id first) so this test would
+    # pass by accident if the Python re-sort had no explicit id tiebreak and
+    # merely happened to preserve DB order via a stable sort — it must
+    # actively re-order these to catch a missing tiebreak.
+    smaller_id = uuid.UUID(int=1)
+    larger_id = uuid.UUID(int=2)
+    same_trust = 0.5
+    same_kept = _utc("2026-01-01T00:00:00")
+
+    row_small = _make_row(
+        title="Smaller",
+        ua_id=smaller_id,
+        trust_score=same_trust,
+        kept_since=same_kept,
+    )
+    row_large = _make_row(
+        title="Larger",
+        ua_id=larger_id,
+        trust_score=same_trust,
+        kept_since=same_kept,
+    )
+    # Fed in ascending-id order (opposite of SQL's id DESC) to force the
+    # Python sort to do real work rather than ride along on input order.
+    session = _make_session([row_small, row_large])
+
+    view = await fetch_portfolio(session, sort="trust", limit=1)
+    page = view.active + view.quiet
+    assert len(page) == 1
+    assert page[0].id == larger_id

@@ -244,18 +244,23 @@ async def fetch_portfolio(
     ]
 
     # ---- sort in Python (mirrors SQL ORDER BY; ensures test-mock parity) ----
+    # The trailing ``-a.id.int`` element is not just test scaffolding: it is
+    # load-bearing for `next_cursor` correctness in production. This re-sort
+    # decides `page[-1]`, which seeds the next cursor — it must match the SQL
+    # tiebreak (``UserAsset.id.desc()``) exactly, rather than relying on
+    # Python's stable sort to implicitly preserve the DB's row order.
     if sort == "trust":
 
         def _sort_key(a: PortfolioAsset) -> tuple:
             # trust DESC NULLS LAST → negate, put None after real values
             trust_key = (0, -a.trust_score) if a.trust_score is not None else (1, 0.0)
             kept_key = -a.kept_since.timestamp()
-            return (*trust_key, kept_key)
+            return (*trust_key, kept_key, -a.id.int)
 
     else:  # recency
 
         def _sort_key(a: PortfolioAsset) -> tuple:  # type: ignore[misc]
-            return (-a.kept_since.timestamp(),)
+            return (-a.kept_since.timestamp(), -a.id.int)
 
     assets.sort(key=_sort_key)
 
