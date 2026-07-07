@@ -836,8 +836,6 @@ def test_version_flag_fallback_when_metadata_missing(monkeypatch, capsys, tmp_pa
     # monkeypatching the cli module's tomllib.load to return a controlled dict.
     import argos.cli as cli_mod
 
-    original_resolve = cli_mod._resolve_version
-
     def _fake_resolve():
         try:
             import importlib.metadata as _m

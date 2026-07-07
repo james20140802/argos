@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
+from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 # RSS feed defaults — 5 AI-company mainstream blogs + 2 Reddit subs (Alpha)
 _DEFAULT_RSS_FEEDS: list[dict[str, str]] = [
     {"url": "https://openai.com/blog/rss.xml", "category": "Mainstream"},
@@ -32,9 +35,6 @@ try:
     import tomllib
 except ImportError:
     import tomli as tomllib  # type: ignore[no-reuse-import]
-
-from pydantic import BaseModel, Field, ValidationError, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
