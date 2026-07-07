@@ -66,7 +66,7 @@ def app_with_child_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     async def _empty_feed(session, *, category=None, cursor=None, limit=20):
         return FeedPage(items=[], next_cursor=None)
 
-    async def _empty_portfolio(session, *, category=None, sort="recency"):
+    async def _empty_portfolio(session, *, category=None, sort="recency", cursor=None):
         return PortfolioView(active=[], quiet=[], category=None, sort="recency")
 
     async def _empty_activity(session, limit=12):

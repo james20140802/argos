@@ -34,20 +34,7 @@
 {% if not view.active and not view.quiet %}
 <p class="portfolio-empty">아직 Keep한 자산이 없습니다. 관측 피드에서 마음에 드는 항목을 Keep 해보세요.</p>
 {% else %}
-{% if view.active %}
-<section class="portfolio-section">
-  <h2 class="portfolio-section__title">새 신호 있음</h2>
-  {% set items = view.active %}
-  {% include "_portfolio_cards.html" %}
-</section>
-{% endif %}
-{% if view.quiet %}
-<section class="portfolio-section">
-  <h2 class="portfolio-section__title">조용함</h2>
-  {% set items = view.quiet %}
-  {% include "_portfolio_cards.html" %}
-</section>
-{% endif %}
+{% include "_portfolio_items.html" %}
 {% endif %}
 </div>
 {% endblock %}

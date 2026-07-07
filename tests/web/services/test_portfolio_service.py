@@ -236,3 +236,213 @@ async def test_signal_subqueries_filter_on_sentinels() -> None:
     assert SIGNAL_MATCHED in sql
     # changed_to predicate is applied (the IN-list against the sentinels)
     assert "changed_to" in sql
+
+
+# ------------------------------------------------------------------ #
+# Test 12-16: cursor helpers (ARG-187)
+# ------------------------------------------------------------------ #
+
+def test_portfolio_page_size_is_20() -> None:
+    from argos.web.services.portfolio import PAGE_SIZE
+    assert PAGE_SIZE == 20
+
+
+def test_portfolio_cursor_round_trips_with_trust_score() -> None:
+    from argos.web.services.portfolio import (
+        decode_portfolio_cursor,
+        encode_portfolio_cursor,
+    )
+    kept = datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc)
+    ua_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    token = encode_portfolio_cursor(kept, ua_id, 0.75)
+    dk, dua, dts = decode_portfolio_cursor(token)
+    assert dk == kept
+    assert dua == ua_id
+    assert dts == 0.75
+
+
+def test_portfolio_cursor_round_trips_with_null_trust() -> None:
+    from argos.web.services.portfolio import (
+        decode_portfolio_cursor,
+        encode_portfolio_cursor,
+    )
+    kept = datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc)
+    ua_id = uuid.uuid4()
+    token = encode_portfolio_cursor(kept, ua_id, None)
+    dk, dua, dts = decode_portfolio_cursor(token)
+    assert dk == kept
+    assert dua == ua_id
+    assert dts is None
+
+
+def test_portfolio_cursor_is_opaque_base64() -> None:
+    from argos.web.services.portfolio import encode_portfolio_cursor
+    kept = datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc)
+    ua_id = uuid.uuid4()
+    token = encode_portfolio_cursor(kept, ua_id, 0.5)
+    assert isinstance(token, str)
+    assert "2026-06-14" not in token
+    assert str(ua_id) not in token
+
+
+def test_decode_portfolio_cursor_rejects_garbage() -> None:
+    from argos.web.services.portfolio import decode_portfolio_cursor
+    with pytest.raises(ValueError):
+        decode_portfolio_cursor("not-a-valid-cursor")
+
+
+# ------------------------------------------------------------------ #
+# Test 17-19: paginated fetch_portfolio (ARG-187)
+# ------------------------------------------------------------------ #
+
+@pytest.mark.asyncio
+async def test_fetch_portfolio_no_next_cursor_when_page_not_full() -> None:
+    session = _make_session([_make_row(title="Only")])
+    view = await fetch_portfolio(session, limit=20)
+    assert view.next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_portfolio_sets_next_cursor_when_more_rows() -> None:
+    # limit+1 rows returned → page is trimmed to `limit` and a cursor is set.
+    rows = [
+        _make_row(
+            title=f"row-{i}",
+            kept_since=_utc(f"2026-01-{(i % 27) + 1:02d}T00:00:00"),
+            signal_count=0,
+            lineage_count=0,
+        )
+        for i in range(3)
+    ]
+    session = _make_session(rows)
+    view = await fetch_portfolio(session, sort="recency", limit=2)
+    # Exactly `limit` assets are surfaced (2), the 3rd row is the overflow probe.
+    assert len(view.active) + len(view.quiet) == 2
+    assert view.next_cursor is not None
+    # The cursor round-trips back to a valid position.
+    from argos.web.services.portfolio import decode_portfolio_cursor
+    decode_portfolio_cursor(view.next_cursor)
+
+
+@pytest.mark.asyncio
+async def test_fetch_portfolio_partition_survives_pagination() -> None:
+    # An active row + a quiet row within one page keep their groups.
+    active = _make_row(title="Act", signal_count=1)
+    quiet = _make_row(title="Qui", signal_count=0, lineage_count=0)
+    session = _make_session([active, quiet])
+    view = await fetch_portfolio(session, limit=20)
+    assert [a.title for a in view.active] == ["Act"]
+    assert [a.title for a in view.quiet] == ["Qui"]
+    assert view.next_cursor is None
+
+
+# ------------------------------------------------------------------ #
+# Test 20: Python _sort_key tiebreak must match SQL's UserAsset.id DESC
+# ------------------------------------------------------------------ #
+
+@pytest.mark.asyncio
+async def test_trust_sort_tiebreak_on_ua_id_desc() -> None:
+    # Two rows collide on both trust_score and kept_since — the only thing
+    # that can break the tie is ua_id. SQL orders `UserAsset.id.desc()`, so
+    # the larger id must win page 1. We deliberately hand `_make_session`
+    # the rows in the "wrong" order (smaller id first) so this test would
+    # pass by accident if the Python re-sort had no explicit id tiebreak and
+    # merely happened to preserve DB order via a stable sort — it must
+    # actively re-order these to catch a missing tiebreak.
+    smaller_id = uuid.UUID(int=1)
+    larger_id = uuid.UUID(int=2)
+    same_trust = 0.5
+    same_kept = _utc("2026-01-01T00:00:00")
+
+    row_small = _make_row(
+        title="Smaller",
+        ua_id=smaller_id,
+        trust_score=same_trust,
+        kept_since=same_kept,
+    )
+    row_large = _make_row(
+        title="Larger",
+        ua_id=larger_id,
+        trust_score=same_trust,
+        kept_since=same_kept,
+    )
+    # Fed in ascending-id order (opposite of SQL's id DESC) to force the
+    # Python sort to do real work rather than ride along on input order.
+    session = _make_session([row_small, row_large])
+
+    view = await fetch_portfolio(session, sort="trust", limit=1)
+    page = view.active + view.quiet
+    assert len(page) == 1
+    assert page[0].id == larger_id
+
+
+# --------------------------------------------------------------------- #
+# DB-backed keyset pagination (self-skip on Release CI which has no PG)
+# --------------------------------------------------------------------- #
+
+from argos.config import settings as _settings  # noqa: E402
+from tests.conftest import db_reachable as _db_reachable  # noqa: E402
+
+_DB_URL: str = _settings.database_url
+
+_pytestmark_db = pytest.mark.skipif(
+    not _db_reachable(_DB_URL),
+    reason="pgvector DB not reachable — skipping ARG-187 DB-backed tests",
+)
+
+
+@_pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_portfolio_recency_paginates_without_overlap() -> None:
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+    from argos.models.user_asset import AssetStatus, UserAsset
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    tech_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            base = datetime(2099, 3, 1, 0, 0, tzinfo=timezone.utc)
+            for i in range(5):
+                t = TechItem(
+                    title=f"arg187-{i}",
+                    source_url=f"https://example.com/arg187/{uuid.uuid4()}",
+                    raw_content="x",
+                    category=CategoryType.MAINSTREAM,
+                    trust_score=0.5,
+                )
+                session.add(t)
+                await session.flush()
+                tech_ids.append(t.id)
+                ua = UserAsset(tech_id=t.id, status=AssetStatus.KEEP)
+                # Stagger created_at so recency order is deterministic.
+                ua.created_at = base + timedelta(hours=i)
+                session.add(ua)
+            await session.commit()
+            our_tech = set(tech_ids)
+
+        async with Session() as session:
+            page1 = await fetch_portfolio(session, sort="recency", limit=2)
+            got1 = [a.tech_id for a in (page1.active + page1.quiet) if a.tech_id in our_tech]
+            assert len(got1) == 2
+            assert page1.next_cursor is not None
+
+            page2 = await fetch_portfolio(
+                session, sort="recency", cursor=page1.next_cursor, limit=2
+            )
+            got2 = [a.tech_id for a in (page2.active + page2.quiet) if a.tech_id in our_tech]
+            # No overlap between consecutive pages.
+            assert set(got1).isdisjoint(set(got2))
+    finally:
+        async with Session() as session:
+            if tech_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(tech_ids))
+                )
+            await session.commit()
+        await engine.dispose()

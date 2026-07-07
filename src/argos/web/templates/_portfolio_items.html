@@ -1,0 +1,28 @@
+{# Portfolio page fragment (ARG-187). Rendered inside portfolio.html for the
+   first page and returned bare by GET /portfolio/items for HTMX "더 보기"
+   cursor pagination. The active/quiet split is computed per loaded page, so
+   each page emits its own section headers only for non-empty groups. #}
+{% if view.active %}
+<section class="portfolio-section">
+  <h2 class="portfolio-section__title">새 신호 있음</h2>
+  {% set items = view.active %}
+  {% include "_portfolio_cards.html" %}
+</section>
+{% endif %}
+{% if view.quiet %}
+<section class="portfolio-section">
+  <h2 class="portfolio-section__title">조용함</h2>
+  {% set items = view.quiet %}
+  {% include "_portfolio_cards.html" %}
+</section>
+{% endif %}
+
+{% if view.next_cursor %}
+<button class="load-more"
+        hx-get="/portfolio/items?cursor={{ view.next_cursor }}&sort={{ sort }}{% if category %}&category={{ category }}{% endif %}"
+        hx-target="this"
+        hx-swap="outerHTML"
+        hx-indicator="this">
+  더 보기
+</button>
+{% endif %}

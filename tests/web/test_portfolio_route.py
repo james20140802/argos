@@ -60,9 +60,9 @@ def _client_with_portfolio(
 
     app.dependency_overrides[_get_session] = _fake_session
 
-    async def _fake_fetch_portfolio(session, *, category=None, sort="recency"):
+    async def _fake_fetch_portfolio(session, *, category=None, sort="recency", cursor=None):
         if capture is not None:
-            capture.append({"category": category, "sort": sort})
+            capture.append({"category": category, "sort": sort, "cursor": cursor})
         return view
 
     monkeypatch.setattr("argos.web.app.fetch_portfolio", _fake_fetch_portfolio)
@@ -245,7 +245,7 @@ def test_get_portfolio_value_error_returns_400_not_500(monkeypatch):
 
     app.dependency_overrides[_get_session] = _fake_session
 
-    async def _raising_fetch(session, *, category=None, sort="recency"):
+    async def _raising_fetch(session, *, category=None, sort="recency", cursor=None):
         raise ValueError("bad portfolio query")
 
     monkeypatch.setattr("argos.web.app.fetch_portfolio", _raising_fetch)
@@ -303,3 +303,89 @@ def test_get_portfolio_last_signal_at_rendered_when_present(monkeypatch):
     assert "마지막 신호 2026-06-10" in body
     # Without signal: '마지막 신호' text should appear once (for with_signal only)
     assert body.count("마지막 신호") == 1
+
+
+# ------------------------------------------------------------------ #
+# Test 13 — /portfolio/items fragment route + cursor pagination (ARG-187)
+# ------------------------------------------------------------------ #
+
+def _view(active=None, quiet=None, *, category=None, sort="recency", next_cursor=None):
+    return PortfolioView(
+        active=active or [],
+        quiet=quiet or [],
+        category=category,
+        sort=sort,
+        next_cursor=next_cursor,
+    )
+
+
+def test_portfolio_renders_load_more_when_next_cursor(monkeypatch):
+    view = _view(quiet=[_asset(title="X")], next_cursor="PCURSOR1")
+    client = _client_with_portfolio(monkeypatch, view)
+    body = client.get("/portfolio").text
+    assert "load-more" in body
+    assert "PCURSOR1" in body
+    assert "/portfolio/items" in body
+
+
+def test_portfolio_no_load_more_when_no_next_cursor(monkeypatch):
+    view = _view(quiet=[_asset(title="X")], next_cursor=None)
+    client = _client_with_portfolio(monkeypatch, view)
+    body = client.get("/portfolio").text
+    assert "load-more" not in body
+
+
+def test_portfolio_items_fragment_is_partial_only(monkeypatch):
+    view = _view(quiet=[_asset(title="FragAsset")])
+    client = _client_with_portfolio(monkeypatch, view)
+    resp = client.get("/portfolio/items")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "FragAsset" in body
+    assert "<!DOCTYPE html>" not in body
+    assert 'class="tabbar"' not in body
+
+
+def test_portfolio_items_fragment_carries_sort_and_category_in_load_more(monkeypatch):
+    view = _view(quiet=[_asset(title="X")], next_cursor="NEXTP", sort="trust")
+    client = _client_with_portfolio(monkeypatch, view)
+    body = client.get("/portfolio/items?sort=trust&category=Alpha").text
+    assert "NEXTP" in body
+    assert "sort=trust" in body
+    assert "category=Alpha" in body
+
+
+def test_portfolio_items_fragment_passes_cursor_to_service(monkeypatch):
+    capture: list = []
+    client = _client_with_portfolio(monkeypatch, _empty_view(), capture=capture)
+    client.get("/portfolio/items?cursor=ABC")
+    assert capture[-1]["cursor"] == "ABC"
+
+
+def test_portfolio_passes_cursor_to_service(monkeypatch):
+    capture: list = []
+    client = _client_with_portfolio(monkeypatch, _empty_view(), capture=capture)
+    client.get("/portfolio?cursor=XYZ")
+    assert capture[-1]["cursor"] == "XYZ"
+
+
+def _client_real_portfolio() -> TestClient:
+    app = build_web_app()
+
+    async def _fake_session():
+        yield None
+
+    app.dependency_overrides[_get_session] = _fake_session
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_portfolio_malformed_cursor_returns_400_not_500():
+    client = _client_real_portfolio()
+    resp = client.get("/portfolio?cursor=not-a-valid-cursor")
+    assert resp.status_code == 400
+
+
+def test_portfolio_items_malformed_cursor_returns_400_not_500():
+    client = _client_real_portfolio()
+    resp = client.get("/portfolio/items?cursor=%%%bogus%%%")
+    assert resp.status_code == 400
