@@ -25,6 +25,7 @@ def _item(
     image_url: str | None = None,
     status: AssetStatus | None = None,
     summary: str | None = None,
+    trust_score: float | None = None,
 ) -> FeedItem:
     return FeedItem(
         id=uuid.uuid4(),
@@ -34,6 +35,7 @@ def _item(
         image_url=image_url,
         summary=summary,
         status=status,
+        trust_score=trust_score,
         sort_at=datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc),
     )
 
@@ -129,6 +131,23 @@ def test_feed_shows_asset_status_badge(monkeypatch):
     body = client.get("/feed").text
     assert "Keep" in body
     assert "Archived" in body
+
+
+def test_feed_shows_trust_score_dial(monkeypatch):
+    item = _item(title="Trusted", category=CategoryType.ALPHA, trust_score=0.87)
+    page = FeedPage(items=[item], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    assert 'class="trust-dial' in body
+    assert "87" in body
+
+
+def test_feed_omits_trust_score_when_none(monkeypatch):
+    item = _item(title="Untrusted", category=CategoryType.ALPHA, trust_score=None)
+    page = FeedPage(items=[item], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    assert "trust-dial" not in body
 
 
 def test_feed_renders_keep_pass_controls(monkeypatch):

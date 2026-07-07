@@ -36,6 +36,7 @@ def _feed_item(
     category: CategoryType | None = CategoryType.ALPHA,
     status: AssetStatus | None = None,
     summary: str | None = None,
+    trust_score: float | None = None,
 ) -> FeedItem:
     return FeedItem(
         id=uuid.uuid4(),
@@ -45,6 +46,7 @@ def _feed_item(
         image_url=image_url,
         summary=summary,
         status=status,
+        trust_score=trust_score,
         sort_at=datetime(2026, 6, 30, 3, 0, tzinfo=timezone.utc),
     )
 

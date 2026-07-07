@@ -990,6 +990,11 @@ body {
   color: var(--brass-hi); letter-spacing: 0.04em;
 }
 
+/* Compact dial for the feed-card eyebrow line (ARG-189) */
+.trust-dial--sm { width: 22px; height: 22px; }
+.trust-dial--sm .trust-dial__face { font-size: 8px; }
+.eyebrow__trust { margin-left: auto; }
+
 /* Keep/Pass/Untrack action bar (ARG-184) — shares .card-action styling with
    the feed/portfolio cards; only the row's own margin differs since the
    detail page isn't a flexed .card. */

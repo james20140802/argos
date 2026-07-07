@@ -35,6 +35,7 @@ class FeedItem:
     image_url: Optional[str]
     summary: Optional[str]
     status: Optional[AssetStatus]
+    trust_score: Optional[float]
     sort_at: datetime
 
 
@@ -96,6 +97,7 @@ async def fetch_feed(
             TechItem.category,
             TechItem.image_url,
             TechItem.summary,
+            TechItem.trust_score,
             UserAsset.status,
             sort_expr.label("sort_at"),
         )
@@ -128,6 +130,7 @@ async def fetch_feed(
             image_url=row.image_url,
             summary=row.summary,
             status=row.status,
+            trust_score=row.trust_score,
             sort_at=row.sort_at,
         )
         for row in rows[:limit]
