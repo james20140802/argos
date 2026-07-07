@@ -71,6 +71,35 @@ def test_keep_returns_updated_feed_card_partial(monkeypatch):
     assert captured["tech_id"] == item_id
 
 
+def test_keep_re_renders_card_with_trust_dial(monkeypatch):
+    """A Keep/Pass re-render threads trust_score through the separate
+    _load_feed_card_context dict path (not the FeedItem service path), so the
+    compact trust dial must appear in the swapped-in fragment for an item that
+    has a trust_score — the render-on-both-paths contract (ARG-189)."""
+    item_id = uuid.uuid4()
+
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
+        return ToggleOutcome.SET
+
+    async def _fake_lookup(session, tech_id):
+        return {"id": tech_id, "title": "Trusted Thing", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": None,
+                "trust_score": 0.6, "source_url": "https://x"}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.toggle_asset": _fake_toggle,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+        },
+    )
+    resp = client.post(f"/items/{item_id}/keep")
+    assert resp.status_code == 200
+    # 0.6 → round(60) percent, rendered inside the compact eyebrow dial.
+    assert "trust-dial" in resp.text
+    assert "60" in resp.text
+
+
 def test_keep_on_featured_card_re_renders_as_hero(monkeypatch):
     """A Keep/Pass on the featured hero passes ?featured=1, so the swapped-in
     card must re-render as the hero (card--featured) rather than collapsing to
