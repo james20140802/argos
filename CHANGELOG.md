@@ -10,6 +10,51 @@ This history was reconstructed retroactively from annotated release tags
 (`git tag -n99`) and their commit ranges; entries before this file existed may be
 less granular than future ones.
 
+## [0.3.1] — 2026-07-07
+
+Web polish, backup tooling, and Ollama-down resilience. 67 commits since v0.3.0.
+
+### Added
+
+- **Backup / restore CLI** — `argos backup` and `argos restore` for the local
+  Postgres volume (ARG-192).
+- **Web `/settings` page** — read/edit `config.toml` from the browser (ARG-186).
+- **Item-detail actions** — Keep / Pass / Untrack buttons on the detail page,
+  every transition logged to `track_history`.
+- **Pull-to-refresh** — held pull-to-refresh gesture, a 새로고침 button, and a
+  floating refresh control, with service-worker shell-cache sync (ARG-198).
+- **Feed "새 항목" polling** — endpoint + pill UI that surfaces newer items
+  without a full reload.
+- **Portfolio pagination** — keyset-cursor "더 보기" fragment route so long
+  portfolios load incrementally (ARG-187).
+- **Typed `OllamaInfraError` + `triage_error` signal** — the brain now
+  distinguishes infra outages from content-level triage results (ARG-190).
+
+### Changed
+
+- Refresh UX rework: self-hosted SVG icon, ring spinner, held pull gesture,
+  floating button.
+- `/settings` gets purpose-built controls plus a readable read-only view.
+
+### Fixed
+
+- **Ollama-down handling** — infra-error rows are retained in `crawl_queue`,
+  are not counted as saved, `argos run` exits non-zero, and single-item `add`
+  surfaces the error (ARG-190).
+- Themed 500 error page via an exception handler (ARG-188).
+- Feed "새 항목" pill: stays visible when a refresh fails, hides when the poll
+  reports zero newer items; `htmx.process()` re-binds controls on the refreshed
+  list.
+- `/settings`: honor `--config` path, fix checkbox unchecks, and skip no-op
+  saves by comparing against the raw on-disk value.
+- Web layout: reserve scrollbar gutter on both edges to keep pages centered;
+  guard native time inputs.
+
+### Security
+
+- Backup hardening: keep `PGPASSWORD` out of `argv` and debug logs, atomic
+  restore with private dump permissions, and collision-safe concurrent dumps.
+
 ## [0.3.0] — 2026-07-02
 
 v0.3.0 — Argos Web (PWA) & Digest Pipeline. 107 commits since v0.2.4.
