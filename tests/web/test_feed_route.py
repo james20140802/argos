@@ -25,6 +25,7 @@ def _item(
     image_url: str | None = None,
     status: AssetStatus | None = None,
     summary: str | None = None,
+    trust_score: float | None = None,
 ) -> FeedItem:
     return FeedItem(
         id=uuid.uuid4(),
@@ -34,6 +35,7 @@ def _item(
         image_url=image_url,
         summary=summary,
         status=status,
+        trust_score=trust_score,
         sort_at=datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc),
     )
 
@@ -129,6 +131,28 @@ def test_feed_shows_asset_status_badge(monkeypatch):
     body = client.get("/feed").text
     assert "Keep" in body
     assert "Archived" in body
+
+
+def test_feed_shows_trust_score_dial(monkeypatch):
+    item = _item(title="Trusted", category=CategoryType.ALPHA, trust_score=0.87)
+    page = FeedPage(items=[item], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    assert 'class="trust-dial trust-dial--sm' in body
+    # Ring-only at feed scale (ARG-189): the value rides the conic sweep and the
+    # accessible label/tooltip, not a cramped inner number ("100" overlapped the
+    # ring). So no __face is rendered here, but the % stays reachable.
+    assert "trust-dial__face" not in body
+    assert "신뢰도 87%" in body
+    assert "--p: 87" in body
+
+
+def test_feed_omits_trust_score_when_none(monkeypatch):
+    item = _item(title="Untrusted", category=CategoryType.ALPHA, trust_score=None)
+    page = FeedPage(items=[item], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed").text
+    assert "trust-dial" not in body
 
 
 def test_feed_renders_keep_pass_controls(monkeypatch):

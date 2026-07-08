@@ -44,11 +44,12 @@ def test_keep_returns_updated_feed_card_partial(monkeypatch):
         return ToggleOutcome.SET
 
     async def _fake_lookup(session, tech_id):
-        # Mirror the real _load_feed_card_context 7-key shape (incl. summary)
+        # Mirror the real _load_feed_card_context 8-key shape (incl. summary,
+        # trust_score)
         # so the partial re-renders the same data the production path would.
         return {"id": tech_id, "title": "Kept Thing", "status": AssetStatus.KEEP,
                 "category": None, "image_url": None, "summary": "킵된 한 줄 요약",
-                "source_url": "https://x"}
+                "trust_score": None, "source_url": "https://x"}
 
     client = _client(
         monkeypatch,
@@ -70,6 +71,35 @@ def test_keep_returns_updated_feed_card_partial(monkeypatch):
     assert captured["tech_id"] == item_id
 
 
+def test_keep_re_renders_card_with_trust_dial(monkeypatch):
+    """A Keep/Pass re-render threads trust_score through the separate
+    _load_feed_card_context dict path (not the FeedItem service path), so the
+    compact trust dial must appear in the swapped-in fragment for an item that
+    has a trust_score — the render-on-both-paths contract (ARG-189)."""
+    item_id = uuid.uuid4()
+
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
+        return ToggleOutcome.SET
+
+    async def _fake_lookup(session, tech_id):
+        return {"id": tech_id, "title": "Trusted Thing", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": None,
+                "trust_score": 0.6, "source_url": "https://x"}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.toggle_asset": _fake_toggle,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+        },
+    )
+    resp = client.post(f"/items/{item_id}/keep")
+    assert resp.status_code == 200
+    # 0.6 → round(60) percent, rendered inside the compact eyebrow dial.
+    assert "trust-dial" in resp.text
+    assert "60" in resp.text
+
+
 def test_keep_on_featured_card_re_renders_as_hero(monkeypatch):
     """A Keep/Pass on the featured hero passes ?featured=1, so the swapped-in
     card must re-render as the hero (card--featured) rather than collapsing to
@@ -82,7 +112,7 @@ def test_keep_on_featured_card_re_renders_as_hero(monkeypatch):
     async def _fake_lookup(session, tech_id):
         return {"id": tech_id, "title": "Hero Kept", "status": AssetStatus.KEEP,
                 "category": None, "image_url": None, "summary": "히어로 요약",
-                "source_url": "https://x"}
+                "trust_score": None, "source_url": "https://x"}
 
     client = _client(
         monkeypatch,
@@ -110,7 +140,7 @@ def test_pass_returns_updated_feed_card_partial(monkeypatch):
     async def _fake_lookup(session, tech_id):
         return {"id": tech_id, "title": "Passed", "status": AssetStatus.ARCHIVED,
                 "category": None, "image_url": None, "summary": None,
-                "source_url": "https://x"}
+                "trust_score": None, "source_url": "https://x"}
 
     client = _client(
         monkeypatch,
@@ -168,7 +198,7 @@ def test_keep_again_toggles_off_returns_untriaged_card(monkeypatch):
         # After toggle-off there is no user_asset, so status is None.
         return {"id": tech_id, "title": "Untriaged Again", "status": None,
                 "category": None, "image_url": None, "summary": None,
-                "source_url": "https://x"}
+                "trust_score": None, "source_url": "https://x"}
 
     client = _client(
         monkeypatch,
@@ -200,7 +230,7 @@ def test_active_query_param_threads_currently_active(monkeypatch):
     async def _fake_lookup(session, tech_id):
         return {"id": tech_id, "title": "Cleared", "status": None,
                 "category": None, "image_url": None, "summary": None,
-                "source_url": "https://x"}
+                "trust_score": None, "source_url": "https://x"}
 
     client = _client(
         monkeypatch,
@@ -289,7 +319,7 @@ def test_keep_with_detail_context_returns_detail_actions_partial(monkeypatch):
     async def _fake_lookup(session, tech_id):
         return {"id": tech_id, "title": "Kept Thing", "status": AssetStatus.KEEP,
                 "category": None, "image_url": None, "summary": "요약",
-                "source_url": "https://x", "asset_id": uuid.uuid4()}
+                "trust_score": None, "source_url": "https://x", "asset_id": uuid.uuid4()}
 
     client = _client(
         monkeypatch,
@@ -319,7 +349,7 @@ def test_pass_with_detail_context_returns_detail_actions_partial(monkeypatch):
     async def _fake_lookup(session, tech_id):
         return {"id": tech_id, "title": "Passed", "status": AssetStatus.ARCHIVED,
                 "category": None, "image_url": None, "summary": None,
-                "source_url": "https://x", "asset_id": None}
+                "trust_score": None, "source_url": "https://x", "asset_id": None}
 
     client = _client(
         monkeypatch,
@@ -348,7 +378,7 @@ def test_keep_without_context_still_returns_feed_card_partial(monkeypatch):
     async def _fake_lookup(session, tech_id):
         return {"id": tech_id, "title": "Kept Thing", "status": AssetStatus.KEEP,
                 "category": None, "image_url": None, "summary": "요약",
-                "source_url": "https://x", "asset_id": uuid.uuid4()}
+                "trust_score": None, "source_url": "https://x", "asset_id": uuid.uuid4()}
 
     client = _client(
         monkeypatch,
@@ -383,7 +413,7 @@ def test_untrack_with_detail_context_rerenders_action_bar(monkeypatch):
         assert t_id == tech_id
         return {"id": t_id, "title": "Untracked", "status": AssetStatus.ARCHIVED,
                 "category": None, "image_url": None, "summary": None,
-                "source_url": "https://x", "asset_id": user_asset_id}
+                "trust_score": None, "source_url": "https://x", "asset_id": user_asset_id}
 
     client = _client(
         monkeypatch,
@@ -420,7 +450,7 @@ def test_untrack_with_detail_context_falls_back_to_query_tech_id(monkeypatch):
         assert t_id == tech_id
         return {"id": t_id, "title": "Still Here", "status": None,
                 "category": None, "image_url": None, "summary": None,
-                "source_url": "https://x", "asset_id": None}
+                "trust_score": None, "source_url": "https://x", "asset_id": None}
 
     client = _client(
         monkeypatch,
@@ -466,7 +496,7 @@ def test_untrack_with_detail_context_falls_back_to_unrelated_tech_id(monkeypatch
         assert t_id == unrelated_tech_id
         return {"id": t_id, "title": "Unrelated Item", "status": AssetStatus.KEEP,
                 "category": None, "image_url": None, "summary": None,
-                "source_url": "https://unrelated", "asset_id": uuid.uuid4()}
+                "trust_score": None, "source_url": "https://unrelated", "asset_id": uuid.uuid4()}
 
     client = _client(
         monkeypatch,

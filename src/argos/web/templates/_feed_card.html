@@ -26,6 +26,18 @@
       {% if item.status %}
       <span class="status-badge status-badge--{{ item.status.value|lower }}">{{ item.status.value }}</span>
       {% endif %}
+      {# Ring-only trust gauge (ARG-189): the conic sweep alone reads at eyebrow
+         scale — the exact % lives on the detail page's labeled dial, so no
+         number is crammed inside this tiny ring (100 overlapped the stroke).
+         aria-label + title keep the value reachable for AT and hover. #}
+      {% if item.trust_score is not none %}
+      {% set trust_pct = ((item.trust_score|float) * 100)|round(0)|int %}
+      <span class="trust-dial trust-dial--sm eyebrow__trust"
+            role="img"
+            aria-label="신뢰도 {{ trust_pct }}%"
+            title="신뢰도 {{ trust_pct }}%"
+            style="--p: {{ trust_pct }};"></span>
+      {% endif %}
     </p>
     <h2 class="headline">
       <a href="/item/{{ item.id }}">{{ item.title }}</a>

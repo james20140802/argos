@@ -95,7 +95,8 @@ async def _load_feed_card_context(session, tech_id: uuid.UUID):
     """Fetch the minimal shape the feed-card partial needs after a transition.
 
     Returns a mapping with keys (id, title, status, category, image_url,
-    summary, source_url, asset_id) or None if the tech_item does not exist.
+    summary, trust_score, source_url, asset_id) or None if the tech_item does
+    not exist.
     ``asset_id`` (the user_asset row id, ARG-184) is only used by the detail
     page's action bar — to build the /assets/{id}/untrack URL — and is
     ignored by the feed-card partial.
@@ -122,6 +123,7 @@ async def _load_feed_card_context(session, tech_id: uuid.UUID):
         "category": tech_item.category,
         "image_url": getattr(tech_item, "image_url", None),
         "summary": getattr(tech_item, "summary", None),
+        "trust_score": getattr(tech_item, "trust_score", None),
         "source_url": tech_item.source_url,
         "asset_id": user_asset.id if user_asset else None,
     }

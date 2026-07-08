@@ -33,8 +33,12 @@
  *     refresh.js push freshly fetched shell HTML back into this cache.
  * v12: new-items poll pill (feed-poll.js, ARG-203). Bumped so v11 clients
  *     precache the new polling script instead of missing it entirely.
+ * v14: feed-card trust-score dial (argos.css + _feed_card.html, ARG-189).
+ *     Bumped so v13 clients pick up the new .trust-dial--sm compact-dial
+ *     styles instead of rendering the feed dial with the cached full-size
+ *     detail-page styling.
  */
-const CACHE_VERSION = 'argos-v13';
+const CACHE_VERSION = 'argos-v15';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
