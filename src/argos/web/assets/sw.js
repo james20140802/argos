@@ -38,7 +38,7 @@
  *     styles instead of rendering the feed dial with the cached full-size
  *     detail-page styling.
  */
-const CACHE_VERSION = 'argos-v14';
+const CACHE_VERSION = 'argos-v15';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.

@@ -138,8 +138,13 @@ def test_feed_shows_trust_score_dial(monkeypatch):
     page = FeedPage(items=[item], next_cursor=None)
     client = _client_with_feed(monkeypatch, page)
     body = client.get("/feed").text
-    assert 'class="trust-dial' in body
-    assert "87" in body
+    assert 'class="trust-dial trust-dial--sm' in body
+    # Ring-only at feed scale (ARG-189): the value rides the conic sweep and the
+    # accessible label/tooltip, not a cramped inner number ("100" overlapped the
+    # ring). So no __face is rendered here, but the % stays reachable.
+    assert "trust-dial__face" not in body
+    assert "신뢰도 87%" in body
+    assert "--p: 87" in body
 
 
 def test_feed_omits_trust_score_when_none(monkeypatch):

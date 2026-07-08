@@ -990,10 +990,20 @@ body {
   color: var(--brass-hi); letter-spacing: 0.04em;
 }
 
-/* Compact dial for the feed-card eyebrow line (ARG-189) */
-.trust-dial--sm { width: 22px; height: 22px; }
-.trust-dial--sm .trust-dial__face { font-size: 8px; }
+/* Compact ring-only dial for the feed-card eyebrow line (ARG-189).
+   No inner number at this size — "100" overflowed the inner disc and touched
+   the ring; the sweep alone conveys the gauge, the exact % is on the detail
+   page's labeled dial. A thinner (inset 3px) ring keeps the 18px circle crisp. */
+.trust-dial--sm { width: 18px; height: 18px; }
+.trust-dial--sm::after { inset: 3px; }
 .eyebrow__trust { margin-left: auto; }
+
+/* "신뢰도" caption beside the detail-page dial (ARG-189) — anchors what the
+   feed's wordless ring means. Mono to match the instrument-readout language. */
+.trust-label {
+  font: 600 10px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+}
 
 /* Keep/Pass/Untrack action bar (ARG-184) — shares .card-action styling with
    the feed/portfolio cards; only the row's own margin differs since the
