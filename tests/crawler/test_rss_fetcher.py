@@ -1,7 +1,6 @@
 """Tests for src/argos/crawler/rss_fetcher.py (ARG-52)."""
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -237,7 +236,6 @@ async def test_run_rss_fetchers_combines_multiple_feeds():
     alpha_parsed = _make_parsed([_REDDIT_ENTRY])
 
     call_count = 0
-    original_to_thread = asyncio.to_thread
 
     async def fake_to_thread(func, url, agent):
         nonlocal call_count

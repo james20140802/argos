@@ -1,0 +1,54 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: argos
+          POSTGRES_PASSWORD: argos_dev_password
+          POSTGRES_DB: argos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U argos"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      POSTGRES_USER: argos
+      POSTGRES_PASSWORD: argos_dev_password
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Ruff lint
+        run: uv run ruff check src tests
+
+      - name: Run tests
+        run: uv run pytest tests/ -q
