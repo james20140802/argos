@@ -54,3 +54,30 @@ def summarize_run_log(path: Path, name: str = "run") -> LogSummary:
         return LogSummary(name, "failure", _mtime(path), "마지막 실행에서 예외 발생")
 
     return LogSummary(name, "unknown", _mtime(path), "성공/실패 마커 없음")
+
+
+def summarize_brief_log(path: Path, name: str = "brief") -> LogSummary:
+    if not path.exists():
+        return LogSummary(name, "unknown", None, "로그 파일 없음")
+
+    lines = path.read_text(errors="replace").splitlines()
+    last_success_idx = None
+    for i, line in enumerate(lines):
+        if _BRIEF_SUCCESS_RE.search(line):
+            last_success_idx = i
+
+    if last_success_idx is not None:
+        # Success timestamp: the ISO stamp on the marker line, else the
+        # nearest preceding stamped line, else file mtime.
+        ts = None
+        for j in range(last_success_idx, -1, -1):
+            m = _ISO_TS_RE.search(lines[j])
+            if m:
+                ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+                break
+        return LogSummary(name, "success", ts or _mtime(path), "브리핑 발송 완료")
+
+    if any("Traceback (most recent call last)" in ln for ln in lines):
+        return LogSummary(name, "failure", _mtime(path), "마지막 실행에서 예외 발생")
+
+    return LogSummary(name, "unknown", _mtime(path), "성공/실패 마커 없음")
