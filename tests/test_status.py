@@ -76,3 +76,19 @@ def test_summarize_brief_log_no_items_is_success(tmp_path):
 def test_summarize_brief_log_missing(tmp_path):
     s = status.summarize_brief_log(tmp_path / "nope.log")
     assert s.last_result == "unknown"
+
+
+def test_collect_status_reads_all_jobs(tmp_path):
+    (tmp_path / "run.log").write_text(RUN_LOG_SUCCESS)
+    (tmp_path / "brief.log").write_text(BRIEF_LOG_SUCCESS)
+    summaries = status.collect_status(log_dir=tmp_path)
+    names = {s.name for s in summaries}
+    assert {"run", "brief"} <= names
+
+
+def test_render_status_contains_job_names_and_verdicts(tmp_path):
+    (tmp_path / "run.log").write_text(RUN_LOG_SUCCESS)
+    summaries = status.collect_status(log_dir=tmp_path)
+    out = status.render_status(summaries)
+    assert "run" in out
+    assert "success" in out or "성공" in out

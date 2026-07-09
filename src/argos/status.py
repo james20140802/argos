@@ -81,3 +81,29 @@ def summarize_brief_log(path: Path, name: str = "brief") -> LogSummary:
         return LogSummary(name, "failure", _mtime(path), "마지막 실행에서 예외 발생")
 
     return LogSummary(name, "unknown", _mtime(path), "성공/실패 마커 없음")
+
+
+def collect_status(log_dir: Path | None = None) -> list[LogSummary]:
+    from argos.scheduler import _DEFAULT_LOG_DIR
+
+    base = log_dir if log_dir is not None else _DEFAULT_LOG_DIR
+    return [
+        summarize_run_log(base / "run.log", name="run"),
+        summarize_brief_log(base / "brief.log", name="brief"),
+        summarize_brief_log(base / "brief-weekly.log", name="brief-weekly"),
+    ]
+
+
+_VERDICT_MARK = {"success": "✅", "failure": "❌", "unknown": "—"}
+
+
+def render_status(summaries: list[LogSummary]) -> str:
+    lines = ["", "argos status", "─" * 40]
+    for s in summaries:
+        mark = _VERDICT_MARK.get(s.last_result, "—")
+        when = s.last_success_at.strftime("%Y-%m-%d %H:%M") if s.last_success_at else "—"
+        lines.append(f"  {mark} {s.name:<13} {s.last_result:<8} 마지막 성공: {when}")
+        if s.detail:
+            lines.append(f"        {s.detail}")
+    lines.append("")
+    return "\n".join(lines)
