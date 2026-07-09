@@ -190,6 +190,57 @@ def check_postgres_reachable() -> Row:
     return ("Postgres reachable", "OK", "")
 
 
+def _alembic_current_and_head() -> tuple[str | None, str | None]:
+    """Return (current_db_revision, script_head_revision), read-only.
+
+    ``head`` comes from the migration scripts (no DB needed).  ``current`` is
+    read from the ``alembic_version`` table via the async engine.  Multi-head
+    repos are not expected here; the first head is used.
+    """
+    from pathlib import Path
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import text
+
+    from argos.database import AsyncSessionLocal
+    from argos.init_wizard import runners
+
+    repo_root = Path(__file__).resolve().parents[2]
+    cfg = Config(str(repo_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(repo_root / "alembic"))
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+
+    current: str | None = None
+
+    async def _read_current() -> None:
+        nonlocal current
+        async with AsyncSessionLocal() as session:
+            row = await session.execute(text("SELECT version_num FROM alembic_version"))
+            current = row.scalar_one_or_none()
+
+    runners.run_async(_read_current())
+    return current, head
+
+
+def check_alembic_head() -> Row:
+    """Probe: applied DB revision equals the latest migration head."""
+    try:
+        current, head = _alembic_current_and_head()
+    except Exception as exc:
+        return ("Alembic migrations", "FAIL", f"could not determine revision: {exc}")
+
+    if current is None:
+        return ("Alembic migrations", "FAIL", "no alembic_version row — run: uv run alembic upgrade head")
+    if current != head:
+        return (
+            "Alembic migrations",
+            "FAIL",
+            f"current {current} != head {head} — run: uv run alembic upgrade head",
+        )
+    return ("Alembic migrations", "OK", current)
+
+
 def print_doctor_table(rows: list[Row]) -> None:
     """Print a structured table of probe results to stdout."""
     if not rows:
@@ -213,6 +264,7 @@ def print_doctor_table(rows: list[Row]) -> None:
 
 
 __all__ = [
+    "check_alembic_head",
     "check_docker",
     "check_macos_version",
     "check_ollama_installed",

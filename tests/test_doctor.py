@@ -422,3 +422,36 @@ def test_check_postgres_reachable_fail(monkeypatch):
     name, status, detail = doctor.check_postgres_reachable()
     assert status == "FAIL"
     assert "database ping failed" in detail
+
+
+# ---------------------------------------------------------------------------
+# check_alembic_head
+# ---------------------------------------------------------------------------
+
+
+def test_check_alembic_head_up_to_date(monkeypatch):
+    monkeypatch.setattr(
+        "argos.doctor._alembic_current_and_head", lambda: ("abc123", "abc123")
+    )
+    name, status, detail = doctor.check_alembic_head()
+    assert name == "Alembic migrations"
+    assert status == "OK"
+
+
+def test_check_alembic_head_behind(monkeypatch):
+    monkeypatch.setattr(
+        "argos.doctor._alembic_current_and_head", lambda: ("abc123", "def456")
+    )
+    _, status, detail = doctor.check_alembic_head()
+    assert status == "FAIL"
+    assert "upgrade head" in detail
+
+
+def test_check_alembic_head_unreadable(monkeypatch):
+    def _raise():
+        raise RuntimeError("cannot connect")
+
+    monkeypatch.setattr("argos.doctor._alembic_current_and_head", _raise)
+    _, status, detail = doctor.check_alembic_head()
+    assert status == "FAIL"
+    assert "cannot connect" in detail
