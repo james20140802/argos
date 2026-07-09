@@ -397,3 +397,28 @@ def test_doctor_config_override_passes_custom_ollama_host(monkeypatch, tmp_path,
     rc = main(["doctor", "--config", str(cfg)])
     assert rc == 0
     assert captured.get("ollama_host") == "http://custom-host:9999"
+
+
+# ---------------------------------------------------------------------------
+# check_postgres_reachable
+# ---------------------------------------------------------------------------
+
+
+def test_check_postgres_reachable_ok(monkeypatch):
+    # runners.run_async(db_ping()) 가 예외 없이 끝나면 OK.
+    monkeypatch.setattr("argos.init_wizard.runners.run_async", lambda coro: None)
+    name, status, detail = doctor.check_postgres_reachable()
+    assert name == "Postgres reachable"
+    assert status == "OK"
+
+
+def test_check_postgres_reachable_fail(monkeypatch):
+    from argos.init_wizard import WizardStepError
+
+    def _raise(coro):
+        raise WizardStepError("database ping failed: connection refused", hint="check db container")
+
+    monkeypatch.setattr("argos.init_wizard.runners.run_async", _raise)
+    name, status, detail = doctor.check_postgres_reachable()
+    assert status == "FAIL"
+    assert "database ping failed" in detail

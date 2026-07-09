@@ -172,6 +172,24 @@ def check_macos_version() -> Row:
     return ("macOS version", "OK", mac_ver)
 
 
+def check_postgres_reachable() -> Row:
+    """Probe: Postgres is reachable (runs SELECT 1 via the async engine).
+
+    Reuses ``runners.db_ping`` so the DB-connection logic lives in one place.
+    A ``WizardStepError`` (ping raised) becomes a FAIL row with its message.
+    """
+    from argos.init_wizard import runners
+    from argos.init_wizard import WizardStepError
+
+    try:
+        runners.run_async(runners.db_ping())
+    except WizardStepError as exc:
+        return ("Postgres reachable", "FAIL", str(exc).splitlines()[0])
+    except Exception as exc:  # pragma: no cover - defensive
+        return ("Postgres reachable", "FAIL", f"unexpected error: {exc}")
+    return ("Postgres reachable", "OK", "")
+
+
 def print_doctor_table(rows: list[Row]) -> None:
     """Print a structured table of probe results to stdout."""
     if not rows:
@@ -200,6 +218,7 @@ __all__ = [
     "check_ollama_installed",
     "check_ollama_models",
     "check_ollama_qwen3_8b",
+    "check_postgres_reachable",
     "check_python_version",
     "check_uv_installed",
     "print_doctor_table",
