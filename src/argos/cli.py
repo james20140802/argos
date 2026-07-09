@@ -613,12 +613,14 @@ def _build_doctor_parser(sub: argparse._SubParsersAction) -> None:
     """Wire the ``argos doctor`` subcommand."""
     doctor_p = sub.add_parser(
         "doctor",
-        help="Run pre-flight health probes (Docker, Ollama, Python, macOS)",
+        help="Run pre-flight health probes (Docker, Ollama, Postgres, alembic, VRAM, Python, macOS)",
         description=(
             "Run a read-only structured check of every prerequisite Argos needs.\n\n"
             "Probes: Docker daemon, Ollama installed, required models pulled\n"
             "(qwen3:8b, qwen3:32b, nomic-embed-text), Python version,\n"
-            "macOS version (warn-only). Prints a table and exits 0 only when no probe FAILs."
+            "macOS version (warn-only), uv installed, Postgres reachable,\n"
+            "alembic migrations up to date, VRAM headroom (warn-only).\n"
+            "Prints a table and exits 0 only when no probe FAILs."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -631,12 +633,15 @@ def _build_doctor_parser(sub: argparse._SubParsersAction) -> None:
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
     from argos.doctor import (
+        check_alembic_head,
         check_docker,
         check_macos_version,
         check_ollama_installed,
         check_ollama_models,
+        check_postgres_reachable,
         check_python_version,
         check_uv_installed,
+        check_vram_headroom,
         print_doctor_table,
     )
 
@@ -651,6 +656,9 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         check_python_version(),
         check_macos_version(),
         check_uv_installed(),
+        check_postgres_reachable(),
+        check_alembic_head(),
+        check_vram_headroom(ollama_host=settings.user.ollama.host),
     ]
 
     print_doctor_table(rows)
