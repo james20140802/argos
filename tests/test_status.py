@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import os
-import time
 from datetime import datetime
-from pathlib import Path
 
 import argos.status as status
 
@@ -92,3 +89,17 @@ def test_render_status_contains_job_names_and_verdicts(tmp_path):
     out = status.render_status(summaries)
     assert "run" in out
     assert "success" in out or "성공" in out
+
+
+def test_cmd_status_runs_and_prints(tmp_path, capsys, monkeypatch):
+    import argparse
+
+    from argos import cli
+
+    (tmp_path / "run.log").write_text(RUN_LOG_SUCCESS)
+    monkeypatch.setattr("argos.scheduler._DEFAULT_LOG_DIR", tmp_path)
+    rc = cli._cmd_status(argparse.Namespace())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "argos status" in out
+    assert "run" in out

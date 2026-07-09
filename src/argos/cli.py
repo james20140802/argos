@@ -666,6 +666,31 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if failures == 0 else 1
 
 
+def _build_status_parser(sub: argparse._SubParsersAction) -> None:
+    """Wire the top-level ``argos status`` subcommand (ARG-221).
+
+    Distinct from ``argos schedule status`` (launchd load state); this
+    summarises the last scheduled run/brief results from their logs.
+    """
+    sub.add_parser(
+        "status",
+        help="Summarise the last scheduled run/brief results from their logs",
+        description=(
+            "Read ~/Library/Logs/argos/{run,brief,brief-weekly}.log and print the "
+            "last result, last success time, and processed counts for each job — "
+            "no manual log tailing needed."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
+def _cmd_status(_args: argparse.Namespace) -> int:
+    from argos.status import collect_status, render_status
+
+    print(render_status(collect_status()))
+    return 0
+
+
 def _build_init_parser(sub: argparse._SubParsersAction) -> None:
     """Wire the ``argos init`` subcommand."""
     from argos.init_wizard.wizard import RECONFIGURE_SECTIONS
@@ -1769,6 +1794,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_portfolio_parser(sub, common)
     _build_schedule_parser(sub)
     _build_search_parser(sub, common)
+    _build_status_parser(sub)
     _build_stats_parser(sub, common)
     _build_web_parser(sub, common)
 
@@ -1831,6 +1857,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_init(args)
     if args.command == "schedule":
         return _dispatch_schedule(args)
+    if args.command == "status":
+        return _cmd_status(args)
     if args.command == "search":
         rc = _apply_config_override(args)
         if rc is not None:
