@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 _RUN_SUCCESS_MARKER = "✅ argos run 완료"
+_TRACEBACK_MARKER = "Traceback (most recent call last)"
 _SAVED_RE = re.compile(r"신규 저장:\s*(\d+)개")
 _PROCESSED_RE = re.compile(r"일일 처리:\s*([\d]+개 / [\d]+개)")
 _BRIEF_SUCCESS_RE = re.compile(r"Briefing sent: ts=|No items today")
@@ -34,12 +35,27 @@ def _mtime(path: Path) -> datetime | None:
         return None
 
 
+def _failure_detail(path: Path) -> str:
+    mtime = _mtime(path)
+    if mtime is None:
+        return "마지막 실행에서 예외 발생"
+    return f"마지막 실행에서 예외 발생 ({mtime:%Y-%m-%d %H:%M})"
+
+
 def summarize_run_log(path: Path, name: str = "run") -> LogSummary:
     if not path.exists():
         return LogSummary(name, "unknown", None, "로그 파일 없음")
 
     text = path.read_text(errors="replace")
-    if _RUN_SUCCESS_MARKER in text:
+    # Logs are append-only and never rotate, so a marker's mere *presence*
+    # isn't enough — we need whichever of success/failure happened LAST.
+    success_idx = text.rfind(_RUN_SUCCESS_MARKER)
+    traceback_idx = text.rfind(_TRACEBACK_MARKER)
+
+    if success_idx == -1 and traceback_idx == -1:
+        return LogSummary(name, "unknown", None, "성공/실패 마커 없음")
+
+    if success_idx > traceback_idx:
         saved = _SAVED_RE.search(text)
         processed = _PROCESSED_RE.search(text)
         bits = []
@@ -50,10 +66,7 @@ def summarize_run_log(path: Path, name: str = "run") -> LogSummary:
         detail = ", ".join(bits) if bits else "성공"
         return LogSummary(name, "success", _mtime(path), detail)
 
-    if "Traceback (most recent call last)" in text:
-        return LogSummary(name, "failure", _mtime(path), "마지막 실행에서 예외 발생")
-
-    return LogSummary(name, "unknown", _mtime(path), "성공/실패 마커 없음")
+    return LogSummary(name, "failure", None, _failure_detail(path))
 
 
 def summarize_brief_log(path: Path, name: str = "brief") -> LogSummary:
@@ -61,12 +74,22 @@ def summarize_brief_log(path: Path, name: str = "brief") -> LogSummary:
         return LogSummary(name, "unknown", None, "로그 파일 없음")
 
     lines = path.read_text(errors="replace").splitlines()
+    # Logs are append-only and never rotate, so we need the LAST occurrence
+    # of each marker, then compare positions — not just "does it exist".
     last_success_idx = None
+    last_traceback_idx = None
     for i, line in enumerate(lines):
         if _BRIEF_SUCCESS_RE.search(line):
             last_success_idx = i
+        if _TRACEBACK_MARKER in line:
+            last_traceback_idx = i
 
-    if last_success_idx is not None:
+    if last_success_idx is None and last_traceback_idx is None:
+        return LogSummary(name, "unknown", None, "성공/실패 마커 없음")
+
+    if last_success_idx is not None and (
+        last_traceback_idx is None or last_success_idx > last_traceback_idx
+    ):
         # Success timestamp: the ISO stamp on the marker line, else the
         # nearest preceding stamped line, else file mtime.
         ts = None
@@ -77,10 +100,7 @@ def summarize_brief_log(path: Path, name: str = "brief") -> LogSummary:
                 break
         return LogSummary(name, "success", ts or _mtime(path), "브리핑 발송 완료")
 
-    if any("Traceback (most recent call last)" in ln for ln in lines):
-        return LogSummary(name, "failure", _mtime(path), "마지막 실행에서 예외 발생")
-
-    return LogSummary(name, "unknown", _mtime(path), "성공/실패 마커 없음")
+    return LogSummary(name, "failure", None, _failure_detail(path))
 
 
 def collect_status(log_dir: Path | None = None) -> list[LogSummary]:

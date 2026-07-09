@@ -45,6 +45,59 @@ def test_summarize_run_log_missing(tmp_path):
     assert s.last_success_at is None
 
 
+RUN_LOG_SUCCESS_THEN_NEWER_FAILURE = """\
+           INFO     Saving: done (149/149)
+✅ argos run 완료
+─────────────────────────────
+일일 처리: 150개 / 1507개 (잔여: 1357개)
+신규 저장: 149개
+소요 시간: 54m 30s
+           INFO     Triage (8B): started
+Traceback (most recent call last):
+  File "x.py", line 1, in <module>
+RuntimeError: boom
+"""
+
+RUN_LOG_FAILURE_THEN_NEWER_SUCCESS = """\
+           INFO     Triage (8B): started
+Traceback (most recent call last):
+  File "x.py", line 1, in <module>
+RuntimeError: boom
+           INFO     Saving: done (149/149)
+✅ argos run 완료
+─────────────────────────────
+일일 처리: 150개 / 1507개 (잔여: 1357개)
+신규 저장: 149개
+소요 시간: 54m 30s
+"""
+
+
+def test_summarize_run_log_success_masked_by_newer_failure(tmp_path):
+    """An append-only log: an OLD success block followed by a NEWER traceback
+    must report failure, not the stale success (recency bug, ARG-221)."""
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_SUCCESS_THEN_NEWER_FAILURE)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+def test_summarize_run_log_failure_then_newer_success_is_success(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_FAILURE_THEN_NEWER_SUCCESS)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "success"
+    assert s.last_success_at is not None
+
+
+def test_summarize_run_log_failure_last_success_at_is_none(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_FAILURE)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
 BRIEF_LOG_SUCCESS = """\
 2026-07-08 09:00:02,999 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
 2026-07-09 09:00:06,663 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
@@ -73,6 +126,39 @@ def test_summarize_brief_log_no_items_is_success(tmp_path):
 def test_summarize_brief_log_missing(tmp_path):
     s = status.summarize_brief_log(tmp_path / "nope.log")
     assert s.last_result == "unknown"
+
+
+BRIEF_LOG_SUCCESS_THEN_NEWER_FAILURE = """\
+2026-07-08 09:00:02,999 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
+Briefing sent: ts=1783555207.645869
+2026-07-09 09:00:10,000 INFO Triage: started
+Traceback (most recent call last):
+  File "x.py", line 1, in <module>
+RuntimeError: boom
+"""
+
+
+def test_summarize_brief_log_success_masked_by_newer_failure(tmp_path):
+    """An old 'Briefing sent' line followed by a NEWER traceback must report
+    failure, not the stale success (recency bug, ARG-221)."""
+    p = tmp_path / "brief.log"
+    p.write_text(BRIEF_LOG_SUCCESS_THEN_NEWER_FAILURE)
+    s = status.summarize_brief_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+def test_summarize_brief_log_failure_last_success_at_is_none(tmp_path):
+    p = tmp_path / "brief.log"
+    p.write_text(
+        "2026-07-09 09:00:06,663 INFO ...\n"
+        "Traceback (most recent call last):\n"
+        '  File "x.py", line 1, in <module>\n'
+        "RuntimeError: boom\n"
+    )
+    s = status.summarize_brief_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
 
 
 def test_collect_status_reads_all_jobs(tmp_path):
