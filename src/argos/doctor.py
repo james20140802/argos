@@ -241,6 +241,73 @@ def check_alembic_head() -> Row:
     return ("Alembic migrations", "OK", current)
 
 
+_VRAM_WARN_THRESHOLD_BYTES = 4 * 1024**3  # 4 GiB free-memory floor (advisory)
+
+
+def _available_memory_bytes() -> int | None:
+    """Best-effort available system memory in bytes (macOS via vm_stat/sysctl).
+
+    Returns None when it cannot be determined (non-macOS or parse failure) so
+    the caller degrades to a WARN rather than crashing.  Uses only stdlib +
+    subprocess — no third-party dependency.
+    """
+    try:
+        vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    page_size = 4096
+    free_pages = 0
+    for line in vm.stdout.splitlines():
+        if "page size of" in line:
+            digits = "".join(ch for ch in line if ch.isdigit())
+            if digits:
+                page_size = int(digits)
+        elif line.startswith("Pages free:") or line.startswith("Pages inactive:"):
+            digits = "".join(ch for ch in line.split(":", 1)[1] if ch.isdigit())
+            if digits:
+                free_pages += int(digits)
+    if free_pages == 0:
+        return None
+    return free_pages * page_size
+
+
+def _loaded_ollama_models(host: str = "http://localhost:11434") -> list[str]:
+    """Model names currently loaded in Ollama (via ``/api/ps``).
+
+    Raises on transport error; the caller converts that to a WARN.
+    """
+    import httpx
+
+    resp = httpx.get(f"{host.rstrip('/')}/api/ps", timeout=5)
+    resp.raise_for_status()
+    return [m.get("name", "") for m in resp.json().get("models", [])]
+
+
+def check_vram_headroom(ollama_host: str = "http://localhost:11434") -> Row:
+    """Probe: enough free unified memory to load a model without pressure.
+
+    Advisory (never FAIL): reports loaded models + free GiB, WARNs when free
+    memory is below the threshold or when either input is unavailable.
+    """
+    try:
+        loaded = _loaded_ollama_models(ollama_host)
+    except Exception as exc:
+        return ("VRAM headroom", "WARN", f"Ollama /api/ps unreachable: {exc}")
+
+    free = _available_memory_bytes()
+    if free is None:
+        loaded_str = ", ".join(loaded) if loaded else "none"
+        return ("VRAM headroom", "WARN", f"could not read free memory (loaded: {loaded_str})")
+
+    free_gib = free / 1024**3
+    loaded_str = ", ".join(loaded) if loaded else "none loaded"
+    detail = f"{free_gib:.1f} GiB free (loaded: {loaded_str})"
+    if free < _VRAM_WARN_THRESHOLD_BYTES:
+        return ("VRAM headroom", "WARN", detail + " — low headroom")
+    return ("VRAM headroom", "OK", detail)
+
+
 def print_doctor_table(rows: list[Row]) -> None:
     """Print a structured table of probe results to stdout."""
     if not rows:
@@ -273,5 +340,6 @@ __all__ = [
     "check_postgres_reachable",
     "check_python_version",
     "check_uv_installed",
+    "check_vram_headroom",
     "print_doctor_table",
 ]

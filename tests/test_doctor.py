@@ -455,3 +455,42 @@ def test_check_alembic_head_unreadable(monkeypatch):
     _, status, detail = doctor.check_alembic_head()
     assert status == "FAIL"
     assert "cannot connect" in detail
+
+
+# ---------------------------------------------------------------------------
+# check_vram_headroom
+# ---------------------------------------------------------------------------
+
+
+def test_check_vram_headroom_ok(monkeypatch):
+    monkeypatch.setattr("argos.doctor._available_memory_bytes", lambda: 12 * 1024**3)
+    monkeypatch.setattr("argos.doctor._loaded_ollama_models", lambda host: ["qwen3:8b"])
+    name, status, detail = doctor.check_vram_headroom()
+    assert name == "VRAM headroom"
+    assert status == "OK"
+    assert "12" in detail  # free GiB surfaced
+
+
+def test_check_vram_headroom_low_warns(monkeypatch):
+    monkeypatch.setattr("argos.doctor._available_memory_bytes", lambda: 2 * 1024**3)
+    monkeypatch.setattr("argos.doctor._loaded_ollama_models", lambda host: ["qwen3:32b"])
+    _, status, detail = doctor.check_vram_headroom()
+    assert status == "WARN"
+
+
+def test_check_vram_headroom_ollama_unreachable_warns(monkeypatch):
+    monkeypatch.setattr("argos.doctor._available_memory_bytes", lambda: 12 * 1024**3)
+
+    def _raise(host):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("argos.doctor._loaded_ollama_models", _raise)
+    _, status, _ = doctor.check_vram_headroom()
+    assert status == "WARN"
+
+
+def test_check_vram_headroom_memory_unknown_warns(monkeypatch):
+    monkeypatch.setattr("argos.doctor._available_memory_bytes", lambda: None)
+    monkeypatch.setattr("argos.doctor._loaded_ollama_models", lambda host: [])
+    _, status, _ = doctor.check_vram_headroom()
+    assert status == "WARN"
