@@ -56,8 +56,11 @@ def summarize_run_log(path: Path, name: str = "run") -> LogSummary:
         return LogSummary(name, "unknown", None, "성공/실패 마커 없음")
 
     if success_idx > traceback_idx:
-        saved = _SAVED_RE.search(text)
-        processed = _PROCESSED_RE.search(text)
+        # Scan counts only within the winning (last) success block — the file
+        # may hold older run blocks whose counts must not leak into this one.
+        latest = text[success_idx:]
+        saved = _SAVED_RE.search(latest)
+        processed = _PROCESSED_RE.search(latest)
         bits = []
         if processed:
             bits.append(f"처리 {processed.group(1)}")

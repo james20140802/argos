@@ -32,6 +32,19 @@ def test_summarize_run_log_success(tmp_path):
     assert "149" in s.detail  # 신규 저장 count surfaced
 
 
+def test_summarize_run_log_counts_come_from_latest_success_block(tmp_path):
+    # Append-only log with an OLD success block followed by a NEWER one.
+    # The reported counts must belong to the latest block (99), not the old (11).
+    old_block = "✅ argos run 완료\n일일 처리: 10개 / 20개\n신규 저장: 11개\n"
+    new_block = "✅ argos run 완료\n일일 처리: 98개 / 200개\n신규 저장: 99개\n"
+    p = tmp_path / "run.log"
+    p.write_text(old_block + new_block)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "success"
+    assert "99" in s.detail
+    assert "11개" not in s.detail  # stale count from the old block must not leak
+
+
 def test_summarize_run_log_failure(tmp_path):
     p = tmp_path / "run.log"
     p.write_text(RUN_LOG_FAILURE)

@@ -432,7 +432,9 @@ def test_doctor_config_override_passes_custom_ollama_host(monkeypatch, tmp_path,
 
 def test_check_postgres_reachable_ok(monkeypatch):
     # runners.run_async(db_ping()) 가 예외 없이 끝나면 OK.
-    monkeypatch.setattr("argos.init_wizard.runners.run_async", lambda coro: None)
+    # Close the coroutine we were handed so pytest doesn't warn about an
+    # un-awaited db_ping() (the real run_async awaits it).
+    monkeypatch.setattr("argos.init_wizard.runners.run_async", lambda coro: coro.close())
     name, status, detail = doctor.check_postgres_reachable()
     assert name == "Postgres reachable"
     assert status == "OK"
@@ -442,6 +444,7 @@ def test_check_postgres_reachable_fail(monkeypatch):
     from argos.init_wizard import WizardStepError
 
     def _raise(coro):
+        coro.close()  # avoid "coroutine was never awaited" warning
         raise WizardStepError("database ping failed: connection refused", hint="check db container")
 
     monkeypatch.setattr("argos.init_wizard.runners.run_async", _raise)
