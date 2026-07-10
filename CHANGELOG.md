@@ -10,6 +10,36 @@ This history was reconstructed retroactively from annotated release tags
 (`git tag -n99`) and their commit ranges; entries before this file existed may be
 less granular than future ones.
 
+## [0.3.2] — 2026-07-10
+
+Operational observability. 21 commits since v0.3.1.
+
+### Added
+
+- **`argos status`** — one read-only command summarising the latest scheduled
+  run / daily-brief / weekly-brief outcome: last result, last success time, and
+  processed counts, parsed from the launchd logs (no DB or network). (ARG-194)
+- **`argos doctor` health probes** — on top of the existing Docker / Ollama /
+  model / Python / uv checks, doctor now reports Postgres reachability, whether
+  the applied DB revision equals the latest Alembic head, and VRAM headroom.
+  (ARG-194)
+- **Feed trust dial** — feed cards show the trust score as a ring dial, and the
+  item-detail page shows a labeled dial. (ARG-189)
+
+### Fixed
+
+- **`argos status` reports the latest outcome by recency** — in the append-only
+  logs an older success no longer masks a newer failure, whether that failure is
+  a traceback, a non-traceback failure header, or an early config-load exit; and
+  the processed counts always come from the most recent success block, never an
+  older one. (ARG-220, ARG-221)
+- **`argos status` recognises weekly-briefing success** — a healthy weekly run
+  (and the "no items today" skip) now reads as success instead of `unknown`.
+- **`argos doctor` migration probe degrades gracefully** — when argos runs from
+  an installed wheel/pipx layout where the migration scripts aren't on disk, the
+  Alembic probe reports a soft WARN instead of a hard FAIL, so a healthy database
+  no longer makes `argos doctor` exit non-zero.
+
 ## [0.3.1] — 2026-07-07
 
 Web polish, backup tooling, and Ollama-down resilience. 67 commits since v0.3.0.
