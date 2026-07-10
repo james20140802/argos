@@ -72,6 +72,14 @@ class TimelineEvent:
     relation_type: Optional[RelationType]
     reasoning: Optional[str]
     label: str
+    # ARG-209: True only for the synthetic "🔁 {predecessor}에서 이어받음"
+    # line `fetch_timeline` prepends when this tech_id is the Keep successor
+    # of an already-Archived Replace predecessor. Defaults False for every
+    # real (status/signal/succession) event, so existing keyword-arg call
+    # sites are unaffected. `_timeline.html` uses this to distinguish the
+    # informational "already handed off" line from a real forward Replace
+    # succession event (which instead gets the handoff banner/button).
+    is_inferred: bool = False
 
 
 async def _fetch_status_events(
@@ -223,6 +231,62 @@ async def _fetch_succession_events(
     ]
 
 
+async def _fetch_inferred_handoff_event(
+    session: AsyncSession, tech_id: uuid.UUID
+) -> Optional[TimelineEvent]:
+    """Infer a "🔁 {predecessor}에서 이어받음" first-line event (ARG-209).
+
+    No new storage: this is computed purely from the *current* state of two
+    assets. ``tech_id`` qualifies when it has a Replace predecessor (via
+    ``tech_succession``) whose own ``user_asset`` is Archived AND ``tech_id``'s
+    own ``user_asset`` is Keep — i.e. the handoff (real or manual) already
+    happened. ``changed_at`` is carried through for the field's sake, but the
+    caller always pins this event to the very front regardless of its value.
+
+    Mirrors ``detail.py::_fetch_predecessors``'s join shape, filtered to
+    Replace and joined once more to both sides' ``user_assets`` to check
+    status. Multiple qualifying Replace predecessors (rare) resolve to the
+    earliest-created succession row, deterministically.
+    """
+    Pred = aliased(TechItem)
+    PredAsset = aliased(UserAsset)
+    current_status_sq = (
+        select(UserAsset.status)
+        .where(UserAsset.tech_id == tech_id)
+        .scalar_subquery()
+    )
+    stmt = (
+        select(
+            Pred.id.label("pred_id"),
+            Pred.title.label("pred_title"),
+            PredAsset.status.label("pred_status"),
+            TechSuccession.created_at,
+            current_status_sq.label("cur_status"),
+        )
+        .join(Pred, Pred.id == TechSuccession.predecessor_id)
+        .join(PredAsset, PredAsset.tech_id == Pred.id)
+        .where(TechSuccession.successor_id == tech_id)
+        .where(TechSuccession.relation_type == RelationType.REPLACE)
+        .order_by(TechSuccession.created_at.asc())
+    )
+    rows = (await session.execute(stmt)).all()
+    for row in rows:
+        if row.cur_status == AssetStatus.KEEP and row.pred_status == AssetStatus.ARCHIVED:
+            return TimelineEvent(
+                kind="succession",
+                changed_at=row.created_at,
+                title=row.pred_title,
+                link_tech_id=row.pred_id,
+                changed_from=None,
+                changed_to=None,
+                relation_type=RelationType.REPLACE,
+                reasoning=None,
+                label=f"🔁 {row.pred_title}에서 이어받음",
+                is_inferred=True,
+            )
+    return None
+
+
 async def fetch_timeline(
     session: AsyncSession,
     tech_id: uuid.UUID,
@@ -234,6 +298,11 @@ async def fetch_timeline(
     ``limit=None`` returns the full history (detail page); ``limit=5``
     returns only the 5 most recent (portfolio card accordion). Ties on
     ``changed_at`` break deterministically via ``_KIND_ORDER``.
+
+    ARG-209: when ``tech_id`` is the Keep successor of an already-Archived
+    Replace predecessor, a synthetic "🔁 이어받음" event is prepended ahead
+    of everything else (regardless of its own ``changed_at``) before
+    ``limit`` is applied, so it always survives as the first entry shown.
     """
     status_events = await _fetch_status_events(session, tech_id)
     signal_events = await _fetch_signal_events(session, tech_id)
@@ -247,6 +316,47 @@ async def fetch_timeline(
     events.sort(key=lambda e: _KIND_ORDER[e.kind])
     events.sort(key=lambda e: e.changed_at, reverse=True)
 
+    inferred = await _fetch_inferred_handoff_event(session, tech_id)
+    if inferred is not None:
+        events.insert(0, inferred)
+
     if limit is not None:
         events = events[:limit]
     return events
+
+
+@dataclass(frozen=True)
+class ReplaceSuccessor:
+    """One Replace-relation successor of a tech_id (ARG-209).
+
+    A thin projection — just enough (title + tech_id) for the portfolio
+    card's handoff banner CTA; no reasoning/timestamp needed there.
+    """
+
+    tech_id: uuid.UUID
+    title: str
+
+
+async def replace_successors(
+    session: AsyncSession, tech_id: uuid.UUID
+) -> list[ReplaceSuccessor]:
+    """Replace-relation successors of ``tech_id`` — pull query for the
+    portfolio card's handoff banner (ARG-209).
+
+    Mirrors ``_fetch_succession_events``'s predecessor-direction join, but
+    filtered to ``relation_type == Replace`` and trimmed to the banner's
+    minimal shape. Called only for assets that already show
+    ``lineage_count > 0`` (see ``app.py::_load_handoff_banners``), so a
+    Keep-only portfolio with no succession links issues zero extra queries.
+    """
+    Succ = aliased(TechItem)
+    stmt = (
+        select(Succ.id, Succ.title)
+        .select_from(TechSuccession)
+        .join(Succ, Succ.id == TechSuccession.successor_id)
+        .where(TechSuccession.predecessor_id == tech_id)
+        .where(TechSuccession.relation_type == RelationType.REPLACE)
+        .order_by(TechSuccession.created_at.asc())
+    )
+    rows = (await session.execute(stmt)).all()
+    return [ReplaceSuccessor(tech_id=row.id, title=row.title) for row in rows]

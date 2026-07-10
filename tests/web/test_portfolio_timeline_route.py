@@ -185,3 +185,86 @@ def test_get_timeline_malformed_asset_id_returns_404_not_500(monkeypatch):
     client = _client(monkeypatch, events=[], tech_id=uuid.uuid4(), raise_server_exceptions=False)
     resp = client.get("/portfolio/not-a-uuid/timeline")
     assert resp.status_code == 404
+
+
+# ------------------------------------------------------------------ #
+# ARG-209 — Enhance/Fork "이 기술도 Keep" button + inferred 이어받음 line
+# ------------------------------------------------------------------ #
+
+def test_get_timeline_enhance_succession_shows_keep_button(monkeypatch):
+    """Enhance/Fork successions (not Replace) get an inline "이 기술도 Keep"
+    button reusing POST /items/{id}/keep — no banner (AC3)."""
+    tech_id = uuid.uuid4()
+    asset_id = uuid.uuid4()
+    succ_id = uuid.uuid4()
+    events = [
+        _event(
+            kind="succession",
+            title="Enhanced Successor",
+            link_tech_id=succ_id,
+            relation_type=RelationType.ENHANCE,
+            label="Enhance: Enhanced Successor",
+        )
+    ]
+    client = _client(monkeypatch, events=events, tech_id=tech_id)
+    resp = client.get(f"/portfolio/{asset_id}/timeline")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "이 기술도 Keep" in body
+    assert f'hx-post="/items/{succ_id}/keep"' in body
+    assert "handoff-banner" not in body
+
+
+def test_get_timeline_replace_succession_has_no_keep_button(monkeypatch):
+    """A real forward Replace succession event (not yet handed off) renders
+    plainly in the timeline — its CTA lives in the card-top banner, not a
+    second button duplicated inside the timeline row."""
+    tech_id = uuid.uuid4()
+    asset_id = uuid.uuid4()
+    succ_id = uuid.uuid4()
+    events = [
+        _event(
+            kind="succession",
+            title="Replace Successor",
+            link_tech_id=succ_id,
+            relation_type=RelationType.REPLACE,
+            label="Replace: Replace Successor",
+        )
+    ]
+    client = _client(monkeypatch, events=events, tech_id=tech_id)
+    resp = client.get(f"/portfolio/{asset_id}/timeline")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Replace Successor" in body
+    assert "이 기술도 Keep" not in body
+
+
+def test_get_timeline_renders_inferred_handoff_line(monkeypatch):
+    """The synthetic 이어받음 event (is_inferred=True) renders as plain
+    informational text — no CTA button, since the handoff already happened."""
+    tech_id = uuid.uuid4()
+    asset_id = uuid.uuid4()
+    pred_id = uuid.uuid4()
+    events = [
+        _event(
+            kind="succession",
+            title="Old Predecessor",
+            link_tech_id=pred_id,
+            relation_type=RelationType.REPLACE,
+            label="🔁 Old Predecessor에서 이어받음",
+        )
+    ]
+    # _event() doesn't expose is_inferred; build directly for this one.
+    from dataclasses import replace as _dc_replace
+
+    events[0] = _dc_replace(events[0], is_inferred=True)
+
+    client = _client(monkeypatch, events=events, tech_id=tech_id)
+    resp = client.get(f"/portfolio/{asset_id}/timeline")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "이어받음" in body
+    assert "Old Predecessor" in body
+    assert "이어받기" not in body
+    assert "이 기술도 Keep" not in body
+    assert "timeline__event--inferred" in body

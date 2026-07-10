@@ -15,6 +15,7 @@ from argos.models.tech_succession import RelationType
 from argos.models.user_asset import AssetStatus
 from argos.web.app import _get_session, build_web_app
 from argos.web.services.detail import (
+    GenealogyEntry,
     HistoryEntry,
     ItemDetailView,
     SignalAlert,
@@ -31,6 +32,7 @@ def _view_with(
     similar: list[SimilarItem] | None = None,
     signal_alerts: list[SignalAlert] | None = None,
     related_history: list[HistoryEntry] | None = None,
+    successors: list[GenealogyEntry] | None = None,
 ) -> ItemDetailView:
     return ItemDetailView(
         id=uuid.uuid4(),
@@ -47,6 +49,7 @@ def _view_with(
         signal_alerts=signal_alerts or [],
         related_history=related_history or [],
         timeline=timeline or [],
+        successors=successors or [],
     )
 
 
@@ -164,3 +167,85 @@ def test_non_asset_item_never_renders_timeline_markup(monkeypatch):
     assert 'class="timeline"' not in body
     assert "최근 변화" in body
     assert "signals-history" in body
+
+
+# ------------------------------------------------------------------ #
+# ARG-209 — detail-page handoff banner (Replace successor)
+# ------------------------------------------------------------------ #
+
+def test_detail_page_renders_handoff_banner_for_replace_successor(monkeypatch):
+    """A Keep item with a Replace successor gets the handoff banner in its
+    action bar — derived from item.successors (no new query, AC1/AC3)."""
+    asset_id = uuid.uuid4()
+    succ_id = uuid.uuid4()
+    view = _view_with(
+        status=AssetStatus.KEEP,
+        asset_id=asset_id,
+        successors=[
+            GenealogyEntry(
+                tech_id=succ_id,
+                title="Next-Gen Model",
+                relation_type=RelationType.REPLACE,
+                reasoning="superseded",
+            )
+        ],
+    )
+    client = _client(monkeypatch, view)
+
+    resp = client.get(f"/item/{view.id}")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "handoff-banner" in body
+    assert "Next-Gen Model" in body
+    assert "이어받기" in body
+    assert (
+        f'hx-post="/assets/{asset_id}/handoff?successor_tech_id={succ_id}"' in body
+    )
+
+
+def test_detail_page_omits_handoff_banner_for_enhance_successor(monkeypatch):
+    """A Keep item whose only successor is Enhance (not Replace) gets no
+    banner — that relation only surfaces the timeline's Keep button (AC3)."""
+    view = _view_with(
+        status=AssetStatus.KEEP,
+        asset_id=uuid.uuid4(),
+        successors=[
+            GenealogyEntry(
+                tech_id=uuid.uuid4(),
+                title="Enhanced Variant",
+                relation_type=RelationType.ENHANCE,
+                reasoning=None,
+            )
+        ],
+    )
+    client = _client(monkeypatch, view)
+
+    resp = client.get(f"/item/{view.id}")
+
+    assert resp.status_code == 200
+    assert "handoff-banner" not in resp.text
+
+
+def test_detail_page_omits_handoff_banner_for_non_kept_item(monkeypatch):
+    """A Replace successor on a non-Keep item (e.g. Archived, Tracking-only,
+    or untriaged) is not an active "hand off my Keep asset" situation, so no
+    banner renders even though a Replace successor exists."""
+    view = _view_with(
+        status=AssetStatus.ARCHIVED,
+        asset_id=uuid.uuid4(),
+        successors=[
+            GenealogyEntry(
+                tech_id=uuid.uuid4(),
+                title="Next-Gen Model",
+                relation_type=RelationType.REPLACE,
+                reasoning=None,
+            )
+        ],
+    )
+    client = _client(monkeypatch, view)
+
+    resp = client.get(f"/item/{view.id}")
+
+    assert resp.status_code == 200
+    assert "handoff-banner" not in resp.text

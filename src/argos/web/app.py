@@ -33,7 +33,7 @@ from argos.web.services.settings import (
     apply_settings,
     load_settings_view,
 )
-from argos.web.services.timeline import fetch_timeline
+from argos.web.services.timeline import fetch_timeline, replace_successors
 
 _PACKAGE_DIR = Path(__file__).parent  # noqa: E402 — module-level lazy shims below
 _log = logging.getLogger("argos.web")
@@ -393,6 +393,24 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid feed cursor") from exc
         return JSONResponse({"new_count": new_count})
 
+    async def _load_handoff_banners(session, view):
+        """Per-asset Replace-successor lookup for the portfolio card's
+        handoff banner (ARG-209).
+
+        Bounded by ``lineage_count > 0`` — the aggregate ``fetch_portfolio``
+        already computes — so a Keep-only portfolio with no succession links
+        at all issues zero extra queries. Keyed by ``user_asset.id`` (the
+        card's DOM id), value is the first Replace successor found.
+        """
+        banners: dict[uuid.UUID, object] = {}
+        for asset in (*view.active, *view.quiet):
+            if asset.lineage_count <= 0:
+                continue
+            successors = await replace_successors(session, asset.tech_id)
+            if successors:
+                banners[asset.id] = successors[0]
+        return banners
+
     async def _render_portfolio(
         request: Request,
         template_name: str,
@@ -416,6 +434,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             raise HTTPException(
                 status_code=400, detail="invalid portfolio query"
             ) from exc
+        handoff_banners = await _load_handoff_banners(session, view)
         return request.app.state.templates.TemplateResponse(
             request,
             template_name,
@@ -423,6 +442,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
                 "view": view,
                 "category": normalized_category,
                 "sort": normalized_sort,
+                "handoff_banners": handoff_banners,
             },
         )
 
@@ -471,7 +491,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
 
         events = await fetch_timeline(session, tech_id, limit=5)
         return request.app.state.templates.TemplateResponse(
-            request, "_timeline.html", {"events": events}
+            request, "_timeline.html", {"events": events, "asset_id": parsed_id}
         )
 
     def _render_not_found(request: Request) -> HTMLResponse:
@@ -687,6 +707,51 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         # Return an empty body so the HTMX ``outerHTML`` swap removes the card,
         # idempotently — a 404/409 error fragment would leave a stale, dead card
         # displaying an error even though the untrack goal is satisfied.
+        return HTMLResponse("", status_code=200)
+
+    @app.post("/assets/{user_asset_id}/handoff", response_class=HTMLResponse)
+    async def handoff_asset(
+        request: Request,
+        user_asset_id: str,
+        successor_tech_id: Optional[str] = None,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        """Succession handoff (ARG-209): archive the predecessor asset (named
+        by ``user_asset_id``), Keep the successor (``successor_tech_id``).
+
+        Both transitions reuse ``transition_asset`` — each independently
+        upserted/logged to ``track_history`` — so the action is idempotent by
+        construction: replaying it is two NOOPs. If the successor is already
+        Keep (the "이미 tracking 중" case), only the predecessor's archive has
+        any effect; the successor's transition_asset call still runs but
+        NOOPs. An empty 200 body mirrors ``untrack``'s contract: the caller's
+        own hx-target/hx-swap decides what disappears (the whole predecessor
+        card on the portfolio page, or just the banner on the detail page).
+        """
+        from argos.models.user_asset import AssetStatus
+
+        try:
+            parsed_asset_id = uuid.UUID(user_asset_id)
+        except ValueError:
+            return _error_fragment(request, 404, "not found")
+
+        if successor_tech_id is None:
+            return _error_fragment(request, 404, "not found")
+        try:
+            parsed_successor_id = uuid.UUID(successor_tech_id)
+        except ValueError:
+            return _error_fragment(request, 404, "not found")
+
+        predecessor_tech_id = await _resolve_user_asset_tech_id(
+            session, parsed_asset_id
+        )
+        if predecessor_tech_id is None:
+            return _error_fragment(request, 404, "not found")
+
+        await transition_asset(session, predecessor_tech_id, AssetStatus.ARCHIVED)
+        await transition_asset(session, parsed_successor_id, AssetStatus.KEEP)
+        await session.commit()
+
         return HTMLResponse("", status_code=200)
 
     # ---- Settings (ARG-186) ------------------------------------------------

@@ -1295,6 +1295,59 @@ body {
   font: 400 12.5px/1.5 "IBM Plex Sans KR", sans-serif;
   color: var(--muted); margin: 0; padding: 10px 2px;
 }
+/* Inferred "🔁 이어받음" line (ARG-209) — informational, not a CTA, so it
+   gets a quieter tint than the alpha-purple succession badge. */
+.timeline__event--inferred { border-color: rgba(183, 144, 228, 0.35); background: rgba(183, 144, 228, 0.05); }
+/* "이 기술도 Keep" — Enhance/Fork's inline CTA (ARG-209 AC3), reusing the
+   existing /items/{id}/keep route. Smaller than .card-action since it sits
+   inline within a timeline row rather than a card's action bar. */
+.timeline__keep-btn {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font: 600 10px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--main); cursor: pointer;
+  background: rgba(116, 183, 199, 0.1);
+  border: 1px solid rgba(116, 183, 199, 0.5); border-radius: 7px;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.timeline__keep-btn:hover { color: var(--ink); border-color: var(--main); background: rgba(116, 183, 199, 0.18); }
+.timeline__keep-btn.htmx-request { opacity: 0.5; pointer-events: none; }
+
+/* Succession handoff banner (ARG-209 AC1/AC3) — Replace-only CTA on the
+   portfolio card top (`_portfolio_cards.html`) and the detail action bar
+   (`_detail_actions.html`). Tinted with the same alpha-purple used for
+   .timeline__relation--replace so it reads as the same relation. */
+.handoff-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
+  margin-bottom: 12px; padding: 10px 12px;
+  border: 1px solid rgba(183, 144, 228, 0.4); border-radius: 10px;
+  background: rgba(183, 144, 228, 0.08);
+}
+.handoff-banner__text {
+  margin: 0; flex: 1 1 auto; min-width: 0;
+  font: 500 12.5px/1.4 "IBM Plex Sans KR", sans-serif;
+  color: var(--ink);
+}
+.handoff-banner__text a {
+  color: var(--alpha); text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+.handoff-banner__text a:hover { border-bottom-color: var(--alpha); }
+.handoff-banner__btn {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  font: 600 11px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--alpha); cursor: pointer;
+  background: rgba(183, 144, 228, 0.12);
+  border: 1px solid rgba(183, 144, 228, 0.5); border-radius: 9px;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.handoff-banner__btn:hover { color: var(--ink); border-color: var(--alpha); background: rgba(183, 144, 228, 0.2); }
+.handoff-banner__btn.htmx-request { opacity: 0.5; pointer-events: none; }
 
 /* ============================================================================
    8. Light theme — follows prefers-color-scheme: light (the OS appearance).

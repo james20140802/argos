@@ -213,6 +213,222 @@ async def test_fetch_timeline_excludes_deleted_signal_match_target() -> None:
 
 @pytestmark_db
 @pytest.mark.asyncio
+async def test_fetch_timeline_infers_handoff_first_line() -> None:
+    """ARG-209: predecessor P (Archived), successor S (Keep), P→S Replace
+    succession — S's timeline gets a synthetic first event: kind="succession",
+    is_inferred=True, label carries both "이어받음" and P's title."""
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import TechItem
+    from argos.models.tech_succession import RelationType, TechSuccession
+    from argos.models.track_history import TrackHistory
+    from argos.models.user_asset import AssetStatus, UserAsset
+    from argos.web.services.timeline import fetch_timeline
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    seeded_tech_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            p = TechItem(
+                title="arg209-handoff-p",
+                source_url=f"https://example.com/arg209/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            s = TechItem(
+                title="arg209-handoff-s",
+                source_url=f"https://example.com/arg209/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            session.add_all([p, s])
+            await session.flush()
+            seeded_tech_ids = [p.id, s.id]
+
+            p_asset = UserAsset(tech_id=p.id, status=AssetStatus.ARCHIVED)
+            s_asset = UserAsset(tech_id=s.id, status=AssetStatus.KEEP)
+            session.add_all([p_asset, s_asset])
+            await session.flush()
+
+            # S's own (older, unrelated) status history — the inferred event
+            # must still sort ahead of this despite its own changed_at being
+            # earlier than the succession's created_at.
+            session.add(
+                TrackHistory(
+                    user_asset_id=s_asset.id,
+                    changed_from="Tracking",
+                    changed_to="Keep",
+                    changed_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc),
+                )
+            )
+            session.add(
+                TechSuccession(
+                    predecessor_id=p.id,
+                    successor_id=s.id,
+                    relation_type=RelationType.REPLACE,
+                    reasoning="p replaced by s",
+                    created_at=datetime(2026, 5, 1, 0, 0, tzinfo=timezone.utc),
+                )
+            )
+            await session.commit()
+            p_id = p.id
+            s_id = s.id
+
+        async with Session() as session:
+            events = await fetch_timeline(session, s_id)
+            assert events, "expected at least the inferred event"
+            first = events[0]
+            assert first.kind == "succession"
+            assert first.is_inferred is True
+            assert "이어받음" in first.label
+            assert "arg209-handoff-p" in first.label
+            assert first.link_tech_id == p_id
+    finally:
+        async with Session() as session:
+            if seeded_tech_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_tech_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_timeline_no_inference_when_predecessor_still_kept() -> None:
+    """No handoff has actually happened yet (predecessor P is still Keep, not
+    Archived) — S's timeline must NOT get the inferred "이어받음" line."""
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import TechItem
+    from argos.models.tech_succession import RelationType, TechSuccession
+    from argos.models.user_asset import AssetStatus, UserAsset
+    from argos.web.services.timeline import fetch_timeline
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    seeded_tech_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            p = TechItem(
+                title="arg209-no-handoff-p",
+                source_url=f"https://example.com/arg209/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            s = TechItem(
+                title="arg209-no-handoff-s",
+                source_url=f"https://example.com/arg209/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            session.add_all([p, s])
+            await session.flush()
+            seeded_tech_ids = [p.id, s.id]
+
+            p_asset = UserAsset(tech_id=p.id, status=AssetStatus.KEEP)
+            s_asset = UserAsset(tech_id=s.id, status=AssetStatus.KEEP)
+            session.add_all([p_asset, s_asset])
+            await session.flush()
+            session.add(
+                TechSuccession(
+                    predecessor_id=p.id,
+                    successor_id=s.id,
+                    relation_type=RelationType.REPLACE,
+                    reasoning="p not yet handed off",
+                    created_at=datetime(2026, 5, 1, 0, 0, tzinfo=timezone.utc),
+                )
+            )
+            await session.commit()
+            s_id = s.id
+
+        async with Session() as session:
+            events = await fetch_timeline(session, s_id)
+            assert all(not e.is_inferred for e in events)
+    finally:
+        async with Session() as session:
+            if seeded_tech_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_tech_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_replace_successors_returns_only_replace_relation() -> None:
+    """ARG-209: replace_successors(session, P.id) returns only P's Replace
+    successor, excluding an Enhance successor on the same predecessor."""
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import TechItem
+    from argos.models.tech_succession import RelationType, TechSuccession
+    from argos.web.services.timeline import replace_successors
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    seeded_tech_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            p = TechItem(
+                title="arg209-multi-p",
+                source_url=f"https://example.com/arg209/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            replace_succ = TechItem(
+                title="arg209-multi-replace",
+                source_url=f"https://example.com/arg209/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            enhance_succ = TechItem(
+                title="arg209-multi-enhance",
+                source_url=f"https://example.com/arg209/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            session.add_all([p, replace_succ, enhance_succ])
+            await session.flush()
+            seeded_tech_ids = [p.id, replace_succ.id, enhance_succ.id]
+
+            session.add_all(
+                [
+                    TechSuccession(
+                        predecessor_id=p.id,
+                        successor_id=replace_succ.id,
+                        relation_type=RelationType.REPLACE,
+                        reasoning="replaced",
+                    ),
+                    TechSuccession(
+                        predecessor_id=p.id,
+                        successor_id=enhance_succ.id,
+                        relation_type=RelationType.ENHANCE,
+                        reasoning="enhanced",
+                    ),
+                ]
+            )
+            await session.commit()
+            p_id = p.id
+            replace_id = replace_succ.id
+
+        async with Session() as session:
+            result = await replace_successors(session, p_id)
+            assert [r.tech_id for r in result] == [replace_id]
+            assert result[0].title == "arg209-multi-replace"
+    finally:
+        async with Session() as session:
+            if seeded_tech_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_tech_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
 async def test_fetch_timeline_legacy_succession_alerted_is_plain_text_event() -> None:
     """A legacy succession_alerted row with changed_from='Keep' can't be
     resolved to a specific successor — it surfaces as a title=None event."""

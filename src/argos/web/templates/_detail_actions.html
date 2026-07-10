@@ -14,6 +14,21 @@
 {% set is_passed = item.status and item.status.value == 'Archived' %}
 {% set untrack_params = ['context=detail', 'tech_id=' ~ item.id] %}
 {% set pass_params = ['context=detail'] + (['active=1'] if is_passed else []) %}
+{# ARG-209 AC1/AC3: a Keep asset with a Replace successor gets a handoff
+   banner. `item.successors` already carries relation_type for every
+   successor (existing 🧬 genealogy query) — reused here as-is, no new
+   query needed on the detail page. #}
+{% set replace_successor = (item.successors | selectattr('relation_type.value', 'equalto', 'Replace') | first) if (is_kept and item.successors) else None %}
+{% if replace_successor %}
+<div class="handoff-banner" id="handoff-banner-{{ item.id }}">
+  <p class="handoff-banner__text">🔁 <a href="/item/{{ replace_successor.tech_id }}">{{ replace_successor.title }}</a>이(가) 이 기술을 대체합니다</p>
+  <button type="button"
+          class="handoff-banner__btn"
+          hx-post="/assets/{{ item.asset_id }}/handoff?successor_tech_id={{ replace_successor.tech_id }}"
+          hx-target="#handoff-banner-{{ item.id }}"
+          hx-swap="outerHTML">이어받기</button>
+</div>
+{% endif %}
 <div class="card-actions detail-actions" id="item-actions-{{ item.id }}">
   {% if is_kept %}
   <button class="card-action card-action--untrack"
