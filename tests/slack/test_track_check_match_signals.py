@@ -174,6 +174,37 @@ async def test_match_signals_threshold_in_query_params():
 
 
 @pytest.mark.asyncio
+async def test_match_signals_threshold_read_from_settings(monkeypatch):
+    """ARG-204: the threshold must come from
+    settings.user.tracking.signal_similarity_threshold, not be hardcoded —
+    changing the singleton must change what match_signals passes to SQL."""
+    from argos.config import settings
+
+    monkeypatch.setattr(settings.user.tracking, "signal_similarity_threshold", 0.42)
+
+    session = _make_session([])
+    await match_signals(session)
+
+    params = session.execute.await_args.args[1]
+    assert params["threshold"] == 0.42
+
+
+@pytest.mark.asyncio
+async def test_match_signals_threshold_defaults_to_settings_value():
+    """With an untouched settings singleton, the threshold passed to SQL
+    equals settings.user.tracking.signal_similarity_threshold, which itself
+    defaults to the module constant SIGNAL_SIMILARITY_THRESHOLD (0.85)."""
+    from argos.config import settings
+
+    session = _make_session([])
+    await match_signals(session)
+
+    params = session.execute.await_args.args[1]
+    assert params["threshold"] == settings.user.tracking.signal_similarity_threshold
+    assert params["threshold"] == SIGNAL_SIMILARITY_THRESHOLD
+
+
+@pytest.mark.asyncio
 async def test_match_signals_sentinel_in_query_params():
     """The SIGNAL_MATCHED sentinel must be passed as a query parameter."""
     session = _make_session([])

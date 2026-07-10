@@ -214,6 +214,14 @@ class WebConfig(BaseModel):
     launchd_enabled: bool = False
 
 
+class TrackingConfig(BaseModel):
+    # ARG-204: cosine similarity threshold above which a new TechItem is
+    # considered a "follow-up signal" for a Keep-ed asset. Mirrors the
+    # module-local SIGNAL_SIMILARITY_THRESHOLD default in
+    # argos.slack.services.track_check (kept there as the fallback constant).
+    signal_similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+
+
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
@@ -227,6 +235,7 @@ class UserConfig(BaseModel):
     rss: RSSConfig = Field(default_factory=RSSConfig)
     spa: SPAConfig = Field(default_factory=SPAConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    tracking: TrackingConfig = Field(default_factory=TrackingConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:
