@@ -21,7 +21,11 @@ _RUN_FAILURE_MARKER = "❌ argos run 실패"
 _TRACEBACK_MARKER = "Traceback (most recent call last)"
 _SAVED_RE = re.compile(r"신규 저장:\s*(\d+)개")
 _PROCESSED_RE = re.compile(r"일일 처리:\s*([\d]+개 / [\d]+개)")
-_BRIEF_SUCCESS_RE = re.compile(r"Briefing sent: ts=|No items today")
+# Matches both the daily ("Briefing sent: ts=") and weekly ("Weekly briefing
+# sent: ts=") success lines from cli.py — the weekly prefix lowercases the 'b',
+# so a case-insensitive 'briefing sent: ts=' covers both. Without this the
+# brief-weekly.log job would render as `unknown` on every successful weekly run.
+_BRIEF_SUCCESS_RE = re.compile(r"[Bb]riefing sent: ts=|No items today")
 _ISO_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 

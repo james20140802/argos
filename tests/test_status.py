@@ -169,6 +169,25 @@ def test_summarize_brief_log_no_items_is_success(tmp_path):
     assert s.last_result == "success"
 
 
+# The weekly job prints "Weekly briefing sent: ts=..." (lowercase 'b'), not the
+# daily "Briefing sent: ts=". The success regex must match both, or a healthy
+# brief-weekly.log renders as `unknown` (P2, PR #113 review).
+BRIEF_WEEKLY_LOG_SUCCESS = """\
+2026-07-08 09:00:02,999 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
+2026-07-09 09:00:06,663 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
+Weekly briefing sent: ts=1783555207.645869
+"""
+
+
+def test_summarize_brief_log_weekly_success(tmp_path):
+    p = tmp_path / "brief-weekly.log"
+    p.write_text(BRIEF_WEEKLY_LOG_SUCCESS)
+    s = status.summarize_brief_log(p, name="brief-weekly")
+    assert s.name == "brief-weekly"
+    assert s.last_result == "success"
+    assert s.last_success_at == datetime(2026, 7, 9, 9, 0, 6)
+
+
 def test_summarize_brief_log_missing(tmp_path):
     s = status.summarize_brief_log(tmp_path / "nope.log")
     assert s.last_result == "unknown"
