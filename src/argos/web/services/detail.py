@@ -31,6 +31,7 @@ from argos.models.tech_item import CategoryType, TechItem
 from argos.models.tech_succession import RelationType, TechSuccession
 from argos.models.track_history import TrackHistory
 from argos.models.user_asset import AssetStatus, UserAsset
+from argos.web.services.timeline import TimelineEvent, fetch_timeline
 
 
 # Number of pgvector-similar items shown in the 관련 신호 → similarity
@@ -124,6 +125,11 @@ class ItemDetailView:
     similar: list[SimilarItem] = field(default_factory=list)
     signal_alerts: list[SignalAlert] = field(default_factory=list)
     related_history: list[HistoryEntry] = field(default_factory=list)
+    # ARG-208: unified status/signal/succession timeline (Task 2's
+    # fetch_timeline), populated FULL (limit=None) only for Keep assets —
+    # replaces signal_alerts/related_history in the template for those items.
+    # Default empty list keeps non-Keep/non-asset callers unaffected.
+    timeline: list[TimelineEvent] = field(default_factory=list)
     # ARG-173: 롱폼 다이제스트. 기본값 None이라 digest를 넘기지 않는 기존 호출부/테스트는 무영향.
     digest: Optional[str] = None
     # ARG-184: Keep/Pass/Untrack 액션 버튼을 상세 페이지에서 렌더링하기 위한
@@ -373,9 +379,23 @@ async def fetch_item_detail(
     predecessors = await _fetch_predecessors(session, item_id)
     successors = await _fetch_successors(session, item_id)
     similar = await _fetch_similar(session, item_id)
-    signal_scope = [item_id] + [s.tech_id for s in similar]
-    signal_alerts = await _fetch_signal_alerts(session, item_id, signal_scope)
-    related_history = await _fetch_related_history(session, item_id, signal_scope)
+
+    # ARG-208: Keep assets get the unified timeline (full history) instead of
+    # the older track_history-derived subsections — those are left empty so
+    # the template renders _timeline.html only, not both. Non-Keep/non-asset
+    # items are untouched: signal_alerts/related_history keep populating as
+    # before and timeline stays empty.
+    timeline: list[TimelineEvent] = []
+    signal_alerts: list[SignalAlert] = []
+    related_history: list[HistoryEntry] = []
+    if row.status == AssetStatus.KEEP:
+        timeline = await fetch_timeline(session, item_id, limit=None)
+    else:
+        signal_scope = [item_id] + [s.tech_id for s in similar]
+        signal_alerts = await _fetch_signal_alerts(session, item_id, signal_scope)
+        related_history = await _fetch_related_history(
+            session, item_id, signal_scope
+        )
 
     return ItemDetailView(
         id=row.id,
@@ -392,6 +412,7 @@ async def fetch_item_detail(
         similar=similar,
         signal_alerts=signal_alerts,
         related_history=related_history,
+        timeline=timeline,
         status=row.status,
         asset_id=row.asset_id,
     )
