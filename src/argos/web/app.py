@@ -33,6 +33,7 @@ from argos.web.services.settings import (
     apply_settings,
     load_settings_view,
 )
+from argos.web.services.timeline import fetch_timeline
 
 _PACKAGE_DIR = Path(__file__).parent  # noqa: E402 — module-level lazy shims below
 _log = logging.getLogger("argos.web")
@@ -447,6 +448,30 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
     ) -> HTMLResponse:
         return await _render_portfolio(
             request, "_portfolio_items.html", category, sort, cursor, session
+        )
+
+    @app.get("/portfolio/{asset_id}/timeline", response_class=HTMLResponse)
+    async def portfolio_asset_timeline(
+        request: Request,
+        asset_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        # ``asset_id`` is user-controlled path state; a malformed UUID or an
+        # asset that no longer exists must not 500 — both render the same
+        # controlled 404 fragment (this endpoint is only ever hit via HTMX,
+        # never as a full-page navigation).
+        try:
+            parsed_id = uuid.UUID(asset_id)
+        except ValueError:
+            return _error_fragment(request, 404, "not found")
+
+        tech_id = await _resolve_user_asset_tech_id(session, parsed_id)
+        if tech_id is None:
+            return _error_fragment(request, 404, "not found")
+
+        events = await fetch_timeline(session, tech_id, limit=5)
+        return request.app.state.templates.TemplateResponse(
+            request, "_timeline.html", {"events": events}
         )
 
     def _render_not_found(request: Request) -> HTMLResponse:

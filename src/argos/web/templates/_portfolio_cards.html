@@ -30,6 +30,14 @@
       {% endif %}
     </p>
     <div class="card-actions">
+      {# Tapping toggles the timeline open/closed; portfolio-timeline.js
+         fetches GET /portfolio/{asset.id}/timeline on first open and just
+         clears the container (no re-fetch) on the retap that closes it. #}
+      <button type="button"
+              class="card-action card-action--timeline"
+              data-timeline-toggle="{{ asset.id }}"
+              aria-expanded="false"
+              aria-controls="timeline-{{ asset.id }}">타임라인</button>
       {# Untrack archives the asset; the route returns an empty body so this
          outerHTML swap removes the card from the Keep-only portfolio. #}
       <button class="card-action card-action--untrack"
@@ -37,6 +45,7 @@
               hx-target="#portfolio-card-{{ asset.id }}"
               hx-swap="outerHTML">Untrack</button>
     </div>
+    <div class="timeline-container" id="timeline-{{ asset.id }}"></div>
   </div>
 </article>
 {% endfor %}

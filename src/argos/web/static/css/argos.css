@@ -822,7 +822,14 @@ body {
 .card-action--keep:hover { color: var(--brass-hi); border-color: rgba(201, 168, 106, 0.5); }
 .card-action--pass:hover,
 .card-action--untrack:hover { color: var(--faint); border-color: var(--line); }
+.card-action--timeline:hover { color: var(--main); border-color: rgba(116, 183, 199, 0.5); }
 .card-action.htmx-request { opacity: 0.5; pointer-events: none; }
+/* aria-expanded="true" mirrors the pressed look other card actions get from
+   .is-active, without claiming the Keep/Pass semantic emerald/terracotta fill. */
+.card-action--timeline[aria-expanded="true"] {
+  color: var(--main); border-color: rgba(116, 183, 199, 0.5);
+  background: rgba(116, 183, 199, 0.08);
+}
 
 /* Active (pressed) triage state — the current status is filled in with its own
    colour (Keep = emerald, Pass = terracotta) so an action is unmistakably
@@ -1222,6 +1229,73 @@ body {
   color: var(--faint); white-space: nowrap;
 }
 
+/* === ARG-205 shared asset timeline (portfolio card accordion + detail) ===
+   `.timeline-container` is empty (zero height) until portfolio-timeline.js
+   swaps in `_timeline.html`'s content and adds `.is-open` — the accordion
+   "expand" is really just the fragment showing up, no JS height animation. */
+.timeline-container {
+  margin-top: 0;
+  transition: margin-top 0.15s;
+}
+.timeline-container.is-open {
+  margin-top: 14px;
+}
+.timeline {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.timeline__event {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: rgba(236, 231, 221, 0.03);
+}
+.timeline__icon {
+  font-size: 13px; line-height: 1;
+}
+.timeline__body {
+  min-width: 0;
+  font: 500 13px/1.4 "IBM Plex Sans KR", sans-serif;
+  color: var(--ink);
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
+}
+.timeline__link {
+  color: var(--ink); text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+.timeline__event--status .timeline__link,
+.timeline__event--status .timeline__label { color: var(--brass-hi); }
+.timeline__event--signal .timeline__link:hover { border-bottom-color: var(--main); }
+.timeline__event--succession .timeline__link:hover { border-bottom-color: var(--alpha); }
+.timeline__label { color: var(--muted); }
+.timeline__relation {
+  font: 600 9.5px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  padding: 4px 8px; border-radius: 6px;
+  border: 1px solid var(--line); color: var(--muted);
+  white-space: nowrap;
+}
+.timeline__relation--replace { color: var(--alpha); border-color: rgba(183, 144, 228, 0.5); }
+.timeline__relation--enhance { color: var(--main); border-color: rgba(116, 183, 199, 0.5); }
+.timeline__relation--fork { color: var(--brass-hi); border-color: rgba(201, 168, 106, 0.5); }
+.timeline__reasoning {
+  flex-basis: 100%;
+  font: 400 12px/1.5 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); margin: 0;
+}
+.timeline__time {
+  font: 400 11px/1 "IBM Plex Mono", monospace;
+  color: var(--faint); white-space: nowrap;
+}
+.timeline-empty {
+  font: 400 12.5px/1.5 "IBM Plex Sans KR", sans-serif;
+  color: var(--muted); margin: 0; padding: 10px 2px;
+}
+
 /* ============================================================================
    8. Light theme — follows prefers-color-scheme: light (the OS appearance).
    The reference brief (Apple Newsroom) is a bright paper surface; this block
@@ -1306,6 +1380,8 @@ body {
 
   /* Detail reader surfaces that tinted off a dark base. */
   .genealogy-entry { background: rgba(0, 0, 0, 0.025); }
+  .timeline__event { background: rgba(0, 0, 0, 0.025); }
+  .card-action--timeline[aria-expanded="true"] { background: rgba(31, 111, 134, 0.08); }
 }
 
 /* ---------------------------------------------------------------------------
