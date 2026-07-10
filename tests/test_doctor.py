@@ -486,6 +486,19 @@ def test_check_alembic_head_unreadable(monkeypatch):
     assert "cannot connect" in detail
 
 
+def test_check_alembic_head_installed_layout_is_soft_warn(monkeypatch):
+    # Installed (pipx/wheel) layout: migration scripts aren't on disk. That is
+    # not a DB fault, so the probe must WARN (non-fatal), not FAIL and force
+    # `argos doctor` to exit non-zero on a healthy DB (P2, PR #113 review).
+    def _raise():
+        raise doctor._AlembicScriptsUnavailable("/opt/venv/lib/python3.12")
+
+    monkeypatch.setattr("argos.doctor._alembic_current_and_head", _raise)
+    _, status, detail = doctor.check_alembic_head()
+    assert status == "WARN"
+    assert "source checkout" in detail
+
+
 # ---------------------------------------------------------------------------
 # check_vram_headroom
 # ---------------------------------------------------------------------------

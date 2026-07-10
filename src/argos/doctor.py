@@ -190,6 +190,19 @@ def check_postgres_reachable() -> Row:
     return ("Postgres reachable", "OK", "")
 
 
+class _AlembicScriptsUnavailable(RuntimeError):
+    """Migration scripts aren't on disk.
+
+    Raised when ``argos`` is running from an installed wheel (pipx / ``pip
+    install``) rather than a source checkout, so the repo-root ``alembic.ini`` /
+    ``alembic/`` this probe expects don't exist — the wheel packages only the
+    ``argos`` package, not the migration tree.  ``check_alembic_head`` degrades
+    this to a soft WARN instead of a hard FAIL, so a healthy database doesn't
+    make ``argos doctor`` exit non-zero merely because the migration files can't
+    be located in an installed layout.
+    """
+
+
 def _alembic_current_and_head() -> tuple[str | None, str | None]:
     """Return (current_db_revision, script_head_revision), read-only.
 
@@ -207,8 +220,12 @@ def _alembic_current_and_head() -> tuple[str | None, str | None]:
     from argos.init_wizard import runners
 
     repo_root = Path(__file__).resolve().parents[2]
-    cfg = Config(str(repo_root / "alembic.ini"))
-    cfg.set_main_option("script_location", str(repo_root / "alembic"))
+    ini = repo_root / "alembic.ini"
+    scripts = repo_root / "alembic"
+    if not ini.exists() or not scripts.is_dir():
+        raise _AlembicScriptsUnavailable(str(repo_root))
+    cfg = Config(str(ini))
+    cfg.set_main_option("script_location", str(scripts))
     head = ScriptDirectory.from_config(cfg).get_current_head()
 
     current: str | None = None
@@ -227,6 +244,14 @@ def check_alembic_head() -> Row:
     """Probe: applied DB revision equals the latest migration head."""
     try:
         current, head = _alembic_current_and_head()
+    except _AlembicScriptsUnavailable:
+        # Installed (non-checkout) layout — can't verify migrations, but that is
+        # not a DB fault. Soft WARN so a healthy DB still exits 0.
+        return (
+            "Alembic migrations",
+            "WARN",
+            "migration scripts not found — run from a source checkout to verify",
+        )
     except Exception as exc:
         return ("Alembic migrations", "FAIL", f"could not determine revision: {exc}")
 
