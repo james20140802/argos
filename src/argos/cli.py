@@ -40,8 +40,13 @@ def _format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
-def _print_run_summary(summary, elapsed: float) -> None:
+def _print_run_summary(summary, elapsed: float, failed: bool = False) -> None:
     import sys
+
+    # A failed run must NOT leave the success marker in the log — `argos status`
+    # keys on it. Emit an explicit failure header on the SAME (stdout) stream so
+    # the status parser sees a deterministic, correctly-ordered outcome marker.
+    header = "❌ argos run 실패 — 트리아지 인프라 오류" if failed else "✅ argos run 완료"
 
     source_parts = []
     if "github_trending" in summary.per_source:
@@ -83,14 +88,18 @@ def _print_run_summary(summary, elapsed: float) -> None:
             table.add_row("소요 시간", _format_duration(elapsed))
 
             console.print()
-            console.print("✅ [bold green]argos run 완료[/bold green]")
+            if failed:
+                console.print("❌ [bold red]argos run 실패 — 트리아지 인프라 오류[/bold red]")
+            else:
+                console.print("✅ [bold green]argos run 완료[/bold green]")
             console.print(table)
             return
         except ImportError:
             pass
 
-    # Non-TTY / Rich unavailable fallback
-    print("✅ argos run 완료")
+    # Non-TTY / Rich unavailable fallback — this is the launchd path that writes
+    # run.log, so the failure header here is what `argos status` keys on.
+    print(header)
     print("─────────────────────────────")
     print(f"신규 크롤링: {summary.crawled_total}개{source_detail}")
     print(f"일일 처리: {queue_detail}")
@@ -309,8 +318,9 @@ async def _run(
                         exc_info=True,
                     )
     elapsed = time.monotonic() - start
-    _print_run_summary(summary, elapsed)
-    if any(s.get("triage_error") for s in results):
+    run_failed = any(s.get("triage_error") for s in results)
+    _print_run_summary(summary, elapsed, failed=run_failed)
+    if run_failed:
         logging.getLogger(__name__).warning(
             "argos run: Ollama infra error during triage; crawl queue preserved "
             "for retry, reporting non-zero exit."
@@ -613,12 +623,14 @@ def _build_doctor_parser(sub: argparse._SubParsersAction) -> None:
     """Wire the ``argos doctor`` subcommand."""
     doctor_p = sub.add_parser(
         "doctor",
-        help="Run pre-flight health probes (Docker, Ollama, Python, macOS)",
+        help="Run pre-flight health probes (Docker, Ollama, Postgres, alembic, VRAM, Python, macOS)",
         description=(
             "Run a read-only structured check of every prerequisite Argos needs.\n\n"
             "Probes: Docker daemon, Ollama installed, required models pulled\n"
             "(qwen3:8b, qwen3:32b, nomic-embed-text), Python version,\n"
-            "macOS version (warn-only). Prints a table and exits 0 only when no probe FAILs."
+            "macOS version (warn-only), uv installed, Postgres reachable,\n"
+            "alembic migrations up to date, VRAM headroom (warn-only).\n"
+            "Prints a table and exits 0 only when no probe FAILs."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -631,12 +643,15 @@ def _build_doctor_parser(sub: argparse._SubParsersAction) -> None:
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
     from argos.doctor import (
+        check_alembic_head,
         check_docker,
         check_macos_version,
         check_ollama_installed,
         check_ollama_models,
+        check_postgres_reachable,
         check_python_version,
         check_uv_installed,
+        check_vram_headroom,
         print_doctor_table,
     )
 
@@ -651,11 +666,39 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         check_python_version(),
         check_macos_version(),
         check_uv_installed(),
+        check_postgres_reachable(),
+        check_alembic_head(),
+        check_vram_headroom(ollama_host=settings.user.ollama.host),
     ]
 
     print_doctor_table(rows)
     failures = sum(1 for _, status, _ in rows if status == "FAIL")
     return 0 if failures == 0 else 1
+
+
+def _build_status_parser(sub: argparse._SubParsersAction) -> None:
+    """Wire the top-level ``argos status`` subcommand (ARG-221).
+
+    Distinct from ``argos schedule status`` (launchd load state); this
+    summarises the last scheduled run/brief results from their logs.
+    """
+    sub.add_parser(
+        "status",
+        help="Summarise the last scheduled run/brief results from their logs",
+        description=(
+            "Read ~/Library/Logs/argos/{run,brief,brief-weekly}.log and print the "
+            "last result, last success time, and processed counts for each job — "
+            "no manual log tailing needed."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
+def _cmd_status(_args: argparse.Namespace) -> int:
+    from argos.status import collect_status, render_status
+
+    print(render_status(collect_status()))
+    return 0
 
 
 def _build_init_parser(sub: argparse._SubParsersAction) -> None:
@@ -1761,6 +1804,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_portfolio_parser(sub, common)
     _build_schedule_parser(sub)
     _build_search_parser(sub, common)
+    _build_status_parser(sub)
     _build_stats_parser(sub, common)
     _build_web_parser(sub, common)
 
@@ -1823,6 +1867,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_init(args)
     if args.command == "schedule":
         return _dispatch_schedule(args)
+    if args.command == "status":
+        return _cmd_status(args)
     if args.command == "search":
         rc = _apply_config_override(args)
         if rc is not None:

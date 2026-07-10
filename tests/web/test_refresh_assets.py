@@ -96,7 +96,7 @@ def test_refresh_reprocesses_swapped_list_for_htmx():
 def test_sw_precaches_refresh_js_and_bumps_version():
     body = SW.read_text(encoding="utf-8")
     assert "/static/js/refresh.js" in body
-    assert "argos-v14" in body               # v13 → v14 (ARG-189 feed trust-dial CSS)
+    assert "argos-v15" in body               # bumped to v15 (ARG-189 ring-only trust dial)
     assert "argos-shell-refresh" in body     # message 리스너
 
 

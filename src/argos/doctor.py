@@ -172,6 +172,167 @@ def check_macos_version() -> Row:
     return ("macOS version", "OK", mac_ver)
 
 
+def check_postgres_reachable() -> Row:
+    """Probe: Postgres is reachable (runs SELECT 1 via the async engine).
+
+    Reuses ``runners.db_ping`` so the DB-connection logic lives in one place.
+    A ``WizardStepError`` (ping raised) becomes a FAIL row with its message.
+    """
+    from argos.init_wizard import runners
+    from argos.init_wizard import WizardStepError
+
+    try:
+        runners.run_async(runners.db_ping())
+    except WizardStepError as exc:
+        return ("Postgres reachable", "FAIL", str(exc).splitlines()[0])
+    except Exception as exc:  # pragma: no cover - defensive
+        return ("Postgres reachable", "FAIL", f"unexpected error: {exc}")
+    return ("Postgres reachable", "OK", "")
+
+
+class _AlembicScriptsUnavailable(RuntimeError):
+    """Migration scripts aren't on disk.
+
+    Raised when ``argos`` is running from an installed wheel (pipx / ``pip
+    install``) rather than a source checkout, so the repo-root ``alembic.ini`` /
+    ``alembic/`` this probe expects don't exist — the wheel packages only the
+    ``argos`` package, not the migration tree.  ``check_alembic_head`` degrades
+    this to a soft WARN instead of a hard FAIL, so a healthy database doesn't
+    make ``argos doctor`` exit non-zero merely because the migration files can't
+    be located in an installed layout.
+    """
+
+
+def _alembic_current_and_head() -> tuple[str | None, str | None]:
+    """Return (current_db_revision, script_head_revision), read-only.
+
+    ``head`` comes from the migration scripts (no DB needed).  ``current`` is
+    read from the ``alembic_version`` table via the async engine.  Multi-head
+    repos are not expected here; the first head is used.
+    """
+    from pathlib import Path
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import text
+
+    from argos.database import AsyncSessionLocal
+    from argos.init_wizard import runners
+
+    repo_root = Path(__file__).resolve().parents[2]
+    ini = repo_root / "alembic.ini"
+    scripts = repo_root / "alembic"
+    if not ini.exists() or not scripts.is_dir():
+        raise _AlembicScriptsUnavailable(str(repo_root))
+    cfg = Config(str(ini))
+    cfg.set_main_option("script_location", str(scripts))
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+
+    current: str | None = None
+
+    async def _read_current() -> None:
+        nonlocal current
+        async with AsyncSessionLocal() as session:
+            row = await session.execute(text("SELECT version_num FROM alembic_version"))
+            current = row.scalar_one_or_none()
+
+    runners.run_async(_read_current())
+    return current, head
+
+
+def check_alembic_head() -> Row:
+    """Probe: applied DB revision equals the latest migration head."""
+    try:
+        current, head = _alembic_current_and_head()
+    except _AlembicScriptsUnavailable:
+        # Installed (non-checkout) layout — can't verify migrations, but that is
+        # not a DB fault. Soft WARN so a healthy DB still exits 0.
+        return (
+            "Alembic migrations",
+            "WARN",
+            "migration scripts not found — run from a source checkout to verify",
+        )
+    except Exception as exc:
+        return ("Alembic migrations", "FAIL", f"could not determine revision: {exc}")
+
+    if current is None:
+        return ("Alembic migrations", "FAIL", "no alembic_version row — run: uv run alembic upgrade head")
+    if current != head:
+        return (
+            "Alembic migrations",
+            "FAIL",
+            f"current {current} != head {head} — run: uv run alembic upgrade head",
+        )
+    return ("Alembic migrations", "OK", current)
+
+
+_VRAM_WARN_THRESHOLD_BYTES = 4 * 1024**3  # 4 GiB free-memory floor (advisory)
+
+
+def _available_memory_bytes() -> int | None:
+    """Best-effort available system memory in bytes (macOS via vm_stat/sysctl).
+
+    Returns None when it cannot be determined (non-macOS or parse failure) so
+    the caller degrades to a WARN rather than crashing.  Uses only stdlib +
+    subprocess — no third-party dependency.
+    """
+    try:
+        vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    page_size = 4096
+    free_pages = 0
+    for line in vm.stdout.splitlines():
+        if "page size of" in line:
+            digits = "".join(ch for ch in line if ch.isdigit())
+            if digits:
+                page_size = int(digits)
+        elif line.startswith("Pages free:") or line.startswith("Pages inactive:"):
+            digits = "".join(ch for ch in line.split(":", 1)[1] if ch.isdigit())
+            if digits:
+                free_pages += int(digits)
+    if free_pages == 0:
+        return None
+    return free_pages * page_size
+
+
+def _loaded_ollama_models(host: str = "http://localhost:11434") -> list[str]:
+    """Model names currently loaded in Ollama (via ``/api/ps``).
+
+    Raises on transport error; the caller converts that to a WARN.
+    """
+    import httpx
+
+    resp = httpx.get(f"{host.rstrip('/')}/api/ps", timeout=5)
+    resp.raise_for_status()
+    return [m.get("name", "") for m in resp.json().get("models", [])]
+
+
+def check_vram_headroom(ollama_host: str = "http://localhost:11434") -> Row:
+    """Probe: enough free unified memory to load a model without pressure.
+
+    Advisory (never FAIL): reports loaded models + free GiB, WARNs when free
+    memory is below the threshold or when either input is unavailable.
+    """
+    try:
+        loaded = _loaded_ollama_models(ollama_host)
+    except Exception as exc:
+        return ("VRAM headroom", "WARN", f"Ollama /api/ps unreachable: {exc}")
+
+    free = _available_memory_bytes()
+    if free is None:
+        loaded_str = ", ".join(loaded) if loaded else "none"
+        return ("VRAM headroom", "WARN", f"could not read free memory (loaded: {loaded_str})")
+
+    free_gib = free / 1024**3
+    loaded_str = ", ".join(loaded) if loaded else "none loaded"
+    detail = f"{free_gib:.1f} GiB free (loaded: {loaded_str})"
+    if free < _VRAM_WARN_THRESHOLD_BYTES:
+        return ("VRAM headroom", "WARN", detail + " — low headroom")
+    return ("VRAM headroom", "OK", detail)
+
+
 def print_doctor_table(rows: list[Row]) -> None:
     """Print a structured table of probe results to stdout."""
     if not rows:
@@ -195,12 +356,15 @@ def print_doctor_table(rows: list[Row]) -> None:
 
 
 __all__ = [
+    "check_alembic_head",
     "check_docker",
     "check_macos_version",
     "check_ollama_installed",
     "check_ollama_models",
     "check_ollama_qwen3_8b",
+    "check_postgres_reachable",
     "check_python_version",
     "check_uv_installed",
+    "check_vram_headroom",
     "print_doctor_table",
 ]

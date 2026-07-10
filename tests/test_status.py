@@ -1,0 +1,298 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+import argos.status as status
+
+
+RUN_LOG_SUCCESS = """\
+           INFO     Saving: done (149/149)
+✅ argos run 완료
+─────────────────────────────
+일일 처리: 150개 / 1507개 (잔여: 1357개)
+신규 저장: 149개
+소요 시간: 54m 30s
+"""
+
+RUN_LOG_FAILURE = """\
+           INFO     Triage (8B): started
+Traceback (most recent call last):
+  File "x.py", line 1, in <module>
+RuntimeError: boom
+"""
+
+
+def test_summarize_run_log_success(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_SUCCESS)
+    s = status.summarize_run_log(p)
+    assert s.name == "run"
+    assert s.last_result == "success"
+    assert s.last_success_at is not None
+    assert "149" in s.detail  # 신규 저장 count surfaced
+
+
+def test_summarize_run_log_counts_come_from_latest_success_block(tmp_path):
+    # Append-only log with an OLD success block followed by a NEWER one.
+    # The reported counts must belong to the latest block (99), not the old (11).
+    old_block = "✅ argos run 완료\n일일 처리: 10개 / 20개\n신규 저장: 11개\n"
+    new_block = "✅ argos run 완료\n일일 처리: 98개 / 200개\n신규 저장: 99개\n"
+    p = tmp_path / "run.log"
+    p.write_text(old_block + new_block)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "success"
+    assert "99" in s.detail
+    assert "11개" not in s.detail  # stale count from the old block must not leak
+
+
+def test_summarize_run_log_failure(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_FAILURE)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+
+
+def test_summarize_run_log_missing(tmp_path):
+    s = status.summarize_run_log(tmp_path / "nope.log")
+    assert s.last_result == "unknown"
+    assert s.last_success_at is None
+
+
+RUN_LOG_SUCCESS_THEN_NEWER_FAILURE = """\
+           INFO     Saving: done (149/149)
+✅ argos run 완료
+─────────────────────────────
+일일 처리: 150개 / 1507개 (잔여: 1357개)
+신규 저장: 149개
+소요 시간: 54m 30s
+           INFO     Triage (8B): started
+Traceback (most recent call last):
+  File "x.py", line 1, in <module>
+RuntimeError: boom
+"""
+
+RUN_LOG_FAILURE_THEN_NEWER_SUCCESS = """\
+           INFO     Triage (8B): started
+Traceback (most recent call last):
+  File "x.py", line 1, in <module>
+RuntimeError: boom
+           INFO     Saving: done (149/149)
+✅ argos run 완료
+─────────────────────────────
+일일 처리: 150개 / 1507개 (잔여: 1357개)
+신규 저장: 149개
+소요 시간: 54m 30s
+"""
+
+
+def test_summarize_run_log_success_masked_by_newer_failure(tmp_path):
+    """An append-only log: an OLD success block followed by a NEWER traceback
+    must report failure, not the stale success (recency bug, ARG-221)."""
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_SUCCESS_THEN_NEWER_FAILURE)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+def test_summarize_run_log_failure_then_newer_success_is_success(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_FAILURE_THEN_NEWER_SUCCESS)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "success"
+    assert s.last_success_at is not None
+
+
+def test_summarize_run_log_failure_last_success_at_is_none(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_FAILURE)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+# A triage-infra error returns non-zero WITHOUT a traceback; cli._print_run_summary
+# then emits an explicit failure header instead of the success one. That failed run
+# must report failure, not masquerade as ✅ (P1, PR #113 review).
+RUN_LOG_NONTRACEBACK_FAILURE = """\
+           INFO     Triage (8B): started
+❌ argos run 실패 — 트리아지 인프라 오류
+─────────────────────────────
+일일 처리: 0개 / 1507개 (잔여: 1507개)
+신규 저장: 0개
+소요 시간: 2m 10s
+"""
+
+RUN_LOG_SUCCESS_THEN_NEWER_NONTRACEBACK_FAILURE = RUN_LOG_SUCCESS + RUN_LOG_NONTRACEBACK_FAILURE
+
+
+def test_summarize_run_log_nontraceback_failure(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_NONTRACEBACK_FAILURE)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+def test_summarize_run_log_success_masked_by_newer_nontraceback_failure(tmp_path):
+    """An old success block followed by a NEWER non-zero-exit failure header must
+    report failure — the whole point of the new command (P1, PR #113 review)."""
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_SUCCESS_THEN_NEWER_NONTRACEBACK_FAILURE)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+# A scheduled `argos run --config <path>` can exit non-zero BEFORE `_run` prints
+# any ✅/❌ marker or traceback — cli._apply_config_override rejects a missing or
+# malformed config with one of these stderr lines. After an older success in the
+# append-only log, status must still report failure, not the stale success
+# (P2, PR #113 review).
+RUN_LOG_SUCCESS_THEN_NEWER_CONFIG_ERROR = (
+    RUN_LOG_SUCCESS + "Config file not found: /home/x/.config/argos/config.toml\n"
+)
+
+
+def test_summarize_run_log_config_error_only_is_failure(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text("Invalid TOML in /x/config.toml: bad\n")
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+def test_summarize_run_log_success_masked_by_newer_config_error(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_SUCCESS_THEN_NEWER_CONFIG_ERROR)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+BRIEF_LOG_SUCCESS = """\
+2026-07-08 09:00:02,999 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
+2026-07-09 09:00:06,663 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
+Briefing sent: ts=1783555207.645869
+"""
+
+BRIEF_LOG_NO_ITEMS = "2026-07-09 09:00:06,663 INFO ...\nNo items today — briefing skipped\n"
+
+
+def test_summarize_brief_log_success(tmp_path):
+    p = tmp_path / "brief.log"
+    p.write_text(BRIEF_LOG_SUCCESS)
+    s = status.summarize_brief_log(p)
+    assert s.name == "brief"
+    assert s.last_result == "success"
+    assert s.last_success_at == datetime(2026, 7, 9, 9, 0, 6)
+
+
+def test_summarize_brief_log_no_items_is_success(tmp_path):
+    p = tmp_path / "brief.log"
+    p.write_text(BRIEF_LOG_NO_ITEMS)
+    s = status.summarize_brief_log(p)
+    assert s.last_result == "success"
+
+
+# The weekly job prints "Weekly briefing sent: ts=..." (lowercase 'b'), not the
+# daily "Briefing sent: ts=". The success regex must match both, or a healthy
+# brief-weekly.log renders as `unknown` (P2, PR #113 review).
+BRIEF_WEEKLY_LOG_SUCCESS = """\
+2026-07-08 09:00:02,999 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
+2026-07-09 09:00:06,663 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
+Weekly briefing sent: ts=1783555207.645869
+"""
+
+
+def test_summarize_brief_log_weekly_success(tmp_path):
+    p = tmp_path / "brief-weekly.log"
+    p.write_text(BRIEF_WEEKLY_LOG_SUCCESS)
+    s = status.summarize_brief_log(p, name="brief-weekly")
+    assert s.name == "brief-weekly"
+    assert s.last_result == "success"
+    assert s.last_success_at == datetime(2026, 7, 9, 9, 0, 6)
+
+
+def test_summarize_brief_log_missing(tmp_path):
+    s = status.summarize_brief_log(tmp_path / "nope.log")
+    assert s.last_result == "unknown"
+
+
+BRIEF_LOG_SUCCESS_THEN_NEWER_FAILURE = """\
+2026-07-08 09:00:02,999 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
+Briefing sent: ts=1783555207.645869
+2026-07-09 09:00:10,000 INFO Triage: started
+Traceback (most recent call last):
+  File "x.py", line 1, in <module>
+RuntimeError: boom
+"""
+
+
+def test_summarize_brief_log_success_masked_by_newer_failure(tmp_path):
+    """An old 'Briefing sent' line followed by a NEWER traceback must report
+    failure, not the stale success (recency bug, ARG-221)."""
+    p = tmp_path / "brief.log"
+    p.write_text(BRIEF_LOG_SUCCESS_THEN_NEWER_FAILURE)
+    s = status.summarize_brief_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+BRIEF_LOG_SUCCESS_THEN_NEWER_CONFIG_ERROR = (
+    BRIEF_LOG_SUCCESS + "Config file not found: /home/x/.config/argos/config.toml\n"
+)
+
+
+def test_summarize_brief_log_success_masked_by_newer_config_error(tmp_path):
+    """`argos brief --config` exiting early on a bad config leaves no traceback,
+    only a config-error line — status must report failure, not the stale
+    'Briefing sent' above it (P2, PR #113 review)."""
+    p = tmp_path / "brief.log"
+    p.write_text(BRIEF_LOG_SUCCESS_THEN_NEWER_CONFIG_ERROR)
+    s = status.summarize_brief_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+def test_summarize_brief_log_failure_last_success_at_is_none(tmp_path):
+    p = tmp_path / "brief.log"
+    p.write_text(
+        "2026-07-09 09:00:06,663 INFO ...\n"
+        "Traceback (most recent call last):\n"
+        '  File "x.py", line 1, in <module>\n'
+        "RuntimeError: boom\n"
+    )
+    s = status.summarize_brief_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+def test_collect_status_reads_all_jobs(tmp_path):
+    (tmp_path / "run.log").write_text(RUN_LOG_SUCCESS)
+    (tmp_path / "brief.log").write_text(BRIEF_LOG_SUCCESS)
+    summaries = status.collect_status(log_dir=tmp_path)
+    names = {s.name for s in summaries}
+    assert {"run", "brief"} <= names
+
+
+def test_render_status_contains_job_names_and_verdicts(tmp_path):
+    (tmp_path / "run.log").write_text(RUN_LOG_SUCCESS)
+    summaries = status.collect_status(log_dir=tmp_path)
+    out = status.render_status(summaries)
+    assert "run" in out
+    assert "success" in out or "성공" in out
+
+
+def test_cmd_status_runs_and_prints(tmp_path, capsys, monkeypatch):
+    import argparse
+
+    from argos import cli
+
+    (tmp_path / "run.log").write_text(RUN_LOG_SUCCESS)
+    monkeypatch.setattr("argos.scheduler._DEFAULT_LOG_DIR", tmp_path)
+    rc = cli._cmd_status(argparse.Namespace())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "argos status" in out
+    assert "run" in out

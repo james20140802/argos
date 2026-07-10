@@ -328,6 +328,11 @@ def test_doctor_command_exits_zero_when_all_ok(monkeypatch, capsys):
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "OK", "13.0.0"))
     monkeypatch.setattr("argos.doctor.check_uv_installed", lambda: ("uv installed", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_postgres_reachable", lambda: ("Postgres reachable", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_alembic_head", lambda: ("Alembic migrations", "OK", "abc123"))
+    monkeypatch.setattr(
+        "argos.doctor.check_vram_headroom", lambda **kw: ("VRAM headroom", "OK", "12.0 GiB free")
+    )
 
     from argos.cli import main
     rc = main(["doctor"])
@@ -351,6 +356,11 @@ def test_doctor_command_exits_nonzero_when_probe_fails(monkeypatch, capsys):
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "OK", "13.0.0"))
     monkeypatch.setattr("argos.doctor.check_uv_installed", lambda: ("uv installed", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_postgres_reachable", lambda: ("Postgres reachable", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_alembic_head", lambda: ("Alembic migrations", "OK", "abc123"))
+    monkeypatch.setattr(
+        "argos.doctor.check_vram_headroom", lambda **kw: ("VRAM headroom", "OK", "12.0 GiB free")
+    )
 
     from argos.cli import main
     rc = main(["doctor"])
@@ -369,6 +379,12 @@ def test_doctor_warn_only_does_not_fail(monkeypatch, capsys):
     # macOS 11 → WARN only
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "WARN", "11.0.0 — old"))
     monkeypatch.setattr("argos.doctor.check_uv_installed", lambda: ("uv installed", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_postgres_reachable", lambda: ("Postgres reachable", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_alembic_head", lambda: ("Alembic migrations", "OK", "abc123"))
+    # VRAM WARN too — proves multiple simultaneous WARNs still exit 0.
+    monkeypatch.setattr(
+        "argos.doctor.check_vram_headroom", lambda **kw: ("VRAM headroom", "WARN", "low headroom")
+    )
 
     from argos.cli import main
     rc = main(["doctor"])
@@ -386,14 +402,150 @@ def test_doctor_config_override_passes_custom_ollama_host(monkeypatch, tmp_path,
         captured.update(kw)
         return [("qwen3:8b", "OK", ""), ("qwen3:32b", "OK", ""), ("nomic-embed-text", "OK", "")]
 
+    vram_captured: dict = {}
+
+    def _capture_vram(**kw):
+        vram_captured.update(kw)
+        return ("VRAM headroom", "OK", "12.0 GiB free")
+
     monkeypatch.setattr("argos.doctor.check_docker", lambda: ("Docker daemon", "OK", ""))
     monkeypatch.setattr("argos.doctor.check_ollama_installed", lambda: ("Ollama installed", "OK", ""))
     monkeypatch.setattr("argos.doctor.check_ollama_models", _capture_models)
     monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
     monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "OK", "13.0.0"))
     monkeypatch.setattr("argos.doctor.check_uv_installed", lambda: ("uv installed", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_postgres_reachable", lambda: ("Postgres reachable", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_alembic_head", lambda: ("Alembic migrations", "OK", "abc123"))
+    monkeypatch.setattr("argos.doctor.check_vram_headroom", _capture_vram)
 
     from argos.cli import main
     rc = main(["doctor", "--config", str(cfg)])
     assert rc == 0
     assert captured.get("ollama_host") == "http://custom-host:9999"
+    assert vram_captured.get("ollama_host") == "http://custom-host:9999"
+
+
+# ---------------------------------------------------------------------------
+# check_postgres_reachable
+# ---------------------------------------------------------------------------
+
+
+def test_check_postgres_reachable_ok(monkeypatch):
+    # runners.run_async(db_ping()) 가 예외 없이 끝나면 OK.
+    # Close the coroutine we were handed so pytest doesn't warn about an
+    # un-awaited db_ping() (the real run_async awaits it).
+    monkeypatch.setattr("argos.init_wizard.runners.run_async", lambda coro: coro.close())
+    name, status, detail = doctor.check_postgres_reachable()
+    assert name == "Postgres reachable"
+    assert status == "OK"
+
+
+def test_check_postgres_reachable_fail(monkeypatch):
+    from argos.init_wizard import WizardStepError
+
+    def _raise(coro):
+        coro.close()  # avoid "coroutine was never awaited" warning
+        raise WizardStepError("database ping failed: connection refused", hint="check db container")
+
+    monkeypatch.setattr("argos.init_wizard.runners.run_async", _raise)
+    name, status, detail = doctor.check_postgres_reachable()
+    assert status == "FAIL"
+    assert "database ping failed" in detail
+
+
+# ---------------------------------------------------------------------------
+# check_alembic_head
+# ---------------------------------------------------------------------------
+
+
+def test_check_alembic_head_up_to_date(monkeypatch):
+    monkeypatch.setattr(
+        "argos.doctor._alembic_current_and_head", lambda: ("abc123", "abc123")
+    )
+    name, status, detail = doctor.check_alembic_head()
+    assert name == "Alembic migrations"
+    assert status == "OK"
+
+
+def test_check_alembic_head_behind(monkeypatch):
+    monkeypatch.setattr(
+        "argos.doctor._alembic_current_and_head", lambda: ("abc123", "def456")
+    )
+    _, status, detail = doctor.check_alembic_head()
+    assert status == "FAIL"
+    assert "upgrade head" in detail
+
+
+def test_check_alembic_head_unreadable(monkeypatch):
+    def _raise():
+        raise RuntimeError("cannot connect")
+
+    monkeypatch.setattr("argos.doctor._alembic_current_and_head", _raise)
+    _, status, detail = doctor.check_alembic_head()
+    assert status == "FAIL"
+    assert "cannot connect" in detail
+
+
+def test_check_alembic_head_installed_layout_is_soft_warn(monkeypatch):
+    # Installed (pipx/wheel) layout: migration scripts aren't on disk. That is
+    # not a DB fault, so the probe must WARN (non-fatal), not FAIL and force
+    # `argos doctor` to exit non-zero on a healthy DB (P2, PR #113 review).
+    def _raise():
+        raise doctor._AlembicScriptsUnavailable("/opt/venv/lib/python3.12")
+
+    monkeypatch.setattr("argos.doctor._alembic_current_and_head", _raise)
+    _, status, detail = doctor.check_alembic_head()
+    assert status == "WARN"
+    assert "source checkout" in detail
+
+
+# ---------------------------------------------------------------------------
+# check_vram_headroom
+# ---------------------------------------------------------------------------
+
+
+def test_check_vram_headroom_ok(monkeypatch):
+    monkeypatch.setattr("argos.doctor._available_memory_bytes", lambda: 12 * 1024**3)
+    monkeypatch.setattr("argos.doctor._loaded_ollama_models", lambda host: ["qwen3:8b"])
+    name, status, detail = doctor.check_vram_headroom()
+    assert name == "VRAM headroom"
+    assert status == "OK"
+    assert "12" in detail  # free GiB surfaced
+
+
+def test_check_vram_headroom_low_warns(monkeypatch):
+    monkeypatch.setattr("argos.doctor._available_memory_bytes", lambda: 2 * 1024**3)
+    monkeypatch.setattr("argos.doctor._loaded_ollama_models", lambda host: ["qwen3:32b"])
+    _, status, detail = doctor.check_vram_headroom()
+    assert status == "WARN"
+
+
+def test_check_vram_headroom_ollama_unreachable_warns(monkeypatch):
+    monkeypatch.setattr("argos.doctor._available_memory_bytes", lambda: 12 * 1024**3)
+
+    def _raise(host):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("argos.doctor._loaded_ollama_models", _raise)
+    _, status, _ = doctor.check_vram_headroom()
+    assert status == "WARN"
+
+
+def test_check_vram_headroom_memory_unknown_warns(monkeypatch):
+    monkeypatch.setattr("argos.doctor._available_memory_bytes", lambda: None)
+    monkeypatch.setattr("argos.doctor._loaded_ollama_models", lambda host: [])
+    _, status, _ = doctor.check_vram_headroom()
+    assert status == "WARN"
+
+
+# ---------------------------------------------------------------------------
+# _cmd_doctor registration smoke test
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_module_exposes_new_probes():
+    assert hasattr(doctor, "check_postgres_reachable")
+    assert hasattr(doctor, "check_alembic_head")
+    assert hasattr(doctor, "check_vram_headroom")
+    for name in ("check_postgres_reachable", "check_alembic_head", "check_vram_headroom"):
+        assert name in doctor.__all__
