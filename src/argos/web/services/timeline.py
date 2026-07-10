@@ -308,6 +308,33 @@ async def fetch_timeline(
     signal_events = await _fetch_signal_events(session, tech_id)
     succession_events = await _fetch_succession_events(session, tech_id)
 
+    # ARG-199: a SUCCESSION_ALERTED signal event and a tech_succession event
+    # can describe the same succession fact — since ARG-204,
+    # post_track_update writes succession_alerted's changed_from as
+    # str(successor_id), so it can be UUID-matched against a succession
+    # event's link_tech_id (the successor). Drop the anonymous 🔭 duplicate
+    # for that (asset, successor) pair only. Legacy rows (pre-ARG-204,
+    # changed_from='Keep') aren't UUID-parseable and are exempt — they stay
+    # as the sole surviving record for an orphaned succession fact.
+    from argos.slack.services.track_check import SUCCESSION_ALERTED
+
+    succession_successor_ids = {e.link_tech_id for e in succession_events}
+
+    def _is_duplicate_succession_alert(event: TimelineEvent) -> bool:
+        if event.kind != "signal" or event.changed_to != SUCCESSION_ALERTED:
+            return False
+        if event.changed_from is None:
+            return False
+        try:
+            successor_id = uuid.UUID(event.changed_from)
+        except ValueError:
+            return False  # legacy 'Keep' row — not UUID-matchable, exempt
+        return successor_id in succession_successor_ids
+
+    signal_events = [
+        e for e in signal_events if not _is_duplicate_succession_alert(e)
+    ]
+
     events = status_events + signal_events + succession_events
 
     # Two-pass stable sort: first the deterministic tie-break (ascending),

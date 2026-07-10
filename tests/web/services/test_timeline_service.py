@@ -483,3 +483,90 @@ async def test_fetch_timeline_legacy_succession_alerted_is_plain_text_event() ->
                 )
             await session.commit()
         await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_timeline_dedupes_new_encoding_succession_alert() -> None:
+    """ARG-199: a NEW-encoding succession_alerted row (changed_from =
+    str(successor_id), written since ARG-204) describes the same fact as the
+    tech_succession row it was raised for — fetch_timeline must return the
+    🧬 succession event but drop the anonymous 🔭 duplicate, so only one
+    event references the succession."""
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import TechItem
+    from argos.models.tech_succession import RelationType, TechSuccession
+    from argos.models.track_history import TrackHistory
+    from argos.models.user_asset import AssetStatus, UserAsset
+    from argos.web.services.timeline import fetch_timeline
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    seeded_tech_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            p = TechItem(
+                title="arg199-dedup-p",
+                source_url=f"https://example.com/arg199/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            s = TechItem(
+                title="arg199-dedup-s",
+                source_url=f"https://example.com/arg199/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            session.add_all([p, s])
+            await session.flush()
+            seeded_tech_ids = [p.id, s.id]
+
+            p_asset = UserAsset(tech_id=p.id, status=AssetStatus.KEEP)
+            session.add(p_asset)
+            await session.flush()
+
+            session.add(
+                TechSuccession(
+                    predecessor_id=p.id,
+                    successor_id=s.id,
+                    relation_type=RelationType.ENHANCE,
+                    reasoning="s enhances p",
+                    created_at=datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc),
+                )
+            )
+            # NEW-encoding succession_alerted: changed_from is the successor's
+            # UUID (str), matching what post_track_update writes since ARG-204.
+            session.add(
+                TrackHistory(
+                    user_asset_id=p_asset.id,
+                    changed_from=str(s.id),
+                    changed_to="succession_alerted",
+                    changed_at=datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc),
+                )
+            )
+            await session.commit()
+            p_id = p.id
+            s_id = s.id
+
+        async with Session() as session:
+            events = await fetch_timeline(session, p_id)
+            succession_matches = [
+                e for e in events if e.kind == "succession" and e.link_tech_id == s_id
+            ]
+            assert len(succession_matches) == 1
+            signal_dupes = [
+                e
+                for e in events
+                if e.kind == "signal" and e.title is None and e.label == "후속 기술 신호"
+            ]
+            assert signal_dupes == []
+            assert len(events) == 1
+    finally:
+        async with Session() as session:
+            if seeded_tech_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_tech_ids))
+                )
+            await session.commit()
+        await engine.dispose()

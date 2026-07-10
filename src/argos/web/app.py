@@ -33,7 +33,7 @@ from argos.web.services.settings import (
     apply_settings,
     load_settings_view,
 )
-from argos.web.services.timeline import fetch_timeline, replace_successors
+from argos.web.services.timeline import ReplaceSuccessor, fetch_timeline, replace_successors
 
 _PACKAGE_DIR = Path(__file__).parent  # noqa: E402 — module-level lazy shims below
 _log = logging.getLogger("argos.web")
@@ -402,7 +402,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         at all issues zero extra queries. Keyed by ``user_asset.id`` (the
         card's DOM id), value is the first Replace successor found.
         """
-        banners: dict[uuid.UUID, object] = {}
+        banners: dict[uuid.UUID, ReplaceSuccessor] = {}
         for asset in (*view.active, *view.quiet):
             if asset.lineage_count <= 0:
                 continue
@@ -491,7 +491,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
 
         events = await fetch_timeline(session, tech_id, limit=5)
         return request.app.state.templates.TemplateResponse(
-            request, "_timeline.html", {"events": events, "asset_id": parsed_id}
+            request, "_timeline.html", {"events": events}
         )
 
     def _render_not_found(request: Request) -> HTMLResponse:

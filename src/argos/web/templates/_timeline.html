@@ -3,11 +3,11 @@
    alerts (🔭), and successions (🧬). Used by the portfolio card accordion
    (GET /portfolio/{asset_id}/timeline, limit=5) and the item-detail page
    (fetch_timeline with no limit). `events` and `empty_message` are read by
-   both call sites; `asset_id` (the CURRENT tech's own user_asset id) is
-   optional and only needed to build Enhance/Fork's "이 기술도 Keep" hx-post
-   target — the Replace handoff banner itself lives outside this partial
-   (`_portfolio_cards.html` / `_detail_actions.html`), since it must render
-   even before this fragment is fetched (ARG-209). #}
+   both call sites. Enhance/Fork's "이 기술도 Keep" hx-post target is built
+   from each event's own `e.link_tech_id` — the Replace handoff banner
+   itself lives outside this partial (`_portfolio_cards.html` /
+   `_detail_actions.html`), since it must render even before this fragment
+   is fetched (ARG-209). #}
 {% set _events = events if events is defined else [] %}
 {% if _events %}
 <ol class="timeline">
