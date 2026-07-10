@@ -111,6 +111,39 @@ def test_summarize_run_log_failure_last_success_at_is_none(tmp_path):
     assert s.last_success_at is None
 
 
+# A triage-infra error returns non-zero WITHOUT a traceback; cli._print_run_summary
+# then emits an explicit failure header instead of the success one. That failed run
+# must report failure, not masquerade as ✅ (P1, PR #113 review).
+RUN_LOG_NONTRACEBACK_FAILURE = """\
+           INFO     Triage (8B): started
+❌ argos run 실패 — 트리아지 인프라 오류
+─────────────────────────────
+일일 처리: 0개 / 1507개 (잔여: 1507개)
+신규 저장: 0개
+소요 시간: 2m 10s
+"""
+
+RUN_LOG_SUCCESS_THEN_NEWER_NONTRACEBACK_FAILURE = RUN_LOG_SUCCESS + RUN_LOG_NONTRACEBACK_FAILURE
+
+
+def test_summarize_run_log_nontraceback_failure(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_NONTRACEBACK_FAILURE)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+def test_summarize_run_log_success_masked_by_newer_nontraceback_failure(tmp_path):
+    """An old success block followed by a NEWER non-zero-exit failure header must
+    report failure — the whole point of the new command (P1, PR #113 review)."""
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_SUCCESS_THEN_NEWER_NONTRACEBACK_FAILURE)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
 BRIEF_LOG_SUCCESS = """\
 2026-07-08 09:00:02,999 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
 2026-07-09 09:00:06,663 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"

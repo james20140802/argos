@@ -40,8 +40,13 @@ def _format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
-def _print_run_summary(summary, elapsed: float) -> None:
+def _print_run_summary(summary, elapsed: float, failed: bool = False) -> None:
     import sys
+
+    # A failed run must NOT leave the success marker in the log — `argos status`
+    # keys on it. Emit an explicit failure header on the SAME (stdout) stream so
+    # the status parser sees a deterministic, correctly-ordered outcome marker.
+    header = "❌ argos run 실패 — 트리아지 인프라 오류" if failed else "✅ argos run 완료"
 
     source_parts = []
     if "github_trending" in summary.per_source:
@@ -83,14 +88,18 @@ def _print_run_summary(summary, elapsed: float) -> None:
             table.add_row("소요 시간", _format_duration(elapsed))
 
             console.print()
-            console.print("✅ [bold green]argos run 완료[/bold green]")
+            if failed:
+                console.print("❌ [bold red]argos run 실패 — 트리아지 인프라 오류[/bold red]")
+            else:
+                console.print("✅ [bold green]argos run 완료[/bold green]")
             console.print(table)
             return
         except ImportError:
             pass
 
-    # Non-TTY / Rich unavailable fallback
-    print("✅ argos run 완료")
+    # Non-TTY / Rich unavailable fallback — this is the launchd path that writes
+    # run.log, so the failure header here is what `argos status` keys on.
+    print(header)
     print("─────────────────────────────")
     print(f"신규 크롤링: {summary.crawled_total}개{source_detail}")
     print(f"일일 처리: {queue_detail}")
@@ -309,8 +318,9 @@ async def _run(
                         exc_info=True,
                     )
     elapsed = time.monotonic() - start
-    _print_run_summary(summary, elapsed)
-    if any(s.get("triage_error") for s in results):
+    run_failed = any(s.get("triage_error") for s in results)
+    _print_run_summary(summary, elapsed, failed=run_failed)
+    if run_failed:
         logging.getLogger(__name__).warning(
             "argos run: Ollama infra error during triage; crawl queue preserved "
             "for retry, reporting non-zero exit."

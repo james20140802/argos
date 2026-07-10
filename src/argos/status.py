@@ -13,6 +13,11 @@ from datetime import datetime
 from pathlib import Path
 
 _RUN_SUCCESS_MARKER = "✅ argos run 완료"
+# A run can fail WITHOUT raising a traceback — e.g. a triage-infra error makes
+# `argos run` print an explicit failure header and return non-zero (see
+# cli._print_run_summary). Recognise that marker too, or such a failed run would
+# masquerade as ✅ in `argos status`.
+_RUN_FAILURE_MARKER = "❌ argos run 실패"
 _TRACEBACK_MARKER = "Traceback (most recent call last)"
 _SAVED_RE = re.compile(r"신규 저장:\s*(\d+)개")
 _PROCESSED_RE = re.compile(r"일일 처리:\s*([\d]+개 / [\d]+개)")
@@ -38,8 +43,8 @@ def _mtime(path: Path) -> datetime | None:
 def _failure_detail(path: Path) -> str:
     mtime = _mtime(path)
     if mtime is None:
-        return "마지막 실행에서 예외 발생"
-    return f"마지막 실행에서 예외 발생 ({mtime:%Y-%m-%d %H:%M})"
+        return "마지막 실행 실패"
+    return f"마지막 실행 실패 ({mtime:%Y-%m-%d %H:%M})"
 
 
 def summarize_run_log(path: Path, name: str = "run") -> LogSummary:
@@ -50,12 +55,15 @@ def summarize_run_log(path: Path, name: str = "run") -> LogSummary:
     # Logs are append-only and never rotate, so a marker's mere *presence*
     # isn't enough — we need whichever of success/failure happened LAST.
     success_idx = text.rfind(_RUN_SUCCESS_MARKER)
-    traceback_idx = text.rfind(_TRACEBACK_MARKER)
+    # Failure = whichever of a traceback OR an explicit non-zero-exit header
+    # happened last.  Both the success and failure headers are written to stdout
+    # by cli._print_run_summary, so their relative order in the file is reliable.
+    failure_idx = max(text.rfind(_TRACEBACK_MARKER), text.rfind(_RUN_FAILURE_MARKER))
 
-    if success_idx == -1 and traceback_idx == -1:
+    if success_idx == -1 and failure_idx == -1:
         return LogSummary(name, "unknown", None, "성공/실패 마커 없음")
 
-    if success_idx > traceback_idx:
+    if success_idx > failure_idx:
         # Scan counts only within the winning (last) success block — the file
         # may hold older run blocks whose counts must not leak into this one.
         latest = text[success_idx:]
