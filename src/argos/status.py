@@ -19,6 +19,18 @@ _RUN_SUCCESS_MARKER = "✅ argos run 완료"
 # masquerade as ✅ in `argos status`.
 _RUN_FAILURE_MARKER = "❌ argos run 실패"
 _TRACEBACK_MARKER = "Traceback (most recent call last)"
+# `argos run/brief --config <path>` can exit non-zero BEFORE any run/brief work
+# runs — hence before any ✅/❌ marker or traceback — when the config file is
+# missing or malformed: cli._apply_config_override prints one of these
+# deterministic lines to stderr and returns non-zero. The scheduled launchd job
+# appends that stderr to the same append-only log, so without recognising these
+# lines a failed config-load run would leave an OLDER ✅ block as the newest
+# marker and `argos status` would keep reporting a stale success. (P2, PR #113
+# review — same class as the non-traceback failure header above.)
+_CONFIG_ERROR_RE = re.compile(
+    r"^(?:Config file not found:|Invalid TOML in |Invalid config in |Could not read config file )",
+    re.MULTILINE,
+)
 _SAVED_RE = re.compile(r"신규 저장:\s*(\d+)개")
 _PROCESSED_RE = re.compile(r"일일 처리:\s*([\d]+개 / [\d]+개)")
 # Matches both the daily ("Briefing sent: ts=") and weekly ("Weekly briefing
@@ -44,6 +56,18 @@ def _mtime(path: Path) -> datetime | None:
         return None
 
 
+def _last_match_start(regex: re.Pattern[str], text: str) -> int:
+    """Byte offset of the LAST regex match in ``text``, or -1 if none.
+
+    Used for recency comparison against literal ``rfind`` offsets, so a
+    config-load failure that lands after an older success is ranked newest.
+    """
+    idx = -1
+    for m in regex.finditer(text):
+        idx = m.start()
+    return idx
+
+
 def _failure_detail(path: Path) -> str:
     mtime = _mtime(path)
     if mtime is None:
@@ -59,10 +83,16 @@ def summarize_run_log(path: Path, name: str = "run") -> LogSummary:
     # Logs are append-only and never rotate, so a marker's mere *presence*
     # isn't enough — we need whichever of success/failure happened LAST.
     success_idx = text.rfind(_RUN_SUCCESS_MARKER)
-    # Failure = whichever of a traceback OR an explicit non-zero-exit header
-    # happened last.  Both the success and failure headers are written to stdout
-    # by cli._print_run_summary, so their relative order in the file is reliable.
-    failure_idx = max(text.rfind(_TRACEBACK_MARKER), text.rfind(_RUN_FAILURE_MARKER))
+    # Failure = whichever of a traceback, an explicit non-zero-exit header, OR a
+    # config-load error line happened last.  The success/failure headers are
+    # written to stdout by cli._print_run_summary and the config-error lines to
+    # stderr by cli._apply_config_override; both land in the same append-only log,
+    # so their relative order there is what decides the latest outcome.
+    failure_idx = max(
+        text.rfind(_TRACEBACK_MARKER),
+        text.rfind(_RUN_FAILURE_MARKER),
+        _last_match_start(_CONFIG_ERROR_RE, text),
+    )
 
     if success_idx == -1 and failure_idx == -1:
         return LogSummary(name, "unknown", None, "성공/실패 마커 없음")
@@ -92,18 +122,20 @@ def summarize_brief_log(path: Path, name: str = "brief") -> LogSummary:
     # Logs are append-only and never rotate, so we need the LAST occurrence
     # of each marker, then compare positions — not just "does it exist".
     last_success_idx = None
-    last_traceback_idx = None
+    last_failure_idx = None
     for i, line in enumerate(lines):
         if _BRIEF_SUCCESS_RE.search(line):
             last_success_idx = i
-        if _TRACEBACK_MARKER in line:
-            last_traceback_idx = i
+        # A traceback OR a config-load error (from `argos brief --config` exiting
+        # early via cli._apply_config_override) both mean this run failed.
+        if _TRACEBACK_MARKER in line or _CONFIG_ERROR_RE.match(line):
+            last_failure_idx = i
 
-    if last_success_idx is None and last_traceback_idx is None:
+    if last_success_idx is None and last_failure_idx is None:
         return LogSummary(name, "unknown", None, "성공/실패 마커 없음")
 
     if last_success_idx is not None and (
-        last_traceback_idx is None or last_success_idx > last_traceback_idx
+        last_failure_idx is None or last_success_idx > last_failure_idx
     ):
         # Success timestamp: the ISO stamp on the marker line, else the
         # nearest preceding stamped line, else file mtime.

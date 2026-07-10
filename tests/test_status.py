@@ -144,6 +144,32 @@ def test_summarize_run_log_success_masked_by_newer_nontraceback_failure(tmp_path
     assert s.last_success_at is None
 
 
+# A scheduled `argos run --config <path>` can exit non-zero BEFORE `_run` prints
+# any ✅/❌ marker or traceback — cli._apply_config_override rejects a missing or
+# malformed config with one of these stderr lines. After an older success in the
+# append-only log, status must still report failure, not the stale success
+# (P2, PR #113 review).
+RUN_LOG_SUCCESS_THEN_NEWER_CONFIG_ERROR = (
+    RUN_LOG_SUCCESS + "Config file not found: /home/x/.config/argos/config.toml\n"
+)
+
+
+def test_summarize_run_log_config_error_only_is_failure(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text("Invalid TOML in /x/config.toml: bad\n")
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+def test_summarize_run_log_success_masked_by_newer_config_error(tmp_path):
+    p = tmp_path / "run.log"
+    p.write_text(RUN_LOG_SUCCESS_THEN_NEWER_CONFIG_ERROR)
+    s = status.summarize_run_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
 BRIEF_LOG_SUCCESS = """\
 2026-07-08 09:00:02,999 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
 2026-07-09 09:00:06,663 INFO httpx: HTTP Request: POST ... "HTTP/1.1 200 OK"
@@ -208,6 +234,22 @@ def test_summarize_brief_log_success_masked_by_newer_failure(tmp_path):
     failure, not the stale success (recency bug, ARG-221)."""
     p = tmp_path / "brief.log"
     p.write_text(BRIEF_LOG_SUCCESS_THEN_NEWER_FAILURE)
+    s = status.summarize_brief_log(p)
+    assert s.last_result == "failure"
+    assert s.last_success_at is None
+
+
+BRIEF_LOG_SUCCESS_THEN_NEWER_CONFIG_ERROR = (
+    BRIEF_LOG_SUCCESS + "Config file not found: /home/x/.config/argos/config.toml\n"
+)
+
+
+def test_summarize_brief_log_success_masked_by_newer_config_error(tmp_path):
+    """`argos brief --config` exiting early on a bad config leaves no traceback,
+    only a config-error line — status must report failure, not the stale
+    'Briefing sent' above it (P2, PR #113 review)."""
+    p = tmp_path / "brief.log"
+    p.write_text(BRIEF_LOG_SUCCESS_THEN_NEWER_CONFIG_ERROR)
     s = status.summarize_brief_log(p)
     assert s.last_result == "failure"
     assert s.last_success_at is None
