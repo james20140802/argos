@@ -302,7 +302,10 @@ def test_item_detail_renders_trust_breakdown_when_rubric_present(monkeypatch):
     assert "없음" in body
     assert "balanced" in body
     assert "low" in body
-    assert "example.com" in body
+    # Full source URL (not a bare domain substring) — asserts the detail page
+    # renders the item's source link, and avoids CodeQL's incomplete-URL-
+    # sanitization false positive on a lone "example.com" check.
+    assert "https://example.com/rubric-item" in body
     assert "2건" in body
 
 
