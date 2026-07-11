@@ -26,13 +26,22 @@ class _FakeSession:
         self.committed = True
 
 
-def _client(monkeypatch, **patches) -> TestClient:
+def _client(monkeypatch, *, verify_successor: bool = True, **patches) -> TestClient:
     app = build_web_app()
 
     async def _fake_session():
         yield _FakeSession()
 
     app.dependency_overrides[_get_session] = _fake_session
+
+    # The handoff route guards on ``_is_replace_successor`` before transitioning.
+    # Default it to True (a valid Replace lineage) so the happy-path tests reach
+    # the transitions; pass ``verify_successor=False`` to exercise rejection.
+    async def _fake_verify(session, predecessor_id, successor_id):
+        return verify_successor
+
+    monkeypatch.setattr("argos.web.app._is_replace_successor", _fake_verify)
+
     for path, fn in patches.items():
         monkeypatch.setattr(path, fn)
     return TestClient(app, raise_server_exceptions=False)
@@ -204,8 +213,12 @@ def test_handoff_commits_session(monkeypatch):
     async def _fake_transition(session, tech_id, target_status):
         return TransitionOutcome.TRANSITIONED
 
+    async def _fake_verify(session, predecessor_id, successor_id):
+        return True
+
     monkeypatch.setattr("argos.web.app._resolve_user_asset_tech_id", _fake_resolve)
     monkeypatch.setattr("argos.web.app.transition_asset", _fake_transition)
+    monkeypatch.setattr("argos.web.app._is_replace_successor", _fake_verify)
 
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
@@ -213,3 +226,85 @@ def test_handoff_commits_session(monkeypatch):
     )
     assert resp.status_code == 200
     assert sessions and sessions[-1].committed is True
+
+
+def test_handoff_rejects_non_replace_successor(monkeypatch):
+    """A ``successor_tech_id`` that is not an actual Replace successor of the
+    predecessor (stale banner after the lineage changed, or a hand-crafted
+    POST) is rejected with 409 and NOTHING transitions — the portfolio can't
+    be handed off to an unrelated or self tech item."""
+    user_asset_id = uuid.uuid4()
+    predecessor_tech_id = uuid.uuid4()
+    successor_tech_id = uuid.uuid4()
+
+    async def _fake_resolve(session, ua_id):
+        return predecessor_tech_id
+
+    async def _fake_transition(session, tech_id, target_status):
+        raise AssertionError("no transition may run when the successor is invalid")
+
+    client = _client(
+        monkeypatch,
+        verify_successor=False,
+        **{
+            "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
+            "argos.web.app.transition_asset": _fake_transition,
+        },
+    )
+    resp = client.post(
+        f"/assets/{user_asset_id}/handoff?successor_tech_id={successor_tech_id}"
+    )
+    assert resp.status_code == 409
+    assert "<!DOCTYPE html>" not in resp.text
+
+
+def test_handoff_detail_context_rerenders_archived_action_bar(monkeypatch):
+    """``context=detail`` re-renders the predecessor's action area, now
+    Archived: the handoff banner is gone and the bar shows Keep (not a stale
+    Untrack), swapped in via the ``#detail-actions-<id>`` wrapper so the detail
+    page never displays controls for a state that no longer exists."""
+    user_asset_id = uuid.uuid4()
+    predecessor_tech_id = uuid.uuid4()
+    successor_tech_id = uuid.uuid4()
+
+    async def _fake_resolve(session, ua_id):
+        return predecessor_tech_id
+
+    async def _fake_transition(session, tech_id, target_status):
+        return TransitionOutcome.TRANSITIONED
+
+    async def _fake_lookup(session, tech_id):
+        assert tech_id == predecessor_tech_id
+        # Predecessor is Archived after the handoff; no ``successors`` key is
+        # needed because the template short-circuits it when is_kept is False.
+        return {
+            "id": tech_id,
+            "title": "Predecessor",
+            "status": AssetStatus.ARCHIVED,
+            "category": None,
+            "image_url": None,
+            "summary": None,
+            "trust_score": None,
+            "source_url": "https://x",
+            "asset_id": user_asset_id,
+        }
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
+            "argos.web.app.transition_asset": _fake_transition,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+        },
+    )
+    resp = client.post(
+        f"/assets/{user_asset_id}/handoff"
+        f"?successor_tech_id={successor_tech_id}&context=detail"
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert f'id="detail-actions-{predecessor_tech_id}"' in body
+    assert f'id="item-actions-{predecessor_tech_id}"' in body
+    assert "handoff-banner" not in body
+    assert "Untrack" not in body
+    assert "Keep" in body

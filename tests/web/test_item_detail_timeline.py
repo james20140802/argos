@@ -200,8 +200,12 @@ def test_detail_page_renders_handoff_banner_for_replace_successor(monkeypatch):
     assert "Next-Gen Model" in body
     assert "이어받기" in body
     assert (
-        f'hx-post="/assets/{asset_id}/handoff?successor_tech_id={succ_id}"' in body
+        f'hx-post="/assets/{asset_id}/handoff'
+        f'?successor_tech_id={succ_id}&context=detail"' in body
     )
+    # The handoff swaps the whole detail action area (banner + bar) so the two
+    # can't drift out of sync after the predecessor is archived (ARG-209).
+    assert f'hx-target="#detail-actions-{view.id}"' in body
 
 
 def test_detail_page_omits_handoff_banner_for_enhance_successor(monkeypatch):

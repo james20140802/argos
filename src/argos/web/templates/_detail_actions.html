@@ -1,17 +1,26 @@
 {# Detail-page Keep/Pass/Untrack action bar (ARG-184).
 
    Rendered both by item_detail.html (initial page load) and as the HTMX
-   swap target for POST /items/{id}/keep|pass?context=detail and
-   POST /assets/{id}/untrack?context=detail. Passing ``context=detail`` on
+   swap target for POST /items/{id}/keep|pass?context=detail,
+   POST /assets/{id}/untrack?context=detail, and
+   POST /assets/{id}/handoff?context=detail. Passing ``context=detail`` on
    those routes is what makes them return THIS partial instead of the feed's
    ``_feed_card.html`` — the detail page has exactly one card on screen, so
    it needs its own standalone fragment rather than a full card re-render.
+
+   Every detail mutation swaps the whole ``#detail-actions-<id>`` wrapper
+   (banner + bar) via outerHTML, so the handoff banner and the action bar can
+   never drift into an inconsistent state (ARG-209): a handoff archives the
+   predecessor, and the re-rendered wrapper drops the banner and shows the
+   Archived bar in one swap. The inner ``#item-actions-<id>`` div is kept so
+   existing selectors/tests still resolve.
 
    Once an item is Kept, the Keep button is replaced by Untrack (mirrors the
    portfolio's one-way "release from Keep" action) rather than staying a
    togglable ✓ Keep — Pass stays a toggle in both states, same as the feed. #}
 {% set is_kept = item.status and item.status.value == 'Keep' %}
 {% set is_passed = item.status and item.status.value == 'Archived' %}
+{% set actions_target = '#detail-actions-' ~ item.id %}
 {% set untrack_params = ['context=detail', 'tech_id=' ~ item.id] %}
 {% set pass_params = ['context=detail'] + (['active=1'] if is_passed else []) %}
 {# ARG-209 AC1/AC3: a Keep asset with a Replace successor gets a handoff
@@ -19,13 +28,14 @@
    successor (existing 🧬 genealogy query) — reused here as-is, no new
    query needed on the detail page. #}
 {% set replace_successor = (item.successors | selectattr('relation_type.value', 'equalto', 'Replace') | first) if (is_kept and item.successors) else None %}
+<div class="detail-actions-area" id="detail-actions-{{ item.id }}">
 {% if replace_successor %}
 <div class="handoff-banner" id="handoff-banner-{{ item.id }}">
   <p class="handoff-banner__text">🔁 <a href="/item/{{ replace_successor.tech_id }}">{{ replace_successor.title }}</a>이(가) 이 기술을 대체합니다</p>
   <button type="button"
           class="handoff-banner__btn"
-          hx-post="/assets/{{ item.asset_id }}/handoff?successor_tech_id={{ replace_successor.tech_id }}"
-          hx-target="#handoff-banner-{{ item.id }}"
+          hx-post="/assets/{{ item.asset_id }}/handoff?successor_tech_id={{ replace_successor.tech_id }}&context=detail"
+          hx-target="{{ actions_target }}"
           hx-swap="outerHTML">이어받기</button>
 </div>
 {% endif %}
@@ -33,18 +43,19 @@
   {% if is_kept %}
   <button class="card-action card-action--untrack"
           hx-post="/assets/{{ item.asset_id }}/untrack?{{ untrack_params | join('&') }}"
-          hx-target="#item-actions-{{ item.id }}"
+          hx-target="{{ actions_target }}"
           hx-swap="outerHTML">Untrack</button>
   {% else %}
   <button class="card-action card-action--keep"
           aria-pressed="false"
           hx-post="/items/{{ item.id }}/keep?context=detail"
-          hx-target="#item-actions-{{ item.id }}"
+          hx-target="{{ actions_target }}"
           hx-swap="outerHTML">Keep</button>
   {% endif %}
   <button class="card-action card-action--pass{% if is_passed %} is-active{% endif %}"
           aria-pressed="{{ 'true' if is_passed else 'false' }}"
           hx-post="/items/{{ item.id }}/pass?{{ pass_params | join('&') }}"
-          hx-target="#item-actions-{{ item.id }}"
+          hx-target="{{ actions_target }}"
           hx-swap="outerHTML">{% if is_passed %}✓ Pass{% else %}Pass{% endif %}</button>
+</div>
 </div>
