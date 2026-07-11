@@ -149,6 +149,15 @@ def test_backfill_trust_fills_rubric_and_resynthesizes_score():
     update_stmt = session.execute.await_args_list[1].args[0]
     params = update_stmt.compile().params
 
+    # The non-overwrite guard (`trust_rubric IS NULL`) compiles to a literal
+    # IS NULL in the SQL text with NO bound param, so it never shows up in
+    # .compile().params — assert it off the rendered SQL. Without this, a
+    # regression that dropped the guard from the WHERE clause (reintroducing
+    # the clobbering race) would still pass every param assertion below.
+    assert "trust_rubric IS NULL" in str(update_stmt)
+    # And the UPDATE must target the intended row (id_1 is the bound row id).
+    assert params["id_1"] == row_id
+
     expected_rubric = {
         "is_primary_source": True,
         "has_evidence_links": True,
