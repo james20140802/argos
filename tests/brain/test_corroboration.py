@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
@@ -106,6 +107,7 @@ async def _add_item(
     corroboration_count=None,
     trust_rubric=None,
     trust_score=0.5,
+    created_at=None,
 ):
     item = TechItem(
         title=title,
@@ -122,6 +124,13 @@ async def _add_item(
         text("UPDATE tech_items SET embedding = CAST(:emb AS vector) WHERE id = :id"),
         {"emb": _emb_str(emb), "id": str(item.id)},
     )
+    # created_at has a server_default(now()), so override it explicitly via SQL
+    # when a test needs an item placed outside the corroboration lookback window.
+    if created_at is not None:
+        await session.execute(
+            text("UPDATE tech_items SET created_at = :created_at WHERE id = :id"),
+            {"created_at": created_at, "id": str(item.id)},
+        )
     return item
 
 
@@ -281,5 +290,34 @@ async def test_threshold_config_changes_count(embeddings, monkeypatch):
             await update_corroboration(session)
             a_low = await _get_item(session, a.id)
             assert a_low.corroboration_count == 1
+        finally:
+            await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_out_of_window_neighbor_not_counted(embeddings):
+    """A similar, different-domain item created BEFORE the lookback window must
+    not corroborate an in-window item — corroboration is 'recent N-day items
+    only', so an old neighbor is excluded from the count."""
+    base_emb, similar_emb, _ortho_emb = embeddings
+    lookback = settings.user.trust.corroboration_lookback_days
+    # Well past the window so there's no boundary flakiness.
+    old_ts = datetime.now(timezone.utc) - timedelta(days=lookback + 30)
+    async with _session_ctx() as session:
+        try:
+            a = await _add_item(session, "A-window", _uniq("window-a.com"), base_emb)
+            # Similar + different domain, but created outside the lookback window.
+            await _add_item(
+                session,
+                "B-old",
+                _uniq("window-b.com"),
+                similar_emb,
+                created_at=old_ts,
+            )
+
+            await update_corroboration(session)
+
+            a_after = await _get_item(session, a.id)
+            assert (a_after.corroboration_count or 0) == 0
         finally:
             await session.rollback()

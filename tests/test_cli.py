@@ -1,12 +1,32 @@
 from __future__ import annotations
 
 import plistlib
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from argos.cli import _format_duration, main
 from argos.crawler.pipeline import PipelineSummary
+
+
+def _make_run_session() -> AsyncMock:
+    """Mock AsyncSessionLocal() for _run tests.
+
+    Besides the async-context-manager protocol, _run's ARG-210 corroboration
+    hook calls ``session.execute(...).mappings().all()``. A bare ``AsyncMock``
+    would make ``.mappings()`` return an un-awaited coroutine (the awaited
+    ``execute`` result is itself an AsyncMock), which the hook's ``except``
+    swallows but GC then reports as ``RuntimeWarning: coroutine ... was never
+    awaited``. Stub the execute chain to a real (sync) empty result so the hook
+    resolves cleanly and test output stays warning-free.
+    """
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = []
+    session.execute.return_value = result
+    return session
 
 
 # ---------------------------------------------------------------------------
@@ -65,9 +85,7 @@ async def test_run_prints_summary_block(capsys, monkeypatch) -> None:
     async def fake_session_context():
         return None
 
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
@@ -97,9 +115,7 @@ async def test_run_prints_summary_block(capsys, monkeypatch) -> None:
 async def test_run_empty_crawl_shows_zero_counts(capsys) -> None:
     summary = _make_summary(crawled_total=0, per_source={}, triage_pass=0, saved_new=0)
 
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
@@ -121,9 +137,7 @@ async def test_run_empty_crawl_shows_zero_counts(capsys) -> None:
 async def test_run_prints_genealogy_skipped_line_when_nonzero(capsys) -> None:
     summary = _make_summary(genealogy_skipped=4)
 
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
@@ -143,9 +157,7 @@ async def test_run_prints_genealogy_skipped_line_when_nonzero(capsys) -> None:
 async def test_run_omits_genealogy_line_when_zero(capsys) -> None:
     summary = _make_summary(genealogy_skipped=0)
 
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
@@ -222,9 +234,7 @@ def test_main_run_subcommand_exits_zero(monkeypatch) -> None:
     summary = _make_summary()
     states = _make_mock_states(1)
 
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
@@ -256,9 +266,7 @@ def test_run_parser_accepts_config_flag(tmp_path, monkeypatch) -> None:
     summary = _make_summary()
     states = _make_mock_states(0)
 
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
@@ -345,9 +353,7 @@ def test_plist_program_arguments_roundtrip_through_run_parser(
 
     summary = _make_summary()
     states = _make_mock_states(0)
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
@@ -744,9 +750,7 @@ def test_schedule_install_no_flag_no_file_launchd_invocation_uses_defaults(
     # Must succeed with default config (missing file → permissive load → defaults).
     summary = _make_summary()
     states = _make_mock_states(0)
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
@@ -859,9 +863,7 @@ def test_run_no_config_flag_no_file_uses_defaults(tmp_path, monkeypatch) -> None
 
     summary = _make_summary()
     states = _make_mock_states(0)
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
@@ -903,9 +905,7 @@ async def test_run_calls_dispatch_signal_matches_with_saved_ids() -> None:
     states = [_make_saved_state(item_id)]
     summary = _make_summary(saved_new=1)
 
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
     mock_session.commit = AsyncMock()
 
     dispatched_ids = []
@@ -941,9 +941,7 @@ async def test_run_does_not_call_dispatch_signal_when_no_saved_items() -> None:
     ]
     summary = _make_summary(saved_new=0)
 
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     dispatch_called = []
 

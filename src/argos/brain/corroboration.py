@@ -80,7 +80,10 @@ async def update_corroboration(session: AsyncSession) -> int:
 
     # Candidate similar pairs for the recent set. Domain-distinctness is
     # cheaper and clearer to resolve in Python than in SQL (see brief) — the
-    # recent window is small, so this post-processing is fine.
+    # recent window is small, so this post-processing is fine. Both sides of
+    # the pair are constrained to the lookback window: corroboration means
+    # "how many recent independent sources agree", so an out-of-window (old)
+    # neighbour must not inflate a recent item's count.
     pair_rows = (
         await session.execute(
             text(
@@ -89,6 +92,7 @@ async def update_corroboration(session: AsyncSession) -> int:
                 FROM tech_items a
                 JOIN tech_items b ON b.id != a.id
                 WHERE a.created_at >= :cutoff
+                  AND b.created_at >= :cutoff
                   AND a.embedding IS NOT NULL
                   AND b.embedding IS NOT NULL
                   AND (1.0 - (a.embedding <=> b.embedding)) > :threshold
@@ -124,7 +128,7 @@ async def update_corroboration(session: AsyncSession) -> int:
             continue
 
         rubric = row["trust_rubric"]
-        if rubric:
+        if rubric is not None:
             trust_score = synthesize_trust(
                 score_rubric(rubric),
                 source_prior(item_url, tiers),
