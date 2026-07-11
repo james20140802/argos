@@ -169,6 +169,33 @@ def test_non_asset_item_never_renders_timeline_markup(monkeypatch):
     assert "signals-history" in body
 
 
+def test_keep_asset_with_empty_timeline_shows_empty_state(monkeypatch):
+    """codex P2: a Keep asset with NO timeline rows yet (freshly Keep'd, no
+    track_history) must still render the unified timeline fragment's own
+    empty-state — not fall back to the (empty for Keep) 새 신호 / 최근 변화
+    subsections, and not drop the 관련 신호 section entirely when there are
+    also no similar items."""
+    view = _view_with(
+        status=AssetStatus.KEEP,
+        asset_id=uuid.uuid4(),
+        similar=[],
+        timeline=[],
+    )
+    client = _client(monkeypatch, view)
+
+    resp = client.get(f"/item/{view.id}")
+
+    assert resp.status_code == 200
+    body = resp.text
+    # 관련 신호 section renders with the timeline empty-state...
+    assert "관련 신호" in body
+    assert "timeline-empty" in body
+    assert "아직 추적 이벤트가 없습니다" in body
+    # ...and the legacy Keep-empty subsections stay gone.
+    assert "signals-history" not in body
+    assert "최근 변화" not in body
+
+
 # ------------------------------------------------------------------ #
 # ARG-209 — detail-page handoff banner (Replace successor)
 # ------------------------------------------------------------------ #

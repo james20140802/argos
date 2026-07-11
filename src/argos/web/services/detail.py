@@ -137,6 +137,18 @@ class ItemDetailView:
     status: Optional[AssetStatus] = None
     asset_id: Optional[uuid.UUID] = None
 
+    @property
+    def is_timeline_view(self) -> bool:
+        """True when 관련 신호 should render the unified _timeline.html.
+
+        Keyed off *asset status*, NOT ``timeline`` emptiness. A freshly-Keep'd
+        asset has no track_history rows yet (``transition_asset`` writes none
+        on CREATE), so its ``timeline`` is empty — but it must still show the
+        timeline fragment's own empty-state, not fall back to the (always
+        empty for Keep) 새 신호 / 최근 변화 subsections or drop the section
+        entirely (ARG-208 codex P2)."""
+        return self.status == AssetStatus.KEEP
+
 
 async def _fetch_predecessors(
     session: AsyncSession, item_id: uuid.UUID

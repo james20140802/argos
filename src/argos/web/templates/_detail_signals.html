@@ -6,19 +6,24 @@
    ARG-208: Keep assets replace the 새 신호 + 최근 변화 subsections with the
    unified _timeline.html fragment (same one the portfolio card accordion
    uses). fetch_item_detail leaves signal_alerts/related_history empty for
-   Keep assets, so has_alerts/has_history are always false there — this is
-   a straight swap, not a case split on asset status. Non-Keep/non-asset
-   items never populate item.timeline, so has_timeline is false and the
-   original subsections render exactly as before (AC2). #}
+   Keep assets, so this is a straight swap, not a case split on those lists.
+
+   The Keep vs non-Keep branch keys off item.is_timeline_view (asset status),
+   NOT item.timeline emptiness: a freshly-Keep'd asset has no track_history
+   yet, so its timeline is empty — but it must still render the timeline
+   fragment's own empty-state ("아직 추적 이벤트가 없습니다"), not fall back to
+   the (always empty for Keep) subsections or drop the whole section
+   (ARG-208 codex P2). Non-Keep/non-asset items have is_timeline_view false,
+   so the original subsections render exactly as before (AC2). #}
 {% set has_similar = item.similar %}
-{% set has_timeline = item.timeline %}
+{% set is_timeline = item.is_timeline_view %}
 {% set has_alerts = item.signal_alerts %}
 {% set has_history = item.related_history %}
-{% if has_similar or has_timeline or has_alerts or has_history %}
+{% if has_similar or is_timeline or has_alerts or has_history %}
 <section class="detail-signals">
   <h2 class="detail-section__title">🔭 관련 신호</h2>
   {% include "_detail_similarity.html" %}
-  {% if has_timeline %}
+  {% if is_timeline %}
   {% set events = item.timeline %}
   {% include "_timeline.html" %}
   {% else %}
