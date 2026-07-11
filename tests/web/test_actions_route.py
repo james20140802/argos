@@ -321,11 +321,15 @@ def test_keep_with_detail_context_returns_detail_actions_partial(monkeypatch):
                 "category": None, "image_url": None, "summary": "요약",
                 "trust_score": None, "source_url": "https://x", "asset_id": uuid.uuid4()}
 
+    async def _fake_successors(session, tech_id):
+        return []
+
     client = _client(
         monkeypatch,
         **{
             "argos.web.app.toggle_asset": _fake_toggle,
             "argos.web.app._load_feed_card_context": _fake_lookup,
+            "argos.web.app._load_item_successors": _fake_successors,
         },
     )
     resp = client.post(f"/items/{item_id}/keep?context=detail")
@@ -338,6 +342,54 @@ def test_keep_with_detail_context_returns_detail_actions_partial(monkeypatch):
     assert "card--featured" not in body
     # Kept → Untrack replaces the Keep button.
     assert "Untrack" in body
+
+
+def test_keep_with_detail_context_shows_handoff_banner_for_replace_successor(
+    monkeypatch,
+):
+    """A Keep on the detail page for an item that already has a Replace
+    successor must render the handoff banner in the swapped fragment — not omit
+    it until a full reload. The re-render loads the item's successors (which
+    _load_feed_card_context doesn't carry) so the banner appears immediately."""
+    from argos.models.tech_succession import RelationType
+    from argos.web.services.detail import GenealogyEntry
+
+    item_id = uuid.uuid4()
+    successor_id = uuid.uuid4()
+
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
+        return ToggleOutcome.SET
+
+    async def _fake_lookup(session, tech_id):
+        return {"id": tech_id, "title": "Kept Thing", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": "요약",
+                "trust_score": None, "source_url": "https://x", "asset_id": uuid.uuid4()}
+
+    async def _fake_successors(session, tech_id):
+        assert tech_id == item_id
+        return [
+            GenealogyEntry(
+                tech_id=successor_id,
+                title="Next-Gen",
+                relation_type=RelationType.REPLACE,
+                reasoning=None,
+            )
+        ]
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.toggle_asset": _fake_toggle,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+            "argos.web.app._load_item_successors": _fake_successors,
+        },
+    )
+    resp = client.post(f"/items/{item_id}/keep?context=detail")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "handoff-banner" in body
+    assert "Next-Gen" in body
+    assert f"successor_tech_id={successor_id}" in body
 
 
 def test_pass_with_detail_context_returns_detail_actions_partial(monkeypatch):

@@ -179,6 +179,23 @@ async def _is_replace_successor(
     return row is not None
 
 
+async def _load_item_successors(session, tech_id: uuid.UUID):
+    """The item's own successors (each carrying ``relation_type``) for the
+    detail action bar's handoff-banner decision.
+
+    ``_load_feed_card_context`` deliberately omits successors — the feed card
+    ignores them — so a detail-context re-render that lands on Keep has to load
+    them here, or a freshly-Kept item's handoff banner stays hidden until a
+    full page reload. Only the detail action paths call this, and only for a
+    Keep item, so the feed hot path never pays for the query. Reuses the detail
+    service's successor loader for the exact ``GenealogyEntry`` shape the
+    ``_detail_actions.html`` banner filters on.
+    """
+    from argos.web.services.detail import _fetch_successors
+
+    return await _fetch_successors(session, tech_id)
+
+
 def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
     """Build and return the Argos FastAPI app.
 
@@ -626,6 +643,16 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         item = await _load_feed_card_context(session, parsed_id)
         if item is None:
             return _error_fragment(request, 404, "not found")
+        # A detail-page Keep makes the item immediately eligible for a handoff
+        # banner, but _load_feed_card_context carries no successors — load them
+        # here so the banner shows now, not after a reload. Only for a Keep
+        # detail render: Pass/Untrack land on non-Keep (no banner) and the feed
+        # never asks for _detail_actions.html.
+        if (
+            partial_name == "_detail_actions.html"
+            and getattr(item.get("status"), "value", None) == "Keep"
+        ):
+            item["successors"] = await _load_item_successors(session, parsed_id)
         return _action_response(
             request, item, partial_name, is_featured=is_featured
         )
