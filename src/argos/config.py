@@ -223,6 +223,10 @@ class TrustConfig(BaseModel):
             "arxiv.org": "high", "github.com": "high",
             "openai.com": "high", "anthropic.com": "high",
             "ai.googleblog.com": "high", "huggingface.co": "high",
+            # First-party official feeds also shipped in _DEFAULT_RSS_FEEDS —
+            # their exact netlocs must be listed here or source_prior() falls
+            # them back to "normal" (0.5), under-scoring first-party sources.
+            "blog.google": "high", "ai.meta.com": "high", "mistral.ai": "high",
         }
     )
     weight_rubric: float = Field(default=0.6, ge=0.0)
