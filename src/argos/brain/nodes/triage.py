@@ -273,6 +273,51 @@ def _synthesize_trust_score(rubric: dict, source_url: str | None) -> float:
     return synthesize_trust(rubric_score, prior_score, corroboration_score(0), weights)
 
 
+async def extract_rubric_via_llm(
+    raw_text: str, client, keep_alive: str | int = 0
+) -> dict | None:
+    """Run the triage rubric prompt against ``raw_text`` and return the 5-field
+    evidence rubric dict, or ``None`` on infra/parse failure.
+
+    Extracted so ``argos backfill-trust`` (ARG-211) can re-run rubric
+    extraction for legacy rows (``trust_rubric IS NULL``) without duplicating
+    the prompt/schema/parsing logic that ``_triage_one`` uses for live items.
+    No relevance/interests gating here — backfill only needs the rubric, not
+    an is_valid/category decision.
+    """
+    triage_text = (raw_text or "")[:_TRIAGE_TEXT_MAX_CHARS]
+    _language = settings.user.slack.summary_language or "English"
+    prompt = _TRIAGE_PROMPT.format(
+        text=triage_text,
+        language=_language,
+        interests_block="",
+        source_hint_block="",
+        schema=_SCHEMA_BASE,
+        language_reminder=language_directive(_language),
+    )
+    try:
+        raw = await client.query(
+            "small",
+            prompt,
+            keep_alive=keep_alive,
+            num_ctx=settings.user.triage.num_ctx,
+            temperature=_TRIAGE_TEMPERATURE,
+        )
+    except OllamaInfraError as exc:
+        logger.warning("extract_rubric_via_llm infra error: %r", exc)
+        return None
+    try:
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            raise ValueError("No JSON found in response")
+        result = _TriageResult.model_validate_json(raw[start:end])
+        return _extract_rubric(result)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("extract_rubric_via_llm parse failed: %r", exc)
+        return None
+
+
 async def _triage_one(state: BrainState, client, keep_alive) -> BrainState:
     """Run triage for a single state without managing model load/unload."""
     topics = _normalize_terms(settings.user.interests.topics)

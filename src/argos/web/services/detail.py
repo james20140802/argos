@@ -130,6 +130,11 @@ class ItemDetailView:
     # user_asset 상태 + id. 둘 다 기본값 None이라 기존 호출부/테스트는 무영향.
     status: Optional[AssetStatus] = None
     asset_id: Optional[uuid.UUID] = None
+    # ARG-211: 신뢰도 구성 요소 내역. trust_rubric은 ARG-206 triage가 채우는
+    # 5필드 evidence rubric dict, legacy row(백필 전)는 NULL → None. 둘 다
+    # 기본값 None이라 기존 호출부/테스트는 무영향.
+    trust_rubric: Optional[dict] = None
+    corroboration_count: Optional[int] = None
 
 
 async def _fetch_predecessors(
@@ -356,6 +361,8 @@ async def fetch_item_detail(
             TechItem.category,
             TechItem.trust_score,
             TechItem.published_at,
+            TechItem.trust_rubric,
+            TechItem.corroboration_count,
             UserAsset.id.label("asset_id"),
             UserAsset.status.label("status"),
         )
@@ -394,4 +401,6 @@ async def fetch_item_detail(
         related_history=related_history,
         status=row.status,
         asset_id=row.asset_id,
+        trust_rubric=row.trust_rubric,
+        corroboration_count=row.corroboration_count,
     )

@@ -1466,6 +1466,132 @@ async def _backfill_digests(limit: int | None = None, dry_run: bool = False) -> 
     return 0
 
 
+def _build_backfill_trust_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos backfill-trust`` subcommand (ARG-211)."""
+    bf_p = sub.add_parser(
+        "backfill-trust",
+        help="Re-run the evidence rubric for items where trust_rubric IS NULL (LLM, slow)",
+        parents=[common],
+        description=(
+            "Fill tech_items.trust_rubric where it is NULL and raw_content is "
+            "present, by re-running the triage rubric prompt (small LLM), then "
+            "re-synthesize trust_score from rubric + source prior + "
+            "corroboration_count. Existing non-NULL trust_rubric rows are "
+            "never overwritten. Idempotent: re-runs only touch rows still NULL."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bf_p.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Process at most N rows this run (default: all)",
+    )
+    bf_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report how many rows would be processed, without calling the LLM",
+    )
+
+
+def _cmd_backfill_trust(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _backfill_trust(
+            limit=getattr(args, "limit", None),
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    )
+
+
+async def _backfill_trust(limit: int | None = None, dry_run: bool = False) -> int:
+    """Fill NULL tech_items.trust_rubric rows via the triage rubric LLM.
+
+    Per-row failure isolation: a row whose rubric extraction fails (infra
+    error or unparseable response) is logged and skipped, never aborting the
+    run. The UPDATE is guarded by ``trust_rubric IS NULL`` so a value set
+    between SELECT and UPDATE (e.g. by a live triage run) is never clobbered.
+    """
+    from sqlalchemy import select, update
+
+    from argos.brain.llm_client import get_llm_client
+    from argos.brain.nodes.triage import extract_rubric_via_llm
+    from argos.brain.trust import (
+        corroboration_score,
+        score_rubric,
+        source_prior,
+        synthesize_trust,
+    )
+    from argos.models.tech_item import TechItem
+
+    async with AsyncSessionLocal() as session:
+        stmt = select(
+            TechItem.id,
+            TechItem.raw_content,
+            TechItem.source_url,
+            TechItem.corroboration_count,
+        ).where(
+            TechItem.trust_rubric.is_(None),
+            TechItem.raw_content.isnot(None),
+        ).order_by(TechItem.created_at.asc())
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        rows = (await session.execute(stmt)).all()
+
+    print(f"backfill-trust: {len(rows)} candidate row(s).")
+    if dry_run or not rows:
+        return 0
+
+    client = get_llm_client()
+    trust_cfg = settings.user.trust
+    weights = {
+        "rubric": trust_cfg.weight_rubric,
+        "prior": trust_cfg.weight_prior,
+        "corroboration": trust_cfg.weight_corroboration,
+    }
+    filled = 0
+    skipped = 0
+    try:
+        for row in rows:
+            try:
+                rubric = await extract_rubric_via_llm(
+                    row.raw_content, client, keep_alive="5m"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "backfill-trust: rubric extraction failed for %s: %r", row.id, exc
+                )
+                skipped += 1
+                continue
+            if rubric is None:
+                skipped += 1
+                continue
+            rubric_score = score_rubric(rubric)
+            prior_score = source_prior(row.source_url or "", trust_cfg.source_tiers)
+            corr_score = corroboration_score(row.corroboration_count or 0)
+            trust_score = synthesize_trust(rubric_score, prior_score, corr_score, weights)
+            async with AsyncSessionLocal() as write_session:
+                await write_session.execute(
+                    update(TechItem)
+                    .where(TechItem.id == row.id, TechItem.trust_rubric.is_(None))
+                    .values(trust_rubric=rubric, trust_score=trust_score)
+                )
+                await write_session.commit()
+            filled += 1
+            print(f"  ✓ {row.id} ({filled}/{len(rows)})")
+    finally:
+        try:
+            await client.unload("small")
+        except Exception:
+            pass
+
+    print(f"backfill-trust done: filled={filled}, skipped={skipped}.")
+    return 0
+
+
 def _build_add_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -1810,6 +1936,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_add_parser(sub, common)
     _build_backfill_images_parser(sub, common)
     _build_backfill_digests_parser(sub, common)
+    _build_backfill_trust_parser(sub, common)
     _build_backup_parser(sub)
     _build_restore_parser(sub)
     _build_config_parser(sub)
@@ -1924,6 +2051,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_backfill_digests(args)
+    if args.command == "backfill-trust":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_backfill_trust(args)
     if args.command == "backup":
         return _cmd_backup(args)
     if args.command == "restore":

@@ -28,6 +28,8 @@ def _view(
     source_url: str = "https://example.com/gpt5",
     status: AssetStatus | None = None,
     asset_id: uuid.UUID | None = None,
+    trust_rubric: dict | None = None,
+    corroboration_count: int | None = None,
 ) -> ItemDetailView:
     return ItemDetailView(
         id=uuid.uuid4(),
@@ -41,6 +43,8 @@ def _view(
         published_at=None,
         status=status,
         asset_id=asset_id,
+        trust_rubric=trust_rubric,
+        corroboration_count=corroboration_count,
     )
 
 
@@ -268,3 +272,47 @@ def test_item_detail_passed_item_shows_active_pass_button(monkeypatch):
     # Not Kept, so the Keep button (not Untrack) is shown.
     assert f"/items/{view.id}/keep?context=detail" in body
     assert "Untrack" not in body
+
+
+# --- ARG-211: 신뢰도 구성 요소 내역 partial ------------------------------- #
+
+
+def test_item_detail_renders_trust_breakdown_when_rubric_present(monkeypatch):
+    rubric = {
+        "is_primary_source": True,
+        "has_evidence_links": True,
+        "has_concrete_numbers": False,
+        "claim_evidence_balance": "balanced",
+        "marketing_intensity": "low",
+    }
+    view = _view(
+        source_url="https://example.com/rubric-item",
+        trust_rubric=rubric,
+        corroboration_count=2,
+    )
+    client = _client_with_detail(monkeypatch, view)
+
+    resp = client.get(f"/item/{view.id}")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "신뢰도 구성" in body
+    assert "예" in body
+    assert "있음" in body
+    assert "없음" in body
+    assert "balanced" in body
+    assert "low" in body
+    assert "example.com" in body
+    assert "2건" in body
+
+
+def test_item_detail_omits_trust_breakdown_for_legacy_row(monkeypatch):
+    """Legacy rows (trust_rubric IS NULL) render no breakdown section."""
+    view = _view(trust_rubric=None, corroboration_count=None)
+    client = _client_with_detail(monkeypatch, view)
+
+    resp = client.get(f"/item/{view.id}")
+
+    assert resp.status_code == 200
+    assert "신뢰도 구성" not in resp.text
+    assert "detail-trust-breakdown" not in resp.text
