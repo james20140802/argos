@@ -46,3 +46,7 @@ class BrainState(TypedDict):
     # and on genuine is_valid=False rejections. Consumers (pipeline Stage 6,
     # CLI _run) key retention/exit-code off this, never off is_valid. (ARG-190)
     triage_error: NotRequired[str | None]
+    # ARG-206: 5-field evidence rubric extracted by triage_node (temperature 0).
+    # Feeds argos.brain.trust.score_rubric() for the deterministic trust
+    # synthesis; None on parse failure / infra error / relevance-gate demotion.
+    trust_rubric: NotRequired[dict | None]

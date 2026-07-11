@@ -32,6 +32,10 @@ def _state(**kwargs) -> BrainState:
 
 @pytest.mark.asyncio
 async def test_triage_node_valid():
+    # ARG-206: LLM no longer returns trust_score directly (that field is now
+    # ignored/vestigial); trust_score is synthesized from the rubric fields.
+    # No rubric fields here -> rubric_score=0, default source_url is
+    # unregistered -> prior=0.5, corroboration=0 -> 0.6*0+0.2*0.5+0.2*0=0.1.
     payload = '{"is_valid": true, "reason": "real tool", "trust_score": 0.82}'
     with respx.mock:
         respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
@@ -39,7 +43,7 @@ async def test_triage_node_valid():
         )
         result = await triage_node(_state())
     assert result["is_valid"] is True
-    assert result["trust_score"] == 0.82
+    assert result["trust_score"] == pytest.approx(0.1)
 
 @pytest.mark.asyncio
 async def test_triage_node_invalid():
@@ -503,6 +507,90 @@ async def test_triage_node_source_hint_unrecognised_string_produces_no_hint(monk
     assert "Source hint" not in captured["prompt"]
 
 
+# ---------------------------------------------------------------------------
+# triage_node — rubric-based trust synthesis (ARG-206)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_triage_node_synthesizes_trust_from_rubric(monkeypatch):
+    from argos.brain.nodes import triage as triage_module
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch, triage_module,
+        '{"is_valid": true, "reason": "x", "summary": "ok", "category": "Alpha",'
+        ' "is_primary_source": true, "has_evidence_links": true,'
+        ' "has_concrete_numbers": true, "claim_evidence_balance": "balanced",'
+        ' "marketing_intensity": "low"}',
+        captured,
+    )
+    # source_url은 미등록 도메인 → prior 0.5
+    result = await triage_node(_state(raw_text="Some tool", source_url="https://example.com/x"))
+    assert result["trust_rubric"]["is_primary_source"] is True
+    assert result["trust_score"] == pytest.approx(0.7)
+
+
+@pytest.mark.asyncio
+async def test_triage_node_trust_rubric_uses_high_tier_source_prior(monkeypatch):
+    """A registered high-tier domain (github.com) raises the prior component."""
+    from argos.brain.nodes import triage as triage_module
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch, triage_module,
+        '{"is_valid": true, "reason": "x", "summary": "ok", "category": "Alpha",'
+        ' "is_primary_source": true, "has_evidence_links": true,'
+        ' "has_concrete_numbers": true, "claim_evidence_balance": "balanced",'
+        ' "marketing_intensity": "low"}',
+        captured,
+    )
+    # rubric=1.0, prior=1.0 (github.com is a seeded high-tier domain), corr=0
+    # -> 0.6*1.0 + 0.2*1.0 + 0.2*0 = 0.8
+    result = await triage_node(
+        _state(raw_text="Some tool", source_url="https://github.com/foo/bar")
+    )
+    assert result["trust_score"] == pytest.approx(0.8)
+
+
+@pytest.mark.asyncio
+async def test_triage_node_trust_rubric_missing_fields_fallback_zero(monkeypatch):
+    """Missing/garbage rubric fields score conservatively to 0 for that field."""
+    from argos.brain.nodes import triage as triage_module
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+    captured: dict = {}
+    _install_fake_client(
+        monkeypatch, triage_module,
+        '{"is_valid": true, "reason": "x", "summary": "ok", "category": "Alpha"}',
+        captured,
+    )
+    # rubric fields absent -> rubric_score=0; prior=0.5 (unregistered); corr=0
+    # -> 0.6*0 + 0.2*0.5 + 0.2*0 = 0.1
+    result = await triage_node(_state(raw_text="Some tool", source_url="https://example.com/x"))
+    assert result["trust_score"] == pytest.approx(0.1)
+    assert result["trust_rubric"]["is_primary_source"] is False
+
+
+@pytest.mark.asyncio
+async def test_triage_node_trust_rubric_none_on_infra_error(monkeypatch):
+    from argos.brain.nodes import triage as triage_module
+    from argos.brain.ollama_client import OllamaInfraError
+
+    _patch_interests(monkeypatch, triage_module, topics=[], exclusions=[])
+
+    class _InfraClient:
+        async def query(self, model_role, prompt, **kwargs):
+            raise OllamaInfraError("ollama down")
+
+        async def unload(self, model_role):
+            return None
+
+    monkeypatch.setattr(triage_module, "get_llm_client", lambda: _InfraClient())
+
+    result = await triage_node(_state(raw_text="anything"))
+    assert result["trust_rubric"] is None
+
+
 @pytest.mark.asyncio
 async def test_embed_node_skips_if_invalid():
     session = AsyncMock()
@@ -578,6 +666,31 @@ async def test_save_node_persists_trust_score():
     await save_node(_state(is_valid=True, trust_score=0.73), session=session)
     added_item = session.add.call_args[0][0]
     assert added_item.trust_score == 0.73
+
+
+@pytest.mark.asyncio
+async def test_save_node_persists_trust_rubric():
+    """ARG-206: the 5-field evidence rubric extracted by triage lands on
+    TechItem.trust_rubric (JSONB) so T2/T3 can reuse it."""
+    session = _mock_session_no_existing()
+    rubric = {
+        "is_primary_source": True,
+        "has_evidence_links": True,
+        "has_concrete_numbers": False,
+        "claim_evidence_balance": "mixed",
+        "marketing_intensity": "medium",
+    }
+    await save_node(_state(is_valid=True, trust_rubric=rubric), session=session)
+    added_item = session.add.call_args[0][0]
+    assert added_item.trust_rubric == rubric
+
+
+@pytest.mark.asyncio
+async def test_save_node_persists_null_trust_rubric_by_default():
+    session = _mock_session_no_existing()
+    await save_node(_state(is_valid=True), session=session)
+    added_item = session.add.call_args[0][0]
+    assert added_item.trust_rubric is None
 
 
 @pytest.mark.asyncio
@@ -1304,12 +1417,17 @@ async def test_triage_empty_interests_preserves_llm_result(monkeypatch):
     result = await triage_node(state)
 
     assert result["is_valid"] is True
-    assert result["trust_score"] == 0.5
+    # ARG-206: no rubric fields in payload -> rubric_score=0; default
+    # source_url is unregistered -> prior=0.5 -> 0.6*0+0.2*0.5+0.2*0=0.1.
+    assert result["trust_score"] == pytest.approx(0.1)
     assert result["summary"] == "ok"
 
 
 @pytest.mark.asyncio
-async def test_triage_topic_match_bumps_trust_score(monkeypatch):
+async def test_triage_topic_match_does_not_bump_trust_score(monkeypatch):
+    """ARG-206: interest-topic matches no longer add +0.1 to trust_score —
+    trust is now a pure rubric+prior+corroboration synthesis, independent of
+    whether any user-interest topic matched the text."""
     from argos.brain.nodes import triage as triage_module
 
     _patch_interests(monkeypatch, triage_module, topics=["RAG"], exclusions=[])
@@ -1317,7 +1435,10 @@ async def test_triage_topic_match_bumps_trust_score(monkeypatch):
     _install_fake_client(
         monkeypatch,
         triage_module,
-        '{"is_valid": true, "reason": "x", "trust_score": 0.6, "summary": "s"}',
+        '{"is_valid": true, "reason": "x", "summary": "s",'
+        ' "is_primary_source": true, "has_evidence_links": true,'
+        ' "has_concrete_numbers": true, "claim_evidence_balance": "balanced",'
+        ' "marketing_intensity": "low"}',
         captured,
     )
 
@@ -1325,11 +1446,16 @@ async def test_triage_topic_match_bumps_trust_score(monkeypatch):
     result = await triage_node(state)
 
     assert result["is_valid"] is True
+    # Full-max rubric (1.0) + unregistered source (prior 0.5) + corr 0
+    # -> 0.6*1.0 + 0.2*0.5 + 0.2*0 = 0.7 — same as if no topic had matched.
     assert result["trust_score"] == pytest.approx(0.7)
 
 
 @pytest.mark.asyncio
-async def test_triage_topic_bump_caps_at_one(monkeypatch):
+async def test_triage_topic_match_full_rubric_high_tier_no_extra_bump(monkeypatch):
+    """ARG-206: even with a topic match, max rubric, and a high-tier source,
+    trust_score is exactly the rubric+prior synthesis ceiling for a brand-new
+    item (corroboration_count=0) — no interest bump inflates it further."""
     from argos.brain.nodes import triage as triage_module
 
     _patch_interests(monkeypatch, triage_module, topics=["RAG"], exclusions=[])
@@ -1337,14 +1463,21 @@ async def test_triage_topic_bump_caps_at_one(monkeypatch):
     _install_fake_client(
         monkeypatch,
         triage_module,
-        '{"is_valid": true, "reason": "x", "trust_score": 0.95, "summary": "s"}',
+        '{"is_valid": true, "reason": "x", "summary": "s",'
+        ' "is_primary_source": true, "has_evidence_links": true,'
+        ' "has_concrete_numbers": true, "claim_evidence_balance": "balanced",'
+        ' "marketing_intensity": "low"}',
         captured,
     )
 
-    state = _state(raw_text="A RAG benchmark paper.")
+    state = _state(
+        raw_text="A RAG benchmark paper.", source_url="https://github.com/foo/bar"
+    )
     result = await triage_node(state)
 
-    assert result["trust_score"] == 1.0
+    # rubric=1.0, prior=1.0 (github.com is high-tier), corr=0
+    # -> 0.6*1.0 + 0.2*1.0 + 0.2*0 = 0.8
+    assert result["trust_score"] == pytest.approx(0.8)
 
 
 @pytest.mark.asyncio
@@ -1363,7 +1496,9 @@ async def test_triage_topic_match_is_case_insensitive(monkeypatch):
     state = _state(raw_text="An article describing RAG architecture.")
     result = await triage_node(state)
 
-    assert result["trust_score"] == pytest.approx(0.7)
+    # ARG-206: case-insensitive topic matching no longer affects trust_score
+    # (the +0.1 bump mechanic is gone); baseline synthesis applies either way.
+    assert result["trust_score"] == pytest.approx(0.1)
 
 
 @pytest.mark.asyncio
@@ -1488,14 +1623,17 @@ async def test_triage_exclusion_past_window_does_not_force_pass(monkeypatch):
     result = await triage_node(state)
 
     # Exclusion is outside the LLM-visible window, so the verdict must stand.
+    # ARG-206: no rubric fields in payload -> baseline synthesis 0.1
+    # (unregistered source_url prior=0.5, 0.6*0+0.2*0.5+0.2*0=0.1).
     assert result["is_valid"] is True
-    assert result["trust_score"] == pytest.approx(0.7)
+    assert result["trust_score"] == pytest.approx(0.1)
     assert result["summary"] == "shiny"
 
 
 @pytest.mark.asyncio
 async def test_triage_topic_past_window_does_not_bump_trust(monkeypatch):
-    """Topic terms beyond the LLM truncation window must not bump trust_score."""
+    """ARG-206: trust_score bump mechanic is gone entirely, so a topic term
+    (in or out of the truncation window) never affects trust_score."""
     from argos.brain.nodes import triage as triage_module
 
     _patch_interests(monkeypatch, triage_module, topics=["RAG"], exclusions=[])
@@ -1514,9 +1652,9 @@ async def test_triage_topic_past_window_does_not_bump_trust(monkeypatch):
     state = _state(raw_text=raw_text)
     result = await triage_node(state)
 
-    # Topic match is outside the visible window: no trust bump should fire.
+    # No rubric fields in payload -> baseline synthesis 0.1.
     assert result["is_valid"] is True
-    assert result["trust_score"] == pytest.approx(0.5)
+    assert result["trust_score"] == pytest.approx(0.1)
 
 
 @pytest.mark.asyncio
@@ -1574,8 +1712,10 @@ async def test_triage_is_relevant_false_demotes_to_invalid(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_triage_is_relevant_true_with_topics_passes_through_rules(monkeypatch):
-    """When LLM emits is_relevant=true with non-empty topics, _apply_interest_rules runs."""
+async def test_triage_is_relevant_true_with_topics_no_trust_bump(monkeypatch):
+    """ARG-206: when LLM emits is_relevant=true with non-empty topics, the
+    relevance gate passes the item through to normal rubric synthesis — no
+    +0.1 interest bump (the removed _apply_interest_rules mechanic)."""
     from argos.brain.nodes import triage as triage_module
 
     _patch_interests(monkeypatch, triage_module, topics=["LLM"], exclusions=[])
@@ -1587,13 +1727,12 @@ async def test_triage_is_relevant_true_with_topics_passes_through_rules(monkeypa
         captured,
     )
 
-    # text contains the topic term so trust-score bump fires
     state = _state(raw_text="LLM benchmarking framework released.")
     result = await triage_node(state)
 
     assert result["is_valid"] is True
-    # trust bump of 0.1 applied via _apply_interest_rules
-    assert result["trust_score"] == pytest.approx(0.7)
+    # No rubric fields in payload -> baseline synthesis 0.1 (no bump).
+    assert result["trust_score"] == pytest.approx(0.1)
 
 
 @pytest.mark.asyncio
@@ -1613,9 +1752,10 @@ async def test_triage_empty_topics_no_is_relevant_key_regression(monkeypatch):
     state = _state(raw_text="A new database indexing library.")
     result = await triage_node(state)
 
-    # Behavior identical to pre-ARG-86: is_relevant key absent, no gating
+    # Behavior identical to pre-ARG-86: is_relevant key absent, no gating.
+    # ARG-206: no rubric fields in payload -> baseline synthesis 0.1.
     assert result["is_valid"] is True
-    assert result["trust_score"] == pytest.approx(0.5)
+    assert result["trust_score"] == pytest.approx(0.1)
     assert result["summary"] == "ok"
     # Prompt must not mention is_relevant when topics empty
     assert "is_relevant" not in captured["prompt"]

@@ -214,6 +214,26 @@ class WebConfig(BaseModel):
     launchd_enabled: bool = False
 
 
+class TrustConfig(BaseModel):
+    # ARG-206: deterministic trust synthesis. source_tiers maps a lower-cased,
+    # www.-stripped domain (see argos.brain.trust.source_prior) to a tier;
+    # unregistered domains fall back to "normal" (0.5).
+    source_tiers: dict[str, str] = Field(
+        default_factory=lambda: {
+            "arxiv.org": "high", "github.com": "high",
+            "openai.com": "high", "anthropic.com": "high",
+            "ai.googleblog.com": "high", "huggingface.co": "high",
+        }
+    )
+    weight_rubric: float = Field(default=0.6, ge=0.0)
+    weight_prior: float = Field(default=0.2, ge=0.0)
+    weight_corroboration: float = Field(default=0.2, ge=0.0)
+    # T2 (corroboration pipeline) fields — pre-declared here so config
+    # schema doesn't need another migration once T2 lands.
+    corroboration_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    corroboration_lookback_days: int = Field(default=7, ge=1)
+
+
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
@@ -227,6 +247,7 @@ class UserConfig(BaseModel):
     rss: RSSConfig = Field(default_factory=RSSConfig)
     spa: SPAConfig = Field(default_factory=SPAConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    trust: TrustConfig = Field(default_factory=TrustConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:

@@ -43,6 +43,7 @@ async def _generate(
     timeout: float = DEFAULT_TIMEOUT,
     num_ctx: int = DEFAULT_NUM_CTX,
     think: bool | None = None,
+    temperature: float | None = None,
 ) -> str:
     payload: dict = {
         "model": model,
@@ -53,6 +54,11 @@ async def _generate(
     }
     if think is not None:
         payload["think"] = think
+    if temperature is not None:
+        # ARG-206: triage now extracts a deterministic rubric — temperature=0
+        # keeps the 5-field JSON extraction as reproducible as an LLM call
+        # can be, same mechanism as num_ctx (an Ollama "options" entry).
+        payload["options"]["temperature"] = temperature
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10)) as client:
         resp = await client.post(f"{_base_url()}/api/generate", json=payload)
         resp.raise_for_status()
@@ -73,10 +79,11 @@ async def query_ollama(
     timeout: float = DEFAULT_TIMEOUT,
     num_ctx: int = DEFAULT_NUM_CTX,
     think: bool | None = None,
+    temperature: float | None = None,
 ) -> str:
     async with _MODEL_LOCK:
         try:
-            return await _generate(model, prompt, keep_alive, timeout, num_ctx, think)
+            return await _generate(model, prompt, keep_alive, timeout, num_ctx, think, temperature)
         except httpx.HTTPStatusError as exc:
             # raise_for_status() failure: 5xx (incl. Ollama's 500 on VRAM OOM)
             # is infra; 4xx is a real request bug and must surface untouched.
@@ -145,6 +152,7 @@ async def unload_then_query(
     timeout: float = DEFAULT_TIMEOUT,
     num_ctx: int = DEFAULT_NUM_CTX,
     think: bool | None = None,
+    temperature: float | None = None,
 ) -> str:
     """Unload `unload` and run a query on `model` atomically under a single lock.
 
@@ -154,4 +162,4 @@ async def unload_then_query(
     """
     async with _MODEL_LOCK:
         await _unload(unload)
-        return await _generate(model, prompt, keep_alive, timeout, num_ctx, think)
+        return await _generate(model, prompt, keep_alive, timeout, num_ctx, think, temperature)
