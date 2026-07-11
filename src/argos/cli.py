@@ -317,6 +317,20 @@ async def _run(
                         "commit after signal match dispatch failed",
                         exc_info=True,
                     )
+
+            # ARG-210: 교차 검증 — 최근 아이템의 다른-도메인 유사 수 갱신 + 재합성.
+            from argos.brain.corroboration import update_corroboration
+            try:
+                updated = await update_corroboration(session)
+                await session.commit()
+                if updated:
+                    logging.getLogger(__name__).info(
+                        "corroboration: %d item(s) recomputed", updated
+                    )
+            except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "corroboration update failed", exc_info=True
+                )
     elapsed = time.monotonic() - start
     run_failed = any(s.get("triage_error") for s in results)
     _print_run_summary(summary, elapsed, failed=run_failed)
