@@ -113,6 +113,7 @@ uv run ruff check src tests                       # Lint
 - **Embedding dimension:** Vector(768) — matches nomic-embed-text. If switching models, update `tech_item.py` and create a new Alembic migration.
 - **Enum values:** Use PascalCase for all enum values (Mainstream, Alpha, Replace, Enhance, Fork, Keep, Tracking, Archived).
 - **Python version:** Target >=3.10,<3.13. Use `from __future__ import annotations` where needed for newer type syntax.
+- **Config layering:** Secrets (Slack tokens, DB password) live in `~/.config/argos/.env`; behavior/tuning knobs live in `~/.config/argos/config.toml`. Model names, num_ctx, thresholds, etc. are config-driven — don't hardcode them in new code. (Brain model defaults: see `src/argos/brain/CLAUDE.md`.)
 - **Slack handlers:** Ack within 3s, then do real work in the background. Hold the Ollama model lock across unload→query for Deep Dive so the 8B/32B swap is atomic. Asset status changes use upsert to stay concurrency-safe; every transition is logged to `track_history`. Briefings post one threaded message per item, replies stay in-thread.
 
 ## Linear 이슈 & PR 작성 관례 — 행동의 언어
