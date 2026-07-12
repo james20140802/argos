@@ -6,6 +6,14 @@ from argos.brain._language import language_directive
 from argos.brain.graph_state import BrainState
 from argos.brain.llm_client import get_llm_client
 from argos.brain.ollama_client import OllamaInfraError
+from argos.brain.trust import (
+    _BALANCE_SCORE,
+    _MARKETING_SCORE,
+    corroboration_score,
+    score_rubric,
+    source_prior,
+    synthesize_trust,
+)
 from argos.config import settings
 from argos.models.tech_item import CategoryType
 
@@ -13,12 +21,20 @@ logger = logging.getLogger(__name__)
 
 _SUMMARY_MAX_CHARS = 500
 _MAX_INTERESTS = 10
-_INTEREST_TRUST_BUMP = 0.1
 _TERM_MAX_CHARS = 64
 _TRIAGE_TEXT_MAX_CHARS = 2000
+# ARG-206: rubric extraction is deterministic scoring feature-work, not
+# creative generation — temperature=0 keeps the 5-field JSON as reproducible
+# as the model allows.
+_TRIAGE_TEMPERATURE = 0.0
 
 _TRIAGE_PROMPT = """Analyze the following text and determine if it describes a real technology (tool, library, framework, model, protocol, or platform).
-trust_score reflects substance over hype: 0.0=pure marketing, 0.5=neutral, 1.0=well-evidenced technical detail.
+Also score five evidence-quality rubric fields (not your opinion of the technology's merit — just what the text itself demonstrates):
+- is_primary_source: true if this is a first-party / official release or the author's own announcement, false if it's third-party coverage.
+- has_evidence_links: true if the text links to code, a paper, or a live demo.
+- has_concrete_numbers: true if the text cites concrete figures or benchmark results.
+- claim_evidence_balance: "balanced" if claims are backed by evidence, "mixed" if partially backed, "unsupported" if claims are asserted without evidence.
+- marketing_intensity: "low" for plain technical writing, "medium" for some promotional framing, "high" for heavy marketing/hype language.
 reason is a brief 1-sentence justification of the is_valid and category decision; written in {language}.
 summary is a 1-2 sentence factual blurb (max 500 chars) describing what the technology is and why it matters; written in {language}. Use null if is_valid is false.
 category must be one of "Mainstream" or "Alpha". Mainstream = mature, widely adopted technology; Alpha = cutting-edge, experimental, or niche. Default to "Alpha" when uncertain.
@@ -27,17 +43,41 @@ category must be one of "Mainstream" or "Alpha". Mainstream = mature, widely ado
 Text:
 {text}{language_reminder}"""
 
-_SCHEMA_BASE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "...", "category": "Mainstream"|"Alpha"}}'
-_SCHEMA_WITH_RELEVANCE = '{{"is_valid": true/false, "reason": "brief explanation", "trust_score": 0.0-1.0, "summary": "...", "category": "Mainstream"|"Alpha", "is_relevant": true/false}}'
+_SCHEMA_BASE = (
+    '{{"is_valid": true/false, "reason": "brief explanation", "summary": "...",'
+    ' "category": "Mainstream"|"Alpha", "is_primary_source": true/false,'
+    ' "has_evidence_links": true/false, "has_concrete_numbers": true/false,'
+    ' "claim_evidence_balance": "balanced"|"mixed"|"unsupported",'
+    ' "marketing_intensity": "low"|"medium"|"high"}}'
+)
+_SCHEMA_WITH_RELEVANCE = (
+    '{{"is_valid": true/false, "reason": "brief explanation", "summary": "...",'
+    ' "category": "Mainstream"|"Alpha", "is_relevant": true/false,'
+    ' "is_primary_source": true/false, "has_evidence_links": true/false,'
+    ' "has_concrete_numbers": true/false,'
+    ' "claim_evidence_balance": "balanced"|"mixed"|"unsupported",'
+    ' "marketing_intensity": "low"|"medium"|"high"}}'
+)
 
 
 class _TriageResult(BaseModel):
     is_valid: StrictBool
     reason: str
+    # Deprecated (ARG-206): the LLM is no longer asked for trust_score — the
+    # field is kept parseable (and clamped) only so a stray/legacy value in
+    # the response doesn't blow up validation. It is never read by
+    # _triage_one; trust_score is now fully code-synthesized from the rubric.
     trust_score: float | None = None
     summary: str | None = None
     is_relevant: StrictBool = True
     category: CategoryType = CategoryType.ALPHA
+    # ARG-206: 5-field evidence rubric (see trust.score_rubric). Missing or
+    # unparseable values fall back to the conservative (lowest-scoring) case.
+    is_primary_source: bool = False
+    has_evidence_links: bool = False
+    has_concrete_numbers: bool = False
+    claim_evidence_balance: str = "unsupported"
+    marketing_intensity: str = "high"
 
     @field_validator("category", mode="before")
     @classmethod
@@ -56,6 +96,29 @@ class _TriageResult(BaseModel):
                 if s.lower() == member.value.lower():
                     return member
         return CategoryType.ALPHA
+
+    @field_validator(
+        "is_primary_source", "has_evidence_links", "has_concrete_numbers", mode="before"
+    )
+    @classmethod
+    def _normalize_rubric_bool(cls, v):
+        # Conservative: only an actual `true` counts; anything else (missing,
+        # string, null, garbage) scores as the worst case (False).
+        return v is True
+
+    @field_validator("claim_evidence_balance", mode="before")
+    @classmethod
+    def _normalize_balance(cls, v):
+        if isinstance(v, str) and v.strip().lower() in _BALANCE_SCORE:
+            return v.strip().lower()
+        return "unsupported"
+
+    @field_validator("marketing_intensity", mode="before")
+    @classmethod
+    def _normalize_marketing(cls, v):
+        if isinstance(v, str) and v.strip().lower() in _MARKETING_SCORE:
+            return v.strip().lower()
+        return "high"
 
     @field_validator("trust_score", mode="before")
     @classmethod
@@ -165,33 +228,94 @@ def _build_interests_block(topics: list[str], exclusions: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _apply_interest_rules(
-    triage_text: str,
-    result: _TriageResult,
-    topics: list[str],
-    exclusions: list[str],
-) -> tuple[bool, float | None, str | None]:
-    # NOTE: substring matching is intentional for v1; a word-boundary regex is a
-    # follow-up if false positives (e.g. "crypto" matching "cryptography") prove noisy.
-    # triage_text must be the same truncated window passed to the LLM so deterministic
-    # rules and the model decision stay consistent (see ARG-50 review).
-    haystack = (triage_text or "") + " " + (result.summary or "")
-    haystack_lower = haystack.lower()
+def _exclusion_hit(triage_text: str, summary: str | None, exclusions: list[str]) -> bool:
+    """True if any exclusion term appears in the triage text or summary.
 
+    NOTE: substring matching is intentional for v1; a word-boundary regex is a
+    follow-up if false positives (e.g. "crypto" matching "cryptography") prove
+    noisy. ``triage_text`` must be the same truncated window passed to the LLM
+    so deterministic rules and the model decision stay consistent (ARG-50).
+    """
+    if not exclusions:
+        return False
+    haystack_lower = ((triage_text or "") + " " + (summary or "")).lower()
     for term in exclusions:
         if term and term.lower() in haystack_lower:
             logger.info("triage exclusion hit: %s", term)
-            return (False, 0.0, None)
+            return True
+    return False
 
-    if result.is_valid and result.trust_score is not None:
-        for term in topics:
-            if term and term.lower() in haystack_lower:
-                bumped = min(1.0, result.trust_score + _INTEREST_TRUST_BUMP)
-                summary = result.summary if result.is_valid else None
-                return (result.is_valid, bumped, summary)
 
-    summary = result.summary if result.is_valid else None
-    return (result.is_valid, result.trust_score, summary)
+def _extract_rubric(result: _TriageResult) -> dict:
+    return {
+        "is_primary_source": result.is_primary_source,
+        "has_evidence_links": result.has_evidence_links,
+        "has_concrete_numbers": result.has_concrete_numbers,
+        "claim_evidence_balance": result.claim_evidence_balance,
+        "marketing_intensity": result.marketing_intensity,
+    }
+
+
+def _synthesize_trust_score(rubric: dict, source_url: str | None) -> float:
+    """ARG-206: deterministic trust = 0.6*rubric + 0.2*prior + 0.2*corroboration.
+
+    New items are scored with corroboration_count=0 (no corroborating sources
+    yet at triage time — T2 fills that in later).
+    """
+    trust_cfg = settings.user.trust
+    rubric_score = score_rubric(rubric)
+    prior_score = source_prior(source_url or "", trust_cfg.source_tiers)
+    weights = {
+        "rubric": trust_cfg.weight_rubric,
+        "prior": trust_cfg.weight_prior,
+        "corroboration": trust_cfg.weight_corroboration,
+    }
+    return synthesize_trust(rubric_score, prior_score, corroboration_score(0), weights)
+
+
+async def extract_rubric_via_llm(
+    raw_text: str, client, keep_alive: str | int = 0
+) -> dict | None:
+    """Run the triage rubric prompt against ``raw_text`` and return the 5-field
+    evidence rubric dict, or ``None`` on infra/parse failure.
+
+    Extracted so ``argos backfill-trust`` (ARG-211) can re-run rubric
+    extraction for legacy rows (``trust_rubric IS NULL``) without duplicating
+    the prompt/schema/parsing logic that ``_triage_one`` uses for live items.
+    No relevance/interests gating here — backfill only needs the rubric, not
+    an is_valid/category decision.
+    """
+    triage_text = (raw_text or "")[:_TRIAGE_TEXT_MAX_CHARS]
+    _language = settings.user.slack.summary_language or "English"
+    prompt = _TRIAGE_PROMPT.format(
+        text=triage_text,
+        language=_language,
+        interests_block="",
+        source_hint_block="",
+        schema=_SCHEMA_BASE,
+        language_reminder=language_directive(_language),
+    )
+    try:
+        raw = await client.query(
+            "small",
+            prompt,
+            keep_alive=keep_alive,
+            num_ctx=settings.user.triage.num_ctx,
+            temperature=_TRIAGE_TEMPERATURE,
+        )
+    except OllamaInfraError as exc:
+        logger.warning("extract_rubric_via_llm infra error: %r", exc)
+        return None
+    try:
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            raise ValueError("No JSON found in response")
+        result = _TriageResult.model_validate_json(raw[start:end])
+        return _extract_rubric(result)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("extract_rubric_via_llm parse failed: %r", exc)
+        return None
 
 
 async def _triage_one(state: BrainState, client, keep_alive) -> BrainState:
@@ -213,7 +337,11 @@ async def _triage_one(state: BrainState, client, keep_alive) -> BrainState:
     )
     try:
         raw = await client.query(
-            "small", prompt, keep_alive=keep_alive, num_ctx=settings.user.triage.num_ctx
+            "small",
+            prompt,
+            keep_alive=keep_alive,
+            num_ctx=settings.user.triage.num_ctx,
+            temperature=_TRIAGE_TEMPERATURE,
         )
     except OllamaInfraError as exc:
         logger.warning("triage_node infra error: %r", exc)
@@ -226,6 +354,7 @@ async def _triage_one(state: BrainState, client, keep_alive) -> BrainState:
             "triage_error": triage_error,
             "is_valid": False,
             "trust_score": None,
+            "trust_rubric": None,
             "summary": None,
             "category": None,
         }
@@ -244,23 +373,34 @@ async def _triage_one(state: BrainState, client, keep_alive) -> BrainState:
             )
             is_valid = False
             trust_score = None
+            trust_rubric = None
             summary = None
             category = None
-        elif topics or exclusions:
-            is_valid, trust_score, summary = _apply_interest_rules(
-                triage_text, result, topics, exclusions
-            )
-            category = result.category if is_valid else None
         else:
-            is_valid = result.is_valid
-            trust_score = result.trust_score
-            summary = result.summary if result.is_valid else None
-            category = result.category if result.is_valid else None
+            # ARG-206: trust is now a deterministic rubric+prior+corroboration
+            # synthesis, computed regardless of is_valid (mirrors the old
+            # behaviour of always carrying a trust_score through this branch).
+            # topics/exclusions handling here is relevance-gate (above) +
+            # exclusion pass-through only — no trust adjustment for interests.
+            rubric = _extract_rubric(result)
+            trust_score = _synthesize_trust_score(rubric, state.get("source_url"))
+            trust_rubric = rubric
+
+            if _exclusion_hit(triage_text, result.summary, exclusions):
+                is_valid = False
+                trust_score = 0.0
+                summary = None
+                category = None
+            else:
+                is_valid = result.is_valid
+                summary = result.summary if result.is_valid else None
+                category = result.category if result.is_valid else None
 
         return {
             **state,
             "is_valid": is_valid,
             "trust_score": trust_score,
+            "trust_rubric": trust_rubric,
             "summary": summary,
             "category": category,
         }
@@ -270,6 +410,7 @@ async def _triage_one(state: BrainState, client, keep_alive) -> BrainState:
             **state,
             "is_valid": False,
             "trust_score": None,
+            "trust_rubric": None,
             "summary": None,
             "category": None,
         }

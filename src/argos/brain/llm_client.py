@@ -38,6 +38,7 @@ class LLMClient(Protocol):
         timeout: float | None = None,
         num_ctx: int = DEFAULT_NUM_CTX,
         think: bool | None = None,
+        temperature: float | None = None,
     ) -> str: ...
 
     async def unload(self, model_role: Literal["small", "large"]) -> None: ...
@@ -57,6 +58,7 @@ class LLMClient(Protocol):
         timeout: float | None = None,
         num_ctx: int = DEFAULT_NUM_CTX,
         think: bool | None = None,
+        temperature: float | None = None,
     ) -> str: ...
 
 
@@ -85,6 +87,7 @@ class OllamaClient:
         timeout: float | None = None,
         num_ctx: int = DEFAULT_NUM_CTX,
         think: bool | None = None,
+        temperature: float | None = None,
     ) -> str:
         return await query_ollama(
             self._resolve(model_role),
@@ -93,6 +96,7 @@ class OllamaClient:
             timeout=timeout if timeout is not None else self._default_timeout(model_role),
             num_ctx=num_ctx,
             think=think,
+            temperature=temperature,
         )
 
     async def unload(self, model_role: Literal["small", "large"]) -> None:
@@ -129,6 +133,7 @@ class OllamaClient:
         timeout: float | None = None,
         num_ctx: int = DEFAULT_NUM_CTX,
         think: bool | None = None,
+        temperature: float | None = None,
     ) -> str:
         return await unload_then_query(
             self._resolve(unload_role),
@@ -138,6 +143,7 @@ class OllamaClient:
             timeout=timeout if timeout is not None else self._default_timeout(query_role),
             num_ctx=num_ctx,
             think=think,
+            temperature=temperature,
         )
 
 
