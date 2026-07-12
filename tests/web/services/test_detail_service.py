@@ -647,3 +647,76 @@ async def test_fetch_item_detail_loads_predecessors_and_successors() -> None:
                 )
             await session.commit()
         await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_item_detail_fills_timeline_only_for_keep_assets() -> None:
+    """ARG-208: a Keep asset's detail view gets the full unified timeline
+    (fetch_timeline, limit=None); a non-asset item's timeline stays empty and
+    keeps populating the older related_history/signal_alerts fields."""
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import TechItem
+    from argos.models.track_history import TrackHistory
+    from argos.models.user_asset import AssetStatus, UserAsset
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        from datetime import datetime, timezone
+
+        async with Session() as session:
+            keep_item = TechItem(
+                title="arg208-keep-item",
+                source_url=f"https://example.com/arg208/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            non_asset_item = TechItem(
+                title="arg208-non-asset-item",
+                source_url=f"https://example.com/arg208/{uuid.uuid4()}",
+                raw_content="x",
+            )
+            session.add_all([keep_item, non_asset_item])
+            await session.flush()
+            seeded_ids = [keep_item.id, non_asset_item.id]
+            asset = UserAsset(tech_id=keep_item.id, status=AssetStatus.KEEP)
+            session.add(asset)
+            await session.flush()
+            session.add(
+                TrackHistory(
+                    user_asset_id=asset.id,
+                    changed_from="Tracking",
+                    changed_to="Keep",
+                    changed_at=datetime(2026, 6, 10, 9, 30, tzinfo=timezone.utc),
+                )
+            )
+            await session.commit()
+            keep_item_id = keep_item.id
+            non_asset_item_id = non_asset_item.id
+
+        async with Session() as session:
+            view = await fetch_item_detail(session, keep_item_id)
+            assert view is not None
+            assert view.timeline  # non-empty for a Keep asset with events
+            assert view.timeline[0].kind == "status"
+            assert view.timeline[0].changed_to == "Keep"
+            # Superseded by timeline for Keep assets — left empty rather
+            # than duplicating data the unified fragment already renders.
+            assert view.related_history == []
+            assert view.signal_alerts == []
+
+            view2 = await fetch_item_detail(session, non_asset_item_id)
+            assert view2 is not None
+            assert view2.timeline == []
+    finally:
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()

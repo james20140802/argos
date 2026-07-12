@@ -1,0 +1,57 @@
+{# Shared asset timeline fragment (ARG-205). Renders a merged, reverse-
+   chronological list of `TimelineEvent`s — status transitions (✅), signal
+   alerts (🔭), and successions (🧬). Used by the portfolio card accordion
+   (GET /portfolio/{asset_id}/timeline, limit=5) and the item-detail page
+   (fetch_timeline with no limit). `events` and `empty_message` are read by
+   both call sites. Enhance/Fork's "이 기술도 Keep" hx-post target is built
+   from each event's own `e.link_tech_id` — the Replace handoff banner
+   itself lives outside this partial (`_portfolio_cards.html` /
+   `_detail_actions.html`), since it must render even before this fragment
+   is fetched (ARG-209). #}
+{% set _events = events if events is defined else [] %}
+{% if _events %}
+<ol class="timeline">
+  {% for e in _events %}
+  <li class="timeline__event timeline__event--{{ e.kind }}{% if e.is_inferred %} timeline__event--inferred{% endif %}">
+    <span class="timeline__icon" aria-hidden="true">{{ "✅" if e.kind == "status" else ("🔭" if e.kind == "signal" else "🧬") }}</span>
+    <span class="timeline__body">
+      {% if e.kind == "succession" %}
+      {% if e.is_inferred %}
+      {# ARG-209: render-time inference only — the handoff (real or manual)
+         already happened, so this is informational text, not a CTA. #}
+      <span class="timeline__label">🔁 <a class="timeline__link" href="/item/{{ e.link_tech_id }}">{{ e.title }}</a>에서 이어받음</span>
+      {% else %}
+      <span class="timeline__relation timeline__relation--{{ e.relation_type.value|lower }}">{{ e.relation_type.value }}</span>
+      {% if e.link_tech_id %}
+      <a class="timeline__link" href="/item/{{ e.link_tech_id }}">{{ e.title }}</a>
+      {% else %}
+      <span class="timeline__label">{{ e.title }}</span>
+      {% endif %}
+      {% if e.reasoning %}
+      <p class="timeline__reasoning">{{ e.reasoning }}</p>
+      {% endif %}
+      {% if e.relation_type.value != "Replace" and e.link_tech_id %}
+      {# Enhance/Fork: no banner (ARG-209 AC3) — just a lightweight "also
+         Keep this" CTA that reuses POST /items/{id}/keep as-is (no new
+         route). hx-swap="none" because the response is a feed-card
+         fragment that doesn't fit this row; the mutation itself is what
+         matters here. #}
+      <button type="button" class="timeline__keep-btn"
+              hx-post="/items/{{ e.link_tech_id }}/keep"
+              hx-swap="none">이 기술도 Keep</button>
+      {% endif %}
+      {% endif %}
+      {% elif e.kind == "signal" and e.link_tech_id %}
+      <a class="timeline__link" href="/item/{{ e.link_tech_id }}">{{ e.label }}</a>
+      {% else %}
+      <span class="timeline__label">{{ e.label }}</span>
+      {% endif %}
+    </span>
+    <time class="timeline__time"
+          datetime="{{ e.changed_at.isoformat() }}">{{ e.changed_at.strftime('%Y-%m-%d') }}</time>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<p class="timeline-empty">{{ empty_message if empty_message is defined else "아직 추적 이벤트가 없습니다" }}</p>
+{% endif %}

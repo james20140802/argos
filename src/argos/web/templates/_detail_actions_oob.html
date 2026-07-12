@@ -1,0 +1,20 @@
+{# Detail-page mutation response (Keep/Pass/Untrack/handoff with context=detail).
+   Swaps the action bar in place (primary target #detail-actions-<id>) AND
+   refreshes the 관련 신호 section out-of-band, because this PR made that
+   section's layout depend on item.status (Keep → unified timeline): a status
+   flip that only re-rendered the action bar would leave the signals section
+   stale — a kept item without its timeline, or an archived item still showing
+   the Keep timeline — until a full reload (codex P2).
+
+   Two data shapes: the action bar renders from the feed-card `item` (status /
+   id / asset_id / successors); the signals section needs the full
+   ItemDetailView (`signals_item`) for similar / timeline / alerts / history.
+   `signals_item` is None only when the item vanished between the mutation and
+   the reload — then there is nothing to refresh out-of-band. #}
+{% include "_detail_actions.html" %}
+{% if signals_item %}
+{% set item = signals_item %}
+<div id="detail-signals-{{ item.id }}" hx-swap-oob="true">
+  {% include "_detail_signals.html" %}
+</div>
+{% endif %}

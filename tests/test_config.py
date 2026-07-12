@@ -343,6 +343,25 @@ def test_rss_defaults_do_not_contain_anthropic():
     assert not any("anthropic" in u for u in rss_urls)
 
 
+# ---------------------------------------------------------------------------
+# TrackingConfig (ARG-204) — signal_similarity_threshold
+# ---------------------------------------------------------------------------
+
+
+def test_tracking_config_default_threshold():
+    from argos.config import UserConfig
+    cfg = UserConfig()
+    assert cfg.tracking.signal_similarity_threshold == 0.85
+
+
+def test_tracking_config_override_from_toml(tmp_path):
+    from argos.config import UserConfig
+    p = tmp_path / "config.toml"
+    p.write_text("[tracking]\nsignal_similarity_threshold = 0.7\n", encoding="utf-8")
+    cfg = UserConfig.load_strict(path=p)
+    assert cfg.tracking.signal_similarity_threshold == 0.7
+
+
 def test_spa_config_loads_from_toml(tmp_path):
     from argos.config import UserConfig
     cfg_file = tmp_path / "config.toml"

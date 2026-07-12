@@ -1,9 +1,11 @@
-"""Succession alert checks (ARG-56) and signal-match checks (ARG-115).
+"""Succession alert checks (ARG-56, ARG-204) and signal-match checks (ARG-115).
 
 **Succession alerts** find succession records whose predecessor is currently
-held as a Keep-ed user_asset, skipping any Keep-ed asset that has already
-received a succession alert (recorded in ``track_history`` with
-``changed_to = 'succession_alerted'``).
+held as a Keep-ed user_asset, skipping any (user_asset, successor) pair that
+has already received a succession alert (recorded in ``track_history`` with
+``changed_to = 'succession_alerted'`` and ``changed_from = str(successor_id)``
+— see ARG-204).  Dedup is per pair, not per asset: a Keep-ed asset that
+already alerted for one successor still alerts for a *different* successor.
 
 **Signal match** (ARG-115) compares the embeddings of newly-saved TechItems
 against Keep-ed assets using pgvector cosine similarity, reporting matches
@@ -38,7 +40,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import timezone
 
-from sqlalchemy import and_, select, text
+from sqlalchemy import String, and_, cast, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -63,6 +65,11 @@ SIGNAL_MATCHED = "signal_matched"
 
 # Cosine similarity threshold above which a new TechItem is considered a
 # "follow-up signal" for a Keep-ed asset.  1 − cosine_distance > threshold.
+# ARG-204: this is now only the *default* value (mirrored by
+# TrackingConfig.signal_similarity_threshold in argos.config). At runtime,
+# match_signals() reads the effective threshold from
+# settings.user.tracking.signal_similarity_threshold instead of this
+# constant directly.
 SIGNAL_SIMILARITY_THRESHOLD = 0.85
 
 
@@ -81,12 +88,18 @@ class SuccessionAlert:
         Title of the newly-saved tech that supersedes the predecessor.
     relation_type:
         Whether the successor Replaces, Enhances, or Forks the predecessor.
+    successor_id:
+        tech_items.id of the successor.  ARG-204: used to dedup alerts per
+        (user_asset, successor) pair — mirrors ``SignalMatch.new_item_id``.
+        Added last so existing keyword-based construction call sites are
+        unaffected.
     """
 
     user_asset_id: uuid.UUID
     predecessor_title: str
     successor_title: str
     relation_type: RelationType
+    successor_id: uuid.UUID
 
 
 async def check_succession(
@@ -113,15 +126,19 @@ async def check_succession(
     list[SuccessionAlert]
         One alert per (Keep-ed predecessor, successor) pair that has not yet
         had a ``succession_alerted`` row written to ``track_history`` for the
-        matching ``user_asset``.
+        matching ``(user_asset, successor)`` pair.
 
     Notes
     -----
-    Dedup granularity: alerts are deduplicated per ``user_asset_id``.  Once any
-    succession alert has been recorded for a Keep-ed asset, subsequent alerts
-    for the *same* Keep-ed asset are suppressed — even if the new alert is
-    about a different successor.  This matches the spec in ARG-104 and avoids
-    schema changes to ``track_history``.
+    Dedup granularity (ARG-204): alerts are deduplicated per
+    ``(user_asset_id, successor_id)`` pair — mirroring :func:`match_signals`'
+    ``(user_asset_id, new_item_id)`` encoding.  Once a succession alert has
+    been recorded for a specific (Keep-ed asset, successor) pair, only that
+    exact pair is suppressed; a *different* successor for the same Keep-ed
+    asset still alerts.  The pair is encoded the same way
+    :func:`post_signal_update` encodes signal matches:
+    ``changed_from = str(successor_id)``, ``changed_to = SUCCESSION_ALERTED``
+    — no schema change required.
 
     Retry semantics: alerts that were generated but failed to post (no
     ``track_history`` row written by :func:`post_track_update`) will reappear
@@ -135,14 +152,19 @@ async def check_succession(
     Predecessor = aliased(TechItem)
     Successor = aliased(TechItem)
 
-    # NOT EXISTS subquery: skip user_assets that already have any
-    # `succession_alerted` row in track_history.
+    # NOT EXISTS subquery: skip (user_asset, successor) pairs that already
+    # have a `succession_alerted` row in track_history for that exact pair.
+    # ARG-204: correlated on successor_id (cast to text) in addition to
+    # user_asset_id — mirrors match_signals' NOT EXISTS predicate
+    # (`th.changed_from = CAST(ni.id AS text)`) and detail.py's
+    # `cast(Matched.id, String) == TrackHistory.changed_from` join condition.
     already_alerted = (
         select(TrackHistory.id)
         .where(
             and_(
                 TrackHistory.user_asset_id == UserAsset.id,
                 TrackHistory.changed_to == SUCCESSION_ALERTED,
+                TrackHistory.changed_from == cast(TechSuccession.successor_id, String),
             )
         )
         .exists()
@@ -154,6 +176,7 @@ async def check_succession(
             Predecessor.title.label("predecessor_title"),
             Successor.title.label("successor_title"),
             TechSuccession.relation_type.label("relation_type"),
+            TechSuccession.successor_id.label("successor_id"),
         )
         .select_from(TechSuccession)
         .join(
@@ -183,30 +206,36 @@ async def check_succession(
     result = await session.execute(stmt)
 
     # In-batch dedup: the track_history NOT EXISTS predicate above only
-    # filters assets that were alerted in *prior committed* runs.  Within a
-    # single query result, a Keep-ed asset with multiple unalerted
-    # successors would otherwise yield one row per successor — and because
-    # ``post_track_update`` writes its dedup ``track_history`` row only
-    # after each Slack send (within the same un-committed session), the
-    # NOT EXISTS predicate can't see those in-flight markers either.
-    # Collapse to one alert per user_asset_id here.  Representative rule:
-    # **first encountered**, which — given the ``ORDER BY
-    # TechSuccession.created_at ASC`` above — is the earliest-created
-    # succession row.  This is deterministic and matches the
-    # per-user_asset dedup contract documented in the Notes section above.
-    seen_asset_ids: set[uuid.UUID] = set()
+    # filters pairs that were alerted in *prior committed* runs.  Within a
+    # single query result, duplicate/overlapping tech_succession rows for
+    # the exact same (asset, successor) pair would otherwise yield more than
+    # one alert for that pair — and because ``post_track_update`` writes its
+    # dedup ``track_history`` row only after each Slack send (within the
+    # same un-committed session), the NOT EXISTS predicate can't see those
+    # in-flight markers either.  ARG-204: collapse to one alert per
+    # (asset_id, successor_id) pair here — NOT per asset_id alone, so a
+    # Keep-ed asset with multiple *distinct* successors still yields one
+    # alert per successor.  Representative rule: **first encountered**,
+    # which — given the ``ORDER BY TechSuccession.created_at ASC`` above —
+    # is the earliest-created succession row.  This is deterministic and
+    # matches the per-pair dedup contract documented in the Notes section
+    # above.
+    seen_pairs: set[tuple[uuid.UUID, uuid.UUID]] = set()
     alerts: list[SuccessionAlert] = []
     for row in result.all():
         asset_id = row[0]
-        if asset_id in seen_asset_ids:
+        successor_id = row[4]
+        pair = (asset_id, successor_id)
+        if pair in seen_pairs:
             continue
-        seen_asset_ids.add(asset_id)
+        seen_pairs.add(pair)
         alerts.append(
             SuccessionAlert(
                 user_asset_id=asset_id,
                 predecessor_title=row[1],
                 successor_title=row[2],
                 relation_type=row[3],
+                successor_id=successor_id,
             )
         )
     return alerts
@@ -272,15 +301,20 @@ async def post_track_update(
             )
             continue
 
-        # Mark the alert as delivered so future runs skip it.
-        # ``changed_from='Keep'`` — only Keep-ed assets trigger succession
-        # alerts, so the previous status is always Keep.  ``changed_to`` is
-        # the sentinel string that the check_succession NOT EXISTS predicate
-        # looks for.
+        # Mark this (user_asset, successor) pair as delivered so future runs
+        # skip only that exact pair.  ARG-204: ``changed_from`` now encodes
+        # ``str(alert.successor_id)`` (36 chars, fits String(50)) instead of
+        # the legacy asset-level ``'Keep'`` literal — mirrors
+        # post_signal_update's ``changed_from=str(match.new_item_id)``
+        # encoding.  ``changed_to`` remains the sentinel string that
+        # check_succession's NOT EXISTS predicate looks for.  Pre-ARG-204
+        # rows still carrying ``changed_from='Keep'`` match no successor
+        # UUID under the new predicate, so those assets naturally re-alert
+        # once — intended, not a bug (see check_succession's Notes).
         session.add(
             TrackHistory(
                 user_asset_id=alert.user_asset_id,
-                changed_from=AssetStatus.KEEP.value,
+                changed_from=str(alert.successor_id),
                 changed_to=SUCCESSION_ALERTED,
             )
         )
@@ -391,8 +425,17 @@ async def match_signals(
             )
     """
 
+    # ARG-204: the threshold is config-driven (settings.user.tracking.
+    # signal_similarity_threshold). Lazy-imported so this module (already
+    # imported at CLI/pipeline startup) doesn't force-load the full config
+    # singleton at import time — mirrors the lazy `from argos.slack.blocks
+    # import ...` pattern used elsewhere in this file.
+    from argos.config import settings
+
+    threshold = settings.user.tracking.signal_similarity_threshold
+
     params: dict = {
-        "threshold": SIGNAL_SIMILARITY_THRESHOLD,
+        "threshold": threshold,
         "sentinel": SIGNAL_MATCHED,
     }
 

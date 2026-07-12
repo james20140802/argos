@@ -31,6 +31,7 @@ def _alert(**overrides) -> SuccessionAlert:
         "predecessor_title": "Old Tech",
         "successor_title": "New Tech",
         "relation_type": RelationType.REPLACE,
+        "successor_id": uuid.uuid4(),
     }
     base.update(overrides)
     return SuccessionAlert(**base)
@@ -108,8 +109,11 @@ async def test_post_track_update_posts_message_and_writes_history():
     row = history_rows[0]
     assert row.user_asset_id == alert.user_asset_id
     assert row.changed_to == SUCCESSION_ALERTED
-    # changed_from is NOT NULL on the model; convention: 'Keep'.
-    assert row.changed_from == "Keep"
+    # ARG-204: changed_from now encodes the successor's UUID (mirrors
+    # SIGNAL_MATCHED's changed_from=str(new_item_id)), not the legacy
+    # 'Keep' literal — this is what makes per-(asset, successor) dedup
+    # possible in check_succession's NOT EXISTS predicate.
+    assert row.changed_from == str(alert.successor_id)
 
 
 @pytest.mark.asyncio
@@ -167,3 +171,31 @@ async def test_post_track_update_writes_history_even_if_flush_unused():
 
     history_rows = [o for o in added if isinstance(o, TrackHistory)]
     assert len(history_rows) == 1
+
+
+# ─── ARG-204: per-(asset, successor) pair encoding ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_post_track_update_records_successor_id_not_keep_literal():
+    """changed_from must encode the successor's UUID (36 chars, fits
+    String(50)), not the old asset-level 'Keep' literal — this is the
+    encoding check_succession's pair-dedup NOT EXISTS predicate relies on."""
+    alert = _alert()
+    app = MagicMock()
+    app.client = MagicMock()
+    app.client.chat_postMessage = AsyncMock(return_value={"ok": True, "ts": "1"})
+
+    added: list = []
+    session = AsyncMock()
+    session.add = lambda obj: added.append(obj)
+    session.flush = AsyncMock()
+
+    await post_track_update(app, "C123", [alert], session)
+
+    history_rows = [o for o in added if isinstance(o, TrackHistory)]
+    assert len(history_rows) == 1
+    row = history_rows[0]
+    assert row.changed_from == str(alert.successor_id)
+    assert row.changed_from != "Keep"
+    assert len(row.changed_from) == 36

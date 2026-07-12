@@ -389,3 +389,71 @@ def test_portfolio_items_malformed_cursor_returns_400_not_500():
     client = _client_real_portfolio()
     resp = client.get("/portfolio/items?cursor=%%%bogus%%%")
     assert resp.status_code == 400
+
+
+# ------------------------------------------------------------------ #
+# ARG-209 — succession handoff banner
+# ------------------------------------------------------------------ #
+
+def test_portfolio_renders_handoff_banner_for_replace_successor(monkeypatch):
+    """A Keep asset with a Replace successor (lineage_count > 0) gets a
+    card-top handoff banner + 이어받기 button, visible before the timeline
+    accordion is ever expanded (AC1/AC3)."""
+    from argos.web.services.timeline import ReplaceSuccessor
+
+    asset = _asset(title="OldModel", lineage_count=1)
+    successor_id = uuid.uuid4()
+
+    async def _fake_replace_successors(session, tech_id):
+        assert tech_id == asset.tech_id
+        return [ReplaceSuccessor(tech_id=successor_id, title="NewModel")]
+
+    monkeypatch.setattr(
+        "argos.web.app.replace_successors", _fake_replace_successors
+    )
+    view = PortfolioView(active=[asset], quiet=[], category=None, sort="recency")
+    client = _client_with_portfolio(monkeypatch, view)
+    body = client.get("/portfolio").text
+    assert "handoff-banner" in body
+    assert "NewModel" in body
+    assert "이어받기" in body
+    assert (
+        f'hx-post="/assets/{asset.id}/handoff?successor_tech_id={successor_id}"'
+        in body
+    )
+
+
+def test_portfolio_omits_handoff_banner_when_lineage_count_zero(monkeypatch):
+    """No succession link at all (lineage_count=0) must skip the
+    replace_successors lookup entirely — no extra query for the common case,
+    and no banner rendered."""
+    asset = _asset(title="Plain", lineage_count=0)
+
+    async def _fake_replace_successors(session, tech_id):
+        raise AssertionError("replace_successors must not run for lineage_count=0")
+
+    monkeypatch.setattr(
+        "argos.web.app.replace_successors", _fake_replace_successors
+    )
+    view = PortfolioView(active=[asset], quiet=[], category=None, sort="recency")
+    client = _client_with_portfolio(monkeypatch, view)
+    body = client.get("/portfolio").text
+    assert "handoff-banner" not in body
+
+
+def test_portfolio_omits_handoff_banner_when_only_enhance_or_fork(monkeypatch):
+    """lineage_count > 0 but every succession is Enhance/Fork (no Replace) —
+    replace_successors returns [] and no banner renders (AC3: those get the
+    timeline "이 기술도 Keep" button instead, not a banner)."""
+    asset = _asset(title="EnhancedOnly", lineage_count=1)
+
+    async def _fake_replace_successors(session, tech_id):
+        return []
+
+    monkeypatch.setattr(
+        "argos.web.app.replace_successors", _fake_replace_successors
+    )
+    view = PortfolioView(active=[asset], quiet=[], category=None, sort="recency")
+    client = _client_with_portfolio(monkeypatch, view)
+    body = client.get("/portfolio").text
+    assert "handoff-banner" not in body

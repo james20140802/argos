@@ -29,6 +29,25 @@ def _client(monkeypatch, **patches) -> TestClient:
         yield _FakeSession()
 
     app.dependency_overrides[_get_session] = _fake_session
+
+    # Detail-context actions (?context=detail) refresh the 관련 신호 section
+    # out-of-band via fetch_item_detail. Default it to None (no OOB block) so the
+    # feed/action-bar tests don't need to build a full ItemDetailView; tests that
+    # assert the signals refresh override this in ``patches``.
+    async def _no_detail(session, tech_id):
+        return None
+
+    monkeypatch.setattr("argos.web.app.fetch_item_detail", _no_detail)
+
+    # A detail-context re-render that lands on Keep loads the handoff-banner
+    # successors via _load_item_successors (centralized in _detail_action_response
+    # so untrack's Keep fallback also gets the banner — codex P2). Default it to
+    # empty (no banner) so tests that don't care about the banner never hit the
+    # real DB loader; banner tests override this in ``patches``.
+    async def _no_successors(session, tech_id):
+        return []
+
+    monkeypatch.setattr("argos.web.app._load_item_successors", _no_successors)
     for path, fn in patches.items():
         monkeypatch.setattr(path, fn)
     return TestClient(app, raise_server_exceptions=False)
@@ -321,11 +340,15 @@ def test_keep_with_detail_context_returns_detail_actions_partial(monkeypatch):
                 "category": None, "image_url": None, "summary": "요약",
                 "trust_score": None, "source_url": "https://x", "asset_id": uuid.uuid4()}
 
+    async def _fake_successors(session, tech_id):
+        return []
+
     client = _client(
         monkeypatch,
         **{
             "argos.web.app.toggle_asset": _fake_toggle,
             "argos.web.app._load_feed_card_context": _fake_lookup,
+            "argos.web.app._load_item_successors": _fake_successors,
         },
     )
     resp = client.post(f"/items/{item_id}/keep?context=detail")
@@ -338,6 +361,114 @@ def test_keep_with_detail_context_returns_detail_actions_partial(monkeypatch):
     assert "card--featured" not in body
     # Kept → Untrack replaces the Keep button.
     assert "Untrack" in body
+
+
+def test_keep_with_detail_context_shows_handoff_banner_for_replace_successor(
+    monkeypatch,
+):
+    """A Keep on the detail page for an item that already has a Replace
+    successor must render the handoff banner in the swapped fragment — not omit
+    it until a full reload. The re-render loads the item's successors (which
+    _load_feed_card_context doesn't carry) so the banner appears immediately."""
+    from argos.models.tech_succession import RelationType
+    from argos.web.services.detail import GenealogyEntry
+
+    item_id = uuid.uuid4()
+    successor_id = uuid.uuid4()
+
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
+        return ToggleOutcome.SET
+
+    async def _fake_lookup(session, tech_id):
+        return {"id": tech_id, "title": "Kept Thing", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": "요약",
+                "trust_score": None, "source_url": "https://x", "asset_id": uuid.uuid4()}
+
+    async def _fake_successors(session, tech_id):
+        assert tech_id == item_id
+        return [
+            GenealogyEntry(
+                tech_id=successor_id,
+                title="Next-Gen",
+                relation_type=RelationType.REPLACE,
+                reasoning=None,
+            )
+        ]
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.toggle_asset": _fake_toggle,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+            "argos.web.app._load_item_successors": _fake_successors,
+        },
+    )
+    resp = client.post(f"/items/{item_id}/keep?context=detail")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "handoff-banner" in body
+    assert "Next-Gen" in body
+    assert f"successor_tech_id={successor_id}" in body
+
+
+def test_keep_with_detail_context_refreshes_signals_oob(monkeypatch):
+    """codex P2: a detail-page Keep must ALSO refresh the 관련 신호 section
+    out-of-band — that section now shows the Keep-only unified timeline, which
+    the action-bar swap alone would leave stale until a full reload. The
+    response carries an hx-swap-oob wrapper (#detail-signals-<id>) rendering the
+    timeline alongside the primary action-bar swap."""
+    from datetime import datetime, timezone
+
+    from argos.web.services.detail import ItemDetailView
+    from argos.web.services.timeline import TimelineEvent
+
+    item_id = uuid.uuid4()
+
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
+        return ToggleOutcome.SET
+
+    async def _fake_lookup(session, tech_id):
+        return {"id": tech_id, "title": "Kept Thing", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": "요약",
+                "trust_score": None, "source_url": "https://x", "asset_id": uuid.uuid4()}
+
+    async def _fake_successors(session, tech_id):
+        return []
+
+    async def _fake_detail(session, tech_id):
+        return ItemDetailView(
+            id=item_id, title="Kept Thing", source_url="https://x",
+            image_url=None, summary=None, category=None, trust_score=None,
+            published_at=None, status=AssetStatus.KEEP, asset_id=uuid.uuid4(),
+            timeline=[
+                TimelineEvent(
+                    kind="signal",
+                    changed_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                    title="새 신호", link_tech_id=uuid.uuid4(),
+                    changed_from=None, changed_to=None, relation_type=None,
+                    reasoning=None, label="새 신호: X",
+                )
+            ],
+        )
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.toggle_asset": _fake_toggle,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+            "argos.web.app._load_item_successors": _fake_successors,
+            "argos.web.app.fetch_item_detail": _fake_detail,
+        },
+    )
+    resp = client.post(f"/items/{item_id}/keep?context=detail")
+    assert resp.status_code == 200
+    body = resp.text
+    # primary swap: the action bar
+    assert f'id="item-actions-{item_id}"' in body
+    # out-of-band swap: the refreshed signals section with the Keep timeline
+    assert f'id="detail-signals-{item_id}"' in body
+    assert 'hx-swap-oob="true"' in body
+    assert 'class="timeline"' in body
 
 
 def test_pass_with_detail_context_returns_detail_actions_partial(monkeypatch):
@@ -519,6 +650,59 @@ def test_untrack_with_detail_context_falls_back_to_unrelated_tech_id(monkeypatch
     # fallback can produce when tech_id doesn't match the original page.
     assert f'id="item-actions-{unrelated_tech_id}"' in body
     assert "Untrack" in body  # AssetStatus.KEEP renders the Untrack button
+
+
+def test_untrack_detail_fallback_on_keep_item_renders_handoff_banner(monkeypatch):
+    """codex P2: when untrack's ``user_asset_id`` no longer resolves, it falls
+    back to rendering the live asset for the ``tech_id`` query param. If that
+    item is currently Keep AND has a Replace successor, the swapped action bar
+    must still show the handoff banner. The banner filters on ``item.successors``,
+    which ``_load_feed_card_context`` omits — earlier only the keep/pass path
+    pre-loaded them, so this fallback silently dropped the banner (Jinja treats
+    the missing key as falsy, no error). _detail_action_response now loads them
+    for every Keep detail re-render, so the banner appears here too."""
+    from argos.models.tech_succession import RelationType
+    from argos.web.services.detail import GenealogyEntry
+
+    user_asset_id = uuid.uuid4()
+    live_tech_id = uuid.uuid4()
+    successor_id = uuid.uuid4()
+
+    async def _fake_resolve(session, ua_id):
+        return None  # stale user_asset_id — triggers the tech_id fallback
+
+    async def _fake_lookup(session, t_id):
+        assert t_id == live_tech_id
+        return {"id": t_id, "title": "Re-Kept Thing", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": None,
+                "trust_score": None, "source_url": "https://x", "asset_id": uuid.uuid4()}
+
+    async def _fake_successors(session, t_id):
+        assert t_id == live_tech_id
+        return [
+            GenealogyEntry(
+                tech_id=successor_id,
+                title="Next-Gen",
+                relation_type=RelationType.REPLACE,
+                reasoning=None,
+            )
+        ]
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+            "argos.web.app._load_item_successors": _fake_successors,
+        },
+    )
+    resp = client.post(
+        f"/assets/{user_asset_id}/untrack?context=detail&tech_id={live_tech_id}"
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert "handoff-banner" in body
+    assert f"successor_tech_id={successor_id}" in body
 
 
 def test_untrack_with_detail_context_and_no_resolvable_tech_id_404s(monkeypatch):

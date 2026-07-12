@@ -35,13 +35,15 @@ async def test_check_succession_none_scans_all_unalerted_rows():
     succession whose alert failed to post on a previous run remains
     eligible until track_history records a successful send."""
     asset_id = uuid.uuid4()
-    rows = [(asset_id, "Old", "New", RelationType.REPLACE)]
+    successor_id = uuid.uuid4()
+    rows = [(asset_id, "Old", "New", RelationType.REPLACE, successor_id)]
     session = _make_session(rows)
 
     alerts = await check_succession(session)  # no new_item_ids → None default
 
     assert len(alerts) == 1
     assert alerts[0].user_asset_id == asset_id
+    assert alerts[0].successor_id == successor_id
 
     # A query was issued, and it does NOT narrow by tech_succession.successor_id.
     session.execute.assert_awaited()
@@ -71,13 +73,14 @@ async def test_check_succession_none_still_filters_already_alerted():
 async def test_check_succession_returns_matched_keep_alerts():
     successor_id = uuid.uuid4()
     user_asset_id = uuid.uuid4()
-    # Row schema: (user_asset_id, predecessor_title, successor_title, relation_type)
+    # Row schema: (user_asset_id, predecessor_title, successor_title, relation_type, successor_id)
     rows = [
         (
             user_asset_id,
             "Old Tech",
             "New Tech",
             RelationType.REPLACE,
+            successor_id,
         )
     ]
     session = _make_session(rows)
@@ -91,6 +94,7 @@ async def test_check_succession_returns_matched_keep_alerts():
     assert alert.predecessor_title == "Old Tech"
     assert alert.successor_title == "New Tech"
     assert alert.relation_type is RelationType.REPLACE
+    assert alert.successor_id == successor_id
 
 
 @pytest.mark.asyncio
@@ -124,42 +128,71 @@ async def test_check_succession_filters_already_alerted_via_query():
     rendered = str(executed_stmt.compile(compile_kwargs={"literal_binds": False}))
     assert "tech_succession" in rendered
     assert "track_history" in rendered
+    # ARG-204: dedup predicate must correlate on successor_id (via
+    # changed_from), not just changed_to — this is what makes the dedup
+    # per-pair instead of per-asset.
+    assert "changed_from" in rendered
 
 
 @pytest.mark.asyncio
 async def test_check_succession_multiple_alerts_preserves_order():
-    successor_id = uuid.uuid4()
+    successor_a = uuid.uuid4()
+    successor_b = uuid.uuid4()
     asset_a = uuid.uuid4()
     asset_b = uuid.uuid4()
     rows = [
-        (asset_a, "A old", "A new", RelationType.ENHANCE),
-        (asset_b, "B old", "B new", RelationType.FORK),
+        (asset_a, "A old", "A new", RelationType.ENHANCE, successor_a),
+        (asset_b, "B old", "B new", RelationType.FORK, successor_b),
     ]
     session = _make_session(rows)
 
-    alerts = await check_succession(session, [successor_id])
+    alerts = await check_succession(session, [successor_a, successor_b])
 
     assert [a.user_asset_id for a in alerts] == [asset_a, asset_b]
     assert [a.relation_type for a in alerts] == [
         RelationType.ENHANCE,
         RelationType.FORK,
     ]
+    assert [a.successor_id for a in alerts] == [successor_a, successor_b]
 
 
 @pytest.mark.asyncio
-async def test_check_succession_dedupes_multiple_successors_for_same_asset():
-    """Two ``tech_succession`` rows sharing the same Keep-ed predecessor
-    (so the same ``user_asset_id``) must collapse to a single alert.  The
-    SQL's track_history NOT EXISTS predicate only covers prior committed
-    runs, so without in-batch dedup ``post_track_update`` would fire one
-    Slack message per successor.  Representative = first encountered
-    (the query is ORDER BY succession created_at ASC)."""
+async def test_check_succession_returns_alert_per_successor_for_same_asset():
+    """ARG-204 fix: dedup granularity is per (user_asset, successor) pair,
+    not per user_asset.  A Keep-ed asset with two *different* successors
+    must yield two alerts — one per successor — so a second, distinct
+    succession is never silently suppressed just because the asset already
+    received an earlier, different succession alert."""
     asset_id = uuid.uuid4()
+    successor_1 = uuid.uuid4()
+    successor_2 = uuid.uuid4()
     rows = [
-        # Earliest succession first — this should win.
-        (asset_id, "Old Tech", "Newer Tech", RelationType.REPLACE),
-        # Later succession for the same Keep-ed asset — must be dropped.
-        (asset_id, "Old Tech", "Even Newer Tech", RelationType.ENHANCE),
+        (asset_id, "Old Tech", "Newer Tech", RelationType.REPLACE, successor_1),
+        (asset_id, "Old Tech", "Even Newer Tech", RelationType.ENHANCE, successor_2),
+    ]
+    session = _make_session(rows)
+
+    alerts = await check_succession(session)
+
+    assert len(alerts) == 2
+    assert {a.successor_id for a in alerts} == {successor_1, successor_2}
+    assert all(a.user_asset_id == asset_id for a in alerts)
+
+
+@pytest.mark.asyncio
+async def test_check_succession_dedupes_duplicate_pair_rows():
+    """If the exact same (asset, successor) pair appears twice in the raw
+    result set (e.g. duplicate/overlapping tech_succession rows), in-batch
+    dedup still collapses it to a single alert — first encountered wins.
+    This is the (asset, successor)-pair analog of the old asset-only
+    in-batch dedup."""
+    asset_id = uuid.uuid4()
+    successor_id = uuid.uuid4()
+    rows = [
+        # Earliest row for this exact pair — this should win.
+        (asset_id, "Old Tech", "Newer Tech", RelationType.REPLACE, successor_id),
+        # Duplicate row for the *same* pair — must be dropped.
+        (asset_id, "Old Tech", "Newer Tech (dup)", RelationType.ENHANCE, successor_id),
     ]
     session = _make_session(rows)
 
@@ -167,26 +200,30 @@ async def test_check_succession_dedupes_multiple_successors_for_same_asset():
 
     assert len(alerts) == 1
     assert alerts[0].user_asset_id == asset_id
+    assert alerts[0].successor_id == successor_id
     # First-encountered representative is preserved.
     assert alerts[0].successor_title == "Newer Tech"
     assert alerts[0].relation_type is RelationType.REPLACE
 
 
 @pytest.mark.asyncio
-async def test_check_succession_dedupes_per_asset_across_distinct_assets():
-    """Dedup is per-asset: two distinct Keep-ed assets each with multiple
-    successors should yield exactly two alerts, one per asset."""
+async def test_check_succession_returns_all_pairs_across_distinct_assets():
+    """Two distinct Keep-ed assets, each with two distinct successors,
+    yield four alerts total — one per (user_asset, successor) pair."""
     asset_a = uuid.uuid4()
     asset_b = uuid.uuid4()
+    succ_a1, succ_a2 = uuid.uuid4(), uuid.uuid4()
+    succ_b1, succ_b2 = uuid.uuid4(), uuid.uuid4()
     rows = [
-        (asset_a, "A old", "A new 1", RelationType.REPLACE),
-        (asset_a, "A old", "A new 2", RelationType.ENHANCE),
-        (asset_b, "B old", "B new 1", RelationType.FORK),
-        (asset_b, "B old", "B new 2", RelationType.REPLACE),
+        (asset_a, "A old", "A new 1", RelationType.REPLACE, succ_a1),
+        (asset_a, "A old", "A new 2", RelationType.ENHANCE, succ_a2),
+        (asset_b, "B old", "B new 1", RelationType.FORK, succ_b1),
+        (asset_b, "B old", "B new 2", RelationType.REPLACE, succ_b2),
     ]
     session = _make_session(rows)
 
     alerts = await check_succession(session)
 
-    assert [a.user_asset_id for a in alerts] == [asset_a, asset_b]
-    assert [a.successor_title for a in alerts] == ["A new 1", "B new 1"]
+    assert len(alerts) == 4
+    assert [a.user_asset_id for a in alerts] == [asset_a, asset_a, asset_b, asset_b]
+    assert [a.successor_id for a in alerts] == [succ_a1, succ_a2, succ_b1, succ_b2]

@@ -113,6 +113,7 @@ async def test_run_full_pipeline_scans_all_succession_rows(monkeypatch):
         predecessor_title="Old",
         successor_title="New",
         relation_type=RelationType.REPLACE,
+        successor_id=uuid.uuid4(),
     )
     check_mock = AsyncMock(return_value=[expected_alert])
     monkeypatch.setattr(crawler_pipeline, "check_succession", check_mock)
@@ -163,6 +164,7 @@ async def test_run_full_pipeline_still_checks_when_nothing_saved(monkeypatch):
         predecessor_title="Previously-failed predecessor",
         successor_title="Previously-failed successor",
         relation_type=RelationType.ENHANCE,
+        successor_id=uuid.uuid4(),
     )
     check_mock = AsyncMock(return_value=[retried_alert])
     monkeypatch.setattr(crawler_pipeline, "check_succession", check_mock)
@@ -419,6 +421,7 @@ async def test_cli_run_consumes_succession_alerts_from_summary():
         predecessor_title="Old",
         successor_title="New",
         relation_type=RelationType.REPLACE,
+        successor_id=uuid.uuid4(),
     )
     summary = PipelineSummary(crawled_total=0, succession_alerts=[alert])
 

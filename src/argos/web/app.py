@@ -33,6 +33,7 @@ from argos.web.services.settings import (
     apply_settings,
     load_settings_view,
 )
+from argos.web.services.timeline import ReplaceSuccessor, fetch_timeline, replace_successors
 
 _PACKAGE_DIR = Path(__file__).parent  # noqa: E402 — module-level lazy shims below
 _log = logging.getLogger("argos.web")
@@ -147,6 +148,61 @@ async def _resolve_user_asset_tech_id(session, user_asset_id: uuid.UUID):
     if row is None:
         return None
     return row[0]
+
+
+async def _is_replace_successor(
+    session, predecessor_tech_id: uuid.UUID, successor_tech_id: uuid.UUID
+) -> bool:
+    """True iff ``successor_tech_id`` is a ``Replace`` successor of
+    ``predecessor_tech_id`` in ``tech_succession``.
+
+    The handoff endpoint verifies this before transitioning so a modified or
+    stale ``successor_tech_id`` — the lineage changed after the banner was
+    rendered, or a hand-crafted POST — cannot archive the predecessor and Keep
+    an unrelated (or self) tech item, which would corrupt the portfolio. Only
+    ``Replace`` counts: Enhance/Fork are "also Keep" relations, not handoffs.
+    Lazy DB import keeps the module import graph DB-free (see the no-DB guard).
+    """
+    # A self-handoff is never valid: nothing constrains ``tech_succession``
+    # against a ``predecessor_id == successor_id`` Replace row, and if one
+    # exists the caller would transition the SAME asset Keep→Archived→Keep —
+    # committing two bogus track_history rows and swapping the portfolio card
+    # away while the asset is still Keep. Reject it at the source so no caller
+    # (present or future) can treat a self row as a real successor. (codex P2)
+    if predecessor_tech_id == successor_tech_id:
+        return False
+
+    from sqlalchemy import select
+
+    from argos.models.tech_succession import RelationType, TechSuccession
+
+    row = (
+        await session.execute(
+            select(TechSuccession.id).where(
+                TechSuccession.predecessor_id == predecessor_tech_id,
+                TechSuccession.successor_id == successor_tech_id,
+                TechSuccession.relation_type == RelationType.REPLACE,
+            )
+        )
+    ).first()
+    return row is not None
+
+
+async def _load_item_successors(session, tech_id: uuid.UUID):
+    """The item's own successors (each carrying ``relation_type``) for the
+    detail action bar's handoff-banner decision.
+
+    ``_load_feed_card_context`` deliberately omits successors — the feed card
+    ignores them — so a detail-context re-render that lands on Keep has to load
+    them here, or a freshly-Kept item's handoff banner stays hidden until a
+    full page reload. Only the detail action paths call this, and only for a
+    Keep item, so the feed hot path never pays for the query. Reuses the detail
+    service's successor loader for the exact ``GenealogyEntry`` shape the
+    ``_detail_actions.html`` banner filters on.
+    """
+    from argos.web.services.detail import _fetch_successors
+
+    return await _fetch_successors(session, tech_id)
 
 
 def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
@@ -392,6 +448,24 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid feed cursor") from exc
         return JSONResponse({"new_count": new_count})
 
+    async def _load_handoff_banners(session, view):
+        """Per-asset Replace-successor lookup for the portfolio card's
+        handoff banner (ARG-209).
+
+        Bounded by ``lineage_count > 0`` — the aggregate ``fetch_portfolio``
+        already computes — so a Keep-only portfolio with no succession links
+        at all issues zero extra queries. Keyed by ``user_asset.id`` (the
+        card's DOM id), value is the first Replace successor found.
+        """
+        banners: dict[uuid.UUID, ReplaceSuccessor] = {}
+        for asset in (*view.active, *view.quiet):
+            if asset.lineage_count <= 0:
+                continue
+            successors = await replace_successors(session, asset.tech_id)
+            if successors:
+                banners[asset.id] = successors[0]
+        return banners
+
     async def _render_portfolio(
         request: Request,
         template_name: str,
@@ -415,6 +489,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             raise HTTPException(
                 status_code=400, detail="invalid portfolio query"
             ) from exc
+        handoff_banners = await _load_handoff_banners(session, view)
         return request.app.state.templates.TemplateResponse(
             request,
             template_name,
@@ -422,6 +497,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
                 "view": view,
                 "category": normalized_category,
                 "sort": normalized_sort,
+                "handoff_banners": handoff_banners,
             },
         )
 
@@ -447,6 +523,30 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
     ) -> HTMLResponse:
         return await _render_portfolio(
             request, "_portfolio_items.html", category, sort, cursor, session
+        )
+
+    @app.get("/portfolio/{asset_id}/timeline", response_class=HTMLResponse)
+    async def portfolio_asset_timeline(
+        request: Request,
+        asset_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        # ``asset_id`` is user-controlled path state; a malformed UUID or an
+        # asset that no longer exists must not 500 — both render the same
+        # controlled 404 fragment (this endpoint is only ever hit via HTMX,
+        # never as a full-page navigation).
+        try:
+            parsed_id = uuid.UUID(asset_id)
+        except ValueError:
+            return _error_fragment(request, 404, "not found")
+
+        tech_id = await _resolve_user_asset_tech_id(session, parsed_id)
+        if tech_id is None:
+            return _error_fragment(request, 404, "not found")
+
+        events = await fetch_timeline(session, tech_id, limit=5)
+        return request.app.state.templates.TemplateResponse(
+            request, "_timeline.html", {"events": events}
         )
 
     def _render_not_found(request: Request) -> HTMLResponse:
@@ -512,6 +612,48 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             {"item": SimpleNamespace(**item), "is_featured": is_featured},
         )
 
+    async def _detail_action_response(
+        request: Request,
+        session,
+        item: dict,
+        tech_id: uuid.UUID,
+    ) -> HTMLResponse:
+        """Detail-page action response: the standalone action bar PLUS an
+        out-of-band refresh of the 관련 신호 section.
+
+        The action bar renders from the feed-card ``item`` dict (as before); the
+        signals section needs the full ``ItemDetailView`` because this PR made
+        its layout depend on ``item.status`` (Keep → unified timeline). Reloading
+        it here keeps it consistent with the just-changed status instead of going
+        stale until a full reload (codex P2). ``fetch_item_detail`` reflects the
+        already-committed new state; ``None`` (item vanished) simply omits the
+        out-of-band block.
+
+        A Keep item's action bar shows the ARG-209 handoff banner, which filters
+        on ``item["successors"]`` — but ``_load_feed_card_context`` omits that
+        key. EVERY detail-context mutation routes its action bar through here, so
+        load the successors here (only for a Keep item; a non-Keep bar never
+        reads them) rather than in each caller. Otherwise a caller that lands on
+        Keep without pre-loading successors — e.g. untrack's stale-``user_asset_id``
+        fallback rendering a since-re-Kept tech — would silently drop the banner
+        (Jinja treats the missing key as falsy, no error) until a full reload
+        (codex P2).
+        """
+        from types import SimpleNamespace
+
+        if (
+            item.get("successors") is None
+            and getattr(item.get("status"), "value", None) == "Keep"
+        ):
+            item["successors"] = await _load_item_successors(session, tech_id)
+
+        signals_item = await fetch_item_detail(session, tech_id)
+        return request.app.state.templates.TemplateResponse(
+            request,
+            "_detail_actions_oob.html",
+            {"item": SimpleNamespace(**item), "signals_item": signals_item},
+        )
+
     async def _toggle_item(
         request: Request,
         item_id: str,
@@ -552,6 +694,12 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         item = await _load_feed_card_context(session, parsed_id)
         if item is None:
             return _error_fragment(request, 404, "not found")
+        # A detail-page mutation re-renders the standalone action bar (+ an OOB
+        # signals refresh). _detail_action_response loads the handoff-banner
+        # successors itself when the item is Keep, so every detail-context caller
+        # gets a correct bar without each pre-loading them.
+        if partial_name == "_detail_actions.html":
+            return await _detail_action_response(request, session, item, parsed_id)
         return _action_response(
             request, item, partial_name, is_featured=is_featured
         )
@@ -653,7 +801,9 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             item = await _load_feed_card_context(session, detail_tech_id)
             if item is None:
                 return _error_fragment(request, 404, "not found")
-            return _action_response(request, item, "_detail_actions.html")
+            return await _detail_action_response(
+                request, session, item, detail_tech_id
+            )
 
         # Untracking archives the asset, dropping it out of the Keep-only
         # portfolio. A missing row (a stale cached /portfolio card whose asset
@@ -662,6 +812,136 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         # Return an empty body so the HTMX ``outerHTML`` swap removes the card,
         # idempotently — a 404/409 error fragment would leave a stale, dead card
         # displaying an error even though the untrack goal is satisfied.
+        return HTMLResponse("", status_code=200)
+
+    @app.post("/assets/{user_asset_id}/handoff", response_class=HTMLResponse)
+    async def handoff_asset(
+        request: Request,
+        user_asset_id: str,
+        successor_tech_id: Optional[str] = None,
+        context: Optional[str] = None,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        """Succession handoff (ARG-209): archive the predecessor asset (named
+        by ``user_asset_id``), Keep the successor (``successor_tech_id``).
+
+        Both transitions reuse ``transition_asset`` — each independently
+        upserted/logged to ``track_history`` — so the action is idempotent by
+        construction: replaying it is two NOOPs. If the successor is already
+        Keep (the "이미 tracking 중" case), only the predecessor's archive has
+        any effect; the successor's transition_asset call still runs but
+        NOOPs.
+
+        The successor is verified to be a real ``Replace`` successor of the
+        predecessor before anything transitions, so a modified or stale
+        ``successor_tech_id`` cannot hand the asset off to an unrelated tech
+        item and corrupt the portfolio.
+
+        Response by ``context``: ``detail`` re-renders the whole detail action
+        area (``_detail_actions.html``) — the predecessor is now Archived, so
+        the banner drops and the bar reflects the new state in place (the
+        button targets ``#detail-actions-<id>``). Otherwise an empty 200 body
+        mirrors ``untrack``'s portfolio contract: the caller's hx-swap removes
+        the whole predecessor card.
+        """
+        from argos.models.user_asset import AssetStatus
+
+        try:
+            parsed_asset_id = uuid.UUID(user_asset_id)
+        except ValueError:
+            return _error_fragment(request, 404, "not found")
+
+        if successor_tech_id is None:
+            return _error_fragment(request, 404, "not found")
+        try:
+            parsed_successor_id = uuid.UUID(successor_tech_id)
+        except ValueError:
+            return _error_fragment(request, 404, "not found")
+
+        predecessor_tech_id = await _resolve_user_asset_tech_id(
+            session, parsed_asset_id
+        )
+        if predecessor_tech_id is None:
+            return _error_fragment(request, 404, "not found")
+
+        # Predecessor liveness is decided by the locked transition outcomes below,
+        # NOT by a separate unlocked status read here. An earlier read-then-
+        # transition guard rejected any non-Keep predecessor up front, but that
+        # read couldn't tell a raced/crafted revival apart from a harmless
+        # completed-handoff *replay* (predecessor already Archived, successor
+        # already Keep): it 409'd the replay before the both-NOOP outcome branch
+        # could recognize it, replacing a detail target with an error fragment on
+        # a mere double-submit (codex P2). The FOR-UPDATE-locked outcome gate is
+        # the single authoritative serialization point, so the up-front read is
+        # gone. See the gate below for exactly what it does and does not enforce.
+
+        # Reject a handoff whose successor is not an actual Replace successor of
+        # this predecessor (stale banner after the lineage changed, or a
+        # hand-crafted POST). Without this a single request could archive the
+        # asset and Keep an arbitrary/self UUID, corrupting the portfolio.
+        if not await _is_replace_successor(
+            session, predecessor_tech_id, parsed_successor_id
+        ):
+            return _error_fragment(request, 409, "invalid successor")
+
+        # transition_asset locks each row FOR UPDATE, so its outcome is the sole
+        # authoritative serialization point for the predecessor's live-Keep state.
+        # Revival guard (codex P2): reject ONLY when the predecessor was NOT
+        # archived-from-live by this request (NOOP = already Archived, CREATED =
+        # row gone) *and* the successor would be NEWLY promoted to Keep — that
+        # combination revives a dismissed asset from a stale/crafted/raced POST.
+        # A completed-handoff replay (both NOOP — successor already Keep) is
+        # harmless and still 200. Returning before commit discards the pending
+        # successor Keep (the session rolls back on close), like the other
+        # early-return guards.
+        from argos.slack.services.asset_transition import TransitionOutcome
+
+        archived = await transition_asset(
+            session, predecessor_tech_id, AssetStatus.ARCHIVED
+        )
+        kept = await transition_asset(session, parsed_successor_id, AssetStatus.KEEP)
+        # Commit ONLY the two safe outcome shapes; reject (before commit, so the
+        # pending writes roll back) everything else. transition_asset locks the
+        # row FOR UPDATE, so these outcomes are authoritative.
+        #   - legit handoff: the predecessor was archived FROM LIVE by this
+        #     request (TRANSITIONED). CREATED would mean the row was deleted and
+        #     we'd resurrect it as Archived; NOOP that it was already Archived —
+        #     neither is a real handoff.
+        #   - benign replay: predecessor already Archived AND successor already
+        #     Keep (both NOOP) — a completed handoff replayed; no writes happen.
+        # Any other mix (NOOP/CREATED archive with a NEW successor Keep, or a
+        # CREATED archive that recreates a cleared predecessor) is a stale/
+        # crafted/raced revival and must not persist. (codex P2)
+        #
+        # NOTE: TRANSITIONED is agnostic to the *prior* status — any non-Archived
+        # predecessor → Archived qualifies, not strictly Keep→Archived. That is
+        # deliberate, not an oversight: a handoff is only ever offered from a Keep
+        # asset (the portfolio lists Keep only; the detail banner renders only
+        # when is_kept), and no code path writes AssetStatus.TRACKING to a
+        # user_asset, so a live predecessor reaching here is always Keep. A
+        # hypothetical Tracking predecessor would archive+promote to a fully
+        # consistent state (no revival, no DB/UI divergence) — so gating on the
+        # prior status here would only re-introduce the unlocked-read/replay
+        # fragility removed above, guarding a state nothing can produce.
+        legit_handoff = archived == TransitionOutcome.TRANSITIONED
+        benign_replay = (
+            archived == TransitionOutcome.NOOP and kept == TransitionOutcome.NOOP
+        )
+        if not (legit_handoff or benign_replay):
+            return _error_fragment(request, 409, "asset not kept")
+        await session.commit()
+
+        if context == "detail":
+            # Re-render the predecessor's detail action area, now Archived: the
+            # handoff banner is gone and the bar shows Keep/Pass instead of a
+            # stale Untrack for a state that no longer exists.
+            item = await _load_feed_card_context(session, predecessor_tech_id)
+            if item is None:
+                return _error_fragment(request, 404, "not found")
+            return await _detail_action_response(
+                request, session, item, predecessor_tech_id
+            )
+
         return HTMLResponse("", status_code=200)
 
     # ---- Settings (ARG-186) ------------------------------------------------

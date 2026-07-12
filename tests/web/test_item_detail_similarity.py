@@ -47,7 +47,10 @@ def test_related_signals_section_omitted_when_no_similar(monkeypatch):
     assert resp.status_code == 200
     body = resp.text
     assert "관련 신호" not in body
-    assert "detail-signals" not in body
+    # The OOB wrapper div (id="detail-signals-<id>") is always present as a swap
+    # target; it's the inner <section class="detail-signals"> that must be
+    # omitted when there's no subsection content.
+    assert 'class="detail-signals"' not in body
     assert "signals-similar" not in body
 
 
