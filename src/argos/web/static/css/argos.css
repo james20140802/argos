@@ -543,9 +543,14 @@ body {
   color: var(--muted); text-align: center; padding: 48px 0;
 }
 
-/* Featured hero — the lead story (first card, first page only). A cinematic
-   wide cover and an outsized serif headline establish the masthead hierarchy
-   the references (Apple Newsroom / NYT) lead with. */
+/* Featured hero — the item ``select_hero`` chose (highest feed_score within
+   the last 48h, or the highest overall as a fallback; falls back further to
+   the natural top item when the named hero isn't on this page), first page
+   only. ``app.py``'s ``pin_hero`` guarantees it always leads the grid at
+   index 0 — diversity reordering is only ever applied to the remainder, so
+   it can never displace the hero. A cinematic wide cover and an outsized
+   serif headline establish the masthead hierarchy the references (Apple
+   Newsroom / NYT) lead with. */
 .card--featured {
   padding-bottom: 14px;
   border-bottom: 1px solid var(--hairline);

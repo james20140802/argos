@@ -80,6 +80,14 @@ def _client_with_feed(
         return hero_id
 
     monkeypatch.setattr("argos.web.app.select_hero", _fake_select_hero)
+
+    # ARG-213 review fix: ``_render_feed`` now derives the poll baseline from
+    # a dedicated ``latest_feed_cursor`` query rather than the rendered
+    # page — stub it too, or the fake ``None`` session would blow up.
+    async def _fake_latest_feed_cursor(session, *, category=None):
+        return None
+
+    monkeypatch.setattr("argos.web.app.latest_feed_cursor", _fake_latest_feed_cursor)
     return TestClient(app)
 
 
@@ -523,3 +531,70 @@ def test_feed_items_fragment_never_has_hero_even_with_hero_id(monkeypatch):
     client = _client_with_feed(monkeypatch, page, hero_id=item.id)
     body = client.get("/feed/items").text
     assert "card--featured" not in body
+
+
+# --------------------------------------------------------------------- #
+# Review fixes — hero must lead the page (pin_hero); malformed cursor
+# across the wrong sort must 400 (route-level AC pin)
+# --------------------------------------------------------------------- #
+
+
+def test_feed_hero_leads_the_grid_even_when_not_first_in_service_order(monkeypatch):
+    """Review fix: the hero was selected by id but never actually moved to
+    the front — so it could render mid-grid even though ``is_featured``
+    correctly tagged it. Assert DOM order, not just the CSS class: the
+    hero's card markup must appear before every other card's."""
+    first = _item(title="Not The Hero")
+    hero = _item(title="The Real Hero")
+    third = _item(title="Also Not The Hero")
+    page = FeedPage(items=[first, hero, third], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page, hero_id=hero.id)
+    body = client.get("/feed").text
+
+    assert body.count("card--featured") == 1
+    hero_pos = body.index(f'id="feed-card-{hero.id}"')
+    first_pos = body.index(f'id="feed-card-{first.id}"')
+    third_pos = body.index(f'id="feed-card-{third.id}"')
+    assert hero_pos < first_pos
+    assert hero_pos < third_pos
+
+
+def test_feed_hero_falls_back_to_natural_top_item_when_not_on_this_page(monkeypatch):
+    """If select_hero names an item that isn't actually on the current page
+    (e.g. a highly-scored-but-old item under a sort/pagination window that
+    excludes it), the natural top item must be featured instead of
+    rendering zero featured cards mid-grid."""
+    first = _item(title="Natural Top")
+    second = _item(title="Second")
+    page = FeedPage(items=[first, second], next_cursor=None)
+    missing_hero_id = uuid.uuid4()
+    client = _client_with_feed(monkeypatch, page, hero_id=missing_hero_id)
+    body = client.get("/feed").text
+
+    assert body.count("card--featured") == 1
+    assert f'card--featured" id="feed-card-{first.id}"' in body
+    assert f'card--featured" id="feed-card-{second.id}"' not in body
+
+
+def test_feed_recommended_sort_cursor_into_latest_sort_returns_400():
+    """Route-level AC pin (Fix 3): a recommended-tagged cursor fed into the
+    ``latest`` sort must 400, not silently misinterpret the payload."""
+    from argos.web.services.feed import encode_score_cursor
+
+    client = _client_real_feed()
+    score_cursor = encode_score_cursor(0.5, uuid.uuid4())
+    resp = client.get(f"/feed?sort=latest&cursor={score_cursor}")
+    assert resp.status_code == 400
+
+
+def test_feed_latest_sort_cursor_into_recommended_sort_returns_400():
+    """The reverse direction: a latest-tagged cursor fed into the default
+    ``recommended`` sort must also 400."""
+    from argos.web.services.feed import encode_cursor as _encode_time_cursor
+
+    client = _client_real_feed()
+    time_cursor = _encode_time_cursor(
+        datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4()
+    )
+    resp = client.get(f"/feed?cursor={time_cursor}")
+    assert resp.status_code == 400

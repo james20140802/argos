@@ -75,6 +75,11 @@ def _client_with_feed(monkeypatch, page: FeedPage) -> TestClient:
         return None
 
     monkeypatch.setattr("argos.web.app.select_hero", _fake_select_hero)
+
+    async def _fake_latest_feed_cursor(session, *, category=None):
+        return None
+
+    monkeypatch.setattr("argos.web.app.latest_feed_cursor", _fake_latest_feed_cursor)
     return TestClient(app)
 
 

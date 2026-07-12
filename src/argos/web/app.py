@@ -28,8 +28,9 @@ from argos.web.services.activity import fetch_activity
 from argos.web.services.detail import fetch_item_detail
 from argos.web.services.feed import (
     count_new_since,
-    encode_cursor,
     fetch_feed,
+    latest_feed_cursor,
+    pin_hero,
     select_hero,
 )
 from argos.web.services.portfolio import fetch_portfolio
@@ -399,28 +400,52 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         # what to poll "newer than". Only meaningful on the genuine first page
         # — a mid-feed "더 보기" fragment or a direct cursor hit has no single
         # "latest" position to anchor polling on, so it's left unset there.
-        # ARG-213: this must stay a genuine time-based marker regardless of
-        # ``sort`` — the poll's "anything newer?" question is always about
-        # wall-clock recency, even when the feed itself renders in feed_score
-        # order and the true newest item isn't page.items[0] (or even on this
-        # page) under "recommended". ``sort_at`` is already selected on every
-        # row regardless of ORDER BY, so taking the max over the page needs no
-        # extra query, and is exactly equivalent to items[0] under "latest".
+        # Review fix (ARG-213): this MUST come from a dedicated query
+        # (``latest_feed_cursor``), not from the rendered page's items. Under
+        # the "recommended" default sort, page 1 is ordered by feed_score, so
+        # its max-``sort_at`` item can be older than the true globally-newest
+        # item (which may have a low feed_score and simply not appear on page
+        # 1 at all) — deriving the baseline from the page would make
+        # ``count_new_since`` report a pre-existing, never-arrived item as
+        # "new". This is correct for BOTH sorts: for "latest" it matches the
+        # old items[0]-derived behavior exactly (the page is already
+        # time-ordered), and it additionally fixes "recommended".
         latest_cursor = ""
-        if first_page and page.items:
-            newest = max(page.items, key=lambda it: (it.sort_at, it.id))
-            latest_cursor = encode_cursor(newest.sort_at, newest.id)
+        if first_page:
+            latest_cursor = await latest_feed_cursor(session, category=normalized) or ""
         # Featured hero (ARG-213): the highest-feed_score item within the
         # last 48h (or the global highest-feed_score fallback), keyed by id —
         # not position. Only computed for the genuine first page; the HTMX
         # "더 보기" fragment (GET /feed/items) always renders with
         # first_page=False so a second hero never appears mid-scroll.
         hero_id = await select_hero(session, category=normalized) if first_page else None
+        # Review fix (ARG-213): the hero was selected by id but never
+        # actually moved to the front of the page — so the full-width hero
+        # markup and the positional tier-2 CSS could land mid-grid, and
+        # ``_reorder_diverse`` (applied inside ``fetch_feed`` over the whole
+        # recommended page) was free to shuffle it away from the front.
+        # ``pin_hero`` moves it to index 0 and only re-diversifies the
+        # remainder (removing the hero can re-introduce an adjacency it used
+        # to break up). If the hero isn't actually on this page (e.g. a
+        # highly-scored-but-old item under "latest"), fall back to featuring
+        # the natural top item rather than rendering a hero mid-grid.
+        items = page.items
+        if first_page and items and hero_id is not None:
+            pinned = pin_hero(
+                items, hero_id, diversify=(normalized_sort == "recommended")
+            )
+            if pinned is not None:
+                items = pinned
+            else:
+                # select_hero named a real item, but it isn't on this page
+                # (e.g. a highly-scored-but-old item under "latest") — feature
+                # the natural top item instead of rendering no hero at all.
+                hero_id = items[0].id
         return request.app.state.templates.TemplateResponse(
             request,
             template_name,
             {
-                "items": page.items,
+                "items": items,
                 "next_cursor": page.next_cursor,
                 "category": normalized,
                 "sort": normalized_sort,

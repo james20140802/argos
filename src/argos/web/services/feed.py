@@ -7,13 +7,17 @@ the Slack briefing pipeline so the two surfaces stay decoupled.
 ARG-213 adds a second, default sort — ``"recommended"`` (feed_score DESC,
 NULLS LAST) — alongside the original ``"latest"`` (time-based) path, a
 page-local same-domain-not-consecutive reorder for the recommended page, and
-``select_hero`` for the magazine-hero pick.
+``select_hero`` for the magazine-hero pick. A follow-up review pass added
+``latest_feed_cursor`` (the ARG-203 poll baseline must stay sort-independent)
+and ``pin_hero`` (the hero must actually lead the rendered page, and
+diversity reordering must not displace it).
 """
 from __future__ import annotations
 
 import base64
 import json
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
@@ -145,7 +149,7 @@ def _domain_of(url: Optional[str]) -> str:
         return ""
 
 
-def _reorder_diverse(items: list) -> list:
+def _reorder_diverse(items: list, *, avoid_domain: Optional[str] = None) -> list:
     """Same-domain-not-consecutive reorder, page-local only (ARG-213).
 
     Repeatedly takes the next item from whichever domain currently has the
@@ -168,9 +172,13 @@ def _reorder_diverse(items: list) -> list:
     an adjacent repeat become truly unavoidable — the excess then lands
     back-to-back, in original relative order, rather than forced apart or
     shuffled. Never drops an item.
-    """
-    from collections import defaultdict, deque
 
+    ``avoid_domain`` seeds the "domain just placed" state so the *first*
+    pick also avoids it when possible — used by ``pin_hero`` so the item
+    immediately following the pinned hero doesn't accidentally share the
+    hero's domain (the hero itself is never part of ``items`` here; it sits
+    at index 0 and this function only ever sees the remainder).
+    """
     buckets: dict[str, deque] = defaultdict(deque)
     domain_order: list[str] = []  # first-seen order, for a deterministic tie-break
     for it in items:
@@ -180,7 +188,7 @@ def _reorder_diverse(items: list) -> list:
         buckets[domain].append(it)
 
     out: list = []
-    last_domain: Optional[str] = None
+    last_domain: Optional[str] = avoid_domain
     total = len(items)
     while len(out) < total:
         candidates = [d for d in domain_order if buckets[d] and d != last_domain]
@@ -194,6 +202,49 @@ def _reorder_diverse(items: list) -> list:
         out.append(chosen)
         last_domain = chosen_domain
     return out
+
+
+def pin_hero(
+    items: list, hero_id: Optional[uuid.UUID], *, diversify: bool
+) -> Optional[list]:
+    """Pin the ``hero_id`` item to index 0; diversify only the remainder.
+
+    Fix (review of ARG-213): the hero was selected by id (``select_hero``)
+    but never actually moved to the front of the rendered page, so the
+    full-width ``.card--featured`` hero markup and the positional tier-2 CSS
+    (``argos.css`` ``nth-child(2)``/``nth-child(3)``) could land on the wrong
+    card whenever the hero wasn't already first — and ``_reorder_diverse``
+    (which runs over the *whole* recommended page) was free to shuffle the
+    hero away from the front entirely.
+
+    Returns ``None`` when ``hero_id`` isn't present in ``items`` at all —
+    the item scored highest but simply isn't on this particular page/sort
+    (e.g. a highly-scored-but-old item under ``sort="latest"``, or a
+    highly-scored item that fell past this page's cursor window). Callers
+    must treat ``None`` as "no pin happened" and fall back gracefully
+    (feature the natural top item) rather than render a hero mid-grid.
+
+    When found: the hero is removed from its original position and placed
+    at index 0; ``diversify=True`` re-applies ``_reorder_diverse`` to the
+    *remainder* only (removing the hero can re-introduce a same-domain
+    adjacency that used to be broken up by the hero sitting between two
+    same-domain items) — the hero itself is never subject to reordering.
+    The remainder's diversification also avoids the hero's own domain for
+    its first pick when possible, so the card immediately following the
+    pinned hero doesn't land back-to-back with it. ``diversify=False`` (the
+    ``"latest"`` sort) leaves the remainder's order untouched, preserving
+    strict time order for every card after the pinned hero.
+    """
+    if hero_id is None:
+        return None
+    index = next((i for i, it in enumerate(items) if it.id == hero_id), None)
+    if index is None:
+        return None
+    hero = items[index]
+    rest = items[:index] + items[index + 1 :]
+    if diversify:
+        rest = _reorder_diverse(rest, avoid_domain=_domain_of(hero.source_url))
+    return [hero, *rest]
 
 
 # ------------------------------------------------------------------ #
@@ -349,6 +400,44 @@ async def select_hero(
 
     row = (await session.execute(fallback_stmt)).first()
     return row[0] if row is not None else None
+
+
+async def latest_feed_cursor(
+    session: AsyncSession, *, category: Optional[Category] = None
+) -> Optional[str]:
+    """The true global-latest item's time-based cursor (review fix, ARG-213).
+
+    Independent of whatever sort actually rendered the current page. Before
+    this helper existed, ``argos.web.app._render_feed`` derived the ARG-203
+    poll baseline from ``max(sort_at, id)`` across the *rendered* page —
+    under the "recommended" default sort, page 1 is ordered by
+    ``feed_score``, so its max-``sort_at`` item can be older than the
+    genuinely newest item in the table (which may have a low ``feed_score``
+    and simply not appear on page 1 at all). That made ``count_new_since``
+    treat a pre-existing, never-arrived item as "new" — a false "새 항목
+    N개" pill. This runs one dedicated ``ORDER BY sort_at DESC, id DESC
+    LIMIT 1`` query so the poll baseline is always the true newest item by
+    wall-clock time, regardless of the active sort.
+
+    Returns ``None`` when the table (after the optional category filter) is
+    empty.
+    """
+    if category is not None and category not in ("Mainstream", "Alpha"):
+        raise ValueError(f"invalid category: {category!r}")
+
+    sort_expr = func.coalesce(TechItem.published_at, TechItem.created_at)
+    stmt = (
+        select(TechItem.id, sort_expr.label("sort_at"))
+        .order_by(sort_expr.desc(), TechItem.id.desc())
+        .limit(1)
+    )
+    if category is not None:
+        stmt = stmt.where(TechItem.category == CategoryType(category))
+
+    row = (await session.execute(stmt)).first()
+    if row is None:
+        return None
+    return encode_cursor(row.sort_at, row.id)
 
 
 async def count_new_since(
