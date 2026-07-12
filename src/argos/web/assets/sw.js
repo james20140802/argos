@@ -108,9 +108,16 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
+  // ARG-207: POST /events/batch (feed-events.js's Impression/Click/Dwell
+  // beacon) must never be served from — or written into — any cache. It
+  // already falls out here because this handler only intercepts GET, but the
+  // early-return is made explicit (rather than relying solely on the method
+  // check below) so a future GET-based events endpoint doesn't silently start
+  // getting cached.
   if (req.method !== 'GET') return;
-
   const url = new URL(req.url);
+  if (url.pathname.startsWith('/events')) return;
+
   if (url.origin !== self.location.origin) return;
 
   // Don't cache action POSTs, HTMX fragment endpoints, or item detail pages —

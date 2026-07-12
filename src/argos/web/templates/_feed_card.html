@@ -11,6 +11,7 @@
    the magazine hero degrades to a standard card there. #}
 {% set cat = (item.category.value if item.category else 'none')|lower %}
 <article class="card rise{% if is_featured %} card--featured{% endif %}" id="feed-card-{{ item.id }}"
+         data-item-id="{{ item.id }}"
          style="--d: {{ card_delay | default('0.00') }}s">
   {# Card taps open the in-app reader (ARG-138); "원문 보기" on the detail
      page handles the external source_url redirect. #}

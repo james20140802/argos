@@ -587,9 +587,75 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         if item is None:
             return _render_not_found(request)
 
+        # ARG-207: record a Click feed_event for the recommendation-ranker
+        # training data. Best-effort — a logging failure here must never break
+        # the detail page itself, so it's isolated in its own try/except and
+        # never re-raised.
+        try:
+            from argos.models.feed_event import FeedEvent, FeedEventType
+
+            session.add(FeedEvent(event_type=FeedEventType.CLICK, tech_item_id=parsed_id))
+            await session.commit()
+        except Exception:
+            _log.exception("failed to record Click feed_event for %s", parsed_id)
+
         return request.app.state.templates.TemplateResponse(
             request, "item_detail.html", {"item": item}
         )
+
+    @app.post("/events/batch")
+    async def events_batch(
+        request: Request,
+        session=Depends(_get_session),
+    ) -> JSONResponse:
+        """Batch-insert front-end feed_events (Impression/Click/Dwell, ARG-207).
+
+        Body: ``{"events": [{"type": "Impression", "item_id": "<uuid>", "value":
+        <float, optional>}, ...]}``. Unknown ``type`` values and malformed
+        ``item_id`` values are silently skipped (not counted in ``inserted``) —
+        this endpoint is fed by a beacon/fetch from the browser, so it must never
+        500 on a malformed or adversarial payload.
+        """
+        from argos.models.feed_event import FeedEvent, FeedEventType
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"inserted": 0})
+
+        events = body.get("events") if isinstance(body, dict) else None
+        if not isinstance(events, list):
+            return JSONResponse({"inserted": 0})
+
+        inserted = 0
+        try:
+            for raw in events:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    event_type = FeedEventType(raw.get("type"))
+                    item_id = uuid.UUID(str(raw.get("item_id")))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+
+                value = raw.get("value")
+                try:
+                    value = float(value) if value is not None else None
+                except (TypeError, ValueError):
+                    value = None
+
+                session.add(
+                    FeedEvent(event_type=event_type, tech_item_id=item_id, value=value)
+                )
+                inserted += 1
+
+            if inserted:
+                await session.commit()
+        except Exception:
+            _log.exception("failed to insert feed_events batch")
+            return JSONResponse({"inserted": 0})
+
+        return JSONResponse({"inserted": inserted})
 
     def _error_fragment(request: Request, status_code: int, message: str) -> HTMLResponse:
         return HTMLResponse(
