@@ -29,6 +29,15 @@ def _client(monkeypatch, **patches) -> TestClient:
         yield _FakeSession()
 
     app.dependency_overrides[_get_session] = _fake_session
+
+    # Detail-context actions (?context=detail) refresh the 관련 신호 section
+    # out-of-band via fetch_item_detail. Default it to None (no OOB block) so the
+    # feed/action-bar tests don't need to build a full ItemDetailView; tests that
+    # assert the signals refresh override this in ``patches``.
+    async def _no_detail(session, tech_id):
+        return None
+
+    monkeypatch.setattr("argos.web.app.fetch_item_detail", _no_detail)
     for path, fn in patches.items():
         monkeypatch.setattr(path, fn)
     return TestClient(app, raise_server_exceptions=False)
@@ -390,6 +399,66 @@ def test_keep_with_detail_context_shows_handoff_banner_for_replace_successor(
     assert "handoff-banner" in body
     assert "Next-Gen" in body
     assert f"successor_tech_id={successor_id}" in body
+
+
+def test_keep_with_detail_context_refreshes_signals_oob(monkeypatch):
+    """codex P2: a detail-page Keep must ALSO refresh the 관련 신호 section
+    out-of-band — that section now shows the Keep-only unified timeline, which
+    the action-bar swap alone would leave stale until a full reload. The
+    response carries an hx-swap-oob wrapper (#detail-signals-<id>) rendering the
+    timeline alongside the primary action-bar swap."""
+    from datetime import datetime, timezone
+
+    from argos.web.services.detail import ItemDetailView
+    from argos.web.services.timeline import TimelineEvent
+
+    item_id = uuid.uuid4()
+
+    async def _fake_toggle(session, tech_id, target_status, *, currently_active=False):
+        return ToggleOutcome.SET
+
+    async def _fake_lookup(session, tech_id):
+        return {"id": tech_id, "title": "Kept Thing", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": "요약",
+                "trust_score": None, "source_url": "https://x", "asset_id": uuid.uuid4()}
+
+    async def _fake_successors(session, tech_id):
+        return []
+
+    async def _fake_detail(session, tech_id):
+        return ItemDetailView(
+            id=item_id, title="Kept Thing", source_url="https://x",
+            image_url=None, summary=None, category=None, trust_score=None,
+            published_at=None, status=AssetStatus.KEEP, asset_id=uuid.uuid4(),
+            timeline=[
+                TimelineEvent(
+                    kind="signal",
+                    changed_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                    title="새 신호", link_tech_id=uuid.uuid4(),
+                    changed_from=None, changed_to=None, relation_type=None,
+                    reasoning=None, label="새 신호: X",
+                )
+            ],
+        )
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.toggle_asset": _fake_toggle,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+            "argos.web.app._load_item_successors": _fake_successors,
+            "argos.web.app.fetch_item_detail": _fake_detail,
+        },
+    )
+    resp = client.post(f"/items/{item_id}/keep?context=detail")
+    assert resp.status_code == 200
+    body = resp.text
+    # primary swap: the action bar
+    assert f'id="item-actions-{item_id}"' in body
+    # out-of-band swap: the refreshed signals section with the Keep timeline
+    assert f'id="detail-signals-{item_id}"' in body
+    assert 'hx-swap-oob="true"' in body
+    assert 'class="timeline"' in body
 
 
 def test_pass_with_detail_context_returns_detail_actions_partial(monkeypatch):

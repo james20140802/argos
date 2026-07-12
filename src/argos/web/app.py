@@ -625,6 +625,32 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             {"item": SimpleNamespace(**item), "is_featured": is_featured},
         )
 
+    async def _detail_action_response(
+        request: Request,
+        session,
+        item: dict,
+        tech_id: uuid.UUID,
+    ) -> HTMLResponse:
+        """Detail-page action response: the standalone action bar PLUS an
+        out-of-band refresh of the 관련 신호 section.
+
+        The action bar renders from the feed-card ``item`` dict (as before); the
+        signals section needs the full ``ItemDetailView`` because this PR made
+        its layout depend on ``item.status`` (Keep → unified timeline). Reloading
+        it here keeps it consistent with the just-changed status instead of going
+        stale until a full reload (codex P2). ``fetch_item_detail`` reflects the
+        already-committed new state; ``None`` (item vanished) simply omits the
+        out-of-band block.
+        """
+        from types import SimpleNamespace
+
+        signals_item = await fetch_item_detail(session, tech_id)
+        return request.app.state.templates.TemplateResponse(
+            request,
+            "_detail_actions_oob.html",
+            {"item": SimpleNamespace(**item), "signals_item": signals_item},
+        )
+
     async def _toggle_item(
         request: Request,
         item_id: str,
@@ -670,11 +696,10 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         # here so the banner shows now, not after a reload. Only for a Keep
         # detail render: Pass/Untrack land on non-Keep (no banner) and the feed
         # never asks for _detail_actions.html.
-        if (
-            partial_name == "_detail_actions.html"
-            and getattr(item.get("status"), "value", None) == "Keep"
-        ):
-            item["successors"] = await _load_item_successors(session, parsed_id)
+        if partial_name == "_detail_actions.html":
+            if getattr(item.get("status"), "value", None) == "Keep":
+                item["successors"] = await _load_item_successors(session, parsed_id)
+            return await _detail_action_response(request, session, item, parsed_id)
         return _action_response(
             request, item, partial_name, is_featured=is_featured
         )
@@ -776,7 +801,9 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             item = await _load_feed_card_context(session, detail_tech_id)
             if item is None:
                 return _error_fragment(request, 404, "not found")
-            return _action_response(request, item, "_detail_actions.html")
+            return await _detail_action_response(
+                request, session, item, detail_tech_id
+            )
 
         # Untracking archives the asset, dropping it out of the Keep-only
         # portfolio. A missing row (a stale cached /portfolio card whose asset
@@ -874,8 +901,13 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         kept = await transition_asset(session, parsed_successor_id, AssetStatus.KEEP)
         if (
             archived != TransitionOutcome.TRANSITIONED
-            and kept == TransitionOutcome.TRANSITIONED
+            and kept != TransitionOutcome.NOOP
         ):
+            # Predecessor was NOT archived-from-live (NOOP = already Archived,
+            # CREATED = row deleted then re-inserted), yet the successor Keep is a
+            # NEW promotion (TRANSITIONED from another status, or CREATED fresh) —
+            # a revival from a stale/crafted/raced POST. Only a harmless replay
+            # (kept == NOOP, i.e. successor already Keep) may fall through.
             return _error_fragment(request, 409, "asset not kept")
         await session.commit()
 
@@ -886,7 +918,9 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             item = await _load_feed_card_context(session, predecessor_tech_id)
             if item is None:
                 return _error_fragment(request, 404, "not found")
-            return _action_response(request, item, "_detail_actions.html")
+            return await _detail_action_response(
+                request, session, item, predecessor_tech_id
+            )
 
         return HTMLResponse("", status_code=200)
 

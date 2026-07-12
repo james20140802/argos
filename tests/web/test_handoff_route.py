@@ -57,6 +57,13 @@ def _client(
 
     monkeypatch.setattr("argos.web.app._user_asset_status", _fake_status)
 
+    # Detail-context handoff refreshes the 관련 신호 section out-of-band via
+    # fetch_item_detail; default it to None (no OOB block) so the action-bar
+    # tests don't need a full ItemDetailView. Overridable via ``patches``.
+    async def _no_detail(session, tech_id):
+        return None
+
+    monkeypatch.setattr("argos.web.app.fetch_item_detail", _no_detail)
     for path, fn in patches.items():
         monkeypatch.setattr(path, fn)
     return TestClient(app, raise_server_exceptions=False)

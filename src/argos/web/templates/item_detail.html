@@ -68,6 +68,12 @@
   </p>
 
   {% include "_detail_genealogy.html" %}
-  {% include "_detail_signals.html" %}
+  {# Stable wrapper so a detail-page status mutation can refresh this section
+     out-of-band (_detail_actions_oob.html) — its Keep-vs-non-Keep layout
+     depends on item.status, so the action bar alone going stale isn't enough
+     (codex P2). #}
+  <div id="detail-signals-{{ item.id }}">
+    {% include "_detail_signals.html" %}
+  </div>
 </article>
 {% endblock %}
