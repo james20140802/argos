@@ -855,8 +855,28 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         ):
             return _error_fragment(request, 409, "invalid successor")
 
-        await transition_asset(session, predecessor_tech_id, AssetStatus.ARCHIVED)
-        await transition_asset(session, parsed_successor_id, AssetStatus.KEEP)
+        # The Keep check above is a separate unlocked read; between it and here a
+        # concurrent Pass/Untrack/handoff (or a delete) could archive the
+        # predecessor. transition_asset locks the row FOR UPDATE, so its outcome
+        # is the authoritative serialization point. Revival guard (codex P2):
+        # reject ONLY when the predecessor was NOT archived-from-live by this
+        # request (NOOP = already Archived, CREATED = row gone) *and* the
+        # successor would be NEWLY promoted to Keep — that combination revives a
+        # dismissed asset from a stale/crafted/raced POST. A completed-handoff
+        # replay (both NOOP — successor already Keep) is harmless and still 200.
+        # Returning before commit discards the pending successor Keep (the
+        # session rolls back on close), like the other early-return guards.
+        from argos.slack.services.asset_transition import TransitionOutcome
+
+        archived = await transition_asset(
+            session, predecessor_tech_id, AssetStatus.ARCHIVED
+        )
+        kept = await transition_asset(session, parsed_successor_id, AssetStatus.KEEP)
+        if (
+            archived != TransitionOutcome.TRANSITIONED
+            and kept == TransitionOutcome.TRANSITIONED
+        ):
+            return _error_fragment(request, 409, "asset not kept")
         await session.commit()
 
         if context == "detail":
