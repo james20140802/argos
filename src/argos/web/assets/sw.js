@@ -37,8 +37,12 @@
  *     Bumped so v13 clients pick up the new .trust-dial--sm compact-dial
  *     styles instead of rendering the feed dial with the cached full-size
  *     detail-page styling.
+ * v16: portfolio timeline accordion + succession handoff (argos.css +
+ *     new portfolio-timeline.js, ARG-205/208/209). Bumped so v15 clients pick
+ *     up the new .timeline / .handoff-banner CSS (otherwise the accordion and
+ *     banner render unstyled) and precache the accordion's driving script.
  */
-const CACHE_VERSION = 'argos-v15';
+const CACHE_VERSION = 'argos-v16';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
@@ -53,6 +57,7 @@ const APP_SHELL = [
   '/static/js/img-fallback.js',
   '/static/js/refresh.js',
   '/static/js/feed-poll.js',
+  '/static/js/portfolio-timeline.js',
 ];
 
 self.addEventListener('install', (event) => {

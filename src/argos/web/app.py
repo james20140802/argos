@@ -150,6 +150,28 @@ async def _resolve_user_asset_tech_id(session, user_asset_id: uuid.UUID):
     return row[0]
 
 
+async def _user_asset_status(session, user_asset_id: uuid.UUID):
+    """Current ``AssetStatus`` of a user_asset, or ``None`` if unknown.
+
+    The handoff endpoint requires a *live Keep* predecessor. Resolving the
+    predecessor's tech_id succeeds even for an already-Archived
+    (Passed/Untracked) asset, so without this guard a stale banner or a crafted
+    handoff POST would re-archive it (a NOOP) yet still promote the successor to
+    ``Keep`` — reviving a dismissed asset (codex P2). Lazy DB import keeps the
+    module import graph DB-free (see the no-DB guard).
+    """
+    from sqlalchemy import select
+
+    from argos.models.user_asset import UserAsset
+
+    row = (
+        await session.execute(
+            select(UserAsset.status).where(UserAsset.id == user_asset_id)
+        )
+    ).first()
+    return row[0] if row is not None else None
+
+
 async def _is_replace_successor(
     session, predecessor_tech_id: uuid.UUID, successor_tech_id: uuid.UUID
 ) -> bool:
@@ -814,6 +836,15 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         )
         if predecessor_tech_id is None:
             return _error_fragment(request, 404, "not found")
+
+        # A handoff only makes sense from a live Keep asset. The predecessor may
+        # have been Passed/Untracked (Archived) after the banner rendered — a
+        # stale portfolio/detail view, or a crafted POST — in which case
+        # re-archiving it is a NOOP but the successor would still be promoted to
+        # Keep, reviving a dismissed asset. Require the current status to be
+        # Keep before transitioning. (codex P2)
+        if await _user_asset_status(session, parsed_asset_id) != AssetStatus.KEEP:
+            return _error_fragment(request, 409, "asset not kept")
 
         # Reject a handoff whose successor is not an actual Replace successor of
         # this predecessor (stale banner after the lineage changed, or a

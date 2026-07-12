@@ -96,7 +96,7 @@ def test_refresh_reprocesses_swapped_list_for_htmx():
 def test_sw_precaches_refresh_js_and_bumps_version():
     body = SW.read_text(encoding="utf-8")
     assert "/static/js/refresh.js" in body
-    assert "argos-v15" in body               # bumped to v15 (ARG-189 ring-only trust dial)
+    assert "argos-v16" in body               # bumped to v16 (ARG-205/208/209 timeline + handoff CSS/JS)
     assert "argos-shell-refresh" in body     # message 리스너
 
 
@@ -146,6 +146,14 @@ def test_base_loads_feed_poll_script():
 def test_sw_precaches_feed_poll_js():
     body = SW.read_text(encoding="utf-8")
     assert "/static/js/feed-poll.js" in body
+
+
+def test_sw_precaches_portfolio_timeline_js():
+    # ARG-205: base.html loads portfolio-timeline.js on the /portfolio shell, so
+    # it belongs in the precached app shell (like feed-poll.js/refresh.js) —
+    # otherwise the accordion is broken on a cached-shell / offline visit.
+    body = SW.read_text(encoding="utf-8")
+    assert "/static/js/portfolio-timeline.js" in body
 
 
 def test_feed_poll_pill_tap_gates_hide_and_scroll_on_refresh_result():
