@@ -13,7 +13,7 @@ from starlette.testclient import TestClient
 
 from argos.models.user_asset import AssetStatus
 from argos.slack.services.asset_transition import TransitionOutcome
-from argos.web.app import _get_session, build_web_app
+from argos.web.app import _get_session, _is_replace_successor, build_web_app
 
 
 class _FakeSession:
@@ -400,6 +400,49 @@ def test_handoff_rejects_non_replace_successor(monkeypatch):
     resp = client.post(
         f"/assets/{user_asset_id}/handoff?successor_tech_id={successor_tech_id}"
     )
+    assert resp.status_code == 409
+    assert "<!DOCTYPE html>" not in resp.text
+
+
+async def test_is_replace_successor_rejects_self_without_db():
+    """codex P2: a self row (predecessor_id == successor_id) is never a valid
+    Replace successor. The guard must short-circuit to False BEFORE any DB
+    access — so passing ``session=None`` (no query possible) still returns
+    False, proving no self-handoff can slip through even if such a lineage row
+    exists."""
+    tech_id = uuid.uuid4()
+    assert await _is_replace_successor(None, tech_id, tech_id) is False
+
+
+def test_handoff_rejects_self_referential_successor(monkeypatch):
+    """codex P2: even if a self-referential Replace row exists in
+    tech_succession, POSTing a handoff whose successor IS the predecessor must
+    be rejected (409) and NOTHING may transition — otherwise the same asset is
+    driven Keep→Archived→Keep, logging bogus history and swapping the portfolio
+    card away while the asset stays Keep. Uses the REAL _is_replace_successor
+    (its self-guard returns False before any DB access), so transition_asset is
+    never reached."""
+    user_asset_id = uuid.uuid4()
+    tech_id = uuid.uuid4()  # predecessor == successor
+
+    app = build_web_app()
+
+    async def _fake_session():
+        yield _FakeSession()
+
+    app.dependency_overrides[_get_session] = _fake_session
+
+    async def _fake_resolve(session, ua_id):
+        return tech_id
+
+    async def _fake_transition(session, tech_id_, target_status):
+        raise AssertionError("no transition may run for a self-referential handoff")
+
+    monkeypatch.setattr("argos.web.app._resolve_user_asset_tech_id", _fake_resolve)
+    monkeypatch.setattr("argos.web.app.transition_asset", _fake_transition)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post(f"/assets/{user_asset_id}/handoff?successor_tech_id={tech_id}")
     assert resp.status_code == 409
     assert "<!DOCTYPE html>" not in resp.text
 

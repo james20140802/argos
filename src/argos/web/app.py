@@ -163,6 +163,15 @@ async def _is_replace_successor(
     ``Replace`` counts: Enhance/Fork are "also Keep" relations, not handoffs.
     Lazy DB import keeps the module import graph DB-free (see the no-DB guard).
     """
+    # A self-handoff is never valid: nothing constrains ``tech_succession``
+    # against a ``predecessor_id == successor_id`` Replace row, and if one
+    # exists the caller would transition the SAME asset Keep→Archived→Keep —
+    # committing two bogus track_history rows and swapping the portfolio card
+    # away while the asset is still Keep. Reject it at the source so no caller
+    # (present or future) can treat a self row as a real successor. (codex P2)
+    if predecessor_tech_id == successor_tech_id:
+        return False
+
     from sqlalchemy import select
 
     from argos.models.tech_succession import RelationType, TechSuccession
@@ -619,8 +628,24 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         stale until a full reload (codex P2). ``fetch_item_detail`` reflects the
         already-committed new state; ``None`` (item vanished) simply omits the
         out-of-band block.
+
+        A Keep item's action bar shows the ARG-209 handoff banner, which filters
+        on ``item["successors"]`` — but ``_load_feed_card_context`` omits that
+        key. EVERY detail-context mutation routes its action bar through here, so
+        load the successors here (only for a Keep item; a non-Keep bar never
+        reads them) rather than in each caller. Otherwise a caller that lands on
+        Keep without pre-loading successors — e.g. untrack's stale-``user_asset_id``
+        fallback rendering a since-re-Kept tech — would silently drop the banner
+        (Jinja treats the missing key as falsy, no error) until a full reload
+        (codex P2).
         """
         from types import SimpleNamespace
+
+        if (
+            item.get("successors") is None
+            and getattr(item.get("status"), "value", None) == "Keep"
+        ):
+            item["successors"] = await _load_item_successors(session, tech_id)
 
         signals_item = await fetch_item_detail(session, tech_id)
         return request.app.state.templates.TemplateResponse(
@@ -669,14 +694,11 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         item = await _load_feed_card_context(session, parsed_id)
         if item is None:
             return _error_fragment(request, 404, "not found")
-        # A detail-page Keep makes the item immediately eligible for a handoff
-        # banner, but _load_feed_card_context carries no successors — load them
-        # here so the banner shows now, not after a reload. Only for a Keep
-        # detail render: Pass/Untrack land on non-Keep (no banner) and the feed
-        # never asks for _detail_actions.html.
+        # A detail-page mutation re-renders the standalone action bar (+ an OOB
+        # signals refresh). _detail_action_response loads the handoff-banner
+        # successors itself when the item is Keep, so every detail-context caller
+        # gets a correct bar without each pre-loading them.
         if partial_name == "_detail_actions.html":
-            if getattr(item.get("status"), "value", None) == "Keep":
-                item["successors"] = await _load_item_successors(session, parsed_id)
             return await _detail_action_response(request, session, item, parsed_id)
         return _action_response(
             request, item, partial_name, is_featured=is_featured
@@ -842,16 +864,16 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         if predecessor_tech_id is None:
             return _error_fragment(request, 404, "not found")
 
-        # Whether the predecessor is a *live Keep* asset is decided by the locked
-        # transition outcomes below, NOT by a separate unlocked status read here.
-        # An earlier read-then-transition guard rejected any non-Keep predecessor
-        # up front, but that read couldn't tell a raced/crafted revival apart from
-        # a harmless completed-handoff *replay* (predecessor already Archived,
-        # successor already Keep): it 409'd the replay before the both-NOOP
-        # outcome branch could recognize it, replacing a detail target with an
-        # error fragment on a mere double-submit (codex P2). The FOR-UPDATE-locked
-        # outcome gate is the single authoritative serialization point and already
-        # rejects every revival shape, so the up-front status read is gone.
+        # Predecessor liveness is decided by the locked transition outcomes below,
+        # NOT by a separate unlocked status read here. An earlier read-then-
+        # transition guard rejected any non-Keep predecessor up front, but that
+        # read couldn't tell a raced/crafted revival apart from a harmless
+        # completed-handoff *replay* (predecessor already Archived, successor
+        # already Keep): it 409'd the replay before the both-NOOP outcome branch
+        # could recognize it, replacing a detail target with an error fragment on
+        # a mere double-submit (codex P2). The FOR-UPDATE-locked outcome gate is
+        # the single authoritative serialization point, so the up-front read is
+        # gone. See the gate below for exactly what it does and does not enforce.
 
         # Reject a handoff whose successor is not an actual Replace successor of
         # this predecessor (stale banner after the lineage changed, or a
@@ -890,6 +912,17 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         # Any other mix (NOOP/CREATED archive with a NEW successor Keep, or a
         # CREATED archive that recreates a cleared predecessor) is a stale/
         # crafted/raced revival and must not persist. (codex P2)
+        #
+        # NOTE: TRANSITIONED is agnostic to the *prior* status — any non-Archived
+        # predecessor → Archived qualifies, not strictly Keep→Archived. That is
+        # deliberate, not an oversight: a handoff is only ever offered from a Keep
+        # asset (the portfolio lists Keep only; the detail banner renders only
+        # when is_kept), and no code path writes AssetStatus.TRACKING to a
+        # user_asset, so a live predecessor reaching here is always Keep. A
+        # hypothetical Tracking predecessor would archive+promote to a fully
+        # consistent state (no revival, no DB/UI divergence) — so gating on the
+        # prior status here would only re-introduce the unlocked-read/replay
+        # fragility removed above, guarding a state nothing can produce.
         legit_handoff = archived == TransitionOutcome.TRANSITIONED
         benign_replay = (
             archived == TransitionOutcome.NOOP and kept == TransitionOutcome.NOOP

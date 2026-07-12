@@ -38,6 +38,16 @@ def _client(monkeypatch, **patches) -> TestClient:
         return None
 
     monkeypatch.setattr("argos.web.app.fetch_item_detail", _no_detail)
+
+    # A detail-context re-render that lands on Keep loads the handoff-banner
+    # successors via _load_item_successors (centralized in _detail_action_response
+    # so untrack's Keep fallback also gets the banner — codex P2). Default it to
+    # empty (no banner) so tests that don't care about the banner never hit the
+    # real DB loader; banner tests override this in ``patches``.
+    async def _no_successors(session, tech_id):
+        return []
+
+    monkeypatch.setattr("argos.web.app._load_item_successors", _no_successors)
     for path, fn in patches.items():
         monkeypatch.setattr(path, fn)
     return TestClient(app, raise_server_exceptions=False)
@@ -640,6 +650,59 @@ def test_untrack_with_detail_context_falls_back_to_unrelated_tech_id(monkeypatch
     # fallback can produce when tech_id doesn't match the original page.
     assert f'id="item-actions-{unrelated_tech_id}"' in body
     assert "Untrack" in body  # AssetStatus.KEEP renders the Untrack button
+
+
+def test_untrack_detail_fallback_on_keep_item_renders_handoff_banner(monkeypatch):
+    """codex P2: when untrack's ``user_asset_id`` no longer resolves, it falls
+    back to rendering the live asset for the ``tech_id`` query param. If that
+    item is currently Keep AND has a Replace successor, the swapped action bar
+    must still show the handoff banner. The banner filters on ``item.successors``,
+    which ``_load_feed_card_context`` omits — earlier only the keep/pass path
+    pre-loaded them, so this fallback silently dropped the banner (Jinja treats
+    the missing key as falsy, no error). _detail_action_response now loads them
+    for every Keep detail re-render, so the banner appears here too."""
+    from argos.models.tech_succession import RelationType
+    from argos.web.services.detail import GenealogyEntry
+
+    user_asset_id = uuid.uuid4()
+    live_tech_id = uuid.uuid4()
+    successor_id = uuid.uuid4()
+
+    async def _fake_resolve(session, ua_id):
+        return None  # stale user_asset_id — triggers the tech_id fallback
+
+    async def _fake_lookup(session, t_id):
+        assert t_id == live_tech_id
+        return {"id": t_id, "title": "Re-Kept Thing", "status": AssetStatus.KEEP,
+                "category": None, "image_url": None, "summary": None,
+                "trust_score": None, "source_url": "https://x", "asset_id": uuid.uuid4()}
+
+    async def _fake_successors(session, t_id):
+        assert t_id == live_tech_id
+        return [
+            GenealogyEntry(
+                tech_id=successor_id,
+                title="Next-Gen",
+                relation_type=RelationType.REPLACE,
+                reasoning=None,
+            )
+        ]
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
+            "argos.web.app._load_feed_card_context": _fake_lookup,
+            "argos.web.app._load_item_successors": _fake_successors,
+        },
+    )
+    resp = client.post(
+        f"/assets/{user_asset_id}/untrack?context=detail&tech_id={live_tech_id}"
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert "handoff-banner" in body
+    assert f"successor_tech_id={successor_id}" in body
 
 
 def test_untrack_with_detail_context_and_no_resolvable_tech_id_404s(monkeypatch):
