@@ -1,0 +1,19 @@
+{# 신뢰도 구성 요소 내역 partial (ARG-211). Rendered inside item_detail.html
+   only when `item.trust_rubric` is present — legacy rows (pre-ARG-206,
+   trust_rubric IS NULL) render nothing here. All rubric values, the
+   source domain, and the corroboration count go through Jinja
+   autoescape; no raw text is ever injected into CSS/HTML. #}
+{% if item.trust_rubric %}
+<section class="detail-trust-breakdown">
+  <h2 class="detail-section__title">신뢰도 구성</h2>
+  <ul class="trust-rubric">
+    <li>1차 소스: {{ '예' if item.trust_rubric.get('is_primary_source') else '아니오' }}</li>
+    <li>근거 링크: {{ '있음' if item.trust_rubric.get('has_evidence_links') else '없음' }}</li>
+    <li>구체 수치: {{ '있음' if item.trust_rubric.get('has_concrete_numbers') else '없음' }}</li>
+    <li>주장-근거 균형: {{ item.trust_rubric.get('claim_evidence_balance', '—') }}</li>
+    <li>마케팅 강도: {{ item.trust_rubric.get('marketing_intensity', '—') }}</li>
+  </ul>
+  <p class="trust-source">소스: {{ item.source_url | domain }}</p>
+  <p class="trust-corroboration">교차 검증: {{ item.corroboration_count or 0 }}건</p>
+</section>
+{% endif %}

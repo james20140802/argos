@@ -1,7 +1,8 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, String, Text
+from sqlalchemy import DateTime, Enum, Float, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
@@ -37,6 +38,12 @@ class TechItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=True,
     )
     trust_score: Mapped[float] = mapped_column(Float, nullable=True)
+    # ARG-206: 5-field evidence rubric extracted by triage (temperature 0) —
+    # feeds score_rubric() in the deterministic trust synthesis.
+    trust_rubric: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # ARG-206: count of corroborating independent sources (T2 fills this in;
+    # new items start at 0/NULL and corroboration_score(0) == 0.0).
+    corroboration_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )

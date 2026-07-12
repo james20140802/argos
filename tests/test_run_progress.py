@@ -35,6 +35,23 @@ def _make_summary(**kwargs):
     return PipelineSummary(**defaults)
 
 
+def _make_run_session() -> AsyncMock:
+    """Mock AsyncSessionLocal() for _run tests.
+
+    _run's ARG-210 corroboration hook calls
+    ``session.execute(...).mappings().all()``; a bare AsyncMock would leave an
+    un-awaited coroutine there (swallowed by the hook's except, then reported
+    as a RuntimeWarning at GC). Stub the execute chain to an empty result.
+    """
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = []
+    session.execute.return_value = result
+    return session
+
+
 @pytest.mark.asyncio
 async def test_run_forwards_progress_reporter_to_pipeline(monkeypatch):
     """`_run` constructs a ProgressReporter and passes it to run_full_pipeline."""
@@ -44,9 +61,7 @@ async def test_run_forwards_progress_reporter_to_pipeline(monkeypatch):
         captured["progress"] = progress
         return [], _make_summary()
 
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
@@ -75,9 +90,7 @@ async def test_run_non_tty_produces_no_ansi(capsys, monkeypatch):
             progress.finish_stage("crawl")
         return [], _make_summary(crawled_total=2)
 
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session = _make_run_session()
 
     with (
         patch("argos.cli.AsyncSessionLocal", return_value=mock_session),
