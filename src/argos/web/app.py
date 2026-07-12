@@ -899,15 +899,23 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             session, predecessor_tech_id, AssetStatus.ARCHIVED
         )
         kept = await transition_asset(session, parsed_successor_id, AssetStatus.KEEP)
-        if (
-            archived != TransitionOutcome.TRANSITIONED
-            and kept != TransitionOutcome.NOOP
-        ):
-            # Predecessor was NOT archived-from-live (NOOP = already Archived,
-            # CREATED = row deleted then re-inserted), yet the successor Keep is a
-            # NEW promotion (TRANSITIONED from another status, or CREATED fresh) —
-            # a revival from a stale/crafted/raced POST. Only a harmless replay
-            # (kept == NOOP, i.e. successor already Keep) may fall through.
+        # Commit ONLY the two safe outcome shapes; reject (before commit, so the
+        # pending writes roll back) everything else. transition_asset locks the
+        # row FOR UPDATE, so these outcomes are authoritative.
+        #   - legit handoff: the predecessor was archived FROM LIVE by this
+        #     request (TRANSITIONED). CREATED would mean the row was deleted and
+        #     we'd resurrect it as Archived; NOOP that it was already Archived —
+        #     neither is a real handoff.
+        #   - benign replay: predecessor already Archived AND successor already
+        #     Keep (both NOOP) — a completed handoff replayed; no writes happen.
+        # Any other mix (NOOP/CREATED archive with a NEW successor Keep, or a
+        # CREATED archive that recreates a cleared predecessor) is a stale/
+        # crafted/raced revival and must not persist. (codex P2)
+        legit_handoff = archived == TransitionOutcome.TRANSITIONED
+        benign_replay = (
+            archived == TransitionOutcome.NOOP and kept == TransitionOutcome.NOOP
+        )
+        if not (legit_handoff or benign_replay):
             return _error_fragment(request, 409, "asset not kept")
         await session.commit()
 

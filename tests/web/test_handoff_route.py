@@ -153,6 +153,58 @@ def test_handoff_aborts_revival_when_predecessor_not_archived_from_live(monkeypa
     assert sessions and sessions[-1].committed is False
 
 
+def test_handoff_rejects_recreated_predecessor_created_archive(monkeypatch):
+    """codex P2: if the predecessor Keep row is DELETED after the live-status
+    read (e.g. a stale feed ✓ Keep toggle-off), transition_asset(...ARCHIVED)
+    returns CREATED — it would resurrect the predecessor as a phantom Archived
+    row. Even when the successor is already Keep (kept == NOOP), that must be
+    rejected (409, no commit): only a genuine Keep→Archived (TRANSITIONED), or a
+    pure both-NOOP replay, may persist."""
+    user_asset_id = uuid.uuid4()
+    predecessor_tech_id = uuid.uuid4()
+    successor_tech_id = uuid.uuid4()
+    sessions: list[_FakeSession] = []
+
+    app = build_web_app()
+
+    async def _fake_session():
+        session = _FakeSession()
+        sessions.append(session)
+        yield session
+
+    app.dependency_overrides[_get_session] = _fake_session
+
+    async def _fake_resolve(session, ua_id):
+        return predecessor_tech_id
+
+    async def _fake_verify(session, predecessor_id, successor_id):
+        return True
+
+    async def _fake_status(session, ua_id):
+        return AssetStatus.KEEP
+
+    async def _no_detail(session, tech_id):
+        return None
+
+    async def _fake_transition(session, tech_id, target_status):
+        if tech_id == predecessor_tech_id:
+            return TransitionOutcome.CREATED  # row was deleted → resurrected
+        return TransitionOutcome.NOOP  # successor already Keep
+
+    monkeypatch.setattr("argos.web.app._resolve_user_asset_tech_id", _fake_resolve)
+    monkeypatch.setattr("argos.web.app._is_replace_successor", _fake_verify)
+    monkeypatch.setattr("argos.web.app._user_asset_status", _fake_status)
+    monkeypatch.setattr("argos.web.app.fetch_item_detail", _no_detail)
+    monkeypatch.setattr("argos.web.app.transition_asset", _fake_transition)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post(
+        f"/assets/{user_asset_id}/handoff?successor_tech_id={successor_tech_id}"
+    )
+    assert resp.status_code == 409
+    assert sessions and sessions[-1].committed is False
+
+
 def test_handoff_rejects_non_keep_predecessor(monkeypatch):
     """codex P2: a handoff POST for a predecessor that is no longer Keep (already
     Passed/Untracked → Archived) must be rejected — never transition — so a
