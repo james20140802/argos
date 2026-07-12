@@ -150,28 +150,6 @@ async def _resolve_user_asset_tech_id(session, user_asset_id: uuid.UUID):
     return row[0]
 
 
-async def _user_asset_status(session, user_asset_id: uuid.UUID):
-    """Current ``AssetStatus`` of a user_asset, or ``None`` if unknown.
-
-    The handoff endpoint requires a *live Keep* predecessor. Resolving the
-    predecessor's tech_id succeeds even for an already-Archived
-    (Passed/Untracked) asset, so without this guard a stale banner or a crafted
-    handoff POST would re-archive it (a NOOP) yet still promote the successor to
-    ``Keep`` — reviving a dismissed asset (codex P2). Lazy DB import keeps the
-    module import graph DB-free (see the no-DB guard).
-    """
-    from sqlalchemy import select
-
-    from argos.models.user_asset import UserAsset
-
-    row = (
-        await session.execute(
-            select(UserAsset.status).where(UserAsset.id == user_asset_id)
-        )
-    ).first()
-    return row[0] if row is not None else None
-
-
 async def _is_replace_successor(
     session, predecessor_tech_id: uuid.UUID, successor_tech_id: uuid.UUID
 ) -> bool:
@@ -864,14 +842,16 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         if predecessor_tech_id is None:
             return _error_fragment(request, 404, "not found")
 
-        # A handoff only makes sense from a live Keep asset. The predecessor may
-        # have been Passed/Untracked (Archived) after the banner rendered — a
-        # stale portfolio/detail view, or a crafted POST — in which case
-        # re-archiving it is a NOOP but the successor would still be promoted to
-        # Keep, reviving a dismissed asset. Require the current status to be
-        # Keep before transitioning. (codex P2)
-        if await _user_asset_status(session, parsed_asset_id) != AssetStatus.KEEP:
-            return _error_fragment(request, 409, "asset not kept")
+        # Whether the predecessor is a *live Keep* asset is decided by the locked
+        # transition outcomes below, NOT by a separate unlocked status read here.
+        # An earlier read-then-transition guard rejected any non-Keep predecessor
+        # up front, but that read couldn't tell a raced/crafted revival apart from
+        # a harmless completed-handoff *replay* (predecessor already Archived,
+        # successor already Keep): it 409'd the replay before the both-NOOP
+        # outcome branch could recognize it, replacing a detail target with an
+        # error fragment on a mere double-submit (codex P2). The FOR-UPDATE-locked
+        # outcome gate is the single authoritative serialization point and already
+        # rejects every revival shape, so the up-front status read is gone.
 
         # Reject a handoff whose successor is not an actual Replace successor of
         # this predecessor (stale banner after the lineage changed, or a
@@ -882,17 +862,16 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         ):
             return _error_fragment(request, 409, "invalid successor")
 
-        # The Keep check above is a separate unlocked read; between it and here a
-        # concurrent Pass/Untrack/handoff (or a delete) could archive the
-        # predecessor. transition_asset locks the row FOR UPDATE, so its outcome
-        # is the authoritative serialization point. Revival guard (codex P2):
-        # reject ONLY when the predecessor was NOT archived-from-live by this
-        # request (NOOP = already Archived, CREATED = row gone) *and* the
-        # successor would be NEWLY promoted to Keep — that combination revives a
-        # dismissed asset from a stale/crafted/raced POST. A completed-handoff
-        # replay (both NOOP — successor already Keep) is harmless and still 200.
-        # Returning before commit discards the pending successor Keep (the
-        # session rolls back on close), like the other early-return guards.
+        # transition_asset locks each row FOR UPDATE, so its outcome is the sole
+        # authoritative serialization point for the predecessor's live-Keep state.
+        # Revival guard (codex P2): reject ONLY when the predecessor was NOT
+        # archived-from-live by this request (NOOP = already Archived, CREATED =
+        # row gone) *and* the successor would be NEWLY promoted to Keep — that
+        # combination revives a dismissed asset from a stale/crafted/raced POST.
+        # A completed-handoff replay (both NOOP — successor already Keep) is
+        # harmless and still 200. Returning before commit discards the pending
+        # successor Keep (the session rolls back on close), like the other
+        # early-return guards.
         from argos.slack.services.asset_transition import TransitionOutcome
 
         archived = await transition_asset(

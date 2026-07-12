@@ -30,7 +30,6 @@ def _client(
     monkeypatch,
     *,
     verify_successor: bool = True,
-    asset_status: AssetStatus = AssetStatus.KEEP,
     **patches,
 ) -> TestClient:
     app = build_web_app()
@@ -48,14 +47,10 @@ def _client(
 
     monkeypatch.setattr("argos.web.app._is_replace_successor", _fake_verify)
 
-    # The route also requires a live Keep predecessor. Default the status to
-    # Keep so happy-path tests reach the transitions (the ``_FakeSession`` has
-    # no ``execute``, so the real query must stay patched out); pass
-    # ``asset_status=AssetStatus.ARCHIVED`` to exercise the not-kept rejection.
-    async def _fake_status(session, ua_id):
-        return asset_status
-
-    monkeypatch.setattr("argos.web.app._user_asset_status", _fake_status)
+    # Whether the predecessor is a live Keep asset is now decided solely by the
+    # locked transition_asset outcomes (no separate unlocked status read to
+    # patch): each test's _fake_transition returns the outcome it wants to
+    # exercise, so the ``_FakeSession`` never needs an ``execute``.
 
     # Detail-context handoff refreshes the 관련 신호 section out-of-band via
     # fetch_item_detail; default it to None (no OOB block) so the action-bar
@@ -131,9 +126,6 @@ def test_handoff_aborts_revival_when_predecessor_not_archived_from_live(monkeypa
     async def _fake_verify(session, predecessor_id, successor_id):
         return True
 
-    async def _fake_status(session, ua_id):
-        return AssetStatus.KEEP  # passes the live-Keep read; the race is after it
-
     async def _fake_transition(session, tech_id, target_status):
         if tech_id == predecessor_tech_id:
             return TransitionOutcome.NOOP  # already Archived (raced) — no-op
@@ -141,7 +133,6 @@ def test_handoff_aborts_revival_when_predecessor_not_archived_from_live(monkeypa
 
     monkeypatch.setattr("argos.web.app._resolve_user_asset_tech_id", _fake_resolve)
     monkeypatch.setattr("argos.web.app._is_replace_successor", _fake_verify)
-    monkeypatch.setattr("argos.web.app._user_asset_status", _fake_status)
     monkeypatch.setattr("argos.web.app.transition_asset", _fake_transition)
 
     client = TestClient(app, raise_server_exceptions=False)
@@ -180,9 +171,6 @@ def test_handoff_rejects_recreated_predecessor_created_archive(monkeypatch):
     async def _fake_verify(session, predecessor_id, successor_id):
         return True
 
-    async def _fake_status(session, ua_id):
-        return AssetStatus.KEEP
-
     async def _no_detail(session, tech_id):
         return None
 
@@ -193,7 +181,6 @@ def test_handoff_rejects_recreated_predecessor_created_archive(monkeypatch):
 
     monkeypatch.setattr("argos.web.app._resolve_user_asset_tech_id", _fake_resolve)
     monkeypatch.setattr("argos.web.app._is_replace_successor", _fake_verify)
-    monkeypatch.setattr("argos.web.app._user_asset_status", _fake_status)
     monkeypatch.setattr("argos.web.app.fetch_item_detail", _no_detail)
     monkeypatch.setattr("argos.web.app.transition_asset", _fake_transition)
 
@@ -205,11 +192,14 @@ def test_handoff_rejects_recreated_predecessor_created_archive(monkeypatch):
     assert sessions and sessions[-1].committed is False
 
 
-def test_handoff_rejects_non_keep_predecessor(monkeypatch):
-    """codex P2: a handoff POST for a predecessor that is no longer Keep (already
-    Passed/Untracked → Archived) must be rejected — never transition — so a
-    stale banner or crafted POST can't revive a dismissed asset by promoting its
-    successor to Keep."""
+def test_handoff_completed_replay_after_commit_returns_200(monkeypatch):
+    """codex P2 (this fix): the REAL state after a handoff commits is predecessor
+    Archived + successor Keep — so replaying the same POST (a detail double-submit
+    or a stale back/forward) archives a NOOP and keeps a NOOP. An earlier unlocked
+    ``_user_asset_status`` precheck saw the now-Archived predecessor and 409'd the
+    replay before the both-NOOP outcome branch could recognize it as harmless,
+    replacing a detail target with an error fragment. With that precheck gone the
+    locked outcome gate sees both NOOP → benign replay → 200 (empty body)."""
     user_asset_id = uuid.uuid4()
     predecessor_tech_id = uuid.uuid4()
     successor_tech_id = uuid.uuid4()
@@ -218,11 +208,11 @@ def test_handoff_rejects_non_keep_predecessor(monkeypatch):
         return predecessor_tech_id
 
     async def _fake_transition(session, tech_id, target_status):
-        raise AssertionError("no transition when the predecessor is not a live Keep")
+        # Post-commit replay: predecessor already Archived, successor already Keep.
+        return TransitionOutcome.NOOP
 
     client = _client(
         monkeypatch,
-        asset_status=AssetStatus.ARCHIVED,
         **{
             "argos.web.app._resolve_user_asset_tech_id": _fake_resolve,
             "argos.web.app.transition_asset": _fake_transition,
@@ -231,8 +221,8 @@ def test_handoff_rejects_non_keep_predecessor(monkeypatch):
     resp = client.post(
         f"/assets/{user_asset_id}/handoff?successor_tech_id={successor_tech_id}"
     )
-    assert resp.status_code == 409
-    assert "<!DOCTYPE html>" not in resp.text
+    assert resp.status_code == 200
+    assert resp.text == ""
 
 
 def test_handoff_unknown_asset_returns_404_fragment(monkeypatch):
@@ -372,13 +362,9 @@ def test_handoff_commits_session(monkeypatch):
     async def _fake_verify(session, predecessor_id, successor_id):
         return True
 
-    async def _fake_status(session, ua_id):
-        return AssetStatus.KEEP
-
     monkeypatch.setattr("argos.web.app._resolve_user_asset_tech_id", _fake_resolve)
     monkeypatch.setattr("argos.web.app.transition_asset", _fake_transition)
     monkeypatch.setattr("argos.web.app._is_replace_successor", _fake_verify)
-    monkeypatch.setattr("argos.web.app._user_asset_status", _fake_status)
 
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
