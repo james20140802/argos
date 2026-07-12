@@ -3,6 +3,11 @@
 ``fetch_feed`` returns recent ``tech_items`` joined to the user's asset
 status. The service deliberately ignores the column exclusively owned by
 the Slack briefing pipeline so the two surfaces stay decoupled.
+
+ARG-213 adds a second, default sort — ``"recommended"`` (feed_score DESC,
+NULLS LAST) — alongside the original ``"latest"`` (time-based) path, a
+page-local same-domain-not-consecutive reorder for the recommended page, and
+``select_hero`` for the magazine-hero pick.
 """
 from __future__ import annotations
 
@@ -10,8 +15,9 @@ import base64
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
+from urllib.parse import urlsplit
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,8 +28,13 @@ from argos.models.user_asset import AssetStatus, UserAsset
 
 PAGE_SIZE: int = 20
 
+# ARG-213: the hero is the highest-feed_score item published/created within
+# this trailing window; see ``select_hero``.
+HERO_WINDOW: timedelta = timedelta(hours=48)
+
 
 Category = Literal["Mainstream", "Alpha"]
+FeedSort = Literal["recommended", "latest"]
 
 
 @dataclass(frozen=True)
@@ -37,6 +48,9 @@ class FeedItem:
     status: Optional[AssetStatus]
     trust_score: Optional[float]
     sort_at: datetime
+    # ARG-213: carried so the "recommended" sort's keyset cursor can be
+    # re-derived from the last item on a page without a second query.
+    feed_score: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -50,9 +64,20 @@ class FeedPage:
 # ------------------------------------------------------------------ #
 
 def encode_cursor(sort_at: datetime, item_id: uuid.UUID) -> str:
+    """Opaque cursor for the ``latest`` (time-based) sort.
+
+    Tagged ``"s": "lat"`` so a ``recommended``-sort cursor accidentally fed
+    into this path (or vice versa) is rejected outright — a feed_score float
+    silently misread as a timestamp (or vice versa) would corrupt pagination
+    instead of failing loudly (ARG-213 AC).
+    """
     if sort_at.tzinfo is None:
         sort_at = sort_at.replace(tzinfo=timezone.utc)
-    payload = {"t": sort_at.astimezone(timezone.utc).isoformat(), "i": item_id.hex}
+    payload = {
+        "t": sort_at.astimezone(timezone.utc).isoformat(),
+        "i": item_id.hex,
+        "s": "lat",
+    }
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
@@ -62,6 +87,8 @@ def decode_cursor(token: str) -> tuple[datetime, uuid.UUID]:
         padded = token + "=" * (-len(token) % 4)
         raw = base64.urlsafe_b64decode(padded.encode("ascii"))
         payload = json.loads(raw.decode("utf-8"))
+        if payload.get("s") != "lat":
+            raise ValueError("not a latest-sort cursor")
         sort_at = datetime.fromisoformat(payload["t"])
         if sort_at.tzinfo is None:
             sort_at = sort_at.replace(tzinfo=timezone.utc)
@@ -69,6 +96,104 @@ def decode_cursor(token: str) -> tuple[datetime, uuid.UUID]:
         return sort_at, item_id
     except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid feed cursor: {token!r}") from exc
+
+
+def encode_score_cursor(feed_score: Optional[float], item_id: uuid.UUID) -> str:
+    """Opaque cursor for the ``recommended`` (feed_score) sort.
+
+    Tagged ``"s": "rec"`` — see ``encode_cursor`` for why cross-sort cursors
+    must not silently decode. ``feed_score`` may be ``None`` (the boundary row
+    sits in the NULLS-LAST tail); JSON ``null`` round-trips that faithfully.
+    """
+    payload = {"f": feed_score, "i": item_id.hex, "s": "rec"}
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_score_cursor(token: str) -> tuple[Optional[float], uuid.UUID]:
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+        if payload.get("s") != "rec":
+            raise ValueError("not a recommended-sort cursor")
+        feed_score = payload["f"]
+        if feed_score is not None:
+            feed_score = float(feed_score)
+        item_id = uuid.UUID(payload["i"])
+        return feed_score, item_id
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid feed cursor: {token!r}") from exc
+
+
+# ------------------------------------------------------------------ #
+# Domain diversity (ARG-213)
+# ------------------------------------------------------------------ #
+
+def _domain_of(url: Optional[str]) -> str:
+    """Pure netloc extraction, '' when unparseable/missing.
+
+    A separate copy from ``argos.web.app``'s render-time ``_domain_of``
+    filter (that one is a closure local to ``build_web_app``) so this service
+    has no dependency on the app module.
+    """
+    if not url:
+        return ""
+    try:
+        return urlsplit(url).netloc
+    except ValueError:
+        return ""
+
+
+def _reorder_diverse(items: list) -> list:
+    """Same-domain-not-consecutive reorder, page-local only (ARG-213).
+
+    Repeatedly takes the next item from whichever domain currently has the
+    most items *left*, skipping the domain just placed unless every
+    remaining item shares it (ties broken by first-seen domain order, and
+    each domain's own items are taken in their original relative order). This
+    is the standard "no two adjacent equal" rearrangement — it's provably
+    able to avoid every same-domain adjacency whenever the page's domain
+    counts allow it (feasible iff the largest domain's count is at most half
+    the page, rounded up).
+
+    A simpler "just differ from the immediately preceding item" greedy can
+    still leave an *avoidable* run near the end on a domain-skewed page: e.g.
+    10 items from domain A plus 10 spread across five other domains is fully
+    alternate-able, but naively draining the smaller domains first (because
+    they happen to sit earlier in the page) leaves nothing but A for the
+    tail. Weighting by remaining count instead avoids that.
+
+    Only when a domain still holds more than half the *remaining* items does
+    an adjacent repeat become truly unavoidable — the excess then lands
+    back-to-back, in original relative order, rather than forced apart or
+    shuffled. Never drops an item.
+    """
+    from collections import defaultdict, deque
+
+    buckets: dict[str, deque] = defaultdict(deque)
+    domain_order: list[str] = []  # first-seen order, for a deterministic tie-break
+    for it in items:
+        domain = _domain_of(it.source_url)
+        if domain not in buckets:
+            domain_order.append(domain)
+        buckets[domain].append(it)
+
+    out: list = []
+    last_domain: Optional[str] = None
+    total = len(items)
+    while len(out) < total:
+        candidates = [d for d in domain_order if buckets[d] and d != last_domain]
+        if not candidates:
+            # Unavoidable: every remaining item shares last_domain.
+            candidates = [d for d in domain_order if buckets[d]]
+        chosen_domain = max(
+            candidates, key=lambda d: (len(buckets[d]), -domain_order.index(d))
+        )
+        chosen = buckets[chosen_domain].popleft()
+        out.append(chosen)
+        last_domain = chosen_domain
+    return out
 
 
 # ------------------------------------------------------------------ #
@@ -81,12 +206,23 @@ async def fetch_feed(
     category: Optional[Category] = None,
     cursor: Optional[str] = None,
     limit: int = PAGE_SIZE,
+    sort: FeedSort = "recommended",
 ) -> FeedPage:
     """Return one paginated page of feed items.
+
+    ``sort="recommended"`` (default, ARG-213) orders by ``feed_score``
+    descending with NULLs last, then applies a page-local same-domain-not-
+    consecutive reorder before returning. ``sort="latest"`` preserves the
+    original ``coalesce(published_at, created_at)`` time order exactly as
+    before, unreordered — the ARG-203 polling contract depends on this path
+    staying strictly time-ordered.
 
     The Slack briefing column is intentionally not referenced here —
     that column is exclusively owned by the briefing pipeline.
     """
+    if sort not in ("recommended", "latest"):
+        raise ValueError(f"invalid feed sort: {sort!r}")
+
     sort_expr = func.coalesce(TechItem.published_at, TechItem.created_at)
 
     stmt = (
@@ -98,13 +234,18 @@ async def fetch_feed(
             TechItem.image_url,
             TechItem.summary,
             TechItem.trust_score,
+            TechItem.feed_score,
             UserAsset.status,
             sort_expr.label("sort_at"),
         )
         .join(UserAsset, UserAsset.tech_id == TechItem.id, isouter=True)
-        .order_by(sort_expr.desc(), TechItem.id.desc())
         .limit(limit + 1)
     )
+
+    if sort == "recommended":
+        stmt = stmt.order_by(TechItem.feed_score.desc().nullslast(), TechItem.id.desc())
+    else:
+        stmt = stmt.order_by(sort_expr.desc(), TechItem.id.desc())
 
     if category is not None:
         if category not in ("Mainstream", "Alpha"):
@@ -112,11 +253,24 @@ async def fetch_feed(
         stmt = stmt.where(TechItem.category == CategoryType(category))
 
     if cursor is not None:
-        cur_sort, cur_id = decode_cursor(cursor)
-        stmt = stmt.where(
-            (sort_expr < cur_sort)
-            | ((sort_expr == cur_sort) & (TechItem.id < cur_id))
-        )
+        if sort == "recommended":
+            cur_score, cur_id = decode_score_cursor(cursor)
+            if cur_score is None:
+                # Cursor is already in the NULLS-LAST tail: only other
+                # null-score rows (ordered by id desc) can sort after it.
+                stmt = stmt.where(TechItem.feed_score.is_(None) & (TechItem.id < cur_id))
+            else:
+                stmt = stmt.where(
+                    TechItem.feed_score.is_(None)
+                    | (TechItem.feed_score < cur_score)
+                    | ((TechItem.feed_score == cur_score) & (TechItem.id < cur_id))
+                )
+        else:
+            cur_sort, cur_id = decode_cursor(cursor)
+            stmt = stmt.where(
+                (sort_expr < cur_sort)
+                | ((sort_expr == cur_sort) & (TechItem.id < cur_id))
+            )
 
     result = await session.execute(stmt)
     rows = result.all()
@@ -132,16 +286,69 @@ async def fetch_feed(
             status=row.status,
             trust_score=row.trust_score,
             sort_at=row.sort_at,
+            feed_score=row.feed_score,
         )
         for row in rows[:limit]
     ]
 
+    # Cursor for the *next* page must key off the true DB-order last row on
+    # THIS page — computed before the display-only diversity reorder below —
+    # or reordering would skip/duplicate items across the page boundary.
     next_cursor = None
-    if len(rows) > limit:
+    if len(rows) > limit and items:
         last = items[-1]
-        next_cursor = encode_cursor(last.sort_at, last.id)
+        next_cursor = (
+            encode_score_cursor(last.feed_score, last.id)
+            if sort == "recommended"
+            else encode_cursor(last.sort_at, last.id)
+        )
+
+    if sort == "recommended":
+        items = _reorder_diverse(items)
 
     return FeedPage(items=items, next_cursor=next_cursor)
+
+
+async def select_hero(
+    session: AsyncSession, *, category: Optional[Category] = None
+) -> Optional[uuid.UUID]:
+    """The recommendation feed's magazine hero (ARG-213).
+
+    The highest-``feed_score`` item created within the last
+    ``HERO_WINDOW`` (48h); falls back to the highest-``feed_score`` item
+    overall when nothing qualifies within that window; ``None`` when no item
+    has a ``feed_score`` at all.
+    """
+    if category is not None and category not in ("Mainstream", "Alpha"):
+        raise ValueError(f"invalid category: {category!r}")
+
+    cutoff = datetime.now(timezone.utc) - HERO_WINDOW
+
+    stmt = (
+        select(TechItem.id)
+        .where(TechItem.feed_score.is_not(None))
+        .where(TechItem.created_at >= cutoff)
+        .order_by(TechItem.feed_score.desc(), TechItem.id.desc())
+        .limit(1)
+    )
+    if category is not None:
+        stmt = stmt.where(TechItem.category == CategoryType(category))
+
+    row = (await session.execute(stmt)).first()
+    if row is not None:
+        return row[0]
+
+    fallback_stmt = (
+        select(TechItem.id)
+        .where(TechItem.feed_score.is_not(None))
+        .order_by(TechItem.feed_score.desc(), TechItem.id.desc())
+        .limit(1)
+    )
+    if category is not None:
+        fallback_stmt = fallback_stmt.where(TechItem.category == CategoryType(category))
+
+    row = (await session.execute(fallback_stmt)).first()
+    return row[0] if row is not None else None
 
 
 async def count_new_since(
@@ -152,11 +359,17 @@ async def count_new_since(
 ) -> int:
     """Count feed items newer than ``cursor`` (ARG-203 polling endpoint).
 
-    Mirrors ``fetch_feed``'s ordering rule (``sort_expr`` desc, ``id`` desc) but
-    inverted: an item is "new" when it sorts *after* the cursor position, i.e.
-    ``sort_expr > cur_sort`` or a tie broken by a greater id. ``decode_cursor``
-    raises ``ValueError`` on a malformed token — that propagates so the route
-    can translate it into a 400.
+    Mirrors the ``latest`` sort's ordering rule (``sort_expr`` desc, ``id``
+    desc) but inverted: an item is "new" when it sorts *after* the cursor
+    position, i.e. ``sort_expr > cur_sort`` or a tie broken by a greater id.
+    ``decode_cursor`` raises ``ValueError`` on a malformed token — that
+    propagates so the route can translate it into a 400.
+
+    Deliberately unchanged by ARG-213: this stays latest-based regardless of
+    which sort the feed itself is currently rendering in — see
+    ``argos.web.app._render_feed``'s ``latest_cursor`` computation, which
+    keeps feeding this a genuine time-based cursor even on the recommended
+    page.
     """
     cur_sort, cur_id = decode_cursor(cursor)
     sort_expr = func.coalesce(TechItem.published_at, TechItem.created_at)

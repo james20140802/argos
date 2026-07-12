@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone, timedelta
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -10,9 +11,13 @@ from argos.config import settings
 from argos.web.services.feed import (
     count_new_since,
     decode_cursor,
+    decode_score_cursor,
     encode_cursor,
+    encode_score_cursor,
     fetch_feed,
+    select_hero,
     PAGE_SIZE,
+    _reorder_diverse,
 )
 from tests.conftest import db_reachable as _db_reachable
 
@@ -103,11 +108,14 @@ async def test_fetch_feed_orders_newest_first_and_paginates_with_cursor() -> Non
             seeded_ids = set(ids)
 
         async with Session() as session:
-            page1 = await fetch_feed(session, limit=3)
+            # ARG-213 flips the *default* sort to "recommended" — this test
+            # is specifically about the time-ordered path, so it must now say
+            # so explicitly.
+            page1 = await fetch_feed(session, limit=3, sort="latest")
             assert [it.id for it in page1.items if it.id in seeded_ids][:3] == list(reversed(ids))[:3]
             assert page1.next_cursor is not None
 
-            page2 = await fetch_feed(session, cursor=page1.next_cursor, limit=3)
+            page2 = await fetch_feed(session, cursor=page1.next_cursor, limit=3, sort="latest")
             page2_seeded = [it.id for it in page2.items if it.id in seeded_ids]
             assert list(reversed(ids))[3:5] == page2_seeded[:2]
     finally:
@@ -228,7 +236,10 @@ async def test_fetch_feed_returns_summary_and_none_when_null() -> None:
             await session.commit()
 
         async with Session() as session:
-            page = await fetch_feed(session, limit=PAGE_SIZE)
+            # published_at=2099 only guarantees first-page placement under the
+            # time-ordered path — pin sort="latest" explicitly (ARG-213 made
+            # "recommended"/feed_score the default).
+            page = await fetch_feed(session, limit=PAGE_SIZE, sort="latest")
             by_id = {it.id: it for it in page.items if it.id in set(seeded_ids)}
             assert set(seeded_ids) <= by_id.keys(), (
                 "seeded items must appear on the first page"
@@ -328,3 +339,502 @@ def test_fetch_feed_module_does_not_reference_briefed_at() -> None:
         "argos.web.services.feed must not reference briefed_at "
         "(Slack briefing owns that column)"
     )
+
+
+# --------------------------------------------------------------------- #
+# ARG-213 — recommended sort, tagged cursors, domain diversity, hero
+# --------------------------------------------------------------------- #
+
+
+def test_encode_decode_score_cursor_round_trips() -> None:
+    item_id = uuid.uuid4()
+    token = encode_score_cursor(0.42, item_id)
+    score, parsed_id = decode_score_cursor(token)
+    assert score == pytest.approx(0.42)
+    assert parsed_id == item_id
+
+
+def test_encode_decode_score_cursor_round_trips_with_none_score() -> None:
+    """A NULLS-LAST boundary row has ``feed_score is None`` — the cursor must
+    round-trip that faithfully rather than coercing it to 0.0 or erroring."""
+    item_id = uuid.uuid4()
+    token = encode_score_cursor(None, item_id)
+    score, parsed_id = decode_score_cursor(token)
+    assert score is None
+    assert parsed_id == item_id
+
+
+def test_decode_score_cursor_rejects_garbage() -> None:
+    with pytest.raises(ValueError):
+        decode_score_cursor("not-a-valid-cursor")
+
+
+def test_decode_score_cursor_rejects_latest_tagged_cursor() -> None:
+    """A ``latest``-sort cursor fed into the ``recommended`` path must raise
+    — not silently reinterpret a timestamp payload as a feed_score (ARG-213
+    AC: mixing sort cursors -> ValueError -> 400)."""
+    latest_cursor = encode_cursor(
+        datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4()
+    )
+    with pytest.raises(ValueError):
+        decode_score_cursor(latest_cursor)
+
+
+def test_decode_cursor_rejects_score_tagged_cursor() -> None:
+    """The inverse direction of the same AC: a ``recommended``-sort cursor
+    fed into the ``latest`` path must also raise."""
+    score_cursor = encode_score_cursor(0.9, uuid.uuid4())
+    with pytest.raises(ValueError):
+        decode_cursor(score_cursor)
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_rejects_cross_sort_cursor_score_into_latest() -> None:
+    """Cursor tag validation happens before any DB access, so this is
+    provable without a live session (``None`` is never touched)."""
+    bad = encode_score_cursor(0.5, uuid.uuid4())
+    with pytest.raises(ValueError):
+        await fetch_feed(None, cursor=bad, sort="latest")
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_rejects_cross_sort_cursor_latest_into_recommended() -> None:
+    bad = encode_cursor(datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4())
+    with pytest.raises(ValueError):
+        await fetch_feed(None, cursor=bad, sort="recommended")
+
+
+# ---- _reorder_diverse: pure function, no DB ---- #
+
+
+def test_reorder_diverse_breaks_runs():
+    class _Item:
+        def __init__(self, u):
+            self.source_url = u
+
+    items = [_Item("https://a.com/1"), _Item("https://a.com/2"), _Item("https://b.com/1")]
+    out = _reorder_diverse(items)
+    domains = [i.source_url.split("/")[2] for i in out]
+    assert not (domains[0] == domains[1])  # 연속 방지
+    assert len(out) == 3  # 손실 없음
+
+
+def test_reorder_diverse_keeps_original_order_when_unavoidable():
+    """All items share one domain — nothing can be un-consecutive, so the
+    original relative order must be preserved rather than shuffled."""
+    class _Item:
+        def __init__(self, u):
+            self.source_url = u
+
+    items = [_Item("https://a.com/1"), _Item("https://a.com/2"), _Item("https://a.com/3")]
+    out = _reorder_diverse(items)
+    assert [i.source_url for i in out] == [i.source_url for i in items]
+
+
+def test_reorder_diverse_handles_empty_and_singleton():
+    assert _reorder_diverse([]) == []
+
+    class _Item:
+        def __init__(self, u):
+            self.source_url = u
+
+    solo = [_Item("https://a.com/1")]
+    assert [i.source_url for i in _reorder_diverse(solo)] == ["https://a.com/1"]
+
+
+def test_reorder_diverse_avoids_avoidable_run_on_skewed_page():
+    """Regression: a naive "just differ from the immediately preceding item"
+    greedy can still leave an avoidable same-domain run near the end of a
+    domain-skewed page — e.g. exactly half the page from one domain is fully
+    alternate-able, but draining the smaller domains first (because they sit
+    earlier in the page) can strand the dominant domain's items at the tail.
+    10 dominant + 10 spread across 5 other domains (matching a real feed
+    shape) must reorder with zero adjacent same-domain pairs."""
+
+    class _Item:
+        def __init__(self, u):
+            self.source_url = u
+
+    # Deliberately front-load the minority domains and push the dominant
+    # domain toward the end, mirroring the failure mode.
+    minority = (
+        ["https://huggingface.co/x"] * 3
+        + ["https://example.com/x"] * 4
+        + ["https://zerofs.net/x"]
+        + ["https://cornell.edu/x"]
+        + ["https://blog.kog.ai/x"]
+    )
+    items = [_Item(u) for u in minority] + [_Item("https://openai.com/x")] * 10
+    out = _reorder_diverse(items)
+
+    assert len(out) == len(items)
+    domains = [urlsplit(i.source_url).netloc for i in out]
+    for a, b in zip(domains, domains[1:]):
+        assert a != b, f"avoidable adjacent same-domain pair: {domains}"
+
+
+# --------------------------------------------------------------------- #
+# DB-backed: recommended-sort ordering / pagination / hero
+# --------------------------------------------------------------------- #
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_feed_recommended_sort_orders_by_feed_score_nulls_last() -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            high = TechItem(
+                title="arg213-high",
+                source_url=f"https://example.com/arg213/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.MAINSTREAM,
+                feed_score=900.0,
+            )
+            mid = TechItem(
+                title="arg213-mid",
+                source_url=f"https://example.com/arg213/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.MAINSTREAM,
+                feed_score=500.0,
+            )
+            low = TechItem(
+                title="arg213-low",
+                source_url=f"https://example.com/arg213/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.MAINSTREAM,
+                feed_score=100.0,
+            )
+            null_score = TechItem(
+                title="arg213-null",
+                source_url=f"https://example.com/arg213/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.MAINSTREAM,
+                feed_score=None,
+            )
+            session.add_all([high, mid, low, null_score])
+            await session.flush()
+            seeded_ids = [high.id, mid.id, low.id, null_score.id]
+            await session.commit()
+
+        async with Session() as session:
+            page = await fetch_feed(session, sort="recommended", limit=200)
+            ours = [it for it in page.items if it.id in set(seeded_ids)]
+            ours_by_id = {it.id: it for it in ours}
+            assert set(seeded_ids) == ours_by_id.keys()
+            # feed_score descending, NULL last: each named item's position in
+            # the returned page must be non-decreasing across this sequence.
+            positions = [
+                ours.index(ours_by_id[i])
+                for i in [high.id, mid.id, low.id, null_score.id]
+            ]
+            assert positions == sorted(positions)
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_feed_recommended_sort_cursor_pagination_no_dupes_or_gaps() -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            items = []
+            # A distinct, non-overlapping score band per item plus a NULL tail
+            # item, all under one throwaway category filter so pagination can
+            # be verified against a known, exact set (page-1 + page-2 must
+            # union back to exactly these 6, no dupes/gaps).
+            for i, score in enumerate([600.0, 500.0, 400.0, 300.0, 200.0, None]):
+                item = TechItem(
+                    title=f"arg213-page-{i}",
+                    source_url=f"https://example.com/arg213page/{uuid.uuid4()}",
+                    raw_content="x",
+                    category=CategoryType.ALPHA,
+                    feed_score=score,
+                )
+                items.append(item)
+            session.add_all(items)
+            await session.flush()
+            seeded_ids = [it.id for it in items]
+            await session.commit()
+
+        async with Session() as session:
+            page1 = await fetch_feed(
+                session, category="Alpha", sort="recommended", limit=3
+            )
+            page1_ids = [it.id for it in page1.items if it.id in set(seeded_ids)]
+            assert page1.next_cursor is not None
+
+            page2 = await fetch_feed(
+                session,
+                category="Alpha",
+                sort="recommended",
+                cursor=page1.next_cursor,
+                limit=200,
+            )
+            page2_ids = [it.id for it in page2.items if it.id in set(seeded_ids)]
+
+            all_ids = page1_ids + page2_ids
+            assert len(all_ids) == len(set(all_ids)) == len(seeded_ids), (
+                "no duplicates or gaps across the cursor boundary"
+            )
+            assert set(all_ids) == set(seeded_ids)
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_feed_latest_sort_cursor_pagination_no_dupes_or_gaps() -> None:
+    """Mirrors the recommended-sort pagination test above for the explicit
+    ``sort="latest"`` path — both sorts must round-trip cleanly."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    base_t = datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            items = [
+                TechItem(
+                    title=f"arg213-latest-{i}",
+                    source_url=f"https://example.com/arg213latest/{uuid.uuid4()}",
+                    raw_content="x",
+                    category=CategoryType.ALPHA,
+                    published_at=base_t + timedelta(hours=i),
+                )
+                for i in range(6)
+            ]
+            session.add_all(items)
+            await session.flush()
+            seeded_ids = [it.id for it in items]
+            await session.commit()
+
+        async with Session() as session:
+            page1 = await fetch_feed(
+                session, category="Alpha", sort="latest", limit=3
+            )
+            page1_ids = [it.id for it in page1.items if it.id in set(seeded_ids)]
+            assert page1.next_cursor is not None
+
+            page2 = await fetch_feed(
+                session,
+                category="Alpha",
+                sort="latest",
+                cursor=page1.next_cursor,
+                limit=200,
+            )
+            page2_ids = [it.id for it in page2.items if it.id in set(seeded_ids)]
+
+            all_ids = page1_ids + page2_ids
+            assert len(all_ids) == len(set(all_ids)) == len(seeded_ids)
+            assert set(all_ids) == set(seeded_ids)
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_select_hero_prefers_highest_score_within_48h() -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    now = datetime.now(timezone.utc)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            recent_high = TechItem(
+                title="arg213-hero-recent-high",
+                source_url=f"https://example.com/arg213hero/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=999.0,
+                created_at=now - timedelta(hours=2),
+            )
+            recent_low = TechItem(
+                title="arg213-hero-recent-low",
+                source_url=f"https://example.com/arg213hero/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=100.0,
+                created_at=now - timedelta(hours=1),
+            )
+            old_higher = TechItem(
+                title="arg213-hero-old-higher",
+                source_url=f"https://example.com/arg213hero/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=5000.0,
+                created_at=now - timedelta(hours=72),
+            )
+            session.add_all([recent_high, recent_low, old_higher])
+            await session.flush()
+            seeded_ids = [recent_high.id, recent_low.id, old_higher.id]
+            await session.commit()
+
+        async with Session() as session:
+            hero_id = await select_hero(session, category="Alpha")
+            assert hero_id == recent_high.id, (
+                "the higher-scored item outside the 48h window must lose to "
+                "the highest-scored item within it"
+            )
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_select_hero_falls_back_to_global_highest_when_none_within_48h() -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    now = datetime.now(timezone.utc)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            old_a = TechItem(
+                title="arg213-hero-fallback-a",
+                source_url=f"https://example.com/arg213heroFB/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=300.0,
+                created_at=now - timedelta(hours=96),
+            )
+            old_b = TechItem(
+                title="arg213-hero-fallback-b",
+                source_url=f"https://example.com/arg213heroFB/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=700.0,
+                created_at=now - timedelta(hours=120),
+            )
+            session.add_all([old_a, old_b])
+            await session.flush()
+            seeded_ids = [old_a.id, old_b.id]
+            await session.commit()
+
+        async with Session() as session:
+            hero_id = await select_hero(session, category="Alpha")
+            assert hero_id == old_b.id, (
+                "with nothing inside the 48h window, fall back to the "
+                "highest feed_score overall"
+            )
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_select_hero_returns_none_when_nothing_scored() -> None:
+    """Deterministic empty-state check: snapshot + clear every feed_score,
+    assert None, then restore — independent of whatever other tests in this
+    session left behind."""
+    from sqlalchemy import text as sa_text
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    try:
+        async with Session() as session:
+            snapshot = (
+                await session.execute(
+                    sa_text(
+                        "SELECT id, feed_score FROM tech_items "
+                        "WHERE feed_score IS NOT NULL"
+                    )
+                )
+            ).all()
+            await session.execute(
+                sa_text("UPDATE tech_items SET feed_score = NULL")
+            )
+            await session.commit()
+
+        try:
+            async with Session() as session:
+                assert await select_hero(session) is None
+                assert await select_hero(session, category="Alpha") is None
+        finally:
+            async with Session() as session:
+                for row in snapshot:
+                    await session.execute(
+                        sa_text(
+                            "UPDATE tech_items SET feed_score = :s WHERE id = :i"
+                        ),
+                        {"s": row.feed_score, "i": row.id},
+                    )
+                await session.commit()
+    finally:
+        await engine.dispose()

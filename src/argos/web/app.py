@@ -26,7 +26,12 @@ from fastapi.templating import Jinja2Templates
 
 from argos.web.services.activity import fetch_activity
 from argos.web.services.detail import fetch_item_detail
-from argos.web.services.feed import count_new_since, encode_cursor, fetch_feed
+from argos.web.services.feed import (
+    count_new_since,
+    encode_cursor,
+    fetch_feed,
+    select_hero,
+)
 from argos.web.services.portfolio import fetch_portfolio
 from argos.web.services.settings import (
     EDITABLE_FIELDS,
@@ -90,6 +95,16 @@ async def _get_session():
 def _normalize_category(category: Optional[str]) -> Optional[str]:
     """Coerce an arbitrary ?category= value to a valid filter or None (전체)."""
     return category if category in _VALID_CATEGORIES else None
+
+
+def _normalize_feed_sort(sort: Optional[str]) -> str:
+    """Coerce an arbitrary ?sort= value to 'latest' or 'recommended' (ARG-213).
+
+    Deliberately permissive: only a cross-sort *cursor* mismatch is a 400 (see
+    ``fetch_feed``) — an unrecognized ``sort`` value here just falls back to
+    the recommended default.
+    """
+    return "latest" if sort == "latest" else "recommended"
 
 
 async def _load_feed_card_context(session, tech_id: uuid.UUID):
@@ -365,10 +380,14 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         *,
         first_page: bool,
         include_activity: bool = False,
+        sort: Optional[str] = None,
     ) -> HTMLResponse:
         normalized = _normalize_category(category)
+        normalized_sort = _normalize_feed_sort(sort)
         try:
-            page = await fetch_feed(session, category=normalized, cursor=cursor)
+            page = await fetch_feed(
+                session, category=normalized, cursor=cursor, sort=normalized_sort
+            )
         except ValueError as exc:
             # ``cursor`` is user-controlled query state; a stale/corrupted
             # load-more URL must not 500. Translate it to a controlled 400.
@@ -380,11 +399,23 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         # what to poll "newer than". Only meaningful on the genuine first page
         # — a mid-feed "더 보기" fragment or a direct cursor hit has no single
         # "latest" position to anchor polling on, so it's left unset there.
-        latest_cursor = (
-            encode_cursor(page.items[0].sort_at, page.items[0].id)
-            if first_page and page.items
-            else ""
-        )
+        # ARG-213: this must stay a genuine time-based marker regardless of
+        # ``sort`` — the poll's "anything newer?" question is always about
+        # wall-clock recency, even when the feed itself renders in feed_score
+        # order and the true newest item isn't page.items[0] (or even on this
+        # page) under "recommended". ``sort_at`` is already selected on every
+        # row regardless of ORDER BY, so taking the max over the page needs no
+        # extra query, and is exactly equivalent to items[0] under "latest".
+        latest_cursor = ""
+        if first_page and page.items:
+            newest = max(page.items, key=lambda it: (it.sort_at, it.id))
+            latest_cursor = encode_cursor(newest.sort_at, newest.id)
+        # Featured hero (ARG-213): the highest-feed_score item within the
+        # last 48h (or the global highest-feed_score fallback), keyed by id —
+        # not position. Only computed for the genuine first page; the HTMX
+        # "더 보기" fragment (GET /feed/items) always renders with
+        # first_page=False so a second hero never appears mid-scroll.
+        hero_id = await select_hero(session, category=normalized) if first_page else None
         return request.app.state.templates.TemplateResponse(
             request,
             template_name,
@@ -392,10 +423,9 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
                 "items": page.items,
                 "next_cursor": page.next_cursor,
                 "category": normalized,
-                # Featured hero is keyed on first-page index 0 only; the HTMX
-                # "더 보기" fragment (GET /feed/items) must never re-emit a hero
-                # mid-scroll, so it renders with first_page=False.
+                "sort": normalized_sort,
                 "first_page": first_page,
+                "hero_id": hero_id,
                 "activity": activity,
                 "latest_cursor": latest_cursor,
             },
@@ -406,6 +436,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         request: Request,
         category: Optional[str] = None,
         cursor: Optional[str] = None,
+        sort: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         # Featured hero belongs to the genuine first page only. A direct hit on
@@ -415,6 +446,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             request, "feed.html", category, cursor, session,
             first_page=cursor is None,
             include_activity=True,
+            sort=sort,
         )
 
     @app.get("/feed/items", response_class=HTMLResponse)
@@ -422,10 +454,17 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         request: Request,
         category: Optional[str] = None,
         cursor: Optional[str] = None,
+        sort: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         return await _render_feed(
-            request, "_feed_items.html", category, cursor, session, first_page=False
+            request,
+            "_feed_items.html",
+            category,
+            cursor,
+            session,
+            first_page=False,
+            sort=sort,
         )
 
     @app.get("/feed/poll")

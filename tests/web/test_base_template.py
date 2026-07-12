@@ -63,7 +63,9 @@ def app_with_child_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     async def _fake_session():
         yield None
 
-    async def _empty_feed(session, *, category=None, cursor=None, limit=20):
+    async def _empty_feed(
+        session, *, category=None, cursor=None, limit=20, sort="recommended"
+    ):
         return FeedPage(items=[], next_cursor=None)
 
     async def _empty_portfolio(session, *, category=None, sort="recency", cursor=None):
@@ -72,10 +74,14 @@ def app_with_child_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     async def _empty_activity(session, limit=12):
         return []
 
+    async def _empty_hero(session, *, category=None):
+        return None
+
     app.dependency_overrides[_get_session] = _fake_session
     monkeypatch.setattr("argos.web.app.fetch_feed", _empty_feed)
     monkeypatch.setattr("argos.web.app.fetch_portfolio", _empty_portfolio)
     monkeypatch.setattr("argos.web.app.fetch_activity", _empty_activity)
+    monkeypatch.setattr("argos.web.app.select_hero", _empty_hero)
 
     app.get("/__test_child__", response_class=HTMLResponse)(_render_child)
 

@@ -413,7 +413,13 @@ body {
 /* === 7. 관측 피드 (ARG-136) — feed list, filter chips, cards === */
 .feed-filter {
   display: flex; gap: 8px; flex-wrap: wrap;
-  margin: 6px 0 18px;
+  margin: 6px 0 10px;
+}
+/* Sort chip row (ARG-213) — second row below the category filter; mirrors
+   .portfolio-sort's layout. */
+.feed-sort {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 18px;
 }
 .chip {
   font: 500 12px/1 "IBM Plex Sans KR", sans-serif;
