@@ -331,6 +331,20 @@ async def _run(
                 logging.getLogger(__name__).warning(
                     "corroboration update failed", exc_info=True
                 )
+
+            # ARG-212: feed_score 일괄 재계산 (corroboration_count 채운 뒤).
+            from argos.brain.feed_ranking import recompute_feed_scores
+            try:
+                scored = await recompute_feed_scores(session)
+                await session.commit()
+                if scored:
+                    logging.getLogger(__name__).info(
+                        "feed_score: %d item(s) rescored", scored
+                    )
+            except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "feed_score recompute failed", exc_info=True
+                )
     elapsed = time.monotonic() - start
     run_failed = any(s.get("triage_error") for s in results)
     _print_run_summary(summary, elapsed, failed=run_failed)
