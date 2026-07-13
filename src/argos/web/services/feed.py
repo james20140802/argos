@@ -409,20 +409,28 @@ async def select_hero(
 ) -> Optional[uuid.UUID]:
     """The recommendation feed's magazine hero (ARG-213).
 
-    The highest-``feed_score`` item created within the last
+    The highest-``feed_score`` item whose recency —
+    ``coalesce(published_at, created_at)`` — falls within the last
     ``HERO_WINDOW`` (48h); falls back to the highest-``feed_score`` item
     overall when nothing qualifies within that window; ``None`` when no item
     has a ``feed_score`` at all.
+
+    The window uses the same ``coalesce(published_at, created_at)`` expression
+    the feed sorts by, not bare ``created_at``: otherwise a months-old article
+    (old ``published_at``) that was just crawled/added (recent ``created_at``)
+    would be featured as the "recent" hero even though ``/feed`` orders it as
+    old (Codex review).
     """
     if category is not None and category not in ("Mainstream", "Alpha"):
         raise ValueError(f"invalid category: {category!r}")
 
     cutoff = datetime.now(timezone.utc) - HERO_WINDOW
+    recency_expr = func.coalesce(TechItem.published_at, TechItem.created_at)
 
     stmt = (
         select(TechItem.id)
         .where(TechItem.feed_score.is_not(None))
-        .where(TechItem.created_at >= cutoff)
+        .where(recency_expr >= cutoff)
         .order_by(TechItem.feed_score.desc(), TechItem.id.desc())
         .limit(1)
     )

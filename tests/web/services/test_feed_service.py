@@ -834,6 +834,71 @@ async def test_select_hero_prefers_highest_score_within_48h() -> None:
 
 @pytestmark_db
 @pytest.mark.asyncio
+async def test_select_hero_window_uses_published_recency_not_insert_time() -> None:
+    """Codex P2 (select_hero): a months-old article (old published_at) that
+    was just crawled/added (recent created_at) must NOT win the 48h hero
+    window — the window keys off coalesce(published_at, created_at), matching
+    the feed's recency sort, so this old-but-freshly-inserted item is excluded
+    and the recent, lower-scored item is featured instead.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    now = datetime.now(timezone.utc)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            # High score, inserted 1h ago, but PUBLISHED 30 days ago.
+            old_pub_recent_insert = TechItem(
+                title="arg201-hero-oldpub",
+                source_url=f"https://example.com/arg201hero/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=99999.0,
+                published_at=now - timedelta(days=30),
+                created_at=now - timedelta(hours=1),
+            )
+            # Lower score than the old item but still high enough to dominate
+            # any real seeded data, and genuinely recent by published_at.
+            genuinely_recent = TechItem(
+                title="arg201-hero-recent",
+                source_url=f"https://example.com/arg201hero/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=90000.0,
+                published_at=now - timedelta(hours=3),
+                created_at=now - timedelta(hours=1),
+            )
+            session.add_all([old_pub_recent_insert, genuinely_recent])
+            await session.flush()
+            seeded_ids = [old_pub_recent_insert.id, genuinely_recent.id]
+            await session.commit()
+
+        async with Session() as session:
+            hero_id = await select_hero(session, category="Alpha")
+            assert hero_id == genuinely_recent.id, (
+                "old-published item must be outside the recency window despite "
+                "its recent insert time and higher score"
+            )
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
 async def test_select_hero_falls_back_to_global_highest_when_none_within_48h() -> None:
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from sqlalchemy.pool import NullPool
