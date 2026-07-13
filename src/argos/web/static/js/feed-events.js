@@ -96,7 +96,12 @@
           var itemId = entry.target.getAttribute("data-item-id");
           if (!itemId) return;
 
-          if (entry.isIntersecting) {
+          // Gate on the ratio, not just isIntersecting: an initial observe
+          // callback (or a card dropping 60%->40%) can report isIntersecting
+          // while intersectionRatio is below the 50% threshold. Starting the
+          // dwell timer there would log an Impression for a card that never
+          // stayed half-visible, corrupting the ARG-207 training events.
+          if (entry.isIntersecting && entry.intersectionRatio >= IMPRESSION_THRESHOLD) {
             if (seen.has(itemId) || timers.has(itemId)) return;
             var timerId = setTimeout(function () {
               timers.delete(itemId);
