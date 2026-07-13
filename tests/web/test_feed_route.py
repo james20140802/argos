@@ -582,7 +582,9 @@ def test_feed_recommended_sort_cursor_into_latest_sort_returns_400():
     from argos.web.services.feed import encode_score_cursor
 
     client = _client_real_feed()
-    score_cursor = encode_score_cursor(0.5, uuid.uuid4())
+    score_cursor = encode_score_cursor(
+        0.5, datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4()
+    )
     resp = client.get(f"/feed?sort=latest&cursor={score_cursor}")
     assert resp.status_code == 400
 

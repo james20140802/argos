@@ -102,19 +102,37 @@ def decode_cursor(token: str) -> tuple[datetime, uuid.UUID]:
         raise ValueError(f"invalid feed cursor: {token!r}") from exc
 
 
-def encode_score_cursor(feed_score: Optional[float], item_id: uuid.UUID) -> str:
+def encode_score_cursor(
+    feed_score: Optional[float], sort_at: datetime, item_id: uuid.UUID
+) -> str:
     """Opaque cursor for the ``recommended`` (feed_score) sort.
 
     Tagged ``"s": "rec"`` — see ``encode_cursor`` for why cross-sort cursors
     must not silently decode. ``feed_score`` may be ``None`` (the boundary row
     sits in the NULLS-LAST tail); JSON ``null`` round-trips that faithfully.
+
+    ``sort_at`` (``coalesce(published_at, created_at)``) is the recency
+    tiebreaker: the recommended order is ``feed_score DESC NULLS LAST, sort_at
+    DESC, id DESC`` so that the NULL tail — every row immediately after the
+    feed_score migration, and any item added between scheduled rescores —
+    orders by recency instead of arbitrary UUID. The cursor therefore has to
+    carry ``sort_at`` for keyset pagination to stay exact.
     """
-    payload = {"f": feed_score, "i": item_id.hex, "s": "rec"}
+    if sort_at.tzinfo is None:
+        sort_at = sort_at.replace(tzinfo=timezone.utc)
+    payload = {
+        "f": feed_score,
+        "t": sort_at.astimezone(timezone.utc).isoformat(),
+        "i": item_id.hex,
+        "s": "rec",
+    }
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def decode_score_cursor(token: str) -> tuple[Optional[float], uuid.UUID]:
+def decode_score_cursor(
+    token: str,
+) -> tuple[Optional[float], datetime, uuid.UUID]:
     try:
         padded = token + "=" * (-len(token) % 4)
         raw = base64.urlsafe_b64decode(padded.encode("ascii"))
@@ -124,8 +142,11 @@ def decode_score_cursor(token: str) -> tuple[Optional[float], uuid.UUID]:
         feed_score = payload["f"]
         if feed_score is not None:
             feed_score = float(feed_score)
+        sort_at = datetime.fromisoformat(payload["t"])
+        if sort_at.tzinfo is None:
+            sort_at = sort_at.replace(tzinfo=timezone.utc)
         item_id = uuid.UUID(payload["i"])
-        return feed_score, item_id
+        return feed_score, sort_at, item_id
     except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid feed cursor: {token!r}") from exc
 
@@ -262,8 +283,11 @@ async def fetch_feed(
     """Return one paginated page of feed items.
 
     ``sort="recommended"`` (default, ARG-213) orders by ``feed_score``
-    descending with NULLs last, then applies a page-local same-domain-not-
-    consecutive reorder before returning. ``sort="latest"`` preserves the
+    descending with NULLs last, breaking ties by recency then id — so the
+    NULL tail (all rows right after the feed_score migration, and items added
+    between scheduled rescores) reads newest-first instead of in arbitrary
+    UUID order — then applies a page-local same-domain-not-consecutive reorder
+    before returning. ``sort="latest"`` preserves the
     original ``coalesce(published_at, created_at)`` time order exactly as
     before, unreordered — the ARG-203 polling contract depends on this path
     staying strictly time-ordered.
@@ -294,7 +318,15 @@ async def fetch_feed(
     )
 
     if sort == "recommended":
-        stmt = stmt.order_by(TechItem.feed_score.desc().nullslast(), TechItem.id.desc())
+        # feed_score DESC (NULLs last), then recency, then id. The recency
+        # tiebreak is what gives the NULL tail — all rows right after the
+        # migration, and items added between scheduled rescores — a sane
+        # newest-first order instead of arbitrary UUID order.
+        stmt = stmt.order_by(
+            TechItem.feed_score.desc().nullslast(),
+            sort_expr.desc(),
+            TechItem.id.desc(),
+        )
     else:
         stmt = stmt.order_by(sort_expr.desc(), TechItem.id.desc())
 
@@ -305,16 +337,28 @@ async def fetch_feed(
 
     if cursor is not None:
         if sort == "recommended":
-            cur_score, cur_id = decode_score_cursor(cursor)
+            cur_score, cur_sort, cur_id = decode_score_cursor(cursor)
             if cur_score is None:
                 # Cursor is already in the NULLS-LAST tail: only other
-                # null-score rows (ordered by id desc) can sort after it.
-                stmt = stmt.where(TechItem.feed_score.is_(None) & (TechItem.id < cur_id))
+                # null-score rows can sort after it, keyed by recency
+                # (sort_at desc) then id desc.
+                stmt = stmt.where(
+                    TechItem.feed_score.is_(None)
+                    & (
+                        (sort_expr < cur_sort)
+                        | ((sort_expr == cur_sort) & (TechItem.id < cur_id))
+                    )
+                )
             else:
                 stmt = stmt.where(
                     TechItem.feed_score.is_(None)
                     | (TechItem.feed_score < cur_score)
-                    | ((TechItem.feed_score == cur_score) & (TechItem.id < cur_id))
+                    | ((TechItem.feed_score == cur_score) & (sort_expr < cur_sort))
+                    | (
+                        (TechItem.feed_score == cur_score)
+                        & (sort_expr == cur_sort)
+                        & (TechItem.id < cur_id)
+                    )
                 )
         else:
             cur_sort, cur_id = decode_cursor(cursor)
@@ -349,7 +393,7 @@ async def fetch_feed(
     if len(rows) > limit and items:
         last = items[-1]
         next_cursor = (
-            encode_score_cursor(last.feed_score, last.id)
+            encode_score_cursor(last.feed_score, last.sort_at, last.id)
             if sort == "recommended"
             else encode_cursor(last.sort_at, last.id)
         )

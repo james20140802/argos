@@ -351,19 +351,25 @@ def test_fetch_feed_module_does_not_reference_briefed_at() -> None:
 
 def test_encode_decode_score_cursor_round_trips() -> None:
     item_id = uuid.uuid4()
-    token = encode_score_cursor(0.42, item_id)
-    score, parsed_id = decode_score_cursor(token)
+    sort_at = datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc)
+    token = encode_score_cursor(0.42, sort_at, item_id)
+    score, parsed_sort, parsed_id = decode_score_cursor(token)
     assert score == pytest.approx(0.42)
+    assert parsed_sort == sort_at
     assert parsed_id == item_id
 
 
 def test_encode_decode_score_cursor_round_trips_with_none_score() -> None:
     """A NULLS-LAST boundary row has ``feed_score is None`` — the cursor must
-    round-trip that faithfully rather than coercing it to 0.0 or erroring."""
+    round-trip that faithfully rather than coercing it to 0.0 or erroring. The
+    recency tiebreaker (``sort_at``) must survive alongside it so the NULL tail
+    paginates by recency, not UUID."""
     item_id = uuid.uuid4()
-    token = encode_score_cursor(None, item_id)
-    score, parsed_id = decode_score_cursor(token)
+    sort_at = datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc)
+    token = encode_score_cursor(None, sort_at, item_id)
+    score, parsed_sort, parsed_id = decode_score_cursor(token)
     assert score is None
+    assert parsed_sort == sort_at
     assert parsed_id == item_id
 
 
@@ -386,7 +392,9 @@ def test_decode_score_cursor_rejects_latest_tagged_cursor() -> None:
 def test_decode_cursor_rejects_score_tagged_cursor() -> None:
     """The inverse direction of the same AC: a ``recommended``-sort cursor
     fed into the ``latest`` path must also raise."""
-    score_cursor = encode_score_cursor(0.9, uuid.uuid4())
+    score_cursor = encode_score_cursor(
+        0.9, datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4()
+    )
     with pytest.raises(ValueError):
         decode_cursor(score_cursor)
 
@@ -395,7 +403,9 @@ def test_decode_cursor_rejects_score_tagged_cursor() -> None:
 async def test_fetch_feed_rejects_cross_sort_cursor_score_into_latest() -> None:
     """Cursor tag validation happens before any DB access, so this is
     provable without a live session (``None`` is never touched)."""
-    bad = encode_score_cursor(0.5, uuid.uuid4())
+    bad = encode_score_cursor(
+        0.5, datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4()
+    )
     with pytest.raises(ValueError):
         await fetch_feed(None, cursor=bad, sort="latest")
 
@@ -606,6 +616,85 @@ async def test_fetch_feed_recommended_sort_cursor_pagination_no_dupes_or_gaps() 
                 "no duplicates or gaps across the cursor boundary"
             )
             assert set(all_ids) == set(seeded_ids)
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_feed_recommended_null_tail_orders_by_recency_not_uuid() -> None:
+    """Codex P2 (feed.py): rows with no ``feed_score`` — every row right after
+    the migration, and items added between scheduled rescores — must fall back
+    to recency order in the NULLS-LAST tail, not arbitrary UUID order, and that
+    order must survive one-at-a-time cursor pagination through the tail.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    seeded_ids: list[uuid.UUID] = []
+    base = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    try:
+        async with Session() as session:
+            # Three unscored items, seeded oldest-first, with UUIDs that do NOT
+            # already happen to sort newest-first — so a UUID-only tiebreak
+            # would return a different order than recency and the assertion
+            # below would catch the regression.
+            newest_to_oldest: list[uuid.UUID] = []
+            for i, age_hours in enumerate([0, 24, 48]):  # newest → oldest
+                item = TechItem(
+                    title=f"arg201-nulltail-{i}",
+                    source_url=f"https://example.com/arg201null/{uuid.uuid4()}",
+                    raw_content="x",
+                    category=CategoryType.ALPHA,
+                    feed_score=None,
+                    published_at=base - timedelta(hours=age_hours),
+                )
+                session.add(item)
+                await session.flush()
+                newest_to_oldest.append(item.id)
+            seeded_ids = list(newest_to_oldest)
+            await session.commit()
+
+        async with Session() as session:
+            page = await fetch_feed(
+                session, category="Alpha", sort="recommended", limit=200
+            )
+            ours = [it.id for it in page.items if it.id in set(seeded_ids)]
+            assert ours == newest_to_oldest, "NULL tail must be newest-first"
+
+        # Walk the tail one item per page: recency order must hold across every
+        # cursor boundary with no dupes or gaps.
+        async with Session() as session:
+            walked: list[uuid.UUID] = []
+            cursor = None
+            for _ in range(len(seeded_ids) + 2):
+                pg = await fetch_feed(
+                    session,
+                    category="Alpha",
+                    sort="recommended",
+                    cursor=cursor,
+                    limit=1,
+                )
+                mine = [it.id for it in pg.items if it.id in set(seeded_ids)]
+                walked.extend(mine)
+                if pg.next_cursor is None:
+                    break
+                cursor = pg.next_cursor
+            assert walked == newest_to_oldest
+            assert len(walked) == len(set(walked)) == len(seeded_ids)
     finally:
         from sqlalchemy import delete as sa_delete
 
