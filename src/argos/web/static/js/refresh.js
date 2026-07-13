@@ -70,6 +70,22 @@
               if (window.htmx && typeof window.htmx.process === "function") {
                 window.htmx.process(freshEl);
               }
+              // htmx.process() activates hx-* controls but — unlike an
+              // HTMX-driven swap — emits NO htmx:afterSwap/afterSettle. Fire an
+              // explicit event so listeners that only re-scan on those HTMX
+              // events (feed-events.js impression tracking) observe the freshly
+              // inserted cards. Covers every manual path (pill / header button /
+              // pull-to-refresh) since they all funnel through refresh().
+              try {
+                document.body.dispatchEvent(
+                  new CustomEvent("argos:refreshed", {
+                    bubbles: true,
+                    detail: { kind: kind, root: freshEl },
+                  })
+                );
+              } catch (err) {
+                // CustomEvent unsupported — degrade silently.
+              }
             }
             notifyServiceWorker(url, html);
             return true;

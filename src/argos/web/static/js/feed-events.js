@@ -50,6 +50,38 @@
     scheduleFlush();
   }
 
+  // Flush pending events immediately, preferring sendBeacon so an in-flight
+  // page unload can't abort the request. The 2s debounce means a card can
+  // become visible → be enqueued → the user clicks it and navigates away
+  // before flush() ever fires; without this the Impression is silently lost.
+  function flushBeacon() {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    if (queue.length === 0) return;
+    var events = queue;
+    queue = [];
+    var payload = JSON.stringify({ events: events });
+    if (navigator.sendBeacon) {
+      var blob = new Blob([payload], { type: "application/json" });
+      navigator.sendBeacon("/events/batch", blob);
+    } else {
+      fetch("/events/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+        keepalive: true,
+      }).catch(function () {});
+    }
+  }
+
+  // Feed page (and every other page): drain the queue on the way out.
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") flushBeacon();
+  });
+  window.addEventListener("pagehide", flushBeacon);
+
   // --- Impression: IntersectionObserver over feed cards ------------------ //
 
   function initImpressions() {
@@ -93,12 +125,15 @@
 
     observeAll();
 
-    // Keep/Pass (hx-swap="outerHTML") and pull-to-refresh / new-items-pill
-    // (whole #feed-list replacement) both detach observed nodes and insert
-    // fresh ones the observer hasn't seen yet. htmx fires these events on the
-    // swapped-in content in both cases.
+    // Keep/Pass (hx-swap="outerHTML") and load-more go through HTMX's own swap
+    // lifecycle, which fires htmx:afterSwap/afterSettle on the inserted content.
     document.body.addEventListener("htmx:afterSwap", observeAll);
     document.body.addEventListener("htmx:afterSettle", observeAll);
+    // Pull-to-refresh / new-items-pill / header refresh replace #feed-list via
+    // refresh.js's currentEl.replaceWith() + htmx.process(), which does NOT emit
+    // the htmx events above. refresh.js dispatches argos:refreshed instead so
+    // the freshly inserted cards still get observed.
+    document.body.addEventListener("argos:refreshed", observeAll);
   }
 
   // --- Dwell: item detail page only --------------------------------------- //
