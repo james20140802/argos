@@ -523,6 +523,55 @@ def test_reorder_diverse_avoids_avoidable_run_on_skewed_page():
         assert a != b, f"avoidable adjacent same-domain pair: {domains}"
 
 
+class _ScoredItem:
+    def __init__(self, u, feed_score):
+        self.source_url = u
+        self.feed_score = feed_score
+
+
+def test_reorder_diverse_keeps_null_score_rows_in_tail():
+    # P2 fix (Codex review): the recommended sort is feed_score DESC NULLS LAST,
+    # so unscored rows live in a tail. Diversifying the whole page would let an
+    # unscored row be pulled up as a same-domain spacer between scored cards —
+    # a(0.8), a(0.7), b(NULL) must NOT become a, b(NULL), a. Every null-score
+    # row must stay after every scored row.
+    items = [
+        _ScoredItem("https://a.com/1", 0.8),
+        _ScoredItem("https://a.com/2", 0.7),
+        _ScoredItem("https://b.com/1", None),
+    ]
+    out = _reorder_diverse(items)
+
+    assert len(out) == 3
+    scores = [i.feed_score for i in out]
+    # No None appears before a non-None (nulls strictly in the tail).
+    seen_null = False
+    for s in scores:
+        if s is None:
+            seen_null = True
+        else:
+            assert not seen_null, f"scored row after a null-score row: {scores}"
+    assert scores[-1] is None  # the NULL b.com stays last, not a mid-grid spacer
+
+
+def test_reorder_diverse_null_band_avoids_boundary_domain():
+    # The scored band's last domain seeds the null band's avoid_domain, so the
+    # scored→null boundary isn't a same-domain pair even across the bands.
+    items = [
+        _ScoredItem("https://a.com/1", 0.9),
+        _ScoredItem("https://a.com/2", 0.8),
+        _ScoredItem("https://a.com/3", None),
+        _ScoredItem("https://b.com/1", None),
+    ]
+    out = _reorder_diverse(items)
+    domains = [urlsplit(i.source_url).netloc for i in out]
+    # Scored a.com pair leads (unavoidable, same domain), then the null band:
+    # its first pick must avoid a.com so the boundary flips to b.com.
+    assert [i.feed_score for i in out][:2] == [0.9, 0.8]
+    assert domains[2] == "b.com", f"null band didn't avoid boundary domain: {domains}"
+    assert sorted(domains[2:]) == ["a.com", "b.com"]  # both null rows present
+
+
 # --------------------------------------------------------------------- #
 # DB-backed: recommended-sort ordering / pagination / hero
 # --------------------------------------------------------------------- #

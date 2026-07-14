@@ -179,7 +179,7 @@ def _domain_of(url: Optional[str]) -> str:
     return host
 
 
-def _reorder_diverse(items: list, *, avoid_domain: Optional[str] = None) -> list:
+def _reorder_no_adjacent(items: list, *, avoid_domain: Optional[str] = None) -> list:
     """Same-domain-not-consecutive reorder, page-local only (ARG-213).
 
     Repeatedly takes the next item from whichever domain currently has the
@@ -232,6 +232,35 @@ def _reorder_diverse(items: list, *, avoid_domain: Optional[str] = None) -> list
         out.append(chosen)
         last_domain = chosen_domain
     return out
+
+
+def _reorder_diverse(items: list, *, avoid_domain: Optional[str] = None) -> list:
+    """Band-aware same-domain diversity for the recommended page (ARG-213).
+
+    The recommended sort is ``feed_score DESC NULLS LAST``, so unscored rows
+    (fresh/manual items, and everything right after the feed_score migration)
+    live in a tail after all scored recommendations. Diversifying the *whole*
+    page at once would let ``_reorder_no_adjacent`` pull an unscored tail row up
+    between two scored cards as a same-domain spacer — e.g. ``a(0.8), a(0.7),
+    b(NULL)`` → ``a, b(NULL), a`` promotes the NULL row above a real
+    recommendation. So diversify the scored band and the null band
+    *independently* and keep the null band strictly after the scored band; the
+    scored band's final domain seeds the null band's ``avoid_domain`` so the
+    boundary between them still isn't a same-domain pair. All-scored or all-null
+    pages (the common cases) fall through to a single-band reorder unchanged.
+
+    ``feed_score`` is read via ``getattr`` so the pure-function tests can pass
+    lightweight item stubs without the attribute (they land in the null band).
+    """
+    scored = [it for it in items if getattr(it, "feed_score", None) is not None]
+    nulls = [it for it in items if getattr(it, "feed_score", None) is None]
+    if scored and nulls:
+        scored_out = _reorder_no_adjacent(scored, avoid_domain=avoid_domain)
+        null_out = _reorder_no_adjacent(
+            nulls, avoid_domain=_domain_of(scored_out[-1].source_url)
+        )
+        return scored_out + null_out
+    return _reorder_no_adjacent(items, avoid_domain=avoid_domain)
 
 
 def pin_hero(
