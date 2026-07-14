@@ -268,6 +268,45 @@ def pin_hero(
     return [hero, *rest]
 
 
+def pick_onpage_hero_within_window(
+    items: list, *, now: datetime
+) -> Optional[uuid.UUID]:
+    """Highest-``feed_score`` page item whose recency is within ``HERO_WINDOW``.
+
+    Recovery for ``select_hero``'s global 48h pick landing *off* page 1 (Codex
+    P2): when a full page of higher-``feed_score`` older items outranks the best
+    recent item, that recent hero isn't among the rendered rows, so ``pin_hero``
+    returns ``None``. Silently featuring the natural top item then buries the
+    hero window entirely — an old, merely top-ranked story leads the magazine.
+
+    Injecting the off-page hero is not an option: the recommended sort paginates
+    by keyset on ``(feed_score, sort_at, id)``, and the hero sits *below* this
+    page's cursor boundary, so it would reappear as a duplicate on a later page.
+    Instead we surface the freshest high-scoring item the reader can actually see
+    on this page. Returns ``None`` when no page item falls within the window (the
+    caller then falls back to the natural top item as before).
+
+    Recency uses each item's ``sort_at`` (``coalesce(published_at, created_at)``)
+    — the same expression the feed sorts and ``select_hero``'s window filter by.
+    ``feed_score`` may be ``None`` on some rows; a scored in-window item always
+    beats an unscored one, mirroring the feed's ``DESC NULLS LAST`` order.
+    """
+    cutoff = now - HERO_WINDOW
+    in_window = [it for it in items if it.sort_at >= cutoff]
+    if not in_window:
+        return None
+    best = max(
+        in_window,
+        key=lambda it: (
+            it.feed_score is not None,
+            it.feed_score if it.feed_score is not None else 0.0,
+            it.sort_at,
+            it.id,
+        ),
+    )
+    return best.id
+
+
 # ------------------------------------------------------------------ #
 # Query
 # ------------------------------------------------------------------ #

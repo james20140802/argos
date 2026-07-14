@@ -16,6 +16,7 @@ from argos.web.services.feed import (
     encode_score_cursor,
     fetch_feed,
     latest_feed_cursor,
+    pick_onpage_hero_within_window,
     pin_hero,
     select_hero,
     FeedItem,
@@ -1004,7 +1005,11 @@ async def test_select_hero_returns_none_when_nothing_scored() -> None:
 
 
 def _feed_item_stub(
-    *, url: str, feed_score: float | None = None, item_id: uuid.UUID | None = None
+    *,
+    url: str,
+    feed_score: float | None = None,
+    item_id: uuid.UUID | None = None,
+    sort_at: datetime | None = None,
 ) -> FeedItem:
     return FeedItem(
         id=item_id or uuid.uuid4(),
@@ -1015,7 +1020,7 @@ def _feed_item_stub(
         summary=None,
         status=None,
         trust_score=None,
-        sort_at=datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc),
+        sort_at=sort_at or datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc),
         feed_score=feed_score,
     )
 
@@ -1110,6 +1115,74 @@ def test_pin_hero_returns_none_when_hero_id_is_none():
 
 def test_pin_hero_handles_empty_items():
     assert pin_hero([], uuid.uuid4(), diversify=True) is None
+
+
+# ---- pick_onpage_hero_within_window: pure function, no DB ---- #
+
+
+def test_pick_onpage_hero_prefers_recent_over_higher_scored_stale_top():
+    """The off-page-hero recovery (Codex P2): among the rendered rows, the
+    freshest item within the 48h window wins even if a stale item has a higher
+    feed_score — the point is to keep a *recent* hero, not re-pick the top."""
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    stale_top = _feed_item_stub(
+        url="https://example.com/old", feed_score=0.9, sort_at=now - timedelta(days=30)
+    )
+    recent = _feed_item_stub(
+        url="https://example.com/new", feed_score=0.5, sort_at=now - timedelta(hours=2)
+    )
+    assert (
+        pick_onpage_hero_within_window([stale_top, recent], now=now) == recent.id
+    )
+
+
+def test_pick_onpage_hero_picks_highest_score_among_in_window_items():
+    """When several page items fall within the window, the highest feed_score
+    among them leads (recency only gates membership, not the ranking)."""
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    lower = _feed_item_stub(
+        url="https://example.com/a", feed_score=0.3, sort_at=now - timedelta(hours=1)
+    )
+    higher = _feed_item_stub(
+        url="https://example.com/b", feed_score=0.8, sort_at=now - timedelta(hours=10)
+    )
+    assert (
+        pick_onpage_hero_within_window([lower, higher], now=now) == higher.id
+    )
+
+
+def test_pick_onpage_hero_returns_none_when_no_item_within_window():
+    """No recent item on the page → None, so the caller keeps its natural-top
+    fallback rather than featuring a stale story as a 'recent' hero."""
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    old_a = _feed_item_stub(
+        url="https://example.com/a", feed_score=0.9, sort_at=now - timedelta(days=10)
+    )
+    old_b = _feed_item_stub(
+        url="https://example.com/b", feed_score=0.7, sort_at=now - timedelta(days=5)
+    )
+    assert pick_onpage_hero_within_window([old_a, old_b], now=now) is None
+
+
+def test_pick_onpage_hero_prefers_scored_over_unscored_in_window():
+    """A scored in-window item beats an unscored one, mirroring the feed's
+    ``feed_score DESC NULLS LAST`` order (unscored rows sit in the tail)."""
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    unscored_newer = _feed_item_stub(
+        url="https://example.com/a", feed_score=None, sort_at=now - timedelta(hours=1)
+    )
+    scored_older = _feed_item_stub(
+        url="https://example.com/b", feed_score=0.4, sort_at=now - timedelta(hours=5)
+    )
+    assert (
+        pick_onpage_hero_within_window([unscored_newer, scored_older], now=now)
+        == scored_older.id
+    )
+
+
+def test_pick_onpage_hero_handles_empty_items():
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    assert pick_onpage_hero_within_window([], now=now) is None
 
 
 # ---- latest_feed_cursor: DB-backed ---- #

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
@@ -30,6 +31,7 @@ from argos.web.services.feed import (
     count_new_since,
     fetch_feed,
     latest_feed_cursor,
+    pick_onpage_hero_within_window,
     pin_hero,
     select_hero,
 )
@@ -426,9 +428,8 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             if normalized_sort == "recommended":
                 # Recommended: promote the highest-feed_score item (within 48h,
                 # else global) to the full-width lead and re-diversify the rest.
-                # ``pin_hero`` returns None when that item isn't on page 1, and
                 # ``select_hero`` returns None when NOTHING is scored yet (fresh
-                # DB / ranking pass not run) — both fall through to the natural
+                # DB / ranking pass not run) — that falls through to the natural
                 # top item so the layout never loses its hero.
                 selected = await select_hero(session, category=normalized)
                 if selected is not None:
@@ -436,6 +437,24 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
                     if pinned is not None:
                         items = pinned
                         hero_id = selected
+                    else:
+                        # ``select_hero``'s global 48h pick is off page 1 (a full
+                        # page of higher-scored older items outranks it), so
+                        # ``pin_hero`` couldn't place it. Rather than bury the
+                        # hero window and feature an old top-ranked story,
+                        # recover the freshest high-scoring item on THIS page
+                        # (Codex P2). Injecting the off-page hero would duplicate
+                        # it on a later keyset page, so we stay within the
+                        # rendered rows; None here (no recent item on the page)
+                        # falls through to the natural top item below.
+                        recovered = pick_onpage_hero_within_window(
+                            items, now=datetime.now(timezone.utc)
+                        )
+                        if recovered is not None:
+                            repinned = pin_hero(items, recovered, diversify=True)
+                            if repinned is not None:
+                                items = repinned
+                                hero_id = recovered
             # Latest sort never reorders (its whole point is strict time order,
             # so pinning a high-score-but-old item to the top would break
             # chronology — Codex review), and any unpinned recommended page

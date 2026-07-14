@@ -8,7 +8,7 @@ the tests runnable on release.yml CI (no Postgres).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from starlette.testclient import TestClient
 
@@ -26,6 +26,8 @@ def _item(
     status: AssetStatus | None = None,
     summary: str | None = None,
     trust_score: float | None = None,
+    sort_at: datetime | None = None,
+    feed_score: float | None = None,
 ) -> FeedItem:
     return FeedItem(
         id=uuid.uuid4(),
@@ -36,7 +38,8 @@ def _item(
         summary=summary,
         status=status,
         trust_score=trust_score,
-        sort_at=datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc),
+        sort_at=sort_at or datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc),
+        feed_score=feed_score,
     )
 
 
@@ -607,6 +610,35 @@ def test_feed_hero_falls_back_to_natural_top_item_when_not_on_this_page(monkeypa
     assert body.count("card--featured") == 1
     assert f'card--featured" id="feed-card-{first.id}"' in body
     assert f'card--featured" id="feed-card-{second.id}"' not in body
+
+
+def test_feed_offpage_hero_recovers_freshest_onpage_item_not_natural_top(monkeypatch):
+    """Codex P2: when ``select_hero``'s global 48h pick is off page 1, feature
+    the freshest high-scoring item ON this page — not the natural top item.
+
+    Here the natural top (highest feed_score) is a month-old story outside the
+    48h window; a lower-scored but recent item sits below it. Without the
+    recovery the old top-ranked story would lead the magazine, burying the hero
+    window; with it, the recent on-page item is featured instead."""
+    now = datetime.now(timezone.utc)
+    old_top = _item(
+        title="Old Top Ranked",
+        sort_at=now - timedelta(days=30),
+        feed_score=0.9,
+    )
+    recent = _item(
+        title="Recent Lower Score",
+        sort_at=now - timedelta(hours=2),
+        feed_score=0.5,
+    )
+    page = FeedPage(items=[old_top, recent], next_cursor=None)
+    # select_hero named an item that isn't on this page (off-page global pick).
+    client = _client_with_feed(monkeypatch, page, hero_id=uuid.uuid4())
+    body = client.get("/feed").text
+
+    assert body.count("card--featured") == 1
+    assert f'card--featured" id="feed-card-{recent.id}"' in body
+    assert f'card--featured" id="feed-card-{old_top.id}"' not in body
 
 
 def test_feed_recommended_sort_cursor_into_latest_sort_returns_400():
