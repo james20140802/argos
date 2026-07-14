@@ -19,18 +19,45 @@ from argos.web.app import _get_session, build_web_app
 from argos.web.services.detail import ItemDetailView
 
 
-class _FakeSession:
-    """Minimal stand-in for an AsyncSession that records add()/commit()."""
+class _FakeResult:
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
 
-    def __init__(self) -> None:
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _FakeSession:
+    """Minimal stand-in for an AsyncSession that records add()/commit().
+
+    ``execute`` models the /events/batch existence pre-filter: it pulls the
+    UUIDs out of the ``TechItem.id.in_(...)`` guard query and reports them as
+    existing, minus any ids in ``missing_ids`` (so a test can simulate a
+    dangling item_id that must be skipped rather than sinking the batch).
+    """
+
+    def __init__(self, missing_ids: set | None = None) -> None:
         self.added: list = []
         self.commit_count = 0
+        self.missing_ids = missing_ids or set()
 
     def add(self, obj) -> None:
         self.added.append(obj)
 
     async def commit(self) -> None:
         self.commit_count += 1
+
+    async def execute(self, statement):
+        wanted: set = set()
+        for value in statement.compile().params.values():
+            if isinstance(value, (list, tuple, set)):
+                wanted.update(value)
+            elif isinstance(value, uuid.UUID):
+                wanted.add(value)
+        return _FakeResult([i for i in wanted if i not in self.missing_ids])
 
 
 def _client(monkeypatch, session: _FakeSession) -> TestClient:
@@ -99,6 +126,52 @@ def test_events_batch_skips_malformed_uuid(monkeypatch):
     resp = client.post(
         "/events/batch",
         json={"events": [{"type": "Impression", "item_id": "not-a-uuid"}]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"inserted": 0}
+    assert session.added == []
+    assert session.commit_count == 0
+
+
+def test_events_batch_dangling_item_id_does_not_sink_good_events(monkeypatch):
+    # P2 fix (proactive review): a well-formed but non-existent item_id must be
+    # skipped, NOT roll the whole batch back on an FK violation at commit. The
+    # client clears its queue before sending and never retries, so a co-batched
+    # dangling id would otherwise silently drop every good Impression/Dwell.
+    good_id = uuid.uuid4()
+    dangling_id = uuid.uuid4()
+    session = _FakeSession(missing_ids={dangling_id})
+    client = _client(monkeypatch, session)
+
+    resp = client.post(
+        "/events/batch",
+        json={
+            "events": [
+                {"type": "Impression", "item_id": str(good_id)},
+                {"type": "Dwell", "item_id": str(dangling_id), "value": 3.0},
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"inserted": 1}
+    assert len(session.added) == 1
+    assert session.added[0].tech_item_id == good_id
+    assert session.added[0].event_type == FeedEventType.IMPRESSION
+    assert session.commit_count == 1
+
+
+def test_events_batch_all_dangling_skips_commit(monkeypatch):
+    # If every id is dangling, nothing is added and commit is never called
+    # (the empty-insert guard), so an all-adversarial payload is a clean no-op.
+    dangling_id = uuid.uuid4()
+    session = _FakeSession(missing_ids={dangling_id})
+    client = _client(monkeypatch, session)
+
+    resp = client.post(
+        "/events/batch",
+        json={"events": [{"type": "Click", "item_id": str(dangling_id)}]},
     )
 
     assert resp.status_code == 200

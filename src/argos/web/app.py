@@ -696,12 +696,21 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         """Batch-insert front-end feed_events (Impression/Click/Dwell, ARG-207).
 
         Body: ``{"events": [{"type": "Impression", "item_id": "<uuid>", "value":
-        <float, optional>}, ...]}``. Unknown ``type`` values and malformed
-        ``item_id`` values are silently skipped (not counted in ``inserted``) —
-        this endpoint is fed by a beacon/fetch from the browser, so it must never
-        500 on a malformed or adversarial payload.
+        <float, optional>}, ...]}``. Unknown ``type`` values, malformed
+        ``item_id`` values, and ``item_id``s that don't reference an existing
+        tech_item are silently skipped (not counted in ``inserted``) — this
+        endpoint is fed by a beacon/fetch from the browser, so it must never 500
+        on a malformed or adversarial payload.
+
+        The dangling-``item_id`` skip is what keeps the batch *all-or-nothing*
+        from silently dropping good events: the client (feed-events.js) clears
+        its queue before sending and never retries, so if one FK-violating id
+        rolled the whole commit back, every co-batched Impression/Dwell/Click
+        would be lost. Filtering to existing ids up front keeps the good events.
         """
         from argos.models.feed_event import FeedEvent, FeedEventType
+        from argos.models.tech_item import TechItem
+        from sqlalchemy import select
 
         try:
             body = await request.json()
@@ -712,23 +721,45 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         if not isinstance(events, list):
             return JSONResponse({"inserted": 0})
 
+        # Parse + validate first, collecting well-formed candidates. item_id
+        # existence is checked in one query below rather than trusting the FK
+        # to fail the (shared) commit for the whole batch.
+        candidates: list[tuple[FeedEventType, uuid.UUID, Optional[float]]] = []
+        for raw in events:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                event_type = FeedEventType(raw.get("type"))
+                item_id = uuid.UUID(str(raw.get("item_id")))
+            except (ValueError, TypeError, AttributeError):
+                continue
+
+            value = raw.get("value")
+            try:
+                value = float(value) if value is not None else None
+            except (TypeError, ValueError):
+                value = None
+
+            candidates.append((event_type, item_id, value))
+
+        if not candidates:
+            return JSONResponse({"inserted": 0})
+
         inserted = 0
         try:
-            for raw in events:
-                if not isinstance(raw, dict):
-                    continue
-                try:
-                    event_type = FeedEventType(raw.get("type"))
-                    item_id = uuid.UUID(str(raw.get("item_id")))
-                except (ValueError, TypeError, AttributeError):
-                    continue
-
-                value = raw.get("value")
-                try:
-                    value = float(value) if value is not None else None
-                except (TypeError, ValueError):
-                    value = None
-
+            wanted = {item_id for _, item_id, _ in candidates}
+            existing = set(
+                (
+                    await session.execute(
+                        select(TechItem.id).where(TechItem.id.in_(wanted))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for event_type, item_id, value in candidates:
+                if item_id not in existing:
+                    continue  # dangling id — skip, don't sink the batch
                 session.add(
                     FeedEvent(event_type=event_type, tech_item_id=item_id, value=value)
                 )
