@@ -126,6 +126,23 @@ def test_impression_timers_cancelled_on_hide():
     assert 'addEventListener("pagehide", cancelPendingTimers)' in body
 
 
+def test_impression_timer_checks_target_still_connected():
+    # P2 fix (Codex review): a refresh (pill / header / pull-to-refresh) or a
+    # Keep/Pass HTMX outerHTML swap can detach a feed card while its 1s
+    # impression timer is armed. The timeout callback must re-check the
+    # observed node is still in the document (target.isConnected) before
+    # enqueueing — else it logs an Impression for a card that did not stay
+    # continuously half-visible for the second (and marks it seen, blocking the
+    # replacement card's genuine impression).
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    assert "var target = entry.target" in body
+    assert "target.isConnected" in body
+    # The connectivity guard lives inside the setTimeout callback (before the
+    # enqueue), not merely somewhere in the file.
+    cb = body.split("setTimeout(function ()")[1].split("IMPRESSION_DWELL_MS")[0]
+    assert "if (!target.isConnected) return" in cb
+
+
 def test_sw_message_listener_writes_shell_cache():
     body = SW.read_text(encoding="utf-8")
     assert "addEventListener('message'" in body or 'addEventListener("message"' in body

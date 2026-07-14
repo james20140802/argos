@@ -103,9 +103,21 @@
           // stayed half-visible, corrupting the ARG-207 training events.
           if (entry.isIntersecting && entry.intersectionRatio >= IMPRESSION_THRESHOLD) {
             if (seen.has(itemId) || timers.has(itemId)) return;
+            var target = entry.target;
             var timerId = setTimeout(function () {
               timers.delete(itemId);
               if (seen.has(itemId)) return;
+              // The observed card must still be in the live document after the
+              // full second. A refresh (pill / header / pull-to-refresh replaces
+              // #feed-list via refresh.js's replaceWith) or a Keep/Pass HTMX
+              // outerHTML swap can DETACH this card mid-countdown; its armed
+              // timer survives in `timers` and would otherwise enqueue an
+              // Impression for a card that did not stay continuously ≥50%
+              // visible for the second (and mark it seen, blocking the fresh
+              // card's genuine impression). isConnected is false once the node
+              // leaves the document, so a swapped-out card is correctly dropped
+              // and the replacement re-accumulates its own second via observeAll.
+              if (!target.isConnected) return;
               seen.add(itemId);
               enqueue({ type: "Impression", item_id: itemId });
             }, IMPRESSION_DWELL_MS);
