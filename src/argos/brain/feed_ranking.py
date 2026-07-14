@@ -117,17 +117,29 @@ def profile_recency_confidence(
     now: datetime,
     half_life_hours: float,
 ) -> float:
-    """Mean recency-decay weight across the Keep signals, in ``[0, 1]``.
+    """Effective recent Keep signal mass, capped to ``[0, 1]``.
 
     ``compute_profile_vector`` normalizes the decayed sum by ``weight_total``,
     which cancels the *absolute* half-life effect: a profile built from a single
     stale Keep (or from Keeps that are all similarly old) yields the same unit
     direction as a fresh one, and ``_cosine_sim`` ignores magnitude — so an
     old-only preference would steer recommendations as strongly as a fresh one.
-    Scaling the profile term by this confidence (``avg(recency_decay)``) restores
-    absolute fade: all-fresh Keeps → ~1.0 (unchanged), all-6-month-old Keeps →
-    ~0.0 (the profile term vanishes and scoring falls back to recency/trust/
-    trending). Returns 0.0 when there are no Keeps.
+    Scaling the profile term by this confidence restores absolute fade.
+
+    Confidence is the *sum* of per-Keep recency decays, capped at 1.0 — NOT the
+    mean. A mean (dividing by the total historical Keep count) would drown a
+    fresh signal in a large stale portfolio: 1 fresh + 99 six-month-old Keeps
+    would scale to ~0.01 even though ``compute_profile_vector`` already steers
+    the direction toward the fresh Keep, so new preferences would be ignored
+    until old assets are pruned. Summing instead measures how much *recent*
+    signal exists, independent of how many stale assets sit alongside it:
+
+    - all-fresh Keeps → ≥1.0 → capped to 1.0 (unchanged behavior).
+    - a single fresh Keep (with any amount of stale history) → ~1.0: fresh
+      preferences keep full influence.
+    - genuinely old-only Keeps (e.g. all six months old) → ~0.0: each decay is
+      ~0, so even hundreds of them sum to ~0 and the profile term still fades.
+    - no Keeps → 0.0.
     """
     if not keep_embeds_with_ts:
         return 0.0
@@ -135,7 +147,7 @@ def profile_recency_confidence(
     for _embed, kept_at in keep_embeds_with_ts:
         age_hours = (now - kept_at).total_seconds() / 3600.0
         total += recency_decay(age_hours, half_life_hours)
-    return total / len(keep_embeds_with_ts)
+    return min(1.0, total)
 
 
 async def recompute_feed_scores(session: AsyncSession) -> int:
@@ -145,8 +157,10 @@ async def recompute_feed_scores(session: AsyncSession) -> int:
     embeddings, then scores every row as the config-weighted sum of recency
     decay, profile cosine similarity, trust, and trending, plus a small
     interest-topic bonus. The profile term is scaled by
-    ``profile_recency_confidence`` (mean Keep decay) so an all-stale Keep set
-    fades absolutely instead of only shifting relative weights among Keeps.
+    ``profile_recency_confidence`` (capped recent Keep signal mass) so an
+    all-stale Keep set fades absolutely instead of only shifting relative
+    weights among Keeps, while a fresh Keep in a large stale portfolio keeps
+    its influence.
 
     Does not commit; the caller (``argos run`` end hook) commits.
 
@@ -193,7 +207,8 @@ async def recompute_feed_scores(session: AsyncSession) -> int:
     # Absolute half-life fade for the profile term: the profile *direction* is a
     # normalized mean (magnitude-free for cosine), so without this an all-stale
     # Keep set would boost matches as strongly as a fresh one. Scale the profile
-    # similarity by the mean Keep decay so stale-only preferences actually fade.
+    # similarity by the capped recent-signal mass so old-only preferences fade
+    # while a fresh Keep in a large stale portfolio keeps its influence.
     profile_confidence = profile_recency_confidence(
         keep, now=now, half_life_hours=cfg.recency_half_life_hours
     )

@@ -65,6 +65,7 @@ def test_profile_recency_confidence_fades_stale_keeps():
 
     now = datetime.now(timezone.utc)
     hl = 48.0
+    old_ts = now - timedelta(days=182)
     # No keeps → 0.0 (profile term contributes nothing).
     assert profile_recency_confidence([], now=now, half_life_hours=hl) == 0.0
     # A single fresh Keep → ~1.0 (unchanged behavior).
@@ -72,14 +73,28 @@ def test_profile_recency_confidence_fades_stale_keeps():
     assert fresh > 0.99
     # A single 6-month-old Keep → ~0.0: the profile term must vanish absolutely,
     # not just re-weight relative to other Keeps.
-    old_ts = now - timedelta(days=182)
     stale = profile_recency_confidence([([1.0], old_ts)], now=now, half_life_hours=hl)
     assert stale < 0.01
-    # Mixed fresh + stale → strictly between the two.
-    mixed = profile_recency_confidence(
-        [([1.0], now), ([1.0], old_ts)], now=now, half_life_hours=hl
+    # Genuinely old-only Keeps stay faded no matter how MANY there are — the
+    # sum of ~0 decays is still ~0 (not lifted by count).
+    many_stale = profile_recency_confidence(
+        [([1.0], old_ts)] * 100, now=now, half_life_hours=hl
     )
-    assert stale < mixed < fresh
+    assert many_stale < 0.01
+
+
+def test_profile_recency_confidence_preserves_fresh_in_stale_portfolio():
+    # P2 fix (Codex review): a fresh Keep must keep its influence even amid a
+    # large stale history. A mean (÷ total Keep count) would drown it — 1 fresh
+    # + 99 six-month-old → ~0.01. Summing the recent signal mass keeps it ~1.0.
+    from argos.brain.feed_ranking import profile_recency_confidence
+
+    now = datetime.now(timezone.utc)
+    hl = 48.0
+    old_ts = now - timedelta(days=182)
+    keeps = [([1.0], now)] + [([1.0], old_ts)] * 99
+    conf = profile_recency_confidence(keeps, now=now, half_life_hours=hl)
+    assert conf > 0.99  # fresh signal preserved, not diluted to ~1/100
 
 
 # ---------------------------------------------------------------------------
