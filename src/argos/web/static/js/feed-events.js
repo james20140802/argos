@@ -89,6 +89,42 @@
 
     var seen = new Set();
     var timers = new Map();
+    // itemId -> node for every card currently ≥50% intersecting. Kept live so
+    // that when the tab is first foregrounded we can arm timers for cards that
+    // were already on screen during a hidden background load (see below) — the
+    // IntersectionObserver does NOT re-fire just because visibility changed.
+    var intersecting = new Map();
+
+    // Arm the 1s dwell timer for a visible card, but ONLY while the page is
+    // actually in the foreground. If `/feed` is opened or restored in a
+    // background tab (middle-click / "open in new tab" / PWA prefetch) it
+    // starts `hidden`, so there is no initial `visibilitychange` to clear a
+    // timer armed here — mirroring the Dwell segment, we must not start the
+    // count until the tab is visible. On the first foreground the
+    // visibilitychange handler re-arms these from `intersecting`, so a
+    // background-loaded card still counts once actually seen.
+    function armTimer(itemId, target) {
+      if (seen.has(itemId) || timers.has(itemId)) return;
+      if (document.visibilityState !== "visible") return;
+      var timerId = setTimeout(function () {
+        timers.delete(itemId);
+        if (seen.has(itemId)) return;
+        // The observed card must still be in the live document after the full
+        // second. A refresh (pill / header / pull-to-refresh replaces
+        // #feed-list via refresh.js's replaceWith) or a Keep/Pass HTMX
+        // outerHTML swap can DETACH this card mid-countdown; its armed timer
+        // survives in `timers` and would otherwise enqueue an Impression for a
+        // card that did not stay continuously ≥50% visible for the second (and
+        // mark it seen, blocking the fresh card's genuine impression).
+        // isConnected is false once the node leaves the document, so a
+        // swapped-out card is correctly dropped and the replacement
+        // re-accumulates its own second via observeAll.
+        if (!target.isConnected) return;
+        seen.add(itemId);
+        enqueue({ type: "Impression", item_id: itemId });
+      }, IMPRESSION_DWELL_MS);
+      timers.set(itemId, timerId);
+    }
 
     var observer = new IntersectionObserver(
       function (entries) {
@@ -102,27 +138,10 @@
           // dwell timer there would log an Impression for a card that never
           // stayed half-visible, corrupting the ARG-207 training events.
           if (entry.isIntersecting && entry.intersectionRatio >= IMPRESSION_THRESHOLD) {
-            if (seen.has(itemId) || timers.has(itemId)) return;
-            var target = entry.target;
-            var timerId = setTimeout(function () {
-              timers.delete(itemId);
-              if (seen.has(itemId)) return;
-              // The observed card must still be in the live document after the
-              // full second. A refresh (pill / header / pull-to-refresh replaces
-              // #feed-list via refresh.js's replaceWith) or a Keep/Pass HTMX
-              // outerHTML swap can DETACH this card mid-countdown; its armed
-              // timer survives in `timers` and would otherwise enqueue an
-              // Impression for a card that did not stay continuously ≥50%
-              // visible for the second (and mark it seen, blocking the fresh
-              // card's genuine impression). isConnected is false once the node
-              // leaves the document, so a swapped-out card is correctly dropped
-              // and the replacement re-accumulates its own second via observeAll.
-              if (!target.isConnected) return;
-              seen.add(itemId);
-              enqueue({ type: "Impression", item_id: itemId });
-            }, IMPRESSION_DWELL_MS);
-            timers.set(itemId, timerId);
+            intersecting.set(itemId, entry.target);
+            armTimer(itemId, entry.target);
           } else {
+            intersecting.delete(itemId);
             var pending = timers.get(itemId);
             if (pending !== undefined) {
               clearTimeout(pending);
@@ -156,7 +175,18 @@
       timers.clear();
     }
     document.addEventListener("visibilitychange", function () {
-      if (document.visibilityState === "hidden") cancelPendingTimers();
+      if (document.visibilityState === "hidden") {
+        cancelPendingTimers();
+      } else {
+        // First foreground (or resume after a hide): arm a fresh 1s timer for
+        // every card still ≥50% visible. This is the ONLY path that starts the
+        // count for a card that was already on screen when the tab loaded
+        // hidden — armTimer bailed then, and the observer won't fire again for
+        // an unchanged intersection.
+        intersecting.forEach(function (node, itemId) {
+          armTimer(itemId, node);
+        });
+      }
     });
     window.addEventListener("pagehide", cancelPendingTimers);
 

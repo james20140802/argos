@@ -120,9 +120,13 @@ def test_impression_timers_cancelled_on_hide():
     # second (and marks it seen, blocking a later real impression).
     body = FEED_EVENTS_JS.read_text(encoding="utf-8")
     assert "cancelPendingTimers" in body
-    # Cleared from BOTH the visibility handler and pagehide.
     assert "timers.clear()" in body
-    assert 'visibilityState === "hidden") cancelPendingTimers()' in body
+    # Cleared from BOTH the impression visibility handler's hidden branch and
+    # pagehide.
+    imp = body.split("function initImpressions")[1]
+    handler = imp.split('addEventListener("visibilitychange"')[1]
+    assert 'visibilityState === "hidden"' in handler
+    assert "cancelPendingTimers()" in handler
     assert 'addEventListener("pagehide", cancelPendingTimers)' in body
 
 
@@ -135,12 +139,36 @@ def test_impression_timer_checks_target_still_connected():
     # continuously half-visible for the second (and marks it seen, blocking the
     # replacement card's genuine impression).
     body = FEED_EVENTS_JS.read_text(encoding="utf-8")
-    assert "var target = entry.target" in body
+    # The observed node is passed into armTimer and closed over as `target`.
+    assert "armTimer(itemId, entry.target)" in body
     assert "target.isConnected" in body
     # The connectivity guard lives inside the setTimeout callback (before the
     # enqueue), not merely somewhere in the file.
     cb = body.split("setTimeout(function ()")[1].split("IMPRESSION_DWELL_MS")[0]
     assert "if (!target.isConnected) return" in cb
+
+
+def test_impression_timer_gated_on_foreground_visibility():
+    # P2 fix (Codex review): /feed opened or restored in a BACKGROUND tab
+    # (middle-click / "open in new tab" / PWA prefetch) starts hidden, so the
+    # IntersectionObserver can arm the 1s impression timer with no initial
+    # visibilitychange to clear it — logging an Impression for a card the user
+    # never saw. The timer must not be armed while hidden, and must be armed on
+    # the first foreground for cards still on screen (mirroring the Dwell
+    # segment's visibility gate). Assert: (1) arming bails unless visible, and
+    # (2) the visibilitychange handler re-arms from the live intersecting set on
+    # the transition to visible.
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    imp = body.split("function initImpressions")[1]
+    # armTimer refuses to start the count unless the page is foreground.
+    assert 'document.visibilityState !== "visible"' in imp
+    # A live map of currently-intersecting nodes exists to re-arm on foreground.
+    assert "intersecting" in imp
+    # The else-branch of the impression visibility handler (became visible)
+    # re-arms timers from the intersecting set.
+    handler = imp.split('addEventListener("visibilitychange"')[1]
+    assert "intersecting.forEach" in handler
+    assert "armTimer" in handler
 
 
 def test_sw_message_listener_writes_shell_cache():
