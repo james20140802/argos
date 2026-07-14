@@ -516,11 +516,44 @@ def test_feed_hero_is_selected_by_id_not_position(monkeypatch):
     assert f'card--featured" id="feed-card-{first.id}"' not in body
 
 
-def test_feed_no_hero_when_select_hero_returns_none(monkeypatch):
-    page = FeedPage(items=[_item(title="Solo")], next_cursor=None)
+def test_feed_falls_back_to_natural_top_hero_when_nothing_scored(monkeypatch):
+    """When ``select_hero`` returns None — no item has a feed_score yet (fresh
+    DB / ranking pass not run, the common state on first deploy) — the feed
+    must STILL feature the natural top item. The magazine tiers in argos.css
+    are positional (``.card--featured`` = full-width lead, ``nth-child(2/3)`` =
+    2-up); a page with no featured card collapses into a heroless 2/3-column
+    grid, which is exactly the layout regression this guards against."""
+    top = _item(title="Natural Top")
+    second = _item(title="Second")
+    page = FeedPage(items=[top, second], next_cursor=None)
     client = _client_with_feed(monkeypatch, page, hero_id=None)
     body = client.get("/feed").text
-    assert "card--featured" not in body
+    assert body.count("card--featured") == 1
+    assert f'card--featured" id="feed-card-{top.id}"' in body
+    assert f'card--featured" id="feed-card-{second.id}"' not in body
+
+
+def test_feed_latest_sort_features_natural_top_not_the_scored_item(monkeypatch):
+    """Latest sort must stay chronological: even when ``select_hero`` names a
+    high-feed_score item that IS on the page but isn't the newest, the latest
+    feed must NOT pin it to the top (that would surface an old story above
+    newer ones — Codex review). The hero is the natural top item (the newest),
+    and no card is reordered."""
+    newest = _item(title="Newest Story")
+    old_but_scored = _item(title="Old But High Score")
+    page = FeedPage(items=[newest, old_but_scored], next_cursor=None)
+    # select_hero names the scored (second) item — under recommended it would
+    # be pinned to index 0, but latest must ignore it.
+    client = _client_with_feed(monkeypatch, page, hero_id=old_but_scored.id)
+    body = client.get("/feed?sort=latest").text
+
+    assert body.count("card--featured") == 1
+    assert f'card--featured" id="feed-card-{newest.id}"' in body
+    assert f'card--featured" id="feed-card-{old_but_scored.id}"' not in body
+    # Order untouched: newest still precedes the scored item in the DOM.
+    assert body.index(f'id="feed-card-{newest.id}"') < body.index(
+        f'id="feed-card-{old_but_scored.id}"'
+    )
 
 
 def test_feed_items_fragment_never_has_hero_even_with_hero_id(monkeypatch):

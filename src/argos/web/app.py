@@ -413,33 +413,35 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         latest_cursor = ""
         if first_page:
             latest_cursor = await latest_feed_cursor(session, category=normalized) or ""
-        # Featured hero (ARG-213): the highest-feed_score item within the
-        # last 48h (or the global highest-feed_score fallback), keyed by id —
-        # not position. Only computed for the genuine first page; the HTMX
-        # "더 보기" fragment (GET /feed/items) always renders with
-        # first_page=False so a second hero never appears mid-scroll.
-        hero_id = await select_hero(session, category=normalized) if first_page else None
-        # Review fix (ARG-213): the hero was selected by id but never
-        # actually moved to the front of the page — so the full-width hero
-        # markup and the positional tier-2 CSS could land mid-grid, and
-        # ``_reorder_diverse`` (applied inside ``fetch_feed`` over the whole
-        # recommended page) was free to shuffle it away from the front.
-        # ``pin_hero`` moves it to index 0 and only re-diversifies the
-        # remainder (removing the hero can re-introduce an adjacency it used
-        # to break up). If the hero isn't actually on this page (e.g. a
-        # highly-scored-but-old item under "latest"), fall back to featuring
-        # the natural top item rather than rendering a hero mid-grid.
+        # Featured hero (ARG-213), first page only — the HTMX "더 보기" fragment
+        # (GET /feed/items) always renders first_page=False so a second hero
+        # never appears mid-scroll. The magazine layout ALWAYS needs a hero:
+        # ``argos.css``'s tiers are positional (``.card--featured`` = full-width
+        # lead, ``nth-child(2)``/``(3)`` = 2-up), so a page with no featured
+        # card collapses into a heroless 2/3-column grid. Pre-ARG-213 the first
+        # card was unconditionally the hero; we keep that guarantee below.
         items = page.items
-        if first_page and items and hero_id is not None:
-            pinned = pin_hero(
-                items, hero_id, diversify=(normalized_sort == "recommended")
-            )
-            if pinned is not None:
-                items = pinned
-            else:
-                # select_hero named a real item, but it isn't on this page
-                # (e.g. a highly-scored-but-old item under "latest") — feature
-                # the natural top item instead of rendering no hero at all.
+        hero_id: Optional[uuid.UUID] = None
+        if first_page and items:
+            if normalized_sort == "recommended":
+                # Recommended: promote the highest-feed_score item (within 48h,
+                # else global) to the full-width lead and re-diversify the rest.
+                # ``pin_hero`` returns None when that item isn't on page 1, and
+                # ``select_hero`` returns None when NOTHING is scored yet (fresh
+                # DB / ranking pass not run) — both fall through to the natural
+                # top item so the layout never loses its hero.
+                selected = await select_hero(session, category=normalized)
+                if selected is not None:
+                    pinned = pin_hero(items, selected, diversify=True)
+                    if pinned is not None:
+                        items = pinned
+                        hero_id = selected
+            # Latest sort never reorders (its whole point is strict time order,
+            # so pinning a high-score-but-old item to the top would break
+            # chronology — Codex review), and any unpinned recommended page
+            # falls here too: feature the natural top item, which under "latest"
+            # is the genuinely newest story.
+            if hero_id is None:
                 hero_id = items[0].id
         return request.app.state.templates.TemplateResponse(
             request,

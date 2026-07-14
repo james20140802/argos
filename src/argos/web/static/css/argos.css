@@ -543,14 +543,16 @@ body {
   color: var(--muted); text-align: center; padding: 48px 0;
 }
 
-/* Featured hero — the item ``select_hero`` chose (highest feed_score within
-   the last 48h, or the highest overall as a fallback; falls back further to
-   the natural top item when the named hero isn't on this page), first page
-   only. ``app.py``'s ``pin_hero`` guarantees it always leads the grid at
-   index 0 — diversity reordering is only ever applied to the remainder, so
-   it can never displace the hero. A cinematic wide cover and an outsized
-   serif headline establish the masthead hierarchy the references (Apple
-   Newsroom / NYT) lead with. */
+/* Featured hero — first page only. Under the recommended sort it's the item
+   ``select_hero`` chose (highest feed_score within 48h, else highest overall),
+   pinned to index 0 by ``app.py``'s ``pin_hero`` (diversity reordering only
+   ever touches the remainder, so it can't displace the hero). It falls back to
+   the natural top item whenever no scored hero is pinned — the latest sort
+   (never reordered; the top item is the newest story) and the recommended sort
+   before any feed_score exists — so this full-width lead is ALWAYS present and
+   the positional tier CSS below never collapses into a heroless grid. A
+   cinematic wide cover and an outsized serif headline establish the masthead
+   hierarchy the references (Apple Newsroom / NYT) lead with. */
 .card--featured {
   padding-bottom: 14px;
   border-bottom: 1px solid var(--hairline);
