@@ -156,8 +156,13 @@
     // first hide would drop every second of resumed reading. Each segment is
     // flushed as its own additive Dwell event — feed_events rows are summed
     // per item downstream — so leaving and returning is counted in full.
-    var segmentStart = Date.now();
-    var segmentOpen = true;
+    // If the detail page loads in a background tab (opened via middle-click /
+    // "open in new tab", or a PWA prefetch) its visibilityState is already
+    // "hidden" — nobody is reading it yet. Start the segment CLOSED in that
+    // case so background time isn't logged as Dwell; the visibilitychange
+    // handler below opens a fresh segment on the first transition to "visible".
+    var segmentOpen = document.visibilityState === "visible";
+    var segmentStart = segmentOpen ? Date.now() : 0;
 
     function flushSegment() {
       if (!segmentOpen) return; // this segment was already flushed

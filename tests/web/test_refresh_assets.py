@@ -5,6 +5,7 @@ import argos.web
 PKG = Path(argos.web.__file__).parent
 SW = PKG / "assets" / "sw.js"
 REFRESH_JS = PKG / "static" / "js" / "refresh.js"
+FEED_EVENTS_JS = PKG / "static" / "js" / "feed-events.js"
 BASE = PKG / "templates" / "base.html"
 FEED = PKG / "templates" / "feed.html"
 PORTFOLIO = PKG / "templates" / "portfolio.html"
@@ -96,8 +97,20 @@ def test_refresh_reprocesses_swapped_list_for_htmx():
 def test_sw_precaches_refresh_js_and_bumps_version():
     body = SW.read_text(encoding="utf-8")
     assert "/static/js/refresh.js" in body
-    assert "argos-v16" in body               # bumped to v16 (ARG-205/208/209 timeline + handoff CSS/JS)
+    assert "argos-v17" in body               # bumped to v17 (ARG-201/213 feed ranking: argos.css + refresh.js changed)
     assert "argos-shell-refresh" in body     # message 리스너
+
+
+def test_dwell_segment_gated_on_initial_visibility():
+    # P2 fix (Codex review): a detail page opened in a background tab
+    # (middle-click / "open in new tab" / PWA prefetch) starts hidden. The
+    # dwell segment must NOT open until the page is first visible, else
+    # background time gets logged as Dwell. Assert the initial segment state
+    # is derived from visibilityState rather than hard-coded open.
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    assert 'segmentOpen = document.visibilityState === "visible"' in body
+    # And a resume path re-opens a fresh segment on the first visible transition.
+    assert '"visible" && !segmentOpen' in body
 
 
 def test_sw_message_listener_writes_shell_cache():

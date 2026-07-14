@@ -41,8 +41,14 @@
  *     new portfolio-timeline.js, ARG-205/208/209). Bumped so v15 clients pick
  *     up the new .timeline / .handoff-banner CSS (otherwise the accordion and
  *     banner render unstyled) and precache the accordion's driving script.
+ * v17: recommendation feed ranking (argos.css + refresh.js, ARG-201/213).
+ *     Both are precached and served cache-first, so v16 clients would keep the
+ *     old copies: refresh.js now dispatches argos:refreshed (without which the
+ *     impression observer never re-attaches to refreshed cards) and argos.css
+ *     wraps long similar-signal titles on mobile. Bumped so those reach
+ *     already-installed clients.
  */
-const CACHE_VERSION = 'argos-v16';
+const CACHE_VERSION = 'argos-v17';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
