@@ -1170,6 +1170,10 @@ body {
   color: var(--ink); text-decoration: none;
   border-bottom: 1px solid transparent;
   transition: border-color 0.15s;
+  /* Titles can carry a long unbroken token (an embedded URL, a slug) that
+     would otherwise run past the rounded entry box on a narrow mobile
+     viewport — same reason the feed card titles wrap. */
+  overflow-wrap: anywhere;
 }
 .signals-similar__link:hover { border-bottom-color: var(--main); }
 
