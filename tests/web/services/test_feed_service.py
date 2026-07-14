@@ -21,6 +21,7 @@ from argos.web.services.feed import (
     select_hero,
     FeedItem,
     PAGE_SIZE,
+    _domain_of,
     _reorder_diverse,
 )
 from tests.conftest import db_reachable as _db_reachable
@@ -418,7 +419,42 @@ async def test_fetch_feed_rejects_cross_sort_cursor_latest_into_recommended() ->
         await fetch_feed(None, cursor=bad, sort="recommended")
 
 
-# ---- _reorder_diverse: pure function, no DB ---- #
+# ---- _domain_of / _reorder_diverse: pure functions, no DB ---- #
+
+
+def test_domain_of_normalizes_www_and_case():
+    # P2 fix (Codex review): the diversity bucket key must collapse host
+    # variants of the same publisher so ARG-213's same-domain-not-consecutive
+    # constraint isn't defeated by www./case differences.
+    assert _domain_of("https://www.example.com/a") == "example.com"
+    assert _domain_of("https://example.com/b") == "example.com"
+    assert _domain_of("https://Example.COM/c") == "example.com"
+    assert _domain_of("https://WWW.Example.com/d") == "example.com"
+    assert _domain_of(None) == ""
+    assert _domain_of("") == ""
+
+
+def test_reorder_diverse_treats_www_and_bare_host_as_same_domain():
+    # Same publisher via www./bare/case variants must land in one bucket, so
+    # the three cannot render consecutively against a differing domain between.
+    class _Item:
+        def __init__(self, u):
+            self.source_url = u
+
+    items = [
+        _Item("https://www.example.com/1"),
+        _Item("https://example.com/2"),
+        _Item("https://Example.com/3"),
+        _Item("https://other.com/1"),
+    ]
+    out = _reorder_diverse(items)
+    domains = [_domain_of(i.source_url) for i in out]
+    assert len(out) == 4
+    # example.com appears 3x, other.com 1x — 3 > half of 4, so one adjacency is
+    # unavoidable, but the single other.com card must sit between two of them,
+    # i.e. it is NOT stranded at an end (which a raw-netloc key would allow).
+    assert domains.count("example.com") == 3 and domains.count("other.com") == 1
+    assert domains[1] == "other.com" or domains[2] == "other.com"
 
 
 def test_reorder_diverse_breaks_runs():

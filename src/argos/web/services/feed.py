@@ -156,18 +156,27 @@ def decode_score_cursor(
 # ------------------------------------------------------------------ #
 
 def _domain_of(url: Optional[str]) -> str:
-    """Pure netloc extraction, '' when unparseable/missing.
+    """Normalized host, '' when unparseable/missing.
 
     A separate copy from ``argos.web.app``'s render-time ``_domain_of``
     filter (that one is a closure local to ``build_web_app``) so this service
     has no dependency on the app module.
+
+    The host is lowercased and a leading ``www.`` is stripped so the value is
+    a stable bucket key for ``_reorder_diverse`` (ARG-213). Without this,
+    ``www.example.com`` / ``example.com`` / ``Example.com`` become distinct
+    keys, so cards from the same publisher can still render consecutively
+    while the same-domain constraint believes it's satisfied.
     """
     if not url:
         return ""
     try:
-        return urlsplit(url).netloc
+        host = urlsplit(url).netloc.lower()
     except ValueError:
         return ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host
 
 
 def _reorder_diverse(items: list, *, avoid_domain: Optional[str] = None) -> list:
