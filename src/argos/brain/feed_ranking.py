@@ -26,7 +26,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import numpy as np
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.config import settings
@@ -80,8 +80,8 @@ def compute_profile_vector(
     dim = len(keep_embeds_with_ts[0][0])
     weighted_sum = [0.0] * dim
     weight_total = 0.0
-    for embed, created_at in keep_embeds_with_ts:
-        age_hours = (now - created_at).total_seconds() / 3600.0
+    for embed, kept_at in keep_embeds_with_ts:
+        age_hours = (now - kept_at).total_seconds() / 3600.0
         weight = recency_decay(age_hours, half_life_hours)
         weight_total += weight
         for i, value in enumerate(embed):
@@ -126,9 +126,16 @@ async def recompute_feed_scores(session: AsyncSession) -> int:
     cfg = settings.user.feed_ranking
     now = datetime.now(timezone.utc)
 
+    # Weight each Keep by *when the user Kept it*, not when the item was
+    # crawled. transition_asset stamps UserAsset.last_monitored_at with the
+    # interaction time, so a months-old item Kept today is a fresh signal;
+    # using TechItem.created_at would decay it to ~0 under the recency
+    # half-life and under-rank its similar recommendations. Fall back to the
+    # crawl time when last_monitored_at is somehow NULL (nullable column).
+    keep_ts = func.coalesce(UserAsset.last_monitored_at, TechItem.created_at)
     keep_rows = (
         await session.execute(
-            select(TechItem.embedding, TechItem.created_at)
+            select(TechItem.embedding, keep_ts)
             .join(UserAsset, UserAsset.tech_id == TechItem.id)
             .where(UserAsset.status == AssetStatus.KEEP)
             .where(TechItem.embedding.is_not(None))
@@ -143,7 +150,7 @@ async def recompute_feed_scores(session: AsyncSession) -> int:
         )
     ).all()
 
-    keep = [(list(emb), created_at) for emb, created_at in keep_rows if emb is not None]
+    keep = [(list(emb), kept_at) for emb, kept_at in keep_rows if emb is not None]
     passv = [list(emb) for (emb,) in pass_rows if emb is not None]
 
     profile = compute_profile_vector(

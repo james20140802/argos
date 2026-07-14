@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
@@ -185,6 +185,90 @@ async def test_recompute_feed_scores_rewards_profile_similarity(embeddings):
             assert b_after.feed_score is not None
             assert c_after.feed_score is not None
             assert b_after.feed_score > c_after.feed_score
+        finally:
+            await session.rollback()
+
+
+async def _set_created_at(session, item, when) -> None:
+    await session.execute(
+        text("UPDATE tech_items SET created_at = :ts WHERE id = :id"),
+        {"ts": when, "id": str(item.id)},
+    )
+
+
+async def _keep_at(session, tech_item, last_monitored_at) -> None:
+    session.add(
+        UserAsset(
+            tech_id=tech_item.id,
+            status=AssetStatus.KEEP,
+            last_monitored_at=last_monitored_at,
+        )
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_recompute_weights_keep_by_interaction_time_not_crawl_time():
+    """P2 regression (Codex review): the Keep signal must decay from *when the
+    user Kept it* (UserAsset.last_monitored_at), not the item's crawl time
+    (TechItem.created_at).
+
+    Two Keeps pull the profile in orthogonal directions X and Y. Keep-X was
+    crawled recently; Keep-Y was crawled a year ago but Kept *today*. Under the
+    ~48h half-life, weighting Y by its ancient created_at decays it to ~0, so
+    the profile collapses onto X alone and a Y-similar candidate gets no boost.
+    Weighting by last_monitored_at keeps Y live (profile ≈ (X+Y)/2), so the
+    Y-similar candidate's profile cosine jumps from ~0 to ~0.707.
+
+    Both candidates share trust/corroboration/recency, so the only score
+    differentiator is the profile term (weight_profile). We assert a margin
+    that only the live-Y profile contribution can clear: without the fix the
+    two scores are ~equal (Δ≈0) and the margin assertion fails."""
+    from argos.brain.feed_ranking import recompute_feed_scores
+
+    cfg = settings.user.feed_ranking
+    # With the fix, Δfeed_score ≈ weight_profile * 0.707; pick a margin well
+    # below that but far above the fixless Δ≈0 (float noise only).
+    margin = 0.4 * cfg.weight_profile
+
+    rng = np.random.default_rng(29)
+    x = _unit(rng.standard_normal(768))
+    y0 = rng.standard_normal(768)
+    y = _unit(y0 - np.dot(y0, x) * x)  # orthogonal to x
+    cand_y = _make_emb(y + rng.standard_normal(768) * 0.02)  # ~similar to y
+    z0 = rng.standard_normal(768)
+    z = z0 - np.dot(z0, x) * x
+    z = _make_emb(z - np.dot(z, y) * y)  # orthogonal to both x and y
+
+    now = datetime.now(timezone.utc)
+    async with _session_ctx() as session:
+        try:
+            keep_x = await _add_item(session, "Keep-X", _uniq("kx.com"), _make_emb(x))
+            await _keep_at(session, keep_x, now)
+
+            keep_y = await _add_item(session, "Keep-Y-old", _uniq("ky.com"), _make_emb(y))
+            await _set_created_at(session, keep_y, now - timedelta(days=365))
+            await _keep_at(session, keep_y, now)  # Kept today despite old crawl
+
+            cand = await _add_item(
+                session, "Cand-Y", _uniq("cy.com"), cand_y,
+                trust_score=0.4, corroboration_count=2,
+            )
+            other = await _add_item(
+                session, "Cand-Z", _uniq("cz.com"), z,
+                trust_score=0.4, corroboration_count=2,
+            )
+
+            await recompute_feed_scores(session)
+
+            cand_after = await _get_item(session, cand.id)
+            other_after = await _get_item(session, other.id)
+            assert cand_after.feed_score is not None
+            assert other_after.feed_score is not None
+            # Y stays in the profile only if weighted by interaction time; the
+            # margin is unreachable when Y decays away under the old crawl-time
+            # weighting.
+            assert cand_after.feed_score > other_after.feed_score + margin
         finally:
             await session.rollback()
 
