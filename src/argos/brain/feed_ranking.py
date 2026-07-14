@@ -111,13 +111,42 @@ def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom)
 
 
+def profile_recency_confidence(
+    keep_embeds_with_ts: list[tuple[list[float], datetime]],
+    *,
+    now: datetime,
+    half_life_hours: float,
+) -> float:
+    """Mean recency-decay weight across the Keep signals, in ``[0, 1]``.
+
+    ``compute_profile_vector`` normalizes the decayed sum by ``weight_total``,
+    which cancels the *absolute* half-life effect: a profile built from a single
+    stale Keep (or from Keeps that are all similarly old) yields the same unit
+    direction as a fresh one, and ``_cosine_sim`` ignores magnitude — so an
+    old-only preference would steer recommendations as strongly as a fresh one.
+    Scaling the profile term by this confidence (``avg(recency_decay)``) restores
+    absolute fade: all-fresh Keeps → ~1.0 (unchanged), all-6-month-old Keeps →
+    ~0.0 (the profile term vanishes and scoring falls back to recency/trust/
+    trending). Returns 0.0 when there are no Keeps.
+    """
+    if not keep_embeds_with_ts:
+        return 0.0
+    total = 0.0
+    for _embed, kept_at in keep_embeds_with_ts:
+        age_hours = (now - kept_at).total_seconds() / 3600.0
+        total += recency_decay(age_hours, half_life_hours)
+    return total / len(keep_embeds_with_ts)
+
+
 async def recompute_feed_scores(session: AsyncSession) -> int:
     """Recompute ``feed_score`` for every tech_item.
 
     Builds the user-profile vector from current Keep/Pass(=Archived) asset
     embeddings, then scores every row as the config-weighted sum of recency
     decay, profile cosine similarity, trust, and trending, plus a small
-    interest-topic bonus.
+    interest-topic bonus. The profile term is scaled by
+    ``profile_recency_confidence`` (mean Keep decay) so an all-stale Keep set
+    fades absolutely instead of only shifting relative weights among Keeps.
 
     Does not commit; the caller (``argos run`` end hook) commits.
 
@@ -161,6 +190,13 @@ async def recompute_feed_scores(session: AsyncSession) -> int:
         pass_weight=cfg.pass_weight,
     )
     profile_arr = np.array(profile, dtype=np.float32) if profile is not None else None
+    # Absolute half-life fade for the profile term: the profile *direction* is a
+    # normalized mean (magnitude-free for cosine), so without this an all-stale
+    # Keep set would boost matches as strongly as a fresh one. Scale the profile
+    # similarity by the mean Keep decay so stale-only preferences actually fade.
+    profile_confidence = profile_recency_confidence(
+        keep, now=now, half_life_hours=cfg.recency_half_life_hours
+    )
 
     topics = [t.lower() for t in settings.user.interests.topics if t]
 
@@ -199,7 +235,7 @@ async def recompute_feed_scores(session: AsyncSession) -> int:
         profile_sim = 0.0
         if profile_arr is not None and embedding is not None:
             item_vec = np.array(embedding, dtype=np.float32)
-            profile_sim = _cosine_sim(item_vec, profile_arr)
+            profile_sim = _cosine_sim(item_vec, profile_arr) * profile_confidence
 
         trust = float(trust_score or 0.0)
         trending = trending_score(corroboration_count)

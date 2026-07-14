@@ -60,6 +60,28 @@ def test_profile_vector_keep_minus_pass():
     assert vec[0] > 0 and vec[1] < 0  # keep 방향 +, pass 방향 −
 
 
+def test_profile_recency_confidence_fades_stale_keeps():
+    from argos.brain.feed_ranking import profile_recency_confidence
+
+    now = datetime.now(timezone.utc)
+    hl = 48.0
+    # No keeps → 0.0 (profile term contributes nothing).
+    assert profile_recency_confidence([], now=now, half_life_hours=hl) == 0.0
+    # A single fresh Keep → ~1.0 (unchanged behavior).
+    fresh = profile_recency_confidence([([1.0], now)], now=now, half_life_hours=hl)
+    assert fresh > 0.99
+    # A single 6-month-old Keep → ~0.0: the profile term must vanish absolutely,
+    # not just re-weight relative to other Keeps.
+    old_ts = now - timedelta(days=182)
+    stale = profile_recency_confidence([([1.0], old_ts)], now=now, half_life_hours=hl)
+    assert stale < 0.01
+    # Mixed fresh + stale → strictly between the two.
+    mixed = profile_recency_confidence(
+        [([1.0], now), ([1.0], old_ts)], now=now, half_life_hours=hl
+    )
+    assert stale < mixed < fresh
+
+
 # ---------------------------------------------------------------------------
 # recompute_feed_scores — DB-backed batch tests (self-skip if DB unreachable)
 # ---------------------------------------------------------------------------
@@ -269,6 +291,55 @@ async def test_recompute_weights_keep_by_interaction_time_not_crawl_time():
             # margin is unreachable when Y decays away under the old crawl-time
             # weighting.
             assert cand_after.feed_score > other_after.feed_score + margin
+        finally:
+            await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_recompute_stale_only_profile_fades_absolutely(embeddings):
+    """P2 regression (Codex review): a profile built from an all-stale Keep set
+    must fade *absolutely* — the mean-normalized profile direction is magnitude-
+    free, so without the profile_recency_confidence scaling a six-month-old sole
+    Keep would boost matches as strongly as a fresh one.
+
+    One Keep, Kept 6 months ago. A base-aligned candidate and an orthogonal one
+    share trust/corroboration/recency. With the confidence scaling the profile
+    term ~vanishes, so the two land within a tight band; without it the aligned
+    candidate would win by ≈weight_profile·cos (~0.34). Assert the gap stays
+    small — an assertion the unscaled profile term cannot satisfy."""
+    base_emb, similar_emb, ortho_emb = embeddings
+    from argos.brain.feed_ranking import recompute_feed_scores
+
+    now = datetime.now(timezone.utc)
+    cfg = settings.user.feed_ranking
+    # Unscaled gap would be ≈weight_profile*cos(similar,base) (~0.34); the scaled
+    # gap is ≈that * confidence(6mo) ≈ 0. Pick a band well below the unscaled gap.
+    band = 0.25 * cfg.weight_profile
+
+    async with _session_ctx() as session:
+        try:
+            kept = await _add_item(session, "Kept-old", _uniq("old.com"), base_emb)
+            # Kept 6 months ago and untouched since → stale interaction time.
+            await _keep_at(session, kept, now - timedelta(days=182))
+
+            aligned = await _add_item(
+                session, "Aligned", _uniq("al.com"), similar_emb,
+                trust_score=0.4, corroboration_count=2,
+            )
+            ortho = await _add_item(
+                session, "Ortho", _uniq("or.com"), ortho_emb,
+                trust_score=0.4, corroboration_count=2,
+            )
+
+            await recompute_feed_scores(session)
+
+            a_after = await _get_item(session, aligned.id)
+            o_after = await _get_item(session, ortho.id)
+            assert a_after.feed_score is not None
+            assert o_after.feed_score is not None
+            # Stale-only profile: aligned must NOT out-boost orthogonal — the
+            # faded profile term keeps them within a tight band.
+            assert abs(a_after.feed_score - o_after.feed_score) < band
         finally:
             await session.rollback()
 
