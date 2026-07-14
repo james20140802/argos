@@ -150,14 +150,20 @@
     var itemId = article.getAttribute("data-item-id");
     if (!itemId) return;
 
-    var enteredAt = Date.now();
-    var sent = false;
+    // Dwell is measured per *visible segment*, not once for the whole page
+    // lifetime. A detail page can be hidden (tab switch, phone lock, PWA
+    // backgrounded) and later resumed; latching a single one-shot flag on the
+    // first hide would drop every second of resumed reading. Each segment is
+    // flushed as its own additive Dwell event — feed_events rows are summed
+    // per item downstream — so leaving and returning is counted in full.
+    var segmentStart = Date.now();
+    var segmentOpen = true;
 
-    function sendDwell() {
-      if (sent) return;
-      var seconds = (Date.now() - enteredAt) / 1000;
+    function flushSegment() {
+      if (!segmentOpen) return; // this segment was already flushed
+      segmentOpen = false;
+      var seconds = (Date.now() - segmentStart) / 1000;
       if (seconds <= 0) return;
-      sent = true;
 
       var payload = JSON.stringify({
         events: [{ type: "Dwell", item_id: itemId, value: seconds }],
@@ -179,9 +185,19 @@
     }
 
     document.addEventListener("visibilitychange", function () {
-      if (document.visibilityState === "hidden") sendDwell();
+      if (document.visibilityState === "hidden") {
+        flushSegment();
+      } else if (document.visibilityState === "visible" && !segmentOpen) {
+        // Resumed after a hide — open a fresh segment so the additional
+        // visible time is measured and reported on the next flush.
+        segmentStart = Date.now();
+        segmentOpen = true;
+      }
     });
-    window.addEventListener("pagehide", sendDwell);
+    // Final segment on unload. Idempotent with the visibilitychange flush:
+    // when a tab close fires hidden→pagehide, the segment is already closed,
+    // so this is a no-op and never double-counts.
+    window.addEventListener("pagehide", flushSegment);
   }
 
   initImpressions();
