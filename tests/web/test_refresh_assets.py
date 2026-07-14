@@ -113,6 +113,19 @@ def test_dwell_segment_gated_on_initial_visibility():
     assert '"visible" && !segmentOpen' in body
 
 
+def test_impression_timers_cancelled_on_hide():
+    # P2 fix (Codex review): an armed 1s impression timer must be cleared when
+    # the tab is backgrounded, else it fires while hidden / on resume and logs
+    # an Impression for a card that wasn't continuously half-visible for a
+    # second (and marks it seen, blocking a later real impression).
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    assert "cancelPendingTimers" in body
+    # Cleared from BOTH the visibility handler and pagehide.
+    assert "timers.clear()" in body
+    assert 'visibilityState === "hidden") cancelPendingTimers()' in body
+    assert 'addEventListener("pagehide", cancelPendingTimers)' in body
+
+
 def test_sw_message_listener_writes_shell_cache():
     body = SW.read_text(encoding="utf-8")
     assert "addEventListener('message'" in body or 'addEventListener("message"' in body

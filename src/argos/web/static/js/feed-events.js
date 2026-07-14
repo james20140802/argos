@@ -128,6 +128,26 @@
       });
     }
 
+    // Cancel any armed impression timers when the tab is backgrounded. A card
+    // can cross the 50% threshold, arm its 1s timer, then have the tab hidden
+    // before the second elapses — and IntersectionObserver does NOT reliably
+    // emit a below-threshold entry just because the document went hidden, so
+    // the timer would otherwise fire while hidden (or on resume) and log an
+    // Impression for a card that was never continuously half-visible for a
+    // second. Worse, it marks the item seen, blocking a later genuine
+    // impression. Clearing the pending timers (without marking seen) means the
+    // card must re-accumulate a full foreground second to count.
+    function cancelPendingTimers() {
+      timers.forEach(function (timerId) {
+        clearTimeout(timerId);
+      });
+      timers.clear();
+    }
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden") cancelPendingTimers();
+    });
+    window.addEventListener("pagehide", cancelPendingTimers);
+
     observeAll();
 
     // Keep/Pass (hx-swap="outerHTML") and load-more go through HTMX's own swap
