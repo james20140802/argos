@@ -88,6 +88,12 @@
     if (typeof IntersectionObserver === "undefined") return;
 
     var seen = new Set();
+    // itemId -> { timerId, target }. The observed node is stored alongside its
+    // pending timer so a card REPLACED mid-countdown (a Keep/Pass HTMX swap or a
+    // refresh) can be detected and its now-stale timer re-armed against the live
+    // replacement node — see armTimer. Keying on itemId alone (without the node)
+    // let a replacement bail on `timers.has(itemId)` while the old node's timer
+    // self-cancelled via isConnected, so the still-visible item never recorded.
     var timers = new Map();
     // itemId -> node for every card currently ≥50% intersecting. Kept live so
     // that when the tab is first foregrounded we can arm timers for cards that
@@ -104,7 +110,22 @@
     // visibilitychange handler re-arms these from `intersecting`, so a
     // background-loaded card still counts once actually seen.
     function armTimer(itemId, target) {
-      if (seen.has(itemId) || timers.has(itemId)) return;
+      if (seen.has(itemId)) return;
+      var existing = timers.get(itemId);
+      if (existing !== undefined) {
+        // A timer is already counting this item. Leave it if it belongs to the
+        // same node (a re-observe or a foreground re-arm), or to a different
+        // node that is still connected (the same card genuinely still on
+        // screen). But if its node has been DETACHED — a Keep/Pass HTMX swap or
+        // a refresh replaced the card during the 1s window — that pending timer
+        // will self-cancel via its isConnected guard and never record. Drop it
+        // and fall through to re-arm against the live replacement, so a
+        // still-visible item still earns its Impression without the user having
+        // to scroll it out of the viewport and back in.
+        if (existing.target === target || existing.target.isConnected) return;
+        clearTimeout(existing.timerId);
+        timers.delete(itemId);
+      }
       if (document.visibilityState !== "visible") return;
       var timerId = setTimeout(function () {
         timers.delete(itemId);
@@ -123,7 +144,7 @@
         seen.add(itemId);
         enqueue({ type: "Impression", item_id: itemId });
       }, IMPRESSION_DWELL_MS);
-      timers.set(itemId, timerId);
+      timers.set(itemId, { timerId: timerId, target: target });
     }
 
     var observer = new IntersectionObserver(
@@ -144,7 +165,7 @@
             intersecting.delete(itemId);
             var pending = timers.get(itemId);
             if (pending !== undefined) {
-              clearTimeout(pending);
+              clearTimeout(pending.timerId);
               timers.delete(itemId);
             }
           }
@@ -169,8 +190,8 @@
     // impression. Clearing the pending timers (without marking seen) means the
     // card must re-accumulate a full foreground second to count.
     function cancelPendingTimers() {
-      timers.forEach(function (timerId) {
-        clearTimeout(timerId);
+      timers.forEach(function (entry) {
+        clearTimeout(entry.timerId);
       });
       timers.clear();
     }

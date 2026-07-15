@@ -148,6 +148,27 @@ def test_impression_timer_checks_target_still_connected():
     assert "if (!target.isConnected) return" in cb
 
 
+def test_impression_timer_rearms_replacement_after_stale_node():
+    # P2 fix (Codex review): when a Keep/Pass HTMX swap or refresh replaces a
+    # card during the 1s impression window and the same item stays visible, the
+    # replacement's observer callback must not bail on an occupied timer slot
+    # whose node has been detached — that stale timer self-cancels via
+    # isConnected and the still-visible item never records. armTimer must store
+    # the node alongside the timer and, when the existing timer's node is no
+    # longer connected, clear it and re-arm against the live replacement.
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    imp = body.split("function initImpressions")[1]
+    arm = imp.split("function armTimer")[1].split("var observer")[0]
+    # The timer is stored with its node so a replacement can be detected.
+    assert "timers.set(itemId, { timerId: timerId, target: target })" in arm
+    # Same node or a still-connected node → leave the pending timer alone.
+    assert "existing.target === target || existing.target.isConnected" in arm
+    # A detached (stale) node's timer is cleared so arming falls through.
+    assert "clearTimeout(existing.timerId)" in arm
+    # The blanket `timers.has(itemId)` early-return is gone (it blocked re-arm).
+    assert "timers.has(itemId)" not in arm
+
+
 def test_impression_timer_gated_on_foreground_visibility():
     # P2 fix (Codex review): /feed opened or restored in a BACKGROUND tab
     # (middle-click / "open in new tab" / PWA prefetch) starts hidden, so the
