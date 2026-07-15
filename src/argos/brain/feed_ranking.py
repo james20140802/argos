@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.config import settings
 from argos.models.tech_item import TechItem
+from argos.models.track_history import TrackHistory
 from argos.models.user_asset import AssetStatus, UserAsset
 
 
@@ -170,12 +171,27 @@ async def recompute_feed_scores(session: AsyncSession) -> int:
     now = datetime.now(timezone.utc)
 
     # Weight each Keep by *when the user Kept it*, not when the item was
-    # crawled. transition_asset stamps UserAsset.last_monitored_at with the
-    # interaction time, so a months-old item Kept today is a fresh signal;
-    # using TechItem.created_at would decay it to ~0 under the recency
-    # half-life and under-rank its similar recommendations. Fall back to the
-    # crawl time when last_monitored_at is somehow NULL (nullable column).
-    keep_ts = func.coalesce(UserAsset.last_monitored_at, TechItem.created_at)
+    # crawled: a months-old item Kept today is a fresh signal, and using
+    # TechItem.created_at would decay it to ~0 under the recency half-life and
+    # under-rank its similar recommendations.
+    #
+    # The interaction time is the latest Keep-transition logged to
+    # track_history (transition_asset writes changed_to == "Keep"), falling
+    # back to UserAsset.created_at — a fresh item Kept directly into Keep state
+    # logs no transition row, so its creation time IS the Keep time — and
+    # finally to the crawl time. Deliberately NOT UserAsset.last_monitored_at:
+    # post_signal_update (slack/services/track_check.py) bumps that column to
+    # now() on every automated signal-match Slack alert with *no user action*,
+    # which would falsely refresh the recency of a long-abandoned Keep and
+    # defeat profile_recency_confidence's absolute fade (ARG-201).
+    keep_kept_at = (
+        select(func.max(TrackHistory.changed_at))
+        .where(TrackHistory.user_asset_id == UserAsset.id)
+        .where(TrackHistory.changed_to == AssetStatus.KEEP.value)
+        .correlate(UserAsset)
+        .scalar_subquery()
+    )
+    keep_ts = func.coalesce(keep_kept_at, UserAsset.created_at, TechItem.created_at)
     keep_rows = (
         await session.execute(
             select(TechItem.embedding, keep_ts)

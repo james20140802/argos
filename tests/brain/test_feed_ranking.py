@@ -233,29 +233,38 @@ async def _set_created_at(session, item, when) -> None:
     )
 
 
-async def _keep_at(session, tech_item, last_monitored_at) -> None:
-    session.add(
-        UserAsset(
-            tech_id=tech_item.id,
-            status=AssetStatus.KEEP,
-            last_monitored_at=last_monitored_at,
-        )
-    )
+async def _keep_at(session, tech_item, kept_at) -> None:
+    """Create a Keep asset whose *interaction time* (when the user Kept it) is
+    ``kept_at``.
+
+    The ranker sources Keep recency from the latest track_history Keep-transition,
+    falling back to ``UserAsset.created_at`` — deliberately NOT
+    ``last_monitored_at``, which an unrelated signal-match notifier also bumps
+    (ARG-201). A fresh item Kept directly into Keep state logs no transition row,
+    so its creation time IS the Keep time; we stamp ``created_at`` to model that
+    common path.
+    """
+    asset = UserAsset(tech_id=tech_item.id, status=AssetStatus.KEEP)
+    session.add(asset)
     await session.flush()
+    await session.execute(
+        text("UPDATE user_assets SET created_at = :ts WHERE id = :id"),
+        {"ts": kept_at, "id": str(asset.id)},
+    )
 
 
 @pytest.mark.asyncio
 async def test_recompute_weights_keep_by_interaction_time_not_crawl_time():
     """P2 regression (Codex review): the Keep signal must decay from *when the
-    user Kept it* (UserAsset.last_monitored_at), not the item's crawl time
-    (TechItem.created_at).
+    user Kept it*, not the item's crawl time (TechItem.created_at).
 
     Two Keeps pull the profile in orthogonal directions X and Y. Keep-X was
     crawled recently; Keep-Y was crawled a year ago but Kept *today*. Under the
-    ~48h half-life, weighting Y by its ancient created_at decays it to ~0, so
-    the profile collapses onto X alone and a Y-similar candidate gets no boost.
-    Weighting by last_monitored_at keeps Y live (profile ≈ (X+Y)/2), so the
-    Y-similar candidate's profile cosine jumps from ~0 to ~0.707.
+    ~48h half-life, weighting Y by its ancient TechItem.created_at decays it to
+    ~0, so the profile collapses onto X alone and a Y-similar candidate gets no
+    boost. Weighting by the Keep interaction time keeps Y live (profile ≈
+    (X+Y)/2), so the Y-similar candidate's profile cosine jumps from ~0 to
+    ~0.707.
 
     Both candidates share trust/corroboration/recency, so the only score
     differentiator is the profile term (weight_profile). We assert a margin
@@ -354,6 +363,71 @@ async def test_recompute_stale_only_profile_fades_absolutely(embeddings):
             assert o_after.feed_score is not None
             # Stale-only profile: aligned must NOT out-boost orthogonal — the
             # faded profile term keeps them within a tight band.
+            assert abs(a_after.feed_score - o_after.feed_score) < band
+        finally:
+            await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_recompute_keep_recency_ignores_signal_match_bump(embeddings):
+    """ARG-201 regression: an automated signal-match Slack alert bumps
+    ``UserAsset.last_monitored_at`` to now() with NO user action
+    (``track_check.post_signal_update``). The Keep recency must decay from *when
+    the user actually Kept it* (track_history Keep-transition, fallback
+    ``UserAsset.created_at``), never from ``last_monitored_at`` — otherwise a
+    long-abandoned Keep is silently re-affirmed and its profile influence never
+    fades, the opposite of ``profile_recency_confidence``'s promise.
+
+    A sole Keep, Kept 6 months ago and untouched by the user since, but whose
+    ``last_monitored_at`` was refreshed to now by a signal match, must still fade
+    absolutely — landing the aligned and orthogonal candidates within the same
+    tight band as the untouched-stale case. Under the old ``last_monitored_at``
+    weighting the profile would read as fresh and the aligned candidate would win
+    by ≈``weight_profile·cos``, blowing past the band."""
+    base_emb, similar_emb, ortho_emb = embeddings
+    from argos.brain.feed_ranking import recompute_feed_scores
+
+    now = datetime.now(timezone.utc)
+    cfg = settings.user.feed_ranking
+    band = 0.25 * cfg.weight_profile
+
+    async with _session_ctx() as session:
+        try:
+            kept = await _add_item(
+                session, "Kept-old-signalled", _uniq("os.com"), base_emb
+            )
+            asset = UserAsset(tech_id=kept.id, status=AssetStatus.KEEP)
+            session.add(asset)
+            await session.flush()
+            # Kept 6 months ago (created_at), untouched by the user since...
+            await session.execute(
+                text("UPDATE user_assets SET created_at = :ts WHERE id = :id"),
+                {"ts": now - timedelta(days=182), "id": str(asset.id)},
+            )
+            # ...but an automated signal match today bumped last_monitored_at
+            # with no user interaction — this must NOT re-affirm the Keep.
+            await session.execute(
+                text("UPDATE user_assets SET last_monitored_at = :ts WHERE id = :id"),
+                {"ts": now, "id": str(asset.id)},
+            )
+
+            aligned = await _add_item(
+                session, "Aligned", _uniq("al2.com"), similar_emb,
+                trust_score=0.4, corroboration_count=2,
+            )
+            ortho = await _add_item(
+                session, "Ortho", _uniq("or2.com"), ortho_emb,
+                trust_score=0.4, corroboration_count=2,
+            )
+
+            await recompute_feed_scores(session)
+
+            a_after = await _get_item(session, aligned.id)
+            o_after = await _get_item(session, ortho.id)
+            assert a_after.feed_score is not None
+            assert o_after.feed_score is not None
+            # The signal-match last_monitored_at=now must not refresh the stale
+            # Keep: the faded profile term keeps the two within a tight band.
             assert abs(a_after.feed_score - o_after.feed_score) < band
         finally:
             await session.rollback()
