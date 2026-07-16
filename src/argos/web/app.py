@@ -387,17 +387,6 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
     ) -> HTMLResponse:
         normalized = _normalize_category(category)
         normalized_sort = _normalize_feed_sort(sort)
-        try:
-            page = await fetch_feed(
-                session, category=normalized, cursor=cursor, sort=normalized_sort
-            )
-        except ValueError as exc:
-            # ``cursor`` is user-controlled query state; a stale/corrupted
-            # load-more URL must not 500. Translate it to a controlled 400.
-            raise HTTPException(status_code=400, detail="invalid feed cursor") from exc
-        # The signal ticker is full-page chrome (feed.html), never part of the
-        # HTMX "더 보기" fragment — so it's only fetched for the initial render.
-        activity = await fetch_activity(session) if include_activity else []
         # feed-poll.js (ARG-203) reads #feed-list[data-latest-cursor] to know
         # what to poll "newer than". Only meaningful on the genuine first page
         # — a mid-feed "더 보기" fragment or a direct cursor hit has no single
@@ -412,9 +401,28 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         # "new". This is correct for BOTH sorts: for "latest" it matches the
         # old items[0]-derived behavior exactly (the page is already
         # time-ordered), and it additionally fixes "recommended".
+        #
+        # Computed BEFORE fetch_feed so the baseline's snapshot is no NEWER than
+        # the rendered page's: these are two independent statements under READ
+        # COMMITTED, and if the crawler commits an item between them, we must not
+        # let that item be BOTH absent from the page AND its own "new since"
+        # baseline (which suppresses its pill forever). Ordering the baseline
+        # first means a gap item instead appears on the page and is counted as
+        # new — a benign, self-healing over-count rather than a silent drop.
         latest_cursor = ""
         if first_page:
             latest_cursor = await latest_feed_cursor(session, category=normalized) or ""
+        try:
+            page = await fetch_feed(
+                session, category=normalized, cursor=cursor, sort=normalized_sort
+            )
+        except ValueError as exc:
+            # ``cursor`` is user-controlled query state; a stale/corrupted
+            # load-more URL must not 500. Translate it to a controlled 400.
+            raise HTTPException(status_code=400, detail="invalid feed cursor") from exc
+        # The signal ticker is full-page chrome (feed.html), never part of the
+        # HTMX "더 보기" fragment — so it's only fetched for the initial render.
+        activity = await fetch_activity(session) if include_activity else []
         # Featured hero (ARG-213), first page only — the HTMX "더 보기" fragment
         # (GET /feed/items) always renders first_page=False so a second hero
         # never appears mid-scroll. The magazine layout ALWAYS needs a hero:
