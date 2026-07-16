@@ -242,7 +242,8 @@ async def recompute_feed_scores(session: AsyncSession) -> int:
                 TechItem.created_at,
                 TechItem.title,
                 TechItem.summary,
-            )
+                UserAsset.status,
+            ).join(UserAsset, UserAsset.tech_id == TechItem.id, isouter=True)
         )
     ).all()
 
@@ -257,14 +258,22 @@ async def recompute_feed_scores(session: AsyncSession) -> int:
             created_at,
             title,
             summary,
+            asset_status,
         ) = row
 
         ts = published_at or created_at
         age_hours = (now - ts).total_seconds() / 3600.0 if ts is not None else 0.0
         recency = recency_decay(age_hours, cfg.recency_half_life_hours)
 
+        # Leave-one-out: an item the user has already decided on (Keep or
+        # Archived) has its OWN embedding baked into the profile vector, so
+        # scoring it against that profile makes a Kept item maximally
+        # self-similar and inflates its own feed_score — it would be
+        # "recommended" back to the user who already Kept it. Zero the profile
+        # term for any item with an existing asset decision; recency/trust/
+        # trending still score it, but the profile boost is not self-referential.
         profile_sim = 0.0
-        if profile_arr is not None and embedding is not None:
+        if profile_arr is not None and embedding is not None and asset_status is None:
             item_vec = np.array(embedding, dtype=np.float32)
             profile_sim = _cosine_sim(item_vec, profile_arr) * profile_confidence
 

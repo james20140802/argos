@@ -369,6 +369,52 @@ async def test_recompute_stale_only_profile_fades_absolutely(embeddings):
 
 
 @pytest.mark.asyncio
+async def test_recompute_excludes_decided_items_from_profile_self_match(embeddings):
+    """ARG-201 leave-one-out: an already-Kept item's own embedding is baked into
+    the profile vector, so scoring it against that profile makes it maximally
+    self-similar and inflates its own feed_score — recommending it back to the
+    user who already Kept it. The profile term must be zeroed for items that
+    carry an existing asset decision (Keep or Archived).
+
+    K (Kept) and U (undecided) share an IDENTICAL embedding (the profile
+    direction, since K is the only Keep), plus identical trust/corroboration/
+    recency. Without the fix both earn the full profile boost and tie; with it
+    K's profile term is zeroed while U keeps it, so the undecided item outranks
+    the already-decided one. Fails under the old unconditional scoring (K == U)."""
+    base_emb, _similar, _ortho = embeddings
+    from argos.brain.feed_ranking import recompute_feed_scores
+
+    # Pin an identical published_at on both so their recency terms are exactly
+    # equal — otherwise the few-ms gap between the two inserts leaves U very
+    # slightly newer and the assertion could pass on recency noise instead of on
+    # the leave-one-out profile difference we mean to test.
+    ts = datetime.now(timezone.utc) - timedelta(hours=1)
+    async with _session_ctx() as session:
+        try:
+            k = await _add_item(
+                session, "Kept-K", _uniq("k.com"), base_emb,
+                trust_score=0.4, corroboration_count=2, published_at=ts,
+            )
+            await _keep(session, k)
+            u = await _add_item(
+                session, "Undecided-U", _uniq("u.com"), base_emb,
+                trust_score=0.4, corroboration_count=2, published_at=ts,
+            )
+
+            await recompute_feed_scores(session)
+
+            k_after = await _get_item(session, k.id)
+            u_after = await _get_item(session, u.id)
+            assert k_after.feed_score is not None
+            assert u_after.feed_score is not None
+            # The already-Kept item's self-referential profile boost is removed,
+            # so an identical undecided item now scores strictly higher.
+            assert u_after.feed_score > k_after.feed_score
+        finally:
+            await session.rollback()
+
+
+@pytest.mark.asyncio
 async def test_recompute_keep_recency_ignores_signal_match_bump(embeddings):
     """ARG-201 regression: an automated signal-match Slack alert bumps
     ``UserAsset.last_monitored_at`` to now() with NO user action
