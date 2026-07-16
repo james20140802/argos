@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone, timedelta
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -10,9 +11,18 @@ from argos.config import settings
 from argos.web.services.feed import (
     count_new_since,
     decode_cursor,
+    decode_score_cursor,
     encode_cursor,
+    encode_score_cursor,
     fetch_feed,
+    latest_feed_cursor,
+    pick_onpage_hero_within_window,
+    pin_hero,
+    select_hero,
+    FeedItem,
     PAGE_SIZE,
+    _domain_of,
+    _reorder_diverse,
 )
 from tests.conftest import db_reachable as _db_reachable
 
@@ -103,11 +113,14 @@ async def test_fetch_feed_orders_newest_first_and_paginates_with_cursor() -> Non
             seeded_ids = set(ids)
 
         async with Session() as session:
-            page1 = await fetch_feed(session, limit=3)
+            # ARG-213 flips the *default* sort to "recommended" — this test
+            # is specifically about the time-ordered path, so it must now say
+            # so explicitly.
+            page1 = await fetch_feed(session, limit=3, sort="latest")
             assert [it.id for it in page1.items if it.id in seeded_ids][:3] == list(reversed(ids))[:3]
             assert page1.next_cursor is not None
 
-            page2 = await fetch_feed(session, cursor=page1.next_cursor, limit=3)
+            page2 = await fetch_feed(session, cursor=page1.next_cursor, limit=3, sort="latest")
             page2_seeded = [it.id for it in page2.items if it.id in seeded_ids]
             assert list(reversed(ids))[3:5] == page2_seeded[:2]
     finally:
@@ -228,7 +241,10 @@ async def test_fetch_feed_returns_summary_and_none_when_null() -> None:
             await session.commit()
 
         async with Session() as session:
-            page = await fetch_feed(session, limit=PAGE_SIZE)
+            # published_at=2099 only guarantees first-page placement under the
+            # time-ordered path — pin sort="latest" explicitly (ARG-213 made
+            # "recommended"/feed_score the default).
+            page = await fetch_feed(session, limit=PAGE_SIZE, sort="latest")
             by_id = {it.id: it for it in page.items if it.id in set(seeded_ids)}
             assert set(seeded_ids) <= by_id.keys(), (
                 "seeded items must appear on the first page"
@@ -328,3 +344,1026 @@ def test_fetch_feed_module_does_not_reference_briefed_at() -> None:
         "argos.web.services.feed must not reference briefed_at "
         "(Slack briefing owns that column)"
     )
+
+
+# --------------------------------------------------------------------- #
+# ARG-213 — recommended sort, tagged cursors, domain diversity, hero
+# --------------------------------------------------------------------- #
+
+
+def test_encode_decode_score_cursor_round_trips() -> None:
+    item_id = uuid.uuid4()
+    sort_at = datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc)
+    token = encode_score_cursor(0.42, sort_at, item_id)
+    score, parsed_sort, parsed_id = decode_score_cursor(token)
+    assert score == pytest.approx(0.42)
+    assert parsed_sort == sort_at
+    assert parsed_id == item_id
+
+
+def test_encode_decode_score_cursor_round_trips_with_none_score() -> None:
+    """A NULLS-LAST boundary row has ``feed_score is None`` — the cursor must
+    round-trip that faithfully rather than coercing it to 0.0 or erroring. The
+    recency tiebreaker (``sort_at``) must survive alongside it so the NULL tail
+    paginates by recency, not UUID."""
+    item_id = uuid.uuid4()
+    sort_at = datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc)
+    token = encode_score_cursor(None, sort_at, item_id)
+    score, parsed_sort, parsed_id = decode_score_cursor(token)
+    assert score is None
+    assert parsed_sort == sort_at
+    assert parsed_id == item_id
+
+
+def test_decode_score_cursor_rejects_garbage() -> None:
+    with pytest.raises(ValueError):
+        decode_score_cursor("not-a-valid-cursor")
+
+
+def test_decode_score_cursor_rejects_latest_tagged_cursor() -> None:
+    """A ``latest``-sort cursor fed into the ``recommended`` path must raise
+    — not silently reinterpret a timestamp payload as a feed_score (ARG-213
+    AC: mixing sort cursors -> ValueError -> 400)."""
+    latest_cursor = encode_cursor(
+        datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4()
+    )
+    with pytest.raises(ValueError):
+        decode_score_cursor(latest_cursor)
+
+
+def test_decode_cursor_rejects_score_tagged_cursor() -> None:
+    """The inverse direction of the same AC: a ``recommended``-sort cursor
+    fed into the ``latest`` path must also raise."""
+    score_cursor = encode_score_cursor(
+        0.9, datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4()
+    )
+    with pytest.raises(ValueError):
+        decode_cursor(score_cursor)
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_rejects_cross_sort_cursor_score_into_latest() -> None:
+    """Cursor tag validation happens before any DB access, so this is
+    provable without a live session (``None`` is never touched)."""
+    bad = encode_score_cursor(
+        0.5, datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4()
+    )
+    with pytest.raises(ValueError):
+        await fetch_feed(None, cursor=bad, sort="latest")
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_rejects_cross_sort_cursor_latest_into_recommended() -> None:
+    bad = encode_cursor(datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4())
+    with pytest.raises(ValueError):
+        await fetch_feed(None, cursor=bad, sort="recommended")
+
+
+# ---- _domain_of / _reorder_diverse: pure functions, no DB ---- #
+
+
+def test_domain_of_normalizes_www_and_case():
+    # P2 fix (Codex review): the diversity bucket key must collapse host
+    # variants of the same publisher so ARG-213's same-domain-not-consecutive
+    # constraint isn't defeated by www./case differences.
+    assert _domain_of("https://www.example.com/a") == "example.com"
+    assert _domain_of("https://example.com/b") == "example.com"
+    assert _domain_of("https://Example.COM/c") == "example.com"
+    assert _domain_of("https://WWW.Example.com/d") == "example.com"
+    assert _domain_of(None) == ""
+    assert _domain_of("") == ""
+
+
+def test_reorder_diverse_treats_www_and_bare_host_as_same_domain():
+    # Same publisher via www./bare/case variants must land in one bucket, so
+    # the three cannot render consecutively against a differing domain between.
+    class _Item:
+        def __init__(self, u):
+            self.source_url = u
+
+    items = [
+        _Item("https://www.example.com/1"),
+        _Item("https://example.com/2"),
+        _Item("https://Example.com/3"),
+        _Item("https://other.com/1"),
+    ]
+    out = _reorder_diverse(items)
+    domains = [_domain_of(i.source_url) for i in out]
+    assert len(out) == 4
+    # example.com appears 3x, other.com 1x — 3 > half of 4, so one adjacency is
+    # unavoidable, but the single other.com card must sit between two of them,
+    # i.e. it is NOT stranded at an end (which a raw-netloc key would allow).
+    assert domains.count("example.com") == 3 and domains.count("other.com") == 1
+    assert domains[1] == "other.com" or domains[2] == "other.com"
+
+
+def test_reorder_diverse_breaks_runs():
+    class _Item:
+        def __init__(self, u):
+            self.source_url = u
+
+    items = [_Item("https://a.com/1"), _Item("https://a.com/2"), _Item("https://b.com/1")]
+    out = _reorder_diverse(items)
+    domains = [i.source_url.split("/")[2] for i in out]
+    assert not (domains[0] == domains[1])  # 연속 방지
+    assert len(out) == 3  # 손실 없음
+
+
+def test_reorder_diverse_keeps_original_order_when_unavoidable():
+    """All items share one domain — nothing can be un-consecutive, so the
+    original relative order must be preserved rather than shuffled."""
+    class _Item:
+        def __init__(self, u):
+            self.source_url = u
+
+    items = [_Item("https://a.com/1"), _Item("https://a.com/2"), _Item("https://a.com/3")]
+    out = _reorder_diverse(items)
+    assert [i.source_url for i in out] == [i.source_url for i in items]
+
+
+def test_reorder_diverse_handles_empty_and_singleton():
+    assert _reorder_diverse([]) == []
+
+    class _Item:
+        def __init__(self, u):
+            self.source_url = u
+
+    solo = [_Item("https://a.com/1")]
+    assert [i.source_url for i in _reorder_diverse(solo)] == ["https://a.com/1"]
+
+
+def test_reorder_diverse_avoids_avoidable_run_on_skewed_page():
+    """Regression: a naive "just differ from the immediately preceding item"
+    greedy can still leave an avoidable same-domain run near the end of a
+    domain-skewed page — e.g. exactly half the page from one domain is fully
+    alternate-able, but draining the smaller domains first (because they sit
+    earlier in the page) can strand the dominant domain's items at the tail.
+    10 dominant + 10 spread across 5 other domains (matching a real feed
+    shape) must reorder with zero adjacent same-domain pairs."""
+
+    class _Item:
+        def __init__(self, u):
+            self.source_url = u
+
+    # Deliberately front-load the minority domains and push the dominant
+    # domain toward the end, mirroring the failure mode.
+    minority = (
+        ["https://huggingface.co/x"] * 3
+        + ["https://example.com/x"] * 4
+        + ["https://zerofs.net/x"]
+        + ["https://cornell.edu/x"]
+        + ["https://blog.kog.ai/x"]
+    )
+    items = [_Item(u) for u in minority] + [_Item("https://openai.com/x")] * 10
+    out = _reorder_diverse(items)
+
+    assert len(out) == len(items)
+    domains = [urlsplit(i.source_url).netloc for i in out]
+    for a, b in zip(domains, domains[1:]):
+        assert a != b, f"avoidable adjacent same-domain pair: {domains}"
+
+
+class _ScoredItem:
+    def __init__(self, u, feed_score):
+        self.source_url = u
+        self.feed_score = feed_score
+
+
+def test_reorder_diverse_keeps_null_score_rows_in_tail():
+    # P2 fix (Codex review): the recommended sort is feed_score DESC NULLS LAST,
+    # so unscored rows live in a tail. Diversifying the whole page would let an
+    # unscored row be pulled up as a same-domain spacer between scored cards —
+    # a(0.8), a(0.7), b(NULL) must NOT become a, b(NULL), a. Every null-score
+    # row must stay after every scored row.
+    items = [
+        _ScoredItem("https://a.com/1", 0.8),
+        _ScoredItem("https://a.com/2", 0.7),
+        _ScoredItem("https://b.com/1", None),
+    ]
+    out = _reorder_diverse(items)
+
+    assert len(out) == 3
+    scores = [i.feed_score for i in out]
+    # No None appears before a non-None (nulls strictly in the tail).
+    seen_null = False
+    for s in scores:
+        if s is None:
+            seen_null = True
+        else:
+            assert not seen_null, f"scored row after a null-score row: {scores}"
+    assert scores[-1] is None  # the NULL b.com stays last, not a mid-grid spacer
+
+
+def test_reorder_diverse_null_band_avoids_boundary_domain():
+    # The scored band's last domain seeds the null band's avoid_domain, so the
+    # scored→null boundary isn't a same-domain pair even across the bands.
+    items = [
+        _ScoredItem("https://a.com/1", 0.9),
+        _ScoredItem("https://a.com/2", 0.8),
+        _ScoredItem("https://a.com/3", None),
+        _ScoredItem("https://b.com/1", None),
+    ]
+    out = _reorder_diverse(items)
+    domains = [urlsplit(i.source_url).netloc for i in out]
+    # Scored a.com pair leads (unavoidable, same domain), then the null band:
+    # its first pick must avoid a.com so the boundary flips to b.com.
+    assert [i.feed_score for i in out][:2] == [0.9, 0.8]
+    assert domains[2] == "b.com", f"null band didn't avoid boundary domain: {domains}"
+    assert sorted(domains[2:]) == ["a.com", "b.com"]  # both null rows present
+
+
+# --------------------------------------------------------------------- #
+# DB-backed: recommended-sort ordering / pagination / hero
+# --------------------------------------------------------------------- #
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_feed_recommended_sort_orders_by_feed_score_nulls_last() -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            high = TechItem(
+                title="arg213-high",
+                source_url=f"https://example.com/arg213/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.MAINSTREAM,
+                feed_score=900.0,
+            )
+            mid = TechItem(
+                title="arg213-mid",
+                source_url=f"https://example.com/arg213/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.MAINSTREAM,
+                feed_score=500.0,
+            )
+            low = TechItem(
+                title="arg213-low",
+                source_url=f"https://example.com/arg213/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.MAINSTREAM,
+                feed_score=100.0,
+            )
+            null_score = TechItem(
+                title="arg213-null",
+                source_url=f"https://example.com/arg213/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.MAINSTREAM,
+                feed_score=None,
+            )
+            session.add_all([high, mid, low, null_score])
+            await session.flush()
+            seeded_ids = [high.id, mid.id, low.id, null_score.id]
+            await session.commit()
+
+        async with Session() as session:
+            page = await fetch_feed(session, sort="recommended", limit=200)
+            ours = [it for it in page.items if it.id in set(seeded_ids)]
+            ours_by_id = {it.id: it for it in ours}
+            assert set(seeded_ids) == ours_by_id.keys()
+            # feed_score descending, NULL last: each named item's position in
+            # the returned page must be non-decreasing across this sequence.
+            positions = [
+                ours.index(ours_by_id[i])
+                for i in [high.id, mid.id, low.id, null_score.id]
+            ]
+            assert positions == sorted(positions)
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_feed_recommended_sort_cursor_pagination_no_dupes_or_gaps() -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            items = []
+            # A distinct, non-overlapping score band per item plus a NULL tail
+            # item, all under one throwaway category filter so pagination can
+            # be verified against a known, exact set (page-1 + page-2 must
+            # union back to exactly these 6, no dupes/gaps).
+            for i, score in enumerate([600.0, 500.0, 400.0, 300.0, 200.0, None]):
+                item = TechItem(
+                    title=f"arg213-page-{i}",
+                    source_url=f"https://example.com/arg213page/{uuid.uuid4()}",
+                    raw_content="x",
+                    category=CategoryType.ALPHA,
+                    feed_score=score,
+                )
+                items.append(item)
+            session.add_all(items)
+            await session.flush()
+            seeded_ids = [it.id for it in items]
+            await session.commit()
+
+        async with Session() as session:
+            page1 = await fetch_feed(
+                session, category="Alpha", sort="recommended", limit=3
+            )
+            page1_ids = [it.id for it in page1.items if it.id in set(seeded_ids)]
+            assert page1.next_cursor is not None
+
+            page2 = await fetch_feed(
+                session,
+                category="Alpha",
+                sort="recommended",
+                cursor=page1.next_cursor,
+                limit=200,
+            )
+            page2_ids = [it.id for it in page2.items if it.id in set(seeded_ids)]
+
+            all_ids = page1_ids + page2_ids
+            assert len(all_ids) == len(set(all_ids)) == len(seeded_ids), (
+                "no duplicates or gaps across the cursor boundary"
+            )
+            assert set(all_ids) == set(seeded_ids)
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_feed_recommended_null_tail_orders_by_recency_not_uuid() -> None:
+    """Codex P2 (feed.py): rows with no ``feed_score`` — every row right after
+    the migration, and items added between scheduled rescores — must fall back
+    to recency order in the NULLS-LAST tail, not arbitrary UUID order, and that
+    order must survive one-at-a-time cursor pagination through the tail.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    seeded_ids: list[uuid.UUID] = []
+    base = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    try:
+        async with Session() as session:
+            # Three unscored items, seeded oldest-first, with UUIDs that do NOT
+            # already happen to sort newest-first — so a UUID-only tiebreak
+            # would return a different order than recency and the assertion
+            # below would catch the regression.
+            newest_to_oldest: list[uuid.UUID] = []
+            for i, age_hours in enumerate([0, 24, 48]):  # newest → oldest
+                item = TechItem(
+                    title=f"arg201-nulltail-{i}",
+                    source_url=f"https://example.com/arg201null/{uuid.uuid4()}",
+                    raw_content="x",
+                    category=CategoryType.ALPHA,
+                    feed_score=None,
+                    published_at=base - timedelta(hours=age_hours),
+                )
+                session.add(item)
+                await session.flush()
+                newest_to_oldest.append(item.id)
+            seeded_ids = list(newest_to_oldest)
+            await session.commit()
+
+        async with Session() as session:
+            page = await fetch_feed(
+                session, category="Alpha", sort="recommended", limit=200
+            )
+            ours = [it.id for it in page.items if it.id in set(seeded_ids)]
+            assert ours == newest_to_oldest, "NULL tail must be newest-first"
+
+        # Walk the tail one item per page: recency order must hold across every
+        # cursor boundary with no dupes or gaps.
+        async with Session() as session:
+            walked: list[uuid.UUID] = []
+            cursor = None
+            for _ in range(len(seeded_ids) + 2):
+                pg = await fetch_feed(
+                    session,
+                    category="Alpha",
+                    sort="recommended",
+                    cursor=cursor,
+                    limit=1,
+                )
+                mine = [it.id for it in pg.items if it.id in set(seeded_ids)]
+                walked.extend(mine)
+                if pg.next_cursor is None:
+                    break
+                cursor = pg.next_cursor
+            assert walked == newest_to_oldest
+            assert len(walked) == len(set(walked)) == len(seeded_ids)
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_feed_latest_sort_cursor_pagination_no_dupes_or_gaps() -> None:
+    """Mirrors the recommended-sort pagination test above for the explicit
+    ``sort="latest"`` path — both sorts must round-trip cleanly."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    base_t = datetime(2026, 6, 20, 0, 0, tzinfo=timezone.utc)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            items = [
+                TechItem(
+                    title=f"arg213-latest-{i}",
+                    source_url=f"https://example.com/arg213latest/{uuid.uuid4()}",
+                    raw_content="x",
+                    category=CategoryType.ALPHA,
+                    published_at=base_t + timedelta(hours=i),
+                )
+                for i in range(6)
+            ]
+            session.add_all(items)
+            await session.flush()
+            seeded_ids = [it.id for it in items]
+            await session.commit()
+
+        async with Session() as session:
+            page1 = await fetch_feed(
+                session, category="Alpha", sort="latest", limit=3
+            )
+            page1_ids = [it.id for it in page1.items if it.id in set(seeded_ids)]
+            assert page1.next_cursor is not None
+
+            page2 = await fetch_feed(
+                session,
+                category="Alpha",
+                sort="latest",
+                cursor=page1.next_cursor,
+                limit=200,
+            )
+            page2_ids = [it.id for it in page2.items if it.id in set(seeded_ids)]
+
+            all_ids = page1_ids + page2_ids
+            assert len(all_ids) == len(set(all_ids)) == len(seeded_ids)
+            assert set(all_ids) == set(seeded_ids)
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_select_hero_prefers_highest_score_within_48h() -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    now = datetime.now(timezone.utc)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            recent_high = TechItem(
+                title="arg213-hero-recent-high",
+                source_url=f"https://example.com/arg213hero/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=999.0,
+                created_at=now - timedelta(hours=2),
+            )
+            recent_low = TechItem(
+                title="arg213-hero-recent-low",
+                source_url=f"https://example.com/arg213hero/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=100.0,
+                created_at=now - timedelta(hours=1),
+            )
+            old_higher = TechItem(
+                title="arg213-hero-old-higher",
+                source_url=f"https://example.com/arg213hero/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=5000.0,
+                created_at=now - timedelta(hours=72),
+            )
+            session.add_all([recent_high, recent_low, old_higher])
+            await session.flush()
+            seeded_ids = [recent_high.id, recent_low.id, old_higher.id]
+            await session.commit()
+
+        async with Session() as session:
+            hero_id = await select_hero(session, category="Alpha")
+            assert hero_id == recent_high.id, (
+                "the higher-scored item outside the 48h window must lose to "
+                "the highest-scored item within it"
+            )
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_select_hero_window_uses_published_recency_not_insert_time() -> None:
+    """Codex P2 (select_hero): a months-old article (old published_at) that
+    was just crawled/added (recent created_at) must NOT win the 48h hero
+    window — the window keys off coalesce(published_at, created_at), matching
+    the feed's recency sort, so this old-but-freshly-inserted item is excluded
+    and the recent, lower-scored item is featured instead.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    now = datetime.now(timezone.utc)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            # High score, inserted 1h ago, but PUBLISHED 30 days ago.
+            old_pub_recent_insert = TechItem(
+                title="arg201-hero-oldpub",
+                source_url=f"https://example.com/arg201hero/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=99999.0,
+                published_at=now - timedelta(days=30),
+                created_at=now - timedelta(hours=1),
+            )
+            # Lower score than the old item but still high enough to dominate
+            # any real seeded data, and genuinely recent by published_at.
+            genuinely_recent = TechItem(
+                title="arg201-hero-recent",
+                source_url=f"https://example.com/arg201hero/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=90000.0,
+                published_at=now - timedelta(hours=3),
+                created_at=now - timedelta(hours=1),
+            )
+            session.add_all([old_pub_recent_insert, genuinely_recent])
+            await session.flush()
+            seeded_ids = [old_pub_recent_insert.id, genuinely_recent.id]
+            await session.commit()
+
+        async with Session() as session:
+            hero_id = await select_hero(session, category="Alpha")
+            assert hero_id == genuinely_recent.id, (
+                "old-published item must be outside the recency window despite "
+                "its recent insert time and higher score"
+            )
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_select_hero_falls_back_to_global_highest_when_none_within_48h() -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    now = datetime.now(timezone.utc)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            old_a = TechItem(
+                title="arg213-hero-fallback-a",
+                source_url=f"https://example.com/arg213heroFB/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=300.0,
+                created_at=now - timedelta(hours=96),
+            )
+            old_b = TechItem(
+                title="arg213-hero-fallback-b",
+                source_url=f"https://example.com/arg213heroFB/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=700.0,
+                created_at=now - timedelta(hours=120),
+            )
+            session.add_all([old_a, old_b])
+            await session.flush()
+            seeded_ids = [old_a.id, old_b.id]
+            await session.commit()
+
+        async with Session() as session:
+            hero_id = await select_hero(session, category="Alpha")
+            assert hero_id == old_b.id, (
+                "with nothing inside the 48h window, fall back to the "
+                "highest feed_score overall"
+            )
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_select_hero_returns_none_when_nothing_scored() -> None:
+    """Deterministic empty-state check: snapshot + clear every feed_score,
+    assert None, then restore — independent of whatever other tests in this
+    session left behind."""
+    from sqlalchemy import text as sa_text
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    try:
+        async with Session() as session:
+            snapshot = (
+                await session.execute(
+                    sa_text(
+                        "SELECT id, feed_score FROM tech_items "
+                        "WHERE feed_score IS NOT NULL"
+                    )
+                )
+            ).all()
+            await session.execute(
+                sa_text("UPDATE tech_items SET feed_score = NULL")
+            )
+            await session.commit()
+
+        try:
+            async with Session() as session:
+                assert await select_hero(session) is None
+                assert await select_hero(session, category="Alpha") is None
+        finally:
+            async with Session() as session:
+                for row in snapshot:
+                    await session.execute(
+                        sa_text(
+                            "UPDATE tech_items SET feed_score = :s WHERE id = :i"
+                        ),
+                        {"s": row.feed_score, "i": row.id},
+                    )
+                await session.commit()
+    finally:
+        await engine.dispose()
+
+
+# --------------------------------------------------------------------- #
+# Review fixes — latest_feed_cursor (sort-independent poll baseline) and
+# pin_hero (hero must lead the page; diversity must not displace it)
+# --------------------------------------------------------------------- #
+
+
+def _feed_item_stub(
+    *,
+    url: str,
+    feed_score: float | None = None,
+    item_id: uuid.UUID | None = None,
+    sort_at: datetime | None = None,
+) -> FeedItem:
+    return FeedItem(
+        id=item_id or uuid.uuid4(),
+        title="stub",
+        source_url=url,
+        category=None,
+        image_url=None,
+        summary=None,
+        status=None,
+        trust_score=None,
+        sort_at=sort_at or datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc),
+        feed_score=feed_score,
+    )
+
+
+# ---- pin_hero: pure function, no DB ---- #
+
+
+def test_pin_hero_moves_hero_to_front_and_diversifies_remainder():
+    """A hero originally sitting between two same-domain items (with real,
+    non-NULL feed_score rows) must be pinned to index 0, and pulling it out
+    must not leave those two items adjacent — hence the remainder is
+    re-diversified when ``diversify=True`` (the 'recommended' sort)."""
+    hero = _feed_item_stub(url="https://hero-domain.example/hero", feed_score=900.0)
+    same_domain_a = _feed_item_stub(url="https://openai.com/a", feed_score=500.0)
+    same_domain_b = _feed_item_stub(url="https://openai.com/b", feed_score=400.0)
+    other = _feed_item_stub(url="https://example.com/x", feed_score=300.0)
+    # Hero sits between the two openai.com items; pulling it out would leave
+    # them adjacent unless the remainder gets re-diversified.
+    items = [same_domain_a, hero, same_domain_b, other]
+
+    out = pin_hero(items, hero.id, diversify=True)
+
+    assert out is not None
+    assert out[0] is hero
+    assert len(out) == len(items)
+    assert {i.id for i in out} == {i.id for i in items}
+    domains = [urlsplit(i.source_url).netloc for i in out]
+    for a, b in zip(domains, domains[1:]):
+        assert a != b, f"avoidable adjacent same-domain pair after hero pin: {domains}"
+
+
+def test_pin_hero_avoids_hero_domain_for_the_card_immediately_after_it():
+    """When the hero shares a domain with part of the remainder, the
+    remainder's diversification must also avoid placing that domain right
+    after the hero — not just avoid adjacency *within* the remainder
+    itself, which ``_reorder_diverse`` alone has no way to know about."""
+    hero = _feed_item_stub(url="https://openai.com/hero", feed_score=900.0)
+    same_domain = _feed_item_stub(url="https://openai.com/other-post", feed_score=500.0)
+    different_domain = _feed_item_stub(url="https://example.com/x", feed_score=400.0)
+    items = [hero, same_domain, different_domain]
+
+    out = pin_hero(items, hero.id, diversify=True)
+
+    assert out is not None
+    assert out[0] is hero
+    assert out[1] is different_domain, (
+        "the card right after the hero must not share the hero's domain "
+        "when an alternative is available"
+    )
+    assert out[2] is same_domain
+
+
+def test_pin_hero_leaves_remainder_order_untouched_when_not_diversifying():
+    """The 'latest' sort must not have its remainder reordered at all — only
+    the hero moves; every other card keeps strict time order."""
+    hero = _feed_item_stub(url="https://openai.com/hero", feed_score=900.0)
+    a = _feed_item_stub(url="https://openai.com/a", feed_score=500.0)
+    b = _feed_item_stub(url="https://openai.com/b", feed_score=400.0)
+    items = [a, hero, b]
+
+    out = pin_hero(items, hero.id, diversify=False)
+
+    assert out == [hero, a, b]
+
+
+def test_pin_hero_already_first_is_unchanged_besides_diversify():
+    hero = _feed_item_stub(url="https://openai.com/hero", feed_score=900.0)
+    rest = _feed_item_stub(url="https://example.com/x", feed_score=1.0)
+
+    out = pin_hero([hero, rest], hero.id, diversify=True)
+
+    assert out[0] is hero
+    assert out[1] is rest
+
+
+def test_pin_hero_returns_none_when_hero_not_on_this_page():
+    """The hero id came from select_hero, but this particular page/sort
+    doesn't include it (e.g. a highly-scored-but-old item under 'latest') —
+    callers must treat this as 'no pin happened' and fall back gracefully."""
+    hero_id_not_present = uuid.uuid4()
+    a = _feed_item_stub(url="https://example.com/a")
+    b = _feed_item_stub(url="https://example.com/b")
+
+    assert pin_hero([a, b], hero_id_not_present, diversify=True) is None
+
+
+def test_pin_hero_returns_none_when_hero_id_is_none():
+    a = _feed_item_stub(url="https://example.com/a")
+
+    assert pin_hero([a], None, diversify=True) is None
+
+
+def test_pin_hero_handles_empty_items():
+    assert pin_hero([], uuid.uuid4(), diversify=True) is None
+
+
+# ---- pick_onpage_hero_within_window: pure function, no DB ---- #
+
+
+def test_pick_onpage_hero_prefers_recent_over_higher_scored_stale_top():
+    """The off-page-hero recovery (Codex P2): among the rendered rows, the
+    freshest item within the 48h window wins even if a stale item has a higher
+    feed_score — the point is to keep a *recent* hero, not re-pick the top."""
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    stale_top = _feed_item_stub(
+        url="https://example.com/old", feed_score=0.9, sort_at=now - timedelta(days=30)
+    )
+    recent = _feed_item_stub(
+        url="https://example.com/new", feed_score=0.5, sort_at=now - timedelta(hours=2)
+    )
+    assert (
+        pick_onpage_hero_within_window([stale_top, recent], now=now) == recent.id
+    )
+
+
+def test_pick_onpage_hero_picks_highest_score_among_in_window_items():
+    """When several page items fall within the window, the highest feed_score
+    among them leads (recency only gates membership, not the ranking)."""
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    lower = _feed_item_stub(
+        url="https://example.com/a", feed_score=0.3, sort_at=now - timedelta(hours=1)
+    )
+    higher = _feed_item_stub(
+        url="https://example.com/b", feed_score=0.8, sort_at=now - timedelta(hours=10)
+    )
+    assert (
+        pick_onpage_hero_within_window([lower, higher], now=now) == higher.id
+    )
+
+
+def test_pick_onpage_hero_returns_none_when_no_item_within_window():
+    """No recent item on the page → None, so the caller keeps its natural-top
+    fallback rather than featuring a stale story as a 'recent' hero."""
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    old_a = _feed_item_stub(
+        url="https://example.com/a", feed_score=0.9, sort_at=now - timedelta(days=10)
+    )
+    old_b = _feed_item_stub(
+        url="https://example.com/b", feed_score=0.7, sort_at=now - timedelta(days=5)
+    )
+    assert pick_onpage_hero_within_window([old_a, old_b], now=now) is None
+
+
+def test_pick_onpage_hero_prefers_scored_over_unscored_in_window():
+    """A scored in-window item beats an unscored one, mirroring the feed's
+    ``feed_score DESC NULLS LAST`` order (unscored rows sit in the tail)."""
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    unscored_newer = _feed_item_stub(
+        url="https://example.com/a", feed_score=None, sort_at=now - timedelta(hours=1)
+    )
+    scored_older = _feed_item_stub(
+        url="https://example.com/b", feed_score=0.4, sort_at=now - timedelta(hours=5)
+    )
+    assert (
+        pick_onpage_hero_within_window([unscored_newer, scored_older], now=now)
+        == scored_older.id
+    )
+
+
+def test_pick_onpage_hero_handles_empty_items():
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    assert pick_onpage_hero_within_window([], now=now) is None
+
+
+# ---- latest_feed_cursor: DB-backed ---- #
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_latest_feed_cursor_reflects_true_newest_item_even_with_low_score() -> None:
+    """Review fix: the ARG-203 poll baseline must be sort-independent. Seed a
+    genuinely-newest item with a LOW feed_score (excluded from a small
+    recommended-sort page) alongside older items with a HIGH feed_score
+    (which dominate that same page) — ``latest_feed_cursor`` must still
+    point at the true-newest item by wall-clock time, not whatever the
+    recommended page's max(sort_at) happens to be."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    far_future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    older = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    seeded_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            newest_low_score = TechItem(
+                title="arg213-fix1-newest-low-score",
+                source_url=f"https://example.com/arg213fix1/{uuid.uuid4()}",
+                raw_content="x",
+                category=CategoryType.ALPHA,
+                feed_score=0.5,
+                published_at=far_future,
+            )
+            high_items = [
+                TechItem(
+                    title=f"arg213-fix1-old-high-{i}",
+                    source_url=f"https://example.com/arg213fix1/{uuid.uuid4()}",
+                    raw_content="x",
+                    category=CategoryType.ALPHA,
+                    feed_score=99999.0 - i,
+                    published_at=older,
+                )
+                for i in range(3)
+            ]
+            session.add_all([newest_low_score, *high_items])
+            await session.flush()
+            seeded_ids = [newest_low_score.id] + [it.id for it in high_items]
+            await session.commit()
+
+        async with Session() as session:
+            # Prove the setup is meaningful: a small recommended-sort page
+            # (ordered by feed_score) excludes the true-newest, low-scored
+            # item and is dominated by the three high-scored older items.
+            page = await fetch_feed(
+                session, category="Alpha", sort="recommended", limit=3
+            )
+            ours_page1 = {it.id for it in page.items} & set(seeded_ids)
+            assert newest_low_score.id not in ours_page1, (
+                "test setup invalid: the low-score newest item must NOT "
+                "surface on a small recommended-sort page"
+            )
+            assert {it.id for it in high_items} <= ours_page1
+
+            token = await latest_feed_cursor(session, category="Alpha")
+            assert token is not None
+            sort_at, item_id = decode_cursor(token)
+            assert item_id == newest_low_score.id, (
+                "latest_feed_cursor must reflect the true-newest item by "
+                "wall-clock time, independent of feed_score / active sort"
+            )
+            assert sort_at == far_future
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        async with Session() as session:
+            if seeded_ids:
+                await session.execute(
+                    sa_delete(TechItem).where(TechItem.id.in_(seeded_ids))
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_latest_feed_cursor_rejects_invalid_category() -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        async with Session() as session:
+            with pytest.raises(ValueError):
+                await latest_feed_cursor(session, category="NotACategory")
+    finally:
+        await engine.dispose()

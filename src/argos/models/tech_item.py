@@ -44,6 +44,9 @@ class TechItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # ARG-206: count of corroborating independent sources (T2 fills this in;
     # new items start at 0/NULL and corroboration_score(0) == 0.0).
     corroboration_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ARG-212: recommendation-feed ranking score (recency + profile similarity
+    # + trust + trending), recomputed in bulk at the end of every `argos run`.
+    feed_score: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
     published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )

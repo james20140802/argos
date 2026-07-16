@@ -246,6 +246,23 @@ class TrustConfig(BaseModel):
     corroboration_lookback_days: int = Field(default=7, ge=1)
 
 
+class FeedRankingConfig(BaseModel):
+    # ARG-212: feed_score = weighted sum of recency decay, user-profile cosine
+    # similarity, trust, and trending (corroboration reuse), plus a small
+    # interest-topic bonus. Weights don't need to sum to 1.0 (interest_bonus
+    # is an additive nudge, not a fifth weighted term).
+    weight_recency: float = Field(default=0.35, ge=0.0)
+    weight_profile: float = Field(default=0.35, ge=0.0)
+    weight_trust: float = Field(default=0.15, ge=0.0)
+    weight_trending: float = Field(default=0.15, ge=0.0)
+    recency_half_life_hours: float = Field(default=48.0, ge=0.0)
+    # Weight applied to the mean Pass(=Archived)-embedding when subtracting it
+    # from the Keep-embedding mean to build the user profile vector.
+    pass_weight: float = Field(default=0.3, ge=0.0)
+    # Small additive bonus when title/summary matches an interests.topics term.
+    interest_bonus: float = Field(default=0.05, ge=0.0)
+
+
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
@@ -261,6 +278,7 @@ class UserConfig(BaseModel):
     web: WebConfig = Field(default_factory=WebConfig)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     trust: TrustConfig = Field(default_factory=TrustConfig)
+    feed_ranking: FeedRankingConfig = Field(default_factory=FeedRankingConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:

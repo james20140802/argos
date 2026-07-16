@@ -59,7 +59,9 @@ def _client_with_feed(monkeypatch, page: FeedPage) -> TestClient:
 
     app.dependency_overrides[_get_session] = _fake_session
 
-    async def _fake_fetch_feed(session, *, category=None, cursor=None, limit=20):
+    async def _fake_fetch_feed(
+        session, *, category=None, cursor=None, limit=20, sort="recommended"
+    ):
         return page
 
     monkeypatch.setattr("argos.web.app.fetch_feed", _fake_fetch_feed)
@@ -68,6 +70,16 @@ def _client_with_feed(monkeypatch, page: FeedPage) -> TestClient:
         return []
 
     monkeypatch.setattr("argos.web.app.fetch_activity", _fake_fetch_activity)
+
+    async def _fake_select_hero(session, *, category=None):
+        return None
+
+    monkeypatch.setattr("argos.web.app.select_hero", _fake_select_hero)
+
+    async def _fake_latest_feed_cursor(session, *, category=None):
+        return None
+
+    monkeypatch.setattr("argos.web.app.latest_feed_cursor", _fake_latest_feed_cursor)
     return TestClient(app)
 
 

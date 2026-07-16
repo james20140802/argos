@@ -92,5 +92,9 @@
   <script src="/static/js/refresh.js" defer></script>
   <script src="/static/js/feed-poll.js" defer></script>
   <script src="/static/js/portfolio-timeline.js" defer></script>
+  {# ARG-207: Impression (feed) + Dwell (detail) collection. Not precached in
+     sw.js's APP_SHELL on purpose — a plain runtime network load is enough and
+     avoids bumping CACHE_VERSION here (see sw.js comment). #}
+  <script src="/static/js/feed-events.js" defer></script>
 </body>
 </html>

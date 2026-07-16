@@ -22,11 +22,18 @@ class TestBaseMetadata:
 
     def test_all_tables_registered(self):
         table_names = set(Base.metadata.tables.keys())
-        expected = {"crawl_queue", "tech_items", "tech_succession", "user_assets", "track_history"}
+        expected = {
+            "crawl_queue",
+            "tech_items",
+            "tech_succession",
+            "user_assets",
+            "track_history",
+            "feed_events",
+        }
         assert expected == table_names
 
     def test_metadata_is_not_empty(self):
-        assert len(Base.metadata.tables) == 5
+        assert len(Base.metadata.tables) == 6
 
 
 # ──────────────────────────────────────────
@@ -301,6 +308,22 @@ class TestTrackHistoryModel:
         result = repr(obj)
         assert "Keep" in result
         assert "Archived" in result
+
+
+# ──────────────────────────────────────────
+# FeedEvent 모델 테스트 (ARG-207)
+# ──────────────────────────────────────────
+
+def test_feed_event_model_shape():
+    from argos.models.feed_event import FeedEvent, FeedEventType
+
+    assert FeedEventType.IMPRESSION.value == "Impression"
+    assert FeedEventType.CLICK.value == "Click"
+    assert FeedEventType.DWELL.value == "Dwell"
+    ev = FeedEvent(event_type=FeedEventType.DWELL, tech_item_id=None, value=3.5)
+    assert ev.event_type == FeedEventType.DWELL
+    assert ev.value == 3.5
+    assert FeedEvent.__tablename__ == "feed_events"
 
 
 # ──────────────────────────────────────────

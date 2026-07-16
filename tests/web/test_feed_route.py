@@ -8,7 +8,7 @@ the tests runnable on release.yml CI (no Postgres).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from starlette.testclient import TestClient
 
@@ -26,6 +26,8 @@ def _item(
     status: AssetStatus | None = None,
     summary: str | None = None,
     trust_score: float | None = None,
+    sort_at: datetime | None = None,
+    feed_score: float | None = None,
 ) -> FeedItem:
     return FeedItem(
         id=uuid.uuid4(),
@@ -36,12 +38,24 @@ def _item(
         summary=summary,
         status=status,
         trust_score=trust_score,
-        sort_at=datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc),
+        sort_at=sort_at or datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc),
+        feed_score=feed_score,
     )
 
 
-def _client_with_feed(monkeypatch, page: FeedPage, capture: list | None = None) -> TestClient:
-    """Build a TestClient whose feed route returns ``page`` without DB access."""
+def _client_with_feed(
+    monkeypatch,
+    page: FeedPage,
+    capture: list | None = None,
+    *,
+    hero_id=None,
+) -> TestClient:
+    """Build a TestClient whose feed route returns ``page`` without DB access.
+
+    ``hero_id`` stands in for ``select_hero`` (ARG-213) — the real function
+    needs a live session, so every first-page render must have it faked here
+    (defaulting to no hero) or the None test session would blow up.
+    """
     app = build_web_app()
 
     async def _fake_session():
@@ -49,9 +63,13 @@ def _client_with_feed(monkeypatch, page: FeedPage, capture: list | None = None) 
 
     app.dependency_overrides[_get_session] = _fake_session
 
-    async def _fake_fetch_feed(session, *, category=None, cursor=None, limit=20):
+    async def _fake_fetch_feed(
+        session, *, category=None, cursor=None, limit=20, sort="recommended"
+    ):
         if capture is not None:
-            capture.append({"category": category, "cursor": cursor, "limit": limit})
+            capture.append(
+                {"category": category, "cursor": cursor, "limit": limit, "sort": sort}
+            )
         return page
 
     monkeypatch.setattr("argos.web.app.fetch_feed", _fake_fetch_feed)
@@ -60,6 +78,19 @@ def _client_with_feed(monkeypatch, page: FeedPage, capture: list | None = None) 
         return []
 
     monkeypatch.setattr("argos.web.app.fetch_activity", _fake_fetch_activity)
+
+    async def _fake_select_hero(session, *, category=None):
+        return hero_id
+
+    monkeypatch.setattr("argos.web.app.select_hero", _fake_select_hero)
+
+    # ARG-213 review fix: ``_render_feed`` now derives the poll baseline from
+    # a dedicated ``latest_feed_cursor`` query rather than the rendered
+    # page — stub it too, or the fake ``None`` session would blow up.
+    async def _fake_latest_feed_cursor(session, *, category=None):
+        return None
+
+    monkeypatch.setattr("argos.web.app.latest_feed_cursor", _fake_latest_feed_cursor)
     return TestClient(app)
 
 
@@ -323,9 +354,9 @@ def test_feed_first_card_is_featured_on_first_page(monkeypatch):
     first = _item(title="Hero Item", category=CategoryType.ALPHA)
     second = _item(title="Plain Item", category=CategoryType.MAINSTREAM)
     page = FeedPage(items=[first, second], next_cursor=None)
-    client = _client_with_feed(monkeypatch, page)
+    client = _client_with_feed(monkeypatch, page, hero_id=first.id)
     body = client.get("/feed").text
-    # Exactly one featured hero, and it is the first card.
+    # Exactly one featured hero, and it is the item select_hero named.
     assert body.count("card--featured") == 1
     assert f'card--featured" id="feed-card-{first.id}"' in body
     assert f'card--featured" id="feed-card-{second.id}"' not in body
@@ -360,7 +391,7 @@ def test_featured_card_action_buttons_carry_featured_flag(monkeypatch):
     first = _item(title="HeroItem")
     second = _item(title="PlainItem")
     page = FeedPage(items=[first, second], next_cursor=None)
-    client = _client_with_feed(monkeypatch, page)
+    client = _client_with_feed(monkeypatch, page, hero_id=first.id)
     body = client.get("/feed").text
     assert f'/items/{first.id}/keep?featured=1' in body
     assert f'/items/{first.id}/pass?featured=1' in body
@@ -395,4 +426,242 @@ def test_feed_malformed_cursor_returns_400_not_500():
 def test_feed_items_malformed_cursor_returns_400_not_500():
     client = _client_real_feed()
     resp = client.get("/feed/items?cursor=%%%bogus%%%")
+    assert resp.status_code == 400
+
+
+# --------------------------------------------------------------------- #
+# ARG-213 — recommended-default sort, ?sort=latest toggle, id-based hero
+# --------------------------------------------------------------------- #
+
+
+def test_feed_default_sort_is_recommended(monkeypatch):
+    capture: list = []
+    client = _client_with_feed(
+        monkeypatch, FeedPage(items=[], next_cursor=None), capture=capture
+    )
+    client.get("/feed")
+    assert capture[-1]["sort"] == "recommended"
+
+
+def test_feed_sort_latest_passed_to_service(monkeypatch):
+    capture: list = []
+    client = _client_with_feed(
+        monkeypatch, FeedPage(items=[], next_cursor=None), capture=capture
+    )
+    client.get("/feed?sort=latest")
+    assert capture[-1]["sort"] == "latest"
+
+
+def test_feed_invalid_sort_falls_back_to_recommended(monkeypatch):
+    """AC is deliberately lenient here: only a cross-sort *cursor* is a 400 —
+    a bogus ``?sort=`` value just falls back to recommended."""
+    capture: list = []
+    client = _client_with_feed(
+        monkeypatch, FeedPage(items=[], next_cursor=None), capture=capture
+    )
+    resp = client.get("/feed?sort=garbage")
+    assert resp.status_code == 200
+    assert capture[-1]["sort"] == "recommended"
+
+
+def test_feed_items_default_sort_is_recommended(monkeypatch):
+    capture: list = []
+    client = _client_with_feed(
+        monkeypatch, FeedPage(items=[], next_cursor=None), capture=capture
+    )
+    client.get("/feed/items")
+    assert capture[-1]["sort"] == "recommended"
+
+
+def test_feed_sort_toggle_renders_both_links(monkeypatch):
+    client = _client_with_feed(monkeypatch, FeedPage(items=[], next_cursor=None))
+    body = client.get("/feed").text
+    assert "추천순" in body
+    assert "최신순" in body
+    assert 'href="/feed?sort=latest"' in body
+
+
+def test_feed_sort_toggle_marks_recommended_active_by_default(monkeypatch):
+    client = _client_with_feed(monkeypatch, FeedPage(items=[], next_cursor=None))
+    body = client.get("/feed").text
+    assert "추천순</a>" in body
+    # The recommended link is the active one (no ?sort= means recommended).
+    idx = body.index("추천순</a>")
+    chip_start = body.rfind("<a class=", 0, idx)
+    assert "is-active" in body[chip_start:idx]
+
+
+def test_feed_sort_toggle_marks_latest_active(monkeypatch):
+    client = _client_with_feed(monkeypatch, FeedPage(items=[], next_cursor=None))
+    body = client.get("/feed?sort=latest").text
+    idx = body.index("최신순</a>")
+    chip_start = body.rfind("<a class=", 0, idx)
+    assert "is-active" in body[chip_start:idx]
+
+
+def test_feed_items_fragment_carries_sort_in_load_more(monkeypatch):
+    page = FeedPage(items=[_item(title="X")], next_cursor="NEXT9")
+    client = _client_with_feed(monkeypatch, page)
+    body = client.get("/feed/items?sort=latest").text
+    assert "sort=latest" in body
+
+
+def test_feed_hero_is_selected_by_id_not_position(monkeypatch):
+    """Hero must be the item whose id matches ``select_hero``'s result — NOT
+    positional index-0 — proving position-independence (ARG-213)."""
+    first = _item(title="Not The Hero")
+    second = _item(title="The Real Hero")
+    page = FeedPage(items=[first, second], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page, hero_id=second.id)
+    body = client.get("/feed").text
+    assert body.count("card--featured") == 1
+    assert f'card--featured" id="feed-card-{second.id}"' in body
+    assert f'card--featured" id="feed-card-{first.id}"' not in body
+
+
+def test_feed_falls_back_to_natural_top_hero_when_nothing_scored(monkeypatch):
+    """When ``select_hero`` returns None — no item has a feed_score yet (fresh
+    DB / ranking pass not run, the common state on first deploy) — the feed
+    must STILL feature the natural top item. The magazine tiers in argos.css
+    are positional (``.card--featured`` = full-width lead, ``nth-child(2/3)`` =
+    2-up); a page with no featured card collapses into a heroless 2/3-column
+    grid, which is exactly the layout regression this guards against."""
+    top = _item(title="Natural Top")
+    second = _item(title="Second")
+    page = FeedPage(items=[top, second], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page, hero_id=None)
+    body = client.get("/feed").text
+    assert body.count("card--featured") == 1
+    assert f'card--featured" id="feed-card-{top.id}"' in body
+    assert f'card--featured" id="feed-card-{second.id}"' not in body
+
+
+def test_feed_latest_sort_features_natural_top_not_the_scored_item(monkeypatch):
+    """Latest sort must stay chronological: even when ``select_hero`` names a
+    high-feed_score item that IS on the page but isn't the newest, the latest
+    feed must NOT pin it to the top (that would surface an old story above
+    newer ones — Codex review). The hero is the natural top item (the newest),
+    and no card is reordered."""
+    newest = _item(title="Newest Story")
+    old_but_scored = _item(title="Old But High Score")
+    page = FeedPage(items=[newest, old_but_scored], next_cursor=None)
+    # select_hero names the scored (second) item — under recommended it would
+    # be pinned to index 0, but latest must ignore it.
+    client = _client_with_feed(monkeypatch, page, hero_id=old_but_scored.id)
+    body = client.get("/feed?sort=latest").text
+
+    assert body.count("card--featured") == 1
+    assert f'card--featured" id="feed-card-{newest.id}"' in body
+    assert f'card--featured" id="feed-card-{old_but_scored.id}"' not in body
+    # Order untouched: newest still precedes the scored item in the DOM.
+    assert body.index(f'id="feed-card-{newest.id}"') < body.index(
+        f'id="feed-card-{old_but_scored.id}"'
+    )
+
+
+def test_feed_items_fragment_never_has_hero_even_with_hero_id(monkeypatch):
+    """The /feed/items 더보기 fragment always renders with first_page=False,
+    so it must never show a hero even if a hero_id happens to be supplied."""
+    item = _item(title="FragItem")
+    page = FeedPage(items=[item], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page, hero_id=item.id)
+    body = client.get("/feed/items").text
+    assert "card--featured" not in body
+
+
+# --------------------------------------------------------------------- #
+# Review fixes — hero must lead the page (pin_hero); malformed cursor
+# across the wrong sort must 400 (route-level AC pin)
+# --------------------------------------------------------------------- #
+
+
+def test_feed_hero_leads_the_grid_even_when_not_first_in_service_order(monkeypatch):
+    """Review fix: the hero was selected by id but never actually moved to
+    the front — so it could render mid-grid even though ``is_featured``
+    correctly tagged it. Assert DOM order, not just the CSS class: the
+    hero's card markup must appear before every other card's."""
+    first = _item(title="Not The Hero")
+    hero = _item(title="The Real Hero")
+    third = _item(title="Also Not The Hero")
+    page = FeedPage(items=[first, hero, third], next_cursor=None)
+    client = _client_with_feed(monkeypatch, page, hero_id=hero.id)
+    body = client.get("/feed").text
+
+    assert body.count("card--featured") == 1
+    hero_pos = body.index(f'id="feed-card-{hero.id}"')
+    first_pos = body.index(f'id="feed-card-{first.id}"')
+    third_pos = body.index(f'id="feed-card-{third.id}"')
+    assert hero_pos < first_pos
+    assert hero_pos < third_pos
+
+
+def test_feed_hero_falls_back_to_natural_top_item_when_not_on_this_page(monkeypatch):
+    """If select_hero names an item that isn't actually on the current page
+    (e.g. a highly-scored-but-old item under a sort/pagination window that
+    excludes it), the natural top item must be featured instead of
+    rendering zero featured cards mid-grid."""
+    first = _item(title="Natural Top")
+    second = _item(title="Second")
+    page = FeedPage(items=[first, second], next_cursor=None)
+    missing_hero_id = uuid.uuid4()
+    client = _client_with_feed(monkeypatch, page, hero_id=missing_hero_id)
+    body = client.get("/feed").text
+
+    assert body.count("card--featured") == 1
+    assert f'card--featured" id="feed-card-{first.id}"' in body
+    assert f'card--featured" id="feed-card-{second.id}"' not in body
+
+
+def test_feed_offpage_hero_recovers_freshest_onpage_item_not_natural_top(monkeypatch):
+    """Codex P2: when ``select_hero``'s global 48h pick is off page 1, feature
+    the freshest high-scoring item ON this page — not the natural top item.
+
+    Here the natural top (highest feed_score) is a month-old story outside the
+    48h window; a lower-scored but recent item sits below it. Without the
+    recovery the old top-ranked story would lead the magazine, burying the hero
+    window; with it, the recent on-page item is featured instead."""
+    now = datetime.now(timezone.utc)
+    old_top = _item(
+        title="Old Top Ranked",
+        sort_at=now - timedelta(days=30),
+        feed_score=0.9,
+    )
+    recent = _item(
+        title="Recent Lower Score",
+        sort_at=now - timedelta(hours=2),
+        feed_score=0.5,
+    )
+    page = FeedPage(items=[old_top, recent], next_cursor=None)
+    # select_hero named an item that isn't on this page (off-page global pick).
+    client = _client_with_feed(monkeypatch, page, hero_id=uuid.uuid4())
+    body = client.get("/feed").text
+
+    assert body.count("card--featured") == 1
+    assert f'card--featured" id="feed-card-{recent.id}"' in body
+    assert f'card--featured" id="feed-card-{old_top.id}"' not in body
+
+
+def test_feed_recommended_sort_cursor_into_latest_sort_returns_400():
+    """Route-level AC pin (Fix 3): a recommended-tagged cursor fed into the
+    ``latest`` sort must 400, not silently misinterpret the payload."""
+    from argos.web.services.feed import encode_score_cursor
+
+    client = _client_real_feed()
+    score_cursor = encode_score_cursor(
+        0.5, datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4()
+    )
+    resp = client.get(f"/feed?sort=latest&cursor={score_cursor}")
+    assert resp.status_code == 400
+
+
+def test_feed_latest_sort_cursor_into_recommended_sort_returns_400():
+    """The reverse direction: a latest-tagged cursor fed into the default
+    ``recommended`` sort must also 400."""
+    from argos.web.services.feed import encode_cursor as _encode_time_cursor
+
+    client = _client_real_feed()
+    time_cursor = _encode_time_cursor(
+        datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc), uuid.uuid4()
+    )
+    resp = client.get(f"/feed?cursor={time_cursor}")
     assert resp.status_code == 400

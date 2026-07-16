@@ -41,8 +41,19 @@
  *     new portfolio-timeline.js, ARG-205/208/209). Bumped so v15 clients pick
  *     up the new .timeline / .handoff-banner CSS (otherwise the accordion and
  *     banner render unstyled) and precache the accordion's driving script.
+ * v17: recommendation feed ranking (argos.css + refresh.js, ARG-201/213).
+ *     Both are precached and served cache-first, so v16 clients would keep the
+ *     old copies: refresh.js now dispatches argos:refreshed (without which the
+ *     impression observer never re-attaches to refreshed cards) and argos.css
+ *     wraps long similar-signal titles on mobile. Bumped so those reach
+ *     already-installed clients.
+ * v18: precache feed-events.js (ARG-201/207). It's loaded on every page
+ *     (base.html) and records Impression/Dwell training events, but was missing
+ *     from APP_SHELL — so a first/offline load of the cached /feed shell could
+ *     silently fail to fetch it and lose that session's events. Added to the
+ *     precache; bumped so already-installed clients pick it up.
  */
-const CACHE_VERSION = 'argos-v16';
+const CACHE_VERSION = 'argos-v18';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
@@ -57,6 +68,7 @@ const APP_SHELL = [
   '/static/js/img-fallback.js',
   '/static/js/refresh.js',
   '/static/js/feed-poll.js',
+  '/static/js/feed-events.js',
   '/static/js/portfolio-timeline.js',
 ];
 
@@ -108,9 +120,16 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
+  // ARG-207: POST /events/batch (feed-events.js's Impression/Click/Dwell
+  // beacon) must never be served from — or written into — any cache. It
+  // already falls out here because this handler only intercepts GET, but the
+  // early-return is made explicit (rather than relying solely on the method
+  // check below) so a future GET-based events endpoint doesn't silently start
+  // getting cached.
   if (req.method !== 'GET') return;
-
   const url = new URL(req.url);
+  if (url.pathname.startsWith('/events')) return;
+
   if (url.origin !== self.location.origin) return;
 
   // Don't cache action POSTs, HTMX fragment endpoints, or item detail pages —

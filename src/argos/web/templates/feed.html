@@ -12,11 +12,20 @@
   <div class="feed-main">
     <nav class="feed-filter" aria-label="카테고리 필터">
       <a class="chip{% if not category %} is-active{% endif %}"
-         href="/feed"{% if not category %} aria-current="true"{% endif %}>전체</a>
+         href="/feed{% if sort == 'latest' %}?sort=latest{% endif %}"{% if not category %} aria-current="true"{% endif %}>전체</a>
       <a class="chip chip--main{% if category == 'Mainstream' %} is-active{% endif %}"
-         href="/feed?category=Mainstream"{% if category == 'Mainstream' %} aria-current="true"{% endif %}>Mainstream</a>
+         href="/feed?category=Mainstream{% if sort == 'latest' %}&sort=latest{% endif %}"{% if category == 'Mainstream' %} aria-current="true"{% endif %}>Mainstream</a>
       <a class="chip chip--alpha{% if category == 'Alpha' %} is-active{% endif %}"
-         href="/feed?category=Alpha"{% if category == 'Alpha' %} aria-current="true"{% endif %}>Alpha</a>
+         href="/feed?category=Alpha{% if sort == 'latest' %}&sort=latest{% endif %}"{% if category == 'Alpha' %} aria-current="true"{% endif %}>Alpha</a>
+    </nav>
+
+    {# ARG-213: 추천순(feed_score desc, 기본) / 최신순(발행 시각) 정렬 토글.
+       카테고리 필터와 마찬가지로 상대 링크가 서로의 쿼리 파라미터를 보존한다. #}
+    <nav class="feed-sort" aria-label="정렬 방식">
+      <a class="chip{% if sort != 'latest' %} is-active{% endif %}"
+         href="/feed{% if category %}?category={{ category }}{% endif %}"{% if sort != 'latest' %} aria-current="true"{% endif %}>추천순</a>
+      <a class="chip{% if sort == 'latest' %} is-active{% endif %}"
+         href="/feed?sort=latest{% if category %}&category={{ category }}{% endif %}"{% if sort == 'latest' %} aria-current="true"{% endif %}>최신순</a>
     </nav>
 
     {# Floating refresh action — desktop(≥768px) only; mobile relies on the

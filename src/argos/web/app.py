@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
@@ -26,7 +27,14 @@ from fastapi.templating import Jinja2Templates
 
 from argos.web.services.activity import fetch_activity
 from argos.web.services.detail import fetch_item_detail
-from argos.web.services.feed import count_new_since, encode_cursor, fetch_feed
+from argos.web.services.feed import (
+    count_new_since,
+    fetch_feed,
+    latest_feed_cursor,
+    pick_onpage_hero_within_window,
+    pin_hero,
+    select_hero,
+)
 from argos.web.services.portfolio import fetch_portfolio
 from argos.web.services.settings import (
     EDITABLE_FIELDS,
@@ -90,6 +98,16 @@ async def _get_session():
 def _normalize_category(category: Optional[str]) -> Optional[str]:
     """Coerce an arbitrary ?category= value to a valid filter or None (전체)."""
     return category if category in _VALID_CATEGORIES else None
+
+
+def _normalize_feed_sort(sort: Optional[str]) -> str:
+    """Coerce an arbitrary ?sort= value to 'latest' or 'recommended' (ARG-213).
+
+    Deliberately permissive: only a cross-sort *cursor* mismatch is a 400 (see
+    ``fetch_feed``) — an unrecognized ``sort`` value here just falls back to
+    the recommended default.
+    """
+    return "latest" if sort == "latest" else "recommended"
 
 
 async def _load_feed_card_context(session, tech_id: uuid.UUID):
@@ -365,10 +383,39 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         *,
         first_page: bool,
         include_activity: bool = False,
+        sort: Optional[str] = None,
     ) -> HTMLResponse:
         normalized = _normalize_category(category)
+        normalized_sort = _normalize_feed_sort(sort)
+        # feed-poll.js (ARG-203) reads #feed-list[data-latest-cursor] to know
+        # what to poll "newer than". Only meaningful on the genuine first page
+        # — a mid-feed "더 보기" fragment or a direct cursor hit has no single
+        # "latest" position to anchor polling on, so it's left unset there.
+        # Review fix (ARG-213): this MUST come from a dedicated query
+        # (``latest_feed_cursor``), not from the rendered page's items. Under
+        # the "recommended" default sort, page 1 is ordered by feed_score, so
+        # its max-``sort_at`` item can be older than the true globally-newest
+        # item (which may have a low feed_score and simply not appear on page
+        # 1 at all) — deriving the baseline from the page would make
+        # ``count_new_since`` report a pre-existing, never-arrived item as
+        # "new". This is correct for BOTH sorts: for "latest" it matches the
+        # old items[0]-derived behavior exactly (the page is already
+        # time-ordered), and it additionally fixes "recommended".
+        #
+        # Computed BEFORE fetch_feed so the baseline's snapshot is no NEWER than
+        # the rendered page's: these are two independent statements under READ
+        # COMMITTED, and if the crawler commits an item between them, we must not
+        # let that item be BOTH absent from the page AND its own "new since"
+        # baseline (which suppresses its pill forever). Ordering the baseline
+        # first means a gap item instead appears on the page and is counted as
+        # new — a benign, self-healing over-count rather than a silent drop.
+        latest_cursor = ""
+        if first_page:
+            latest_cursor = await latest_feed_cursor(session, category=normalized) or ""
         try:
-            page = await fetch_feed(session, category=normalized, cursor=cursor)
+            page = await fetch_feed(
+                session, category=normalized, cursor=cursor, sort=normalized_sort
+            )
         except ValueError as exc:
             # ``cursor`` is user-controlled query state; a stale/corrupted
             # load-more URL must not 500. Translate it to a controlled 400.
@@ -376,26 +423,63 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         # The signal ticker is full-page chrome (feed.html), never part of the
         # HTMX "더 보기" fragment — so it's only fetched for the initial render.
         activity = await fetch_activity(session) if include_activity else []
-        # feed-poll.js (ARG-203) reads #feed-list[data-latest-cursor] to know
-        # what to poll "newer than". Only meaningful on the genuine first page
-        # — a mid-feed "더 보기" fragment or a direct cursor hit has no single
-        # "latest" position to anchor polling on, so it's left unset there.
-        latest_cursor = (
-            encode_cursor(page.items[0].sort_at, page.items[0].id)
-            if first_page and page.items
-            else ""
-        )
+        # Featured hero (ARG-213), first page only — the HTMX "더 보기" fragment
+        # (GET /feed/items) always renders first_page=False so a second hero
+        # never appears mid-scroll. The magazine layout ALWAYS needs a hero:
+        # ``argos.css``'s tiers are positional (``.card--featured`` = full-width
+        # lead, ``nth-child(2)``/``(3)`` = 2-up), so a page with no featured
+        # card collapses into a heroless 2/3-column grid. Pre-ARG-213 the first
+        # card was unconditionally the hero; we keep that guarantee below.
+        items = page.items
+        hero_id: Optional[uuid.UUID] = None
+        if first_page and items:
+            if normalized_sort == "recommended":
+                # Recommended: promote the highest-feed_score item (within 48h,
+                # else global) to the full-width lead and re-diversify the rest.
+                # ``select_hero`` returns None when NOTHING is scored yet (fresh
+                # DB / ranking pass not run) — that falls through to the natural
+                # top item so the layout never loses its hero.
+                selected = await select_hero(session, category=normalized)
+                if selected is not None:
+                    pinned = pin_hero(items, selected, diversify=True)
+                    if pinned is not None:
+                        items = pinned
+                        hero_id = selected
+                    else:
+                        # ``select_hero``'s global 48h pick is off page 1 (a full
+                        # page of higher-scored older items outranks it), so
+                        # ``pin_hero`` couldn't place it. Rather than bury the
+                        # hero window and feature an old top-ranked story,
+                        # recover the freshest high-scoring item on THIS page
+                        # (Codex P2). Injecting the off-page hero would duplicate
+                        # it on a later keyset page, so we stay within the
+                        # rendered rows; None here (no recent item on the page)
+                        # falls through to the natural top item below.
+                        recovered = pick_onpage_hero_within_window(
+                            items, now=datetime.now(timezone.utc)
+                        )
+                        if recovered is not None:
+                            repinned = pin_hero(items, recovered, diversify=True)
+                            if repinned is not None:
+                                items = repinned
+                                hero_id = recovered
+            # Latest sort never reorders (its whole point is strict time order,
+            # so pinning a high-score-but-old item to the top would break
+            # chronology — Codex review), and any unpinned recommended page
+            # falls here too: feature the natural top item, which under "latest"
+            # is the genuinely newest story.
+            if hero_id is None:
+                hero_id = items[0].id
         return request.app.state.templates.TemplateResponse(
             request,
             template_name,
             {
-                "items": page.items,
+                "items": items,
                 "next_cursor": page.next_cursor,
                 "category": normalized,
-                # Featured hero is keyed on first-page index 0 only; the HTMX
-                # "더 보기" fragment (GET /feed/items) must never re-emit a hero
-                # mid-scroll, so it renders with first_page=False.
+                "sort": normalized_sort,
                 "first_page": first_page,
+                "hero_id": hero_id,
                 "activity": activity,
                 "latest_cursor": latest_cursor,
             },
@@ -406,6 +490,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         request: Request,
         category: Optional[str] = None,
         cursor: Optional[str] = None,
+        sort: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         # Featured hero belongs to the genuine first page only. A direct hit on
@@ -415,6 +500,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             request, "feed.html", category, cursor, session,
             first_page=cursor is None,
             include_activity=True,
+            sort=sort,
         )
 
     @app.get("/feed/items", response_class=HTMLResponse)
@@ -422,10 +508,17 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         request: Request,
         category: Optional[str] = None,
         cursor: Optional[str] = None,
+        sort: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         return await _render_feed(
-            request, "_feed_items.html", category, cursor, session, first_page=False
+            request,
+            "_feed_items.html",
+            category,
+            cursor,
+            session,
+            first_page=False,
+            sort=sort,
         )
 
     @app.get("/feed/poll")
@@ -587,9 +680,106 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         if item is None:
             return _render_not_found(request)
 
+        # ARG-207: record a Click feed_event for the recommendation-ranker
+        # training data. Best-effort — a logging failure here must never break
+        # the detail page itself, so it's isolated in its own try/except and
+        # never re-raised.
+        try:
+            from argos.models.feed_event import FeedEvent, FeedEventType
+
+            session.add(FeedEvent(event_type=FeedEventType.CLICK, tech_item_id=parsed_id))
+            await session.commit()
+        except Exception:
+            _log.exception("failed to record Click feed_event for %s", parsed_id)
+
         return request.app.state.templates.TemplateResponse(
             request, "item_detail.html", {"item": item}
         )
+
+    @app.post("/events/batch")
+    async def events_batch(
+        request: Request,
+        session=Depends(_get_session),
+    ) -> JSONResponse:
+        """Batch-insert front-end feed_events (Impression/Click/Dwell, ARG-207).
+
+        Body: ``{"events": [{"type": "Impression", "item_id": "<uuid>", "value":
+        <float, optional>}, ...]}``. Unknown ``type`` values, malformed
+        ``item_id`` values, and ``item_id``s that don't reference an existing
+        tech_item are silently skipped (not counted in ``inserted``) — this
+        endpoint is fed by a beacon/fetch from the browser, so it must never 500
+        on a malformed or adversarial payload.
+
+        The dangling-``item_id`` skip is what keeps the batch *all-or-nothing*
+        from silently dropping good events: the client (feed-events.js) clears
+        its queue before sending and never retries, so if one FK-violating id
+        rolled the whole commit back, every co-batched Impression/Dwell/Click
+        would be lost. Filtering to existing ids up front keeps the good events.
+        """
+        from argos.models.feed_event import FeedEvent, FeedEventType
+        from argos.models.tech_item import TechItem
+        from sqlalchemy import select
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"inserted": 0})
+
+        events = body.get("events") if isinstance(body, dict) else None
+        if not isinstance(events, list):
+            return JSONResponse({"inserted": 0})
+
+        # Parse + validate first, collecting well-formed candidates. item_id
+        # existence is checked in one query below rather than trusting the FK
+        # to fail the (shared) commit for the whole batch.
+        candidates: list[tuple[FeedEventType, uuid.UUID, Optional[float]]] = []
+        for raw in events:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                event_type = FeedEventType(raw.get("type"))
+                item_id = uuid.UUID(str(raw.get("item_id")))
+            except (ValueError, TypeError, AttributeError):
+                continue
+
+            value = raw.get("value")
+            try:
+                value = float(value) if value is not None else None
+            except (TypeError, ValueError):
+                value = None
+
+            candidates.append((event_type, item_id, value))
+
+        if not candidates:
+            return JSONResponse({"inserted": 0})
+
+        inserted = 0
+        try:
+            wanted = {item_id for _, item_id, _ in candidates}
+            existing = set(
+                (
+                    await session.execute(
+                        select(TechItem.id).where(TechItem.id.in_(wanted))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for event_type, item_id, value in candidates:
+                if item_id not in existing:
+                    continue  # dangling id — skip, don't sink the batch
+                session.add(
+                    FeedEvent(event_type=event_type, tech_item_id=item_id, value=value)
+                )
+                inserted += 1
+
+            if inserted:
+                await session.commit()
+        except Exception:
+            _log.exception("failed to insert feed_events batch")
+            return JSONResponse({"inserted": 0})
+
+        return JSONResponse({"inserted": inserted})
 
     def _error_fragment(request: Request, status_code: int, message: str) -> HTMLResponse:
         return HTMLResponse(

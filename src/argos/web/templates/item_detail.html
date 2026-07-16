@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block title %}{{ item.title }} · ARGOS{% endblock %}
 {% block content %}
-<article class="detail">
+{# data-item-id (ARG-207): drives feed-events.js's Dwell timer — the script
+   reads this attribute on DOMContentLoaded to know which item to attribute
+   the sendBeacon Dwell event to on visibilitychange/pagehide. #}
+<article class="detail" data-item-id="{{ item.id }}">
   {% if item.image_url and item.image_url | is_favicon %}
   <div class="detail-hero detail-hero--favicon detail-hero--{{ (item.category.value if item.category else 'none')|lower }}">
     <span class="detail-hero__scrim" aria-hidden="true"></span>

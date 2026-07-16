@@ -5,6 +5,7 @@ import argos.web
 PKG = Path(argos.web.__file__).parent
 SW = PKG / "assets" / "sw.js"
 REFRESH_JS = PKG / "static" / "js" / "refresh.js"
+FEED_EVENTS_JS = PKG / "static" / "js" / "feed-events.js"
 BASE = PKG / "templates" / "base.html"
 FEED = PKG / "templates" / "feed.html"
 PORTFOLIO = PKG / "templates" / "portfolio.html"
@@ -96,8 +97,127 @@ def test_refresh_reprocesses_swapped_list_for_htmx():
 def test_sw_precaches_refresh_js_and_bumps_version():
     body = SW.read_text(encoding="utf-8")
     assert "/static/js/refresh.js" in body
-    assert "argos-v16" in body               # bumped to v16 (ARG-205/208/209 timeline + handoff CSS/JS)
+    # ARG-201/207: feed-events.js is loaded on every page and must be precached
+    # so an offline/first shell load doesn't lose that session's Impression/
+    # Dwell events; bumped to v18 so installed clients pick it up.
+    assert "/static/js/feed-events.js" in body
+    assert "argos-v18" in body
     assert "argos-shell-refresh" in body     # message 리스너
+
+
+def test_dwell_segment_gated_on_initial_visibility():
+    # P2 fix (Codex review): a detail page opened in a background tab
+    # (middle-click / "open in new tab" / PWA prefetch) starts hidden. The
+    # dwell segment must NOT open until the page is first visible, else
+    # background time gets logged as Dwell. Assert the initial segment state
+    # is derived from visibilityState rather than hard-coded open.
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    assert 'segmentOpen = document.visibilityState === "visible"' in body
+    # And a resume path re-opens a fresh segment on the first visible transition.
+    assert '"visible" && !segmentOpen' in body
+
+
+def test_impression_timers_cancelled_on_hide():
+    # P2 fix (Codex review): an armed 1s impression timer must be cleared when
+    # the tab is backgrounded, else it fires while hidden / on resume and logs
+    # an Impression for a card that wasn't continuously half-visible for a
+    # second (and marks it seen, blocking a later real impression).
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    assert "cancelPendingTimers" in body
+    assert "timers.clear()" in body
+    # Cleared from BOTH the impression visibility handler's hidden branch and
+    # pagehide.
+    imp = body.split("function initImpressions")[1]
+    handler = imp.split('addEventListener("visibilitychange"')[1]
+    assert 'visibilityState === "hidden"' in handler
+    assert "cancelPendingTimers()" in handler
+    assert 'addEventListener("pagehide", cancelPendingTimers)' in body
+
+
+def test_impression_timer_checks_target_still_connected():
+    # P2 fix (Codex review): a refresh (pill / header / pull-to-refresh) or a
+    # Keep/Pass HTMX outerHTML swap can detach a feed card while its 1s
+    # impression timer is armed. The timeout callback must re-check the
+    # observed node is still in the document (target.isConnected) before
+    # enqueueing — else it logs an Impression for a card that did not stay
+    # continuously half-visible for the second (and marks it seen, blocking the
+    # replacement card's genuine impression).
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    # The observed node is passed into armTimer and closed over as `target`.
+    assert "armTimer(itemId, entry.target)" in body
+    assert "target.isConnected" in body
+    # The connectivity guard lives inside the setTimeout callback (before the
+    # enqueue), not merely somewhere in the file.
+    cb = body.split("setTimeout(function ()")[1].split("IMPRESSION_DWELL_MS")[0]
+    assert "if (!target.isConnected) return" in cb
+
+
+def test_impression_observer_reaps_detached_cards():
+    # ARG-201: observeAll must unobserve cards detached by a Keep/Pass outerHTML
+    # swap or a refresh replaceWith(), and prune their stale `intersecting`
+    # entries — otherwise the observer retains dead nodes and the foreground
+    # re-arm can fire a timer against a node no longer in the document.
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    imp = body.split("function initImpressions")[1]
+    obs = imp.split("function observeAll")[1].split('addEventListener("htmx:afterSwap"')[0]
+    assert "observer.unobserve(node)" in obs
+    assert "!node.isConnected" in obs
+    assert "intersecting.delete(itemId)" in obs
+
+
+def test_dwell_uses_monotonic_clock():
+    # ARG-201: Dwell timing must use performance.now() (monotonic), not
+    # Date.now() — a backward wall-clock adjustment (NTP/manual) while a detail
+    # page is open would make a Date.now() delta negative and silently drop the
+    # whole segment's real reading time.
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    dwell = body.split("function initDwell")[1]
+    assert "performance.now()" in dwell
+    assert "Date.now()" not in dwell
+
+
+def test_impression_timer_rearms_replacement_after_stale_node():
+    # P2 fix (Codex review): when a Keep/Pass HTMX swap or refresh replaces a
+    # card during the 1s impression window and the same item stays visible, the
+    # replacement's observer callback must not bail on an occupied timer slot
+    # whose node has been detached — that stale timer self-cancels via
+    # isConnected and the still-visible item never records. armTimer must store
+    # the node alongside the timer and, when the existing timer's node is no
+    # longer connected, clear it and re-arm against the live replacement.
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    imp = body.split("function initImpressions")[1]
+    arm = imp.split("function armTimer")[1].split("var observer")[0]
+    # The timer is stored with its node so a replacement can be detected.
+    assert "timers.set(itemId, { timerId: timerId, target: target })" in arm
+    # Same node or a still-connected node → leave the pending timer alone.
+    assert "existing.target === target || existing.target.isConnected" in arm
+    # A detached (stale) node's timer is cleared so arming falls through.
+    assert "clearTimeout(existing.timerId)" in arm
+    # The blanket `timers.has(itemId)` early-return is gone (it blocked re-arm).
+    assert "timers.has(itemId)" not in arm
+
+
+def test_impression_timer_gated_on_foreground_visibility():
+    # P2 fix (Codex review): /feed opened or restored in a BACKGROUND tab
+    # (middle-click / "open in new tab" / PWA prefetch) starts hidden, so the
+    # IntersectionObserver can arm the 1s impression timer with no initial
+    # visibilitychange to clear it — logging an Impression for a card the user
+    # never saw. The timer must not be armed while hidden, and must be armed on
+    # the first foreground for cards still on screen (mirroring the Dwell
+    # segment's visibility gate). Assert: (1) arming bails unless visible, and
+    # (2) the visibilitychange handler re-arms from the live intersecting set on
+    # the transition to visible.
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    imp = body.split("function initImpressions")[1]
+    # armTimer refuses to start the count unless the page is foreground.
+    assert 'document.visibilityState !== "visible"' in imp
+    # A live map of currently-intersecting nodes exists to re-arm on foreground.
+    assert "intersecting" in imp
+    # The else-branch of the impression visibility handler (became visible)
+    # re-arms timers from the intersecting set.
+    handler = imp.split('addEventListener("visibilitychange"')[1]
+    assert "intersecting.forEach" in handler
+    assert "armTimer" in handler
 
 
 def test_sw_message_listener_writes_shell_cache():
