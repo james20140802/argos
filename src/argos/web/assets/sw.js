@@ -47,8 +47,13 @@
  *     impression observer never re-attaches to refreshed cards) and argos.css
  *     wraps long similar-signal titles on mobile. Bumped so those reach
  *     already-installed clients.
+ * v18: precache feed-events.js (ARG-201/207). It's loaded on every page
+ *     (base.html) and records Impression/Dwell training events, but was missing
+ *     from APP_SHELL — so a first/offline load of the cached /feed shell could
+ *     silently fail to fetch it and lose that session's events. Added to the
+ *     precache; bumped so already-installed clients pick it up.
  */
-const CACHE_VERSION = 'argos-v17';
+const CACHE_VERSION = 'argos-v18';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
@@ -63,6 +68,7 @@ const APP_SHELL = [
   '/static/js/img-fallback.js',
   '/static/js/refresh.js',
   '/static/js/feed-poll.js',
+  '/static/js/feed-events.js',
   '/static/js/portfolio-timeline.js',
 ];
 

@@ -100,6 +100,10 @@
     // were already on screen during a hidden background load (see below) — the
     // IntersectionObserver does NOT re-fire just because visibility changed.
     var intersecting = new Map();
+    // Every node currently under observation, so observeAll() can unobserve the
+    // ones detached by a Keep/Pass outerHTML swap or a refresh replaceWith()
+    // instead of leaking them (and their stale intersecting entries) forever.
+    var observed = new Set();
 
     // Arm the 1s dwell timer for a visible card, but ONLY while the page is
     // actually in the foreground. If `/feed` is opened or restored in a
@@ -175,8 +179,22 @@
     );
 
     function observeAll() {
+      // Reap cards detached by a Keep/Pass outerHTML swap or a refresh
+      // replaceWith(): stop observing them and drop any stale intersecting
+      // entry, so the observer doesn't retain dead nodes and the foreground
+      // re-arm can't fire a timer against a node no longer in the document.
+      observed.forEach(function (node) {
+        if (!node.isConnected) {
+          observer.unobserve(node);
+          observed.delete(node);
+        }
+      });
+      intersecting.forEach(function (node, itemId) {
+        if (!node.isConnected) intersecting.delete(itemId);
+      });
       document.querySelectorAll(".card[data-item-id]").forEach(function (el) {
         observer.observe(el);
+        observed.add(el);
       });
     }
 
@@ -244,13 +262,18 @@
     // "hidden" — nobody is reading it yet. Start the segment CLOSED in that
     // case so background time isn't logged as Dwell; the visibilitychange
     // handler below opens a fresh segment on the first transition to "visible".
+    // Timing uses a monotonic clock (performance.now(), ms since page load)
+    // rather than the wall clock: a backward wall-clock adjustment (NTP
+    // correction or a manual clock change) while the page is open would make a
+    // wall-clock delta negative and silently drop the whole segment's real
+    // reading time; the monotonic clock can't run backwards.
     var segmentOpen = document.visibilityState === "visible";
-    var segmentStart = segmentOpen ? Date.now() : 0;
+    var segmentStart = segmentOpen ? performance.now() : 0;
 
     function flushSegment() {
       if (!segmentOpen) return; // this segment was already flushed
       segmentOpen = false;
-      var seconds = (Date.now() - segmentStart) / 1000;
+      var seconds = (performance.now() - segmentStart) / 1000;
       if (seconds <= 0) return;
 
       var payload = JSON.stringify({
@@ -278,7 +301,7 @@
       } else if (document.visibilityState === "visible" && !segmentOpen) {
         // Resumed after a hide — open a fresh segment so the additional
         // visible time is measured and reported on the next flush.
-        segmentStart = Date.now();
+        segmentStart = performance.now();
         segmentOpen = true;
       }
     });

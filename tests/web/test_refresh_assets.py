@@ -97,7 +97,11 @@ def test_refresh_reprocesses_swapped_list_for_htmx():
 def test_sw_precaches_refresh_js_and_bumps_version():
     body = SW.read_text(encoding="utf-8")
     assert "/static/js/refresh.js" in body
-    assert "argos-v17" in body               # bumped to v17 (ARG-201/213 feed ranking: argos.css + refresh.js changed)
+    # ARG-201/207: feed-events.js is loaded on every page and must be precached
+    # so an offline/first shell load doesn't lose that session's Impression/
+    # Dwell events; bumped to v18 so installed clients pick it up.
+    assert "/static/js/feed-events.js" in body
+    assert "argos-v18" in body
     assert "argos-shell-refresh" in body     # message 리스너
 
 
@@ -146,6 +150,30 @@ def test_impression_timer_checks_target_still_connected():
     # enqueue), not merely somewhere in the file.
     cb = body.split("setTimeout(function ()")[1].split("IMPRESSION_DWELL_MS")[0]
     assert "if (!target.isConnected) return" in cb
+
+
+def test_impression_observer_reaps_detached_cards():
+    # ARG-201: observeAll must unobserve cards detached by a Keep/Pass outerHTML
+    # swap or a refresh replaceWith(), and prune their stale `intersecting`
+    # entries — otherwise the observer retains dead nodes and the foreground
+    # re-arm can fire a timer against a node no longer in the document.
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    imp = body.split("function initImpressions")[1]
+    obs = imp.split("function observeAll")[1].split('addEventListener("htmx:afterSwap"')[0]
+    assert "observer.unobserve(node)" in obs
+    assert "!node.isConnected" in obs
+    assert "intersecting.delete(itemId)" in obs
+
+
+def test_dwell_uses_monotonic_clock():
+    # ARG-201: Dwell timing must use performance.now() (monotonic), not
+    # Date.now() — a backward wall-clock adjustment (NTP/manual) while a detail
+    # page is open would make a Date.now() delta negative and silently drop the
+    # whole segment's real reading time.
+    body = FEED_EVENTS_JS.read_text(encoding="utf-8")
+    dwell = body.split("function initDwell")[1]
+    assert "performance.now()" in dwell
+    assert "Date.now()" not in dwell
 
 
 def test_impression_timer_rearms_replacement_after_stale_node():
