@@ -175,6 +175,23 @@ def test_latin_names_inside_korean_text_are_extracted():
     assert "claude sonnet 5" in names
 
 
+def test_accented_name_stays_one_name():
+    # 악센트 글자에서 낱말이 끊기면 이름이 조각난다 — "François"가 "Fran"과
+    # "ois"로 갈라지고, 남은 "Fran"은 사람 이름 행세를 한다.
+    [names] = canonicals(["Reviewers quoted François Chollet on the benchmark."])
+    assert "françois chollet" in names
+    assert "fran" not in names
+    assert "chollet" not in names
+
+
+def test_korean_particle_does_not_stick_to_a_latin_name():
+    # 이름 글자 범위를 넓힐 때 대소문자 없는 글자까지 넣으면 조사가 이름에
+    # 붙어 버린다 — "Claude를"은 어느 배치에서도 "Claude"와 같은 이름이 아니다.
+    [names] = canonicals(["앤트로픽은 Claude Sonnet 5와 Claude를 함께 갱신했다."])
+    assert {"claude sonnet 5", "claude"} <= names
+    assert not any(name.endswith("를") for name in names)
+
+
 @pytest.mark.parametrize("documents", [[], [""], ["   "], ["...  ---  "], ["한글만 있는 문장이다."]])
 def test_degenerate_input_yields_no_names(documents):
     assert all(names == set() for names in canonicals(documents))

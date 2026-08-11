@@ -15,8 +15,11 @@ import unicodedata
 
 # 하이픈/언더스코어/슬래시/유니코드 대시류 -> 공백
 _SEPARATORS = re.compile(r"[-_/‐-―−]+")
-# 영숫자·공백·점 이외 전부 제거 (괄호, 따옴표, 쉼표 …)
-_NOISE = re.compile(r"[^0-9a-z\s.]+")
+# 글자·숫자·공백·점 이외 전부 제거 (괄호, 따옴표, 쉼표 …). 글자는 ASCII로
+# 한정하지 않는다 — 'François'에서 ç를 지우면 'franois'라는 없는 이름이 된다.
+# 악센트 유무를 접지는(François == Francois) 않는다: 결합 기호를 일괄로
+# 지우면 일본어 탁점('が' -> 'か')처럼 글자 정체가 바뀌는 표기까지 망가진다.
+_NOISE = re.compile(r"[^\w\s.]+")
 # 숫자 사이가 아닌 점은 제거 (문장 끝 마침표는 버리고 5.2의 점은 남긴다)
 _LONE_DOT = re.compile(r"(?<!\d)\.|\.(?!\d)")
 _SPACES = re.compile(r"\s+")

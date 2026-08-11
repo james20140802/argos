@@ -30,9 +30,26 @@ def test_longer_form_is_a_distinct_name():
     assert canonical_name("Claude Sonnet 5") != canonical_name("Sonnet 5")
 
 
+def test_accented_letters_survive():
+    # 라틴 확장 글자를 지우면 이름이 부서진다: François -> franois.
+    # 악센트 유무를 접는 건(François == Francois) 하지 않는다 — 일본어
+    # 탁점처럼 글자 정체를 바꾸는 결합 기호까지 같이 지워지기 때문이다.
+    assert canonical_name("François Chollet") == "françois chollet"
+    assert canonical_name("Müller") == "müller"
+    assert canonical_name("(Gómez)") == "gómez"
+
+
 @pytest.mark.parametrize(
     "raw",
-    ["Sonnet-5", "GPT-5.2", "Claude Sonnet 5", "Anthropic.", "  ", "NVIDIA Blackwell"],
+    [
+        "Sonnet-5",
+        "GPT-5.2",
+        "Claude Sonnet 5",
+        "Anthropic.",
+        "  ",
+        "NVIDIA Blackwell",
+        "François Chollet",
+    ],
 )
 def test_idempotent(raw):
     once = canonical_name(raw)
