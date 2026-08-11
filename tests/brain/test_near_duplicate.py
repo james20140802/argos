@@ -1,3 +1,5 @@
+import unicodedata
+
 import pytest
 
 from argos.config import EventDetectionConfig, settings
@@ -148,6 +150,24 @@ def test_symbol_only_texts_are_not_all_the_same_article():
     assert simhash(left) != 0
     assert simhash(left) != simhash(right)
     assert is_near_duplicate(left, right) is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "François Chollet reviewed the release notes carefully. ",
+        "앤트로픽이 새 모델을 공개했다. 성능이 크게 올랐다고 밝혔다. ",
+    ],
+)
+def test_encoding_variants_are_the_same_article(body):
+    # 같은 글을 NFC로 저장한 곳과 NFD로 저장한 곳에서 각각 긁어 오는 일이 있다.
+    # 바이트 표현만 다른 같은 글이 다른 기사로 판정되면 안 된다.
+    article = body * 10
+    composed = unicodedata.normalize("NFC", article)
+    decomposed = unicodedata.normalize("NFD", article)
+    assert composed != decomposed
+    assert simhash(composed) == simhash(decomposed)
+    assert is_near_duplicate(composed, decomposed) is True
 
 
 @pytest.mark.parametrize("a,b,expected", [(0, 0, 0), (0b1011, 0b1001, 1), (0, 2**64 - 1, 64)])

@@ -228,6 +228,18 @@ def test_decomposed_accents_are_normalized_before_tokenizing():
     assert "franc" not in names
 
 
+@pytest.mark.parametrize(
+    "document",
+    ['"Customers pay monthly."', "(Customers pay monthly.)", "- Customers pay monthly."],
+)
+def test_opening_punctuation_does_not_hide_a_sentence_start(document):
+    # 따옴표·괄호·목록 기호가 앞에 있어도 그 단어는 여전히 문장의 첫 단어다.
+    # 앞에 뭐라도 있으면 문장 중간으로 치면, 인용문과 목록에서 보통 명사가
+    # 이름 행세를 한다.
+    [names] = canonicals([document])
+    assert "customers" not in names
+
+
 def test_korean_particle_does_not_stick_to_a_latin_name():
     # 이름 글자 범위를 넓힐 때 대소문자 없는 글자까지 넣으면 조사가 이름에
     # 붙어 버린다 — "Claude를"은 어느 배치에서도 "Claude"와 같은 이름이 아니다.

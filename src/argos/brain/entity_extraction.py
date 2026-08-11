@@ -126,6 +126,19 @@ def _mask_uncased(text: str) -> str:
     )
 
 
+def _only_punctuation(text: str) -> bool:
+    """앞에 놓인 게 구두점·기호·공백뿐인가.
+
+    따옴표·괄호·목록 기호 뒤도 여전히 문장의 첫 자리다. 뭐라도 있으면 문장
+    중간으로 치면 인용문과 목록에서 보통 명사가 이름 행세를 한다. 반대로
+    자리표시자(제어 문자)는 구두점이 아니라서 "앞에 글이 있었다"는 증거로 남는다.
+    """
+    return all(
+        character.isspace() or unicodedata.category(character)[0] in "PS"
+        for character in text
+    )
+
+
 def _sentences(text: str) -> list[str]:
     return [part for part in _SENTENCE_END.split(text) if part.strip(f" \t\r\n{_MASK}")]
 
@@ -176,17 +189,20 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             run.clear()
 
         previous_end = 0
+        seen_content = False
         for match in _TOKEN.finditer(sentence):
+            gap = sentence[previous_end : match.start()]
             # 낱말 사이에 공백이 아닌 게 끼면(쉼표·괄호·따옴표) 거기서 이름이
             # 끊긴다. "Acme Corp, Globex"를 한 이름으로 붙이면 안 된다.
-            if run and sentence[previous_end : match.start()].strip():
+            if run and gap.strip():
                 flush()
             previous_end = match.end()
 
             # 문장 첫 단어인지는 토큰 순번이 아니라 앞에 실제로 뭐가 있었는지로
             # 본다. 순번으로 세면 마스킹된 한글이 통째로 없던 일이 되어
             # "연구진은 Anthropic과"의 Anthropic이 문장 첫 단어로 둔갑한다.
-            initial = not sentence[: match.start()].strip()
+            initial = not seen_content and _only_punctuation(gap)
+            seen_content = True
 
             token = match.group()
             possessive = _POSSESSIVE.search(token)

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from collections import Counter
 
 from argos.config import settings
@@ -52,6 +53,10 @@ def _feature_hash(feature: str) -> int:
 
 
 def _shingles(text: str, size: int) -> Counter[str]:
+    # 같은 글을 NFC로 저장한 곳과 NFD로 저장한 곳에서 각각 긁어 오는 일이 있다.
+    # 합성해 두지 않으면 바이트 표현만 다른 같은 글이 완전히 다른 피처를 낸다.
+    # ASCII 본문은 이미 NFC라서 기존 해시는 그대로다.
+    text = unicodedata.normalize("NFC", text)
     normalized = _normalize(text)
     if not normalized:
         # 글자·숫자가 하나도 없는 글(렌더 전에 긁힌 자리표시자 페이지 등)은
