@@ -47,13 +47,9 @@ def spacy_names(documents: Sequence[str]) -> list[list[str]]:
     if pipeline is None:
         return [[] for _ in documents]
 
-    results: list[list[str]] = []
-    for document in documents:
-        if not document.strip():
-            results.append([])
-            continue
-        parsed = pipeline(document)
-        results.append(
-            [ent.text for ent in parsed.ents if ent.label_ in _NAME_LABELS]
-        )
-    return results
+    # 배치를 통째로 `.pipe`에 넘긴다. 문서마다 따로 부르면 spaCy 내부 배치가
+    # 놀고 호출 오버헤드만 문서 수만큼 쌓인다 — 결과는 똑같다.
+    return [
+        [ent.text for ent in parsed.ents if ent.label_ in _NAME_LABELS]
+        for parsed in pipeline.pipe(documents)
+    ]

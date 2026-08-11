@@ -147,6 +147,34 @@ def test_explicit_max_ngram_overrides_config(monkeypatch):
     assert "claude sonnet 5" in names
 
 
-@pytest.mark.parametrize("documents", [[], [""], ["   "], ["...  ---  "]])
+def test_comma_separated_names_do_not_merge():
+    # 쉼표로 나열된 서로 다른 이름들이 한 덩어리로 붙으면, 뒤쪽 이름은 n-gram
+    # 폭에 잘려 아예 사라진다 — 사건 묶기의 재료가 통째로 없어진다.
+    [names] = canonicals(
+        ["Analysts compared Acme Corp, Globex, Initech, and Umbrella this quarter."]
+    )
+    assert {"acme corp", "globex", "initech", "umbrella"} <= names
+    assert "acme corp globex initech" not in names
+
+
+def test_long_capitalized_run_drops_nothing():
+    # 제목처럼 대문자가 길게 이어지면 n-gram 폭을 넘는다. 앞쪽만 남기고 조용히
+    # 버리면 뒤쪽 이름은 어디에도 나타나지 않는다.
+    [names] = canonicals(
+        ["Reporters watched Alpha Beta Gamma Delta Epsilon Zeta ship the update."]
+    )
+    assert "epsilon zeta" in names
+
+
+def test_latin_names_inside_korean_text_are_extracted():
+    # 한글 자체는 대소문자가 없어 규칙 경로가 잡을 근거가 없다. 다만 한글 기사에
+    # 섞인 라틴 표기 이름은 잡혀야 한다 — 국내 기사의 실제 모습이다.
+    [names] = canonicals(
+        ["앤트로픽이 Claude Sonnet 5를 오늘 공개했다. 성능이 올랐다고 밝혔다."]
+    )
+    assert "claude sonnet 5" in names
+
+
+@pytest.mark.parametrize("documents", [[], [""], ["   "], ["...  ---  "], ["한글만 있는 문장이다."]])
 def test_degenerate_input_yields_no_names(documents):
     assert all(names == set() for names in canonicals(documents))

@@ -10,6 +10,18 @@ LLM도 DB도 쓰지 않는다.
 문서빈도는 호출 시 넘겨받은 배치 안에서만 센다. 그래서 API가 배치 지향이고,
 같은 기사라도 어떤 배치와 함께 넘겼는지에 따라 결과가 달라진다 — 의도된
 동작이다. 번들 빈도표나 외부 코퍼스는 만들지 않는다.
+
+알려진 한계 두 가지.
+
+1. **대소문자가 있는 표기에만 적용된다.** 한글에는 대문자가 없어 규칙 경로가
+   이름과 보통 명사를 가를 근거 자체가 없다 — 한글 기사에서는 본문에 섞인
+   라틴 표기 이름("Claude Sonnet 5")만 잡힌다. 한글 이름까지 잡으려면
+   형태소 분석기가 필요하고, 그건 새 필수 의존성이라 이 이슈 범위 밖이다.
+   근접중복 판정(`near_duplicate`)은 언어를 가리지 않는다.
+2. **대문자가 길게 이어지면 이름 하나로 뽑히지 않는다.** 제목처럼 통째로
+   Title Case인 문장은 동사·형용사까지 한 묶음에 들어간다. 폭 단위로 끊어
+   버리는 낱말은 없게 했지만, 그 안에서 진짜 이름만 골라내지는 못한다.
+   이름 사전으로 거르는 건 ARG-240 소관이다.
 """
 
 from __future__ import annotations
@@ -91,6 +103,10 @@ def _candidate(words: Sequence[str], *, sentence_initial: bool) -> _Candidate | 
     canonical = canonical_name(surface)
     if not canonical:
         return None
+    # 글자가 하나도 없으면 이름이 아니다. 이름에 붙은 버전 숫자가 n-gram 폭
+    # 경계에서 떨어져 나와 홀로 남는 경우를 막는다 ("Claude Sonnet" | "5").
+    if not any(character.isalpha() for character in surface):
+        return None
     # 한 낱말짜리 흔한 말은 이름이 아니다. 여러 낱말이면 그대로 둔다 —
     # "New York"의 New까지 잘라내면 이름이 부서진다.
     if len(words) == 1 and canonical in _STOPWORDS:
@@ -108,21 +124,30 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     found: list[_Candidate] = []
 
     for sentence in _sentences(document):
-        tokens = _TOKEN.findall(sentence)
+        matches = list(_TOKEN.finditer(sentence))
         run: list[tuple[int, str]] = []
 
         def flush() -> None:
-            if not run:
-                return
-            window = run[:max_ngram]
-            candidate = _candidate(
-                [token for _, token in window], sentence_initial=window[0][0] == 0
-            )
-            if candidate is not None:
-                found.append(candidate)
+            # n-gram 폭을 넘는 묶음은 앞부분만 남기고 버리는 대신 폭 단위로
+            # 끊는다. 잘라 버리면 뒤쪽 이름이 결과 어디에도 나타나지 않는다.
+            for start in range(0, len(run), max_ngram):
+                window = run[start : start + max_ngram]
+                candidate = _candidate(
+                    [token for _, token in window], sentence_initial=window[0][0] == 0
+                )
+                if candidate is not None:
+                    found.append(candidate)
             run.clear()
 
-        for index, token in enumerate(tokens):
+        previous_end = 0
+        for index, match in enumerate(matches):
+            # 낱말 사이에 공백이 아닌 게 끼면(쉼표·괄호·따옴표) 거기서 이름이
+            # 끊긴다. "Acme Corp, Globex"를 한 이름으로 붙이면 안 된다.
+            if run and sentence[previous_end : match.start()].strip():
+                flush()
+            previous_end = match.end()
+
+            token = match.group()
             if token[0].isupper():
                 run.append((index, token))
             elif token[0].isdigit() and run:

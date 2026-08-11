@@ -27,13 +27,30 @@ class FakeDoc:
     ents: tuple[FakeEnt, ...]
 
 
+class FakePipeline:
+    """문서 원문 -> (표면형, 라벨) 목록을 돌려주는 가짜 nlp.
+
+    진짜 spaCy처럼 단건 호출과 배치 `.pipe` 둘 다 받는다. 넘겨받은 배치를
+    기록해 두어서 호출 쪽이 배치 API를 실제로 쓰는지 확인할 수 있다.
+    """
+
+    def __init__(self, mapping):
+        self.mapping = mapping
+        self.batches: list[list[str]] = []
+
+    def __call__(self, text):
+        return FakeDoc(
+            tuple(FakeEnt(t, label) for t, label in self.mapping.get(text, ()))
+        )
+
+    def pipe(self, texts):
+        batch = list(texts)
+        self.batches.append(batch)
+        return [self(text) for text in batch]
+
+
 def fake_pipeline(mapping):
-    """문서 원문 -> (표면형, 라벨) 목록을 돌려주는 가짜 nlp."""
-
-    def nlp(text):
-        return FakeDoc(tuple(FakeEnt(t, label) for t, label in mapping.get(text, ())))
-
-    return nlp
+    return FakePipeline(mapping)
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +91,16 @@ def test_extraction_still_works_without_spacy(monkeypatch):
 def test_spacy_names_are_empty_without_a_pipeline(monkeypatch):
     monkeypatch.setattr(entity_spacy, "load_pipeline", lambda: None)
     assert entity_spacy.spacy_names(["Anthropic said nothing.", ""]) == [[], []]
+
+
+def test_documents_are_parsed_in_one_batch(monkeypatch):
+    # 배치 API로 받아 놓고 문서마다 파이프라인을 따로 부르면 spaCy 내부 배치가
+    # 통째로 놀게 된다. 기사 수백 건짜리 크롤 배치에서 그 차이가 그대로 난다.
+    pipeline = fake_pipeline({})
+    monkeypatch.setattr(entity_spacy, "load_pipeline", lambda: pipeline)
+    documents = ["Anthropic said nothing.", "", "Reviewers measured GPT-5.2."]
+    assert entity_spacy.spacy_names(documents) == [[], [], []]
+    assert pipeline.batches == [documents]
 
 
 # ------------------------------------------------------------------- 보강 경로
