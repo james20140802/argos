@@ -141,6 +141,15 @@ def test_empty_text_is_handled():
     assert is_near_duplicate("", "") is True
 
 
+def test_symbol_only_texts_are_not_all_the_same_article():
+    # 글자·숫자가 하나도 없는 글(렌더 전에 긁힌 자리표시자 페이지 등)을 전부
+    # SimHash 0으로 뭉개면, 서로 무관한 것끼리 같은 기사로 판정된다.
+    left, right = "!!! ---- ???", "... === +++"
+    assert simhash(left) != 0
+    assert simhash(left) != simhash(right)
+    assert is_near_duplicate(left, right) is False
+
+
 @pytest.mark.parametrize("a,b,expected", [(0, 0, 0), (0b1011, 0b1001, 1), (0, 2**64 - 1, 64)])
 def test_hamming_distance(a, b, expected):
     assert hamming_distance(a, b) == expected

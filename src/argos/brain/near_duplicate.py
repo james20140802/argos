@@ -32,6 +32,7 @@ _HASH_BITS = 64
 # 않는다 — 라틴 문자만 남기면 한글 기사가 통째로 빈 글이 되어 전부 SimHash 0으로
 # 뭉개지고, 서로 무관한 기사끼리 같은 기사로 판정된다.
 _NON_TEXT = re.compile(r"[\W_]+", re.UNICODE)
+_WHITESPACE = re.compile(r"\s+")
 
 
 def _normalize(text: str) -> str:
@@ -52,6 +53,11 @@ def _feature_hash(feature: str) -> int:
 
 def _shingles(text: str, size: int) -> Counter[str]:
     normalized = _normalize(text)
+    if not normalized:
+        # 글자·숫자가 하나도 없는 글(렌더 전에 긁힌 자리표시자 페이지 등)은
+        # 정규화하면 전부 빈 글이 된다. 그대로 두면 SimHash 0으로 뭉개져
+        # 서로 무관한 것끼리 같은 기사로 판정되므로, 이럴 때만 원문을 쓴다.
+        normalized = _WHITESPACE.sub(" ", text.casefold()).strip()
     if not normalized:
         return Counter()
     if len(normalized) <= size:
