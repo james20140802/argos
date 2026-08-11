@@ -184,6 +184,22 @@ def test_accented_name_stays_one_name():
     assert "chollet" not in names
 
 
+def test_vietnamese_name_stays_one_name():
+    # 이름 글자 범위를 블록 열거로 정하면 빠뜨린 블록에서 이름이 조각난다.
+    # 베트남어 성조 부호(ễ)는 라틴 확장 추가 블록에 있다.
+    [names] = canonicals(["Reviewers quoted Nguyễn Văn An on the benchmark."])
+    assert "nguyễn văn an" in names
+    assert "nguy" not in names
+
+
+def test_line_break_starts_a_new_sentence():
+    # 크롤한 본문은 소제목 뒤에 마침표 없이 줄만 바뀐다. 한 문장으로 붙여 두면
+    # 문단 첫 단어가 '문장 중간 대문자'로 위장해 문장 첫 단어 필터를 통과한다.
+    [names] = canonicals(["Pricing details\nCustomers pay monthly for the tier."])
+    assert "customers" not in names
+    assert not any("customers" in name for name in names)
+
+
 def test_korean_particle_does_not_stick_to_a_latin_name():
     # 이름 글자 범위를 넓힐 때 대소문자 없는 글자까지 넣으면 조사가 이름에
     # 붙어 버린다 — "Claude를"은 어느 배치에서도 "Claude"와 같은 이름이 아니다.

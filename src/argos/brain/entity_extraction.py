@@ -35,16 +35,16 @@ from argos.brain import entity_spacy
 from argos.brain.entity_names import canonical_name
 from argos.config import settings
 
-# 문장 끝은 여기서만 인정한다. `GPT-5.2`의 점은 뒤에 공백이 없어서 안 걸린다.
-_SENTENCE_END = re.compile(r"(?<=[.!?])[\"'’)\]]*\s+")
-# 이름 글자로 인정하는 범위: 대소문자가 **있는** 문자만. 라틴 확장(악센트)과
-# 그리스·키릴이 여기 들어간다 — 'François'를 ASCII로 자르면 'Fran'과 'ois'로
-# 갈라진다. 반대로 한글·한자·가나처럼 대소문자가 없는 글자는 일부러 뺀다.
-# 넣으면 "Anthropic이"처럼 조사가 이름에 들러붙고, 대문자 규칙이 그 글자에
-# 대해서는 아무것도 판정하지 못한다.
-_LETTER = r"A-Za-zÀ-ÖØ-öø-ɏͰ-ϿЀ-ӿ"
+# 문장 끝: 종결부호 뒤의 공백, 또는 줄바꿈. 크롤한 본문은 소제목·문단이
+# 마침표 없이 줄만 바꾸는 일이 흔하다 — 한 문장으로 붙여 두면 문단 첫 단어가
+# '문장 중간 대문자'로 위장해 아래 문장 첫 단어 필터를 통과해 버린다.
+# `GPT-5.2`의 점은 뒤에 공백이 없어서 안 걸린다.
+_SENTENCE_END = re.compile(r"(?<=[.!?])[\"'’)\]]*\s+|[^\S\n]*\n\s*")
 # 낱말(내부 하이픈·아포스트로피·버전 점 포함) 또는 숫자.
-_TOKEN = re.compile(rf"[{_LETTER}][{_LETTER}0-9]*(?:[-'’.][{_LETTER}0-9]+)*|\d+(?:\.\d+)*")
+_TOKEN = re.compile(r"[^\W\d_][^\W_]*(?:[-'’.][^\W_]+)*|\d+(?:\.\d+)*")
+# 이름 글자가 아닌 자리를 메우는 표시. 공백이 **아니어야** 한다 — 이 자리에서
+# 이름 묶음이 끊겨야 하기 때문이다. 토큰 정규식에도 걸리지 않는다.
+_MASK = "\x00"
 
 # 대문자로 시작해도 이름이 아닌 말들. 문장 첫 단어 규칙이 대부분을 걸러 주므로
 # 여기 있는 건 문장 중간에서도 대문자로 나오는 것들이다. 최소한만 둔다 —
@@ -99,8 +99,31 @@ class _Candidate:
     sentence_initial: bool
 
 
+def _is_cased(character: str) -> bool:
+    """대소문자 구분이 있는 글자인가. 한글·한자·가나·아랍 문자는 아니다."""
+    if character.isascii():
+        return character.isalpha()
+    return character.isalpha() and character.lower() != character.upper()
+
+
+def _mask_uncased(text: str) -> str:
+    """이름 글자가 될 수 없는 글자를 자리표시자로 덮는다. 길이는 그대로 둔다.
+
+    대소문자가 없는 글자는 대문자 규칙이 이름 여부를 판정할 근거 자체가 없다.
+    지우지 않고 덮는 이유는 두 가지다. 오프셋이 어긋나지 않아 표시용 원문을
+    그대로 잘라 쓸 수 있고, 공백이 아닌 자리표시자가 남아 있어야 "Anthropic이
+    Claude"처럼 조사를 사이에 낀 두 이름이 한 묶음으로 붙지 않는다.
+    """
+    if text.isascii():
+        return text
+    return "".join(
+        _MASK if character.isalpha() and not _is_cased(character) else character
+        for character in text
+    )
+
+
 def _sentences(text: str) -> list[str]:
-    return [part for part in _SENTENCE_END.split(text) if part.strip()]
+    return [part for part in _SENTENCE_END.split(text) if part.strip(f" \t\r\n{_MASK}")]
 
 
 def _candidate(words: Sequence[str], *, sentence_initial: bool) -> _Candidate | None:
@@ -129,7 +152,7 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     """한 문서에서 대문자 n-gram 후보를 뽑는다 (필터 적용 전)."""
     found: list[_Candidate] = []
 
-    for sentence in _sentences(document):
+    for sentence in _sentences(_mask_uncased(document)):
         matches = list(_TOKEN.finditer(sentence))
         run: list[tuple[int, str]] = []
 
