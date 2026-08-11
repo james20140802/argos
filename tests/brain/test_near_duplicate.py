@@ -100,6 +100,42 @@ def test_deterministic_across_processes():
     assert runs[0] == str(simhash("Anthropic ships a faster coding model today"))
 
 
+# 한글은 글자당 정보량이 라틴 문자보다 훨씬 크다. 같은 "글자 수"라도 훨씬 짧은
+# 기사이므로, 영문 픽스처와 비교 가능한 분량이 되도록 본문을 잡는다.
+_KO_BODY = (
+    "회사는 새 모델이 긴 문맥에서 코딩 정확도를 높였다고 밝혔다. "
+    "내부 평가에서 이전 세대보다 점수가 올랐으며, 기존 고객의 가격은 그대로다. "
+    "일부 연구자는 평가 세트가 공개되지 않았다며 학습 데이터에 대한 설명을 요구했다. "
+    "회사는 기술 보고서를 이번 분기 안에 내겠다고 답했다. "
+    "업계는 이번 발표가 가격 경쟁을 다시 촉발할지 주시하고 있다. "
+    "경쟁사는 다음 달 자체 모델을 내놓겠다고 예고한 상태다. "
+    "국내 개발자들은 한국어 처리 성능이 실제로 개선됐는지 확인하겠다는 반응이다. "
+    "회사 측은 별도의 벤치마크 결과를 공개하지 않았다. "
+    "엔터프라이즈 고객은 확장 문맥 등급에 우선 접근을 신청할 수 있다. "
+    "이 등급은 백만 토큰 규모의 입력을 처리한다고 회사는 설명했다. "
+    "가격 정책 변경은 기존 계약에는 소급 적용되지 않는다. "
+    "회사는 다음 분기에 별도의 기술 문서를 공개하겠다고 덧붙였다."
+)
+KO_ARTICLE = "새 코딩 모델 공개. " + _KO_BODY
+KO_RETITLED = "개발자 겨냥한 신규 공개. " + _KO_BODY
+KO_UNRELATED = (
+    "시의회가 강변 자전거 도로 설치를 승인했다. 공사는 봄에 시작해 여덟 달이 걸린다. "
+    "인근 상인들은 계획을 반겼지만 주차 공간을 더 달라고 요청했다. "
+    "예산은 광역 교통 기금에서 나오며 지방세를 올리지 않는다."
+)
+
+
+def test_non_latin_articles_are_not_all_the_same_article():
+    # 라틴 문자만 남기고 버리면 한국어 기사는 전부 빈 글이 되어 SimHash 0으로
+    # 뭉개지고, 서로 무관한 기사끼리 같은 기사로 판정된다.
+    assert simhash(KO_ARTICLE) != 0
+    assert is_near_duplicate(KO_ARTICLE, KO_UNRELATED) is False
+
+
+def test_non_latin_retitled_article_is_near_duplicate():
+    assert is_near_duplicate(KO_ARTICLE, KO_RETITLED) is True
+
+
 def test_empty_text_is_handled():
     assert simhash("") == 0
     assert is_near_duplicate("", "") is True

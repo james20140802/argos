@@ -12,6 +12,11 @@
 
 공개 API는 해시 계산과 두 기사 쌍 비교까지다. 리스트에서 근접중복 무리를
 찾는 건 clustering이고 뒤 이슈 소관이다.
+
+알려진 한계: 판정은 본문 분량에 비례해 정확해진다. 제목 한 줄이 차지하는
+비중이 클수록 재배포본도 멀어 보이기 때문이다. 한두 문장짜리 블러브는
+제목이 바뀌면 놓칠 수 있다 — 글자당 정보량이 큰 한글은 특히 그렇다.
+기사 전문에서는 문제가 되지 않는다.
 """
 
 from __future__ import annotations
@@ -23,7 +28,10 @@ from collections import Counter
 from argos.config import settings
 
 _HASH_BITS = 64
-_NON_TEXT = re.compile(r"[^0-9a-z]+")
+# 글자·숫자만 남기고 나머지(구두점, 공백)는 하나의 공백으로. 스크립트를 가리지
+# 않는다 — 라틴 문자만 남기면 한글 기사가 통째로 빈 글이 되어 전부 SimHash 0으로
+# 뭉개지고, 서로 무관한 기사끼리 같은 기사로 판정된다.
+_NON_TEXT = re.compile(r"[\W_]+", re.UNICODE)
 
 
 def _normalize(text: str) -> str:
