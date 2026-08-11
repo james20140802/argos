@@ -279,6 +279,8 @@ class EventDetectionConfig(BaseModel):
     entity_min_doc_count: int = Field(default=1, ge=1)
     entity_max_doc_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
     entity_df_min_batch: int = Field(default=5, ge=1)
+    # spaCy 보강(ARG-253)은 켜져 있어도 미설치면 조용히 건너뛴다.
+    entity_spacy_enabled: bool = True
 
 
 class UserConfig(BaseModel):

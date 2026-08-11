@@ -370,6 +370,9 @@ git clone https://github.com/james20140802/argos.git
 cd argos
 uv sync --all-extras
 
+# (선택) 고유명사 추출 보조 경로 — 없어도 규칙 기반으로 동작하고 재현율만 낮아진다
+uv sync --extra nlp && uv run python -m spacy download en_core_web_sm
+
 # 2. 환경 파일 생성
 mkdir -p ~/.config/argos
 cp .env.example ~/.config/argos/.env

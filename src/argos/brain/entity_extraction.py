@@ -19,6 +19,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Sequence
 
+from argos.brain import entity_spacy
 from argos.brain.entity_names import canonical_name
 from argos.config import settings
 
@@ -84,6 +85,24 @@ def _sentences(text: str) -> list[str]:
     return [part for part in _SENTENCE_END.split(text) if part.strip()]
 
 
+def _candidate(words: Sequence[str], *, sentence_initial: bool) -> _Candidate | None:
+    """낱말 묶음을 후보로 만든다. 이름이 될 수 없으면 None."""
+    surface = " ".join(words)
+    canonical = canonical_name(surface)
+    if not canonical:
+        return None
+    # 한 낱말짜리 흔한 말은 이름이 아니다. 여러 낱말이면 그대로 둔다 —
+    # "New York"의 New까지 잘라내면 이름이 부서진다.
+    if len(words) == 1 and canonical in _STOPWORDS:
+        return None
+    return _Candidate(
+        canonical=canonical,
+        surface=surface,
+        word_count=len(words),
+        sentence_initial=sentence_initial,
+    )
+
+
 def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     """한 문서에서 대문자 n-gram 후보를 뽑는다 (필터 적용 전)."""
     found: list[_Candidate] = []
@@ -96,19 +115,11 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             if not run:
                 return
             window = run[:max_ngram]
-            surface = " ".join(token for _, token in window)
-            canonical = canonical_name(surface)
-            # 한 낱말짜리 흔한 말은 이름이 아니다. 여러 낱말이면 그대로 둔다 —
-            # "New York"의 New까지 잘라내면 이름이 부서진다.
-            if canonical and not (len(window) == 1 and canonical in _STOPWORDS):
-                found.append(
-                    _Candidate(
-                        canonical=canonical,
-                        surface=surface,
-                        word_count=len(window),
-                        sentence_initial=window[0][0] == 0,
-                    )
-                )
+            candidate = _candidate(
+                [token for _, token in window], sentence_initial=window[0][0] == 0
+            )
+            if candidate is not None:
+                found.append(candidate)
             run.clear()
 
         for index, token in enumerate(tokens):
@@ -133,6 +144,15 @@ def extract_names(
         max_ngram = config.entity_max_ngram
 
     per_document = [_candidates(document, max_ngram) for document in documents]
+
+    # spaCy 보강(ARG-253)은 규칙 경로 **뒤에** 붙는다. 앞에 두면 표시형 우선순위가
+    # 뒤집히고, 무엇보다 주 경로가 보조 경로에 가려진다.
+    if config.entity_spacy_enabled:
+        for document, spans in zip(per_document, entity_spacy.spacy_names(documents)):
+            for span in spans:
+                candidate = _candidate(span.split()[:max_ngram], sentence_initial=False)
+                if candidate is not None:
+                    document.append(candidate)
 
     # 문장 첫 단어라서 대문자인 것과 진짜 이름을 가르는 증거: 같은 이름이
     # 배치 어딘가에서 문장 중간에도 대문자로 나오는가.

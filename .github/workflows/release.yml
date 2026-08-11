@@ -24,7 +24,9 @@ jobs:
           version: "latest"
 
       - name: Sync dependencies
-        run: uv sync --all-extras
+        # dev만 — nlp extra(spaCy)는 일부러 뺀다. 릴리스 CI는 spaCy 미설치
+        # 폴백 경로로 도는 것이 검증 대상이다 (ARG-253).
+        run: uv sync --extra dev
 
       - name: Verify tag is annotated
         run: |

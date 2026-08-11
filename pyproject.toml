@@ -52,6 +52,11 @@ Issues = "https://github.com/james20140802/argos/issues"
 Changelog = "https://github.com/james20140802/argos/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+# 고유명사 추출의 보조 경로(ARG-253). 없으면 규칙 경로만으로 동작하고
+# 재현율만 낮아지므로 기본 설치에는 넣지 않는다.
+nlp = [
+    "spacy>=3.7,<4",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
