@@ -240,6 +240,31 @@ def test_opening_punctuation_does_not_hide_a_sentence_start(document):
     assert "customers" not in names
 
 
+@pytest.mark.parametrize(
+    "document",
+    ["1) Customers pay monthly.", "[1] Customers pay monthly.", "(a) Customers pay monthly."],
+)
+def test_list_enumerator_does_not_hide_a_sentence_start(document):
+    # 항목 번호는 문장 내용이 아니라 여는 표시다. 이걸 '앞선 내용'으로 세면
+    # 목록 첫 단어가 문장 첫 단어 필터를 그대로 통과한다.
+    [names] = canonicals([document])
+    assert "customers" not in names
+
+
+def test_ampersand_joins_a_name_instead_of_splitting_it():
+    # '&'는 이름을 가르는 구분자가 아니라 붙이는 이음말이다. 여기서 끊으면
+    # 회사 하나가 사라지고 한 글자짜리 가짜 이름이 생긴다.
+    [names] = canonicals(["Reviewers compared AT&T with Verizon this quarter."])
+    assert "at t" in names
+    assert "t" not in names
+    assert "verizon" in names
+
+
+def test_spaced_ampersand_keeps_one_company_name():
+    [names] = canonicals(["Analysts covered Johnson & Johnson closely this quarter."])
+    assert "johnson johnson" in names
+
+
 def test_korean_particle_does_not_stick_to_a_latin_name():
     # 이름 글자 범위를 넓힐 때 대소문자 없는 글자까지 넣으면 조사가 이름에
     # 붙어 버린다 — "Claude를"은 어느 배치에서도 "Claude"와 같은 이름이 아니다.

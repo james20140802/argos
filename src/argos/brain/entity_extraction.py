@@ -49,6 +49,11 @@ _MASK = "\x00"
 # 소유격 어미. 이름은 소유자에서 끝난다 — "Anthropic's Claude"를 한 묶음으로
 # 두면 'anthropics claude'라는 없는 이름이 되고 진짜 이름 둘이 다 사라진다.
 _POSSESSIVE = re.compile(r"['’][Ss]$")
+# 낱말 사이에 끼어도 이름을 가르지 않는 것. 'AT&T', 'Johnson & Johnson'에서
+# 끊으면 회사 하나가 사라지고 한 글자짜리 가짜 이름이 생긴다.
+_JOINERS = frozenset({"&", "＆"})
+# 항목 번호를 닫는 기호. '1.'은 문장 끝 규칙이 이미 잘라 준다.
+_ENUMERATOR_CLOSE = frozenset({")", "]"})
 
 # 대문자로 시작해도 이름이 아닌 말들. 문장 첫 단어 규칙이 대부분을 걸러 주므로
 # 여기 있는 건 문장 중간에서도 대문자로 나오는 것들이다. 최소한만 둔다 —
@@ -139,6 +144,17 @@ def _only_punctuation(text: str) -> bool:
     )
 
 
+def _is_enumerator(token: str, sentence: str, end: int) -> bool:
+    """'1)' '[1]' '(a)'처럼 항목을 여는 번호인가.
+
+    번호는 문장 내용이 아니라 여는 표시다. 내용으로 세면 목록 첫 단어가
+    문장 첫 단어 필터를 그대로 통과해 보통 명사가 이름 행세를 한다.
+    """
+    if not (token.isdigit() or (len(token) == 1 and token.isalpha())):
+        return False
+    return sentence[end : end + 1] in _ENUMERATOR_CLOSE
+
+
 def _sentences(text: str) -> list[str]:
     return [part for part in _SENTENCE_END.split(text) if part.strip(f" \t\r\n{_MASK}")]
 
@@ -191,20 +207,25 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
         previous_end = 0
         seen_content = False
         for match in _TOKEN.finditer(sentence):
-            gap = sentence[previous_end : match.start()]
+            gap = sentence[previous_end : match.start()].strip()
             # 낱말 사이에 공백이 아닌 게 끼면(쉼표·괄호·따옴표) 거기서 이름이
             # 끊긴다. "Acme Corp, Globex"를 한 이름으로 붙이면 안 된다.
-            if run and gap.strip():
+            # 이음말('&')은 예외다 — 거기서 끊으면 이름이 부서진다.
+            if run and gap and gap not in _JOINERS:
                 flush()
-            previous_end = match.end()
 
             # 문장 첫 단어인지는 토큰 순번이 아니라 앞에 실제로 뭐가 있었는지로
             # 본다. 순번으로 세면 마스킹된 한글이 통째로 없던 일이 되어
             # "연구진은 Anthropic과"의 Anthropic이 문장 첫 단어로 둔갑한다.
-            initial = not seen_content and _only_punctuation(gap)
-            seen_content = True
-
+            opening = not seen_content and _only_punctuation(gap)
             token = match.group()
+            if opening and _is_enumerator(token, sentence, match.end()):
+                previous_end = match.end()
+                continue
+
+            previous_end = match.end()
+            initial = opening
+            seen_content = True
             possessive = _POSSESSIVE.search(token)
             if possessive and token[0].isupper():
                 run.append((initial, token[: possessive.start()]))
