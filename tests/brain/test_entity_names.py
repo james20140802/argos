@@ -30,6 +30,14 @@ def test_longer_form_is_a_distinct_name():
     assert canonical_name("Claude Sonnet 5") != canonical_name("Sonnet 5")
 
 
+def test_ampersand_folds_like_other_separators():
+    # 규칙 경로는 'AT&T'를 낱말 둘로 보고, spaCy 경로는 'AT&T' 한 덩어리를
+    # 넘긴다. 둘이 다른 키가 되면 같은 회사가 문서빈도에서 둘로 쪼개진다.
+    assert canonical_name("AT&T") == "at t"
+    assert canonical_name("AT & T") == "at t"
+    assert canonical_name("Johnson & Johnson") == canonical_name("Johnson&Johnson")
+
+
 def test_accented_letters_survive():
     # 라틴 확장 글자를 지우면 이름이 부서진다: François -> franois.
     # 악센트 유무를 접는 건(François == Francois) 하지 않는다 — 일본어

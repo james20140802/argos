@@ -265,6 +265,38 @@ def test_spaced_ampersand_keeps_one_company_name():
     assert "johnson johnson" in names
 
 
+@pytest.mark.parametrize(
+    "document",
+    [
+        "背景です。Customers pay monthly.",
+        "背景です！Customers pay monthly.",
+        "背景です？Customers pay monthly.",
+    ],
+)
+def test_unicode_terminator_starts_a_new_sentence(document):
+    # 일본어·중국어 본문의 문장 끝은 ASCII 마침표가 아니다. 게다가 뒤에 공백도
+    # 없어서, 종결부호로 안 쳐 주면 다음 문장 첫 단어가 문장 중간으로 위장한다.
+    [names] = canonicals([document])
+    assert "customers" not in names
+
+
+@pytest.mark.parametrize(
+    "document",
+    ["1: Customers pay monthly.", "1 - Customers pay monthly.", "(ii) Customers pay monthly."],
+)
+def test_more_list_enumerator_forms_do_not_hide_a_sentence_start(document):
+    [names] = canonicals([document])
+    assert "customers" not in names
+
+
+def test_ampersand_is_kept_in_the_display_surface():
+    # 이음말을 빼고 낱말만 이어 붙이면 표시용 원문이 'AT T'로 망가진다.
+    [names] = extract_names(["Reviewers compared AT&T with Verizon this quarter."])
+    by_key = {name.canonical: name for name in names}
+    assert "at t" in by_key
+    assert by_key["at t"].surface == "AT&T"
+
+
 def test_korean_particle_does_not_stick_to_a_latin_name():
     # 이름 글자 범위를 넓힐 때 대소문자 없는 글자까지 넣으면 조사가 이름에
     # 붙어 버린다 — "Claude를"은 어느 배치에서도 "Claude"와 같은 이름이 아니다.

@@ -36,11 +36,15 @@ from argos.brain import entity_spacy
 from argos.brain.entity_names import canonical_name
 from argos.config import settings
 
-# 문장 끝: 종결부호 뒤의 공백, 또는 줄바꿈. 크롤한 본문은 소제목·문단이
-# 마침표 없이 줄만 바꾸는 일이 흔하다 — 한 문장으로 붙여 두면 문단 첫 단어가
-# '문장 중간 대문자'로 위장해 아래 문장 첫 단어 필터를 통과해 버린다.
-# `GPT-5.2`의 점은 뒤에 공백이 없어서 안 걸린다.
-_SENTENCE_END = re.compile(r"(?<=[.!?])[\"'’)\]]*\s+|[^\S\n]*\n\s*")
+# 문장 끝: 종결부호 뒤의 공백, 전각 종결부호, 또는 줄바꿈.
+# `GPT-5.2`의 점은 뒤에 공백이 없어서 안 걸린다. 전각 종결부호(。！？)는 뒤에
+# 공백을 두지 않는 게 보통이라 공백을 요구하지 않는다.
+# 크롤한 본문은 소제목·문단이 마침표 없이 줄만 바꾸는 일도 흔하다 — 한 문장으로
+# 붙여 두면 문단 첫 단어가 '문장 중간 대문자'로 위장해 아래 문장 첫 단어
+# 필터를 통과해 버린다.
+_SENTENCE_END = re.compile(
+    r"(?<=[.!?])[\"'’)\]]*\s+|(?<=[。．！？])[\"'’)\]』」]*\s*|[^\S\n]*\n\s*"
+)
 # 낱말(내부 하이픈·아포스트로피·버전 점 포함) 또는 숫자.
 _TOKEN = re.compile(r"[^\W\d_][^\W_]*(?:[-'’.][^\W_]+)*|\d+(?:\.\d+)*")
 # 이름 글자가 아닌 자리를 메우는 표시. 공백이 **아니어야** 한다 — 이 자리에서
@@ -53,7 +57,10 @@ _POSSESSIVE = re.compile(r"['’][Ss]$")
 # 끊으면 회사 하나가 사라지고 한 글자짜리 가짜 이름이 생긴다.
 _JOINERS = frozenset({"&", "＆"})
 # 항목 번호를 닫는 기호. '1.'은 문장 끝 규칙이 이미 잘라 준다.
-_ENUMERATOR_CLOSE = frozenset({")", "]"})
+_ENUMERATOR_CLOSE = frozenset({")", "]", ":", ".", "-", "–", "—"})
+# 소문자 로마 숫자 목록 기호 ('(ii)'). 대문자는 일부러 뺀다 — 'MIX:' 같은
+# 전부 대문자인 회사명을 목록 기호로 오인해 삼킨다.
+_ROMAN = re.compile(r"^[ivxlcdm]+$")
 
 # 대문자로 시작해도 이름이 아닌 말들. 문장 첫 단어 규칙이 대부분을 걸러 주므로
 # 여기 있는 건 문장 중간에서도 대문자로 나오는 것들이다. 최소한만 둔다 —
@@ -150,18 +157,29 @@ def _is_enumerator(token: str, sentence: str, end: int) -> bool:
     번호는 문장 내용이 아니라 여는 표시다. 내용으로 세면 목록 첫 단어가
     문장 첫 단어 필터를 그대로 통과해 보통 명사가 이름 행세를 한다.
     """
-    if not (token.isdigit() or (len(token) == 1 and token.isalpha())):
+    if not (
+        token.isdigit()
+        or (len(token) == 1 and token.isalpha())
+        or _ROMAN.match(token) is not None
+    ):
         return False
-    return sentence[end : end + 1] in _ENUMERATOR_CLOSE
+    return sentence[end:].lstrip(" \t")[:1] in _ENUMERATOR_CLOSE
 
 
 def _sentences(text: str) -> list[str]:
     return [part for part in _SENTENCE_END.split(text) if part.strip(f" \t\r\n{_MASK}")]
 
 
-def _candidate(words: Sequence[str], *, sentence_initial: bool) -> _Candidate | None:
-    """낱말 묶음을 후보로 만든다. 이름이 될 수 없으면 None."""
-    surface = " ".join(words)
+def _candidate(
+    words: Sequence[str], *, sentence_initial: bool, surface: str | None = None
+) -> _Candidate | None:
+    """낱말 묶음을 후보로 만든다. 이름이 될 수 없으면 None.
+
+    `surface`를 주면 표시용 원문으로 그대로 쓴다. 낱말만 이어 붙이면 사이에
+    낀 이음말이 사라져 'AT&T'가 'AT T'로 망가진다.
+    """
+    if surface is None:
+        surface = " ".join(words)
     canonical = canonical_name(surface)
     if not canonical:
         return None
@@ -190,7 +208,8 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     normalized = _mask_uncased(unicodedata.normalize("NFC", document))
 
     for sentence in _sentences(normalized):
-        run: list[tuple[bool, str]] = []
+        # (문장 첫 단어인가, 낱말, 문장 안 시작 위치, 끝 위치)
+        run: list[tuple[bool, str, int, int]] = []
 
         def flush() -> None:
             # n-gram 폭을 넘는 묶음은 앞부분만 남기고 버리는 대신 폭 단위로
@@ -198,7 +217,11 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             for start in range(0, len(run), max_ngram):
                 window = run[start : start + max_ngram]
                 candidate = _candidate(
-                    [token for _, token in window], sentence_initial=window[0][0]
+                    [token for _, token, _, _ in window],
+                    sentence_initial=window[0][0],
+                    # 표시용 원문은 낱말을 이어 붙이지 않고 원본 구간을 그대로
+                    # 쓴다. 사이에 낀 이음말('&')이 사라지면 안 된다.
+                    surface=sentence[window[0][2] : window[-1][3]],
                 )
                 if candidate is not None:
                     found.append(candidate)
@@ -228,13 +251,14 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             seen_content = True
             possessive = _POSSESSIVE.search(token)
             if possessive and token[0].isupper():
-                run.append((initial, token[: possessive.start()]))
+                owner = token[: possessive.start()]
+                run.append((initial, owner, match.start(), match.start() + len(owner)))
                 flush()
             elif token[0].isupper():
-                run.append((initial, token))
+                run.append((initial, token, match.start(), match.end()))
             elif token[0].isdigit() and run:
                 # 이름에 붙은 버전 숫자 ("Claude Sonnet 5").
-                run.append((initial, token))
+                run.append((initial, token, match.start(), match.end()))
             else:
                 flush()
         flush()

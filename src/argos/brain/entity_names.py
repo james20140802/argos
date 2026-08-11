@@ -13,8 +13,11 @@ from __future__ import annotations
 import re
 import unicodedata
 
-# 하이픈/언더스코어/슬래시/유니코드 대시류 -> 공백
-_SEPARATORS = re.compile(r"[-_/‐-―−]+")
+# 하이픈/언더스코어/슬래시/유니코드 대시류/앰퍼샌드 -> 공백. 앰퍼샌드까지
+# 여기 넣는 이유는 'AT&T'와 'AT & T'가 같은 키로 모여야 하기 때문이다 —
+# 규칙 경로는 낱말 둘로 보고 spaCy 경로는 한 덩어리로 넘겨서, 안 접으면
+# 같은 회사가 문서빈도에서 둘로 쪼개진다.
+_SEPARATORS = re.compile(r"[-_/&＆‐-―−]+")
 # 글자·숫자·공백·점 이외 전부 제거 (괄호, 따옴표, 쉼표 …). 글자는 ASCII로
 # 한정하지 않는다 — 'François'에서 ç를 지우면 'franois'라는 없는 이름이 된다.
 # 악센트 유무를 접지는(François == Francois) 않는다: 결합 기호를 일괄로
