@@ -9,7 +9,7 @@ from argos.config import EventDetectionConfig, UserConfig
 def test_defaults_match_design_decision():
     cfg = EventDetectionConfig()
     assert cfg.simhash_hamming_max == 3
-    assert cfg.simhash_shingle_size == 3
+    assert cfg.simhash_shingle_size == 4
     assert cfg.entity_max_ngram == 4
     assert cfg.entity_min_doc_count == 1
     assert cfg.entity_max_doc_ratio == pytest.approx(0.5)
@@ -25,7 +25,7 @@ def test_user_config_exposes_section_with_defaults():
 def test_partial_section_keeps_other_defaults():
     user = UserConfig.model_validate({"event_detection": {"simhash_hamming_max": 6}})
     assert user.event_detection.simhash_hamming_max == 6
-    assert user.event_detection.simhash_shingle_size == 3
+    assert user.event_detection.simhash_shingle_size == 4
 
 
 @pytest.mark.parametrize(

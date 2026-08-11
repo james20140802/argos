@@ -268,7 +268,10 @@ class EventDetectionConfig(BaseModel):
     # 코드 상수로 두면 "판정 기준의 엄격함을 설정으로 조절할 수 있다"가 깨진다.
     # SimHash 64bit / 해밍 거리 <= 3 은 확정된 설계 결정(ARG-239)이다.
     simhash_hamming_max: int = Field(default=3, ge=0, le=64)
-    simhash_shingle_size: int = Field(default=3, ge=1, le=10)
+    # 문자 n-gram 폭. 실측상 4가 재배포본(제목 교체·문단 재배열)은 거리 1로,
+    # 무관한 기사는 22로 벌려 놓는다. 3으로 좁히면 제목 교체가 거리 3이라
+    # 컷에 딱 붙어 마진이 사라진다.
+    simhash_shingle_size: int = Field(default=4, ge=1, le=10)
     # 후보 이름의 최대 단어 수 ("Claude Sonnet 5" = 3).
     entity_max_ngram: int = Field(default=4, ge=1, le=8)
     # 배치 내 문서빈도(DF) 컷. 배치가 entity_df_min_batch 미만이면

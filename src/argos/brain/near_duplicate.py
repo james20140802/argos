@@ -1,0 +1,100 @@
+"""기사 근접중복(재배포) 판정 — ARG-251.
+
+같은 기사가 제목만 갈아끼워지거나 문단 순서만 바뀐 채 다시 들어오는 걸
+잡는다. SimHash 64bit + 해밍 거리 컷이고, LLM도 DB도 쓰지 않는다.
+
+피처는 **문자 n-gram + 등장 빈도 가중**이다. 단어 n-gram으로는 확정
+임계값(해밍 <= 3)을 구조적으로 만족할 수 없다 — 제목 한 줄(6단어)이
+바뀌면 단어 shingle 집합의 5~6%가 통째로 갈리고, SimHash 해밍 거리는
+피처 벡터 사잇각에 비례하므로 거리 7 근처가 나온다. 문자 n-gram은
+바뀐 제목의 n-gram 대부분이 이미 본문에 등장하는 것들이라 벡터 방향이
+거의 움직이지 않는다(실측: 제목 교체 1, 문단 재배열 1, 무관한 기사 22).
+
+공개 API는 해시 계산과 두 기사 쌍 비교까지다. 리스트에서 근접중복 무리를
+찾는 건 clustering이고 뒤 이슈 소관이다.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from collections import Counter
+
+from argos.config import settings
+
+_HASH_BITS = 64
+_NON_TEXT = re.compile(r"[^0-9a-z]+")
+
+
+def _normalize(text: str) -> str:
+    """대소문자·구두점·공백 차이를 지운다. 재배포본은 이런 게 흔히 다르다."""
+    return _NON_TEXT.sub(" ", text.casefold()).strip()
+
+
+def _feature_hash(feature: str) -> int:
+    """프로세스 간 결정적인 64bit 해시.
+
+    내장 `hash()`는 PYTHONHASHSEED에 따라 값이 달라져서 쓸 수 없다 —
+    같은 기사가 실행마다 다른 SimHash를 갖게 된다.
+    """
+    return int.from_bytes(
+        hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest(), "big"
+    )
+
+
+def _shingles(text: str, size: int) -> Counter[str]:
+    normalized = _normalize(text)
+    if not normalized:
+        return Counter()
+    if len(normalized) <= size:
+        return Counter([normalized])
+    return Counter(normalized[i : i + size] for i in range(len(normalized) - size + 1))
+
+
+def simhash(text: str, *, shingle_size: int | None = None) -> int:
+    """본문의 64bit SimHash. 빈 글은 0."""
+    if shingle_size is None:
+        shingle_size = settings.user.event_detection.simhash_shingle_size
+
+    features = _shingles(text, shingle_size)
+    if not features:
+        return 0
+
+    columns = [0] * _HASH_BITS
+    for feature, weight in features.items():
+        digest = _feature_hash(feature)
+        for bit in range(_HASH_BITS):
+            columns[bit] += weight if (digest >> bit) & 1 else -weight
+
+    value = 0
+    for bit, column in enumerate(columns):
+        if column > 0:
+            value |= 1 << bit
+    return value
+
+
+def hamming_distance(left: int, right: int) -> int:
+    """두 해시가 다른 비트 수."""
+    return (left ^ right).bit_count()
+
+
+def is_near_duplicate(
+    left: str,
+    right: str,
+    *,
+    max_distance: int | None = None,
+    shingle_size: int | None = None,
+) -> bool:
+    """두 기사가 사실상 같은 기사인가.
+
+    거리 컷을 넘기지 않으면 `[event_detection] simhash_hamming_max`를 쓴다.
+    엄격함은 코드가 아니라 설정에서 조절한다.
+    """
+    if max_distance is None:
+        max_distance = settings.user.event_detection.simhash_hamming_max
+
+    distance = hamming_distance(
+        simhash(left, shingle_size=shingle_size),
+        simhash(right, shingle_size=shingle_size),
+    )
+    return distance <= max_distance
