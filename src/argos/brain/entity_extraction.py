@@ -27,6 +27,7 @@ LLM도 DB도 쓰지 않는다.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from typing import Sequence
@@ -45,6 +46,9 @@ _TOKEN = re.compile(r"[^\W\d_][^\W_]*(?:[-'’.][^\W_]+)*|\d+(?:\.\d+)*")
 # 이름 글자가 아닌 자리를 메우는 표시. 공백이 **아니어야** 한다 — 이 자리에서
 # 이름 묶음이 끊겨야 하기 때문이다. 토큰 정규식에도 걸리지 않는다.
 _MASK = "\x00"
+# 소유격 어미. 이름은 소유자에서 끝난다 — "Anthropic's Claude"를 한 묶음으로
+# 두면 'anthropics claude'라는 없는 이름이 되고 진짜 이름 둘이 다 사라진다.
+_POSSESSIVE = re.compile(r"['’][Ss]$")
 
 # 대문자로 시작해도 이름이 아닌 말들. 문장 첫 단어 규칙이 대부분을 걸러 주므로
 # 여기 있는 건 문장 중간에서도 대문자로 나오는 것들이다. 최소한만 둔다 —
@@ -152,9 +156,12 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     """한 문서에서 대문자 n-gram 후보를 뽑는다 (필터 적용 전)."""
     found: list[_Candidate] = []
 
-    for sentence in _sentences(_mask_uncased(document)):
-        matches = list(_TOKEN.finditer(sentence))
-        run: list[tuple[int, str]] = []
+    # 크롤한 글이 NFC라는 보장이 없다. 결합 기호가 분리된 채로 오면 토큰이
+    # 거기서 끊겨 'François'가 'Franc'과 'ois'로 갈라진다.
+    normalized = _mask_uncased(unicodedata.normalize("NFC", document))
+
+    for sentence in _sentences(normalized):
+        run: list[tuple[bool, str]] = []
 
         def flush() -> None:
             # n-gram 폭을 넘는 묶음은 앞부분만 남기고 버리는 대신 폭 단위로
@@ -162,26 +169,35 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             for start in range(0, len(run), max_ngram):
                 window = run[start : start + max_ngram]
                 candidate = _candidate(
-                    [token for _, token in window], sentence_initial=window[0][0] == 0
+                    [token for _, token in window], sentence_initial=window[0][0]
                 )
                 if candidate is not None:
                     found.append(candidate)
             run.clear()
 
         previous_end = 0
-        for index, match in enumerate(matches):
+        for match in _TOKEN.finditer(sentence):
             # 낱말 사이에 공백이 아닌 게 끼면(쉼표·괄호·따옴표) 거기서 이름이
             # 끊긴다. "Acme Corp, Globex"를 한 이름으로 붙이면 안 된다.
             if run and sentence[previous_end : match.start()].strip():
                 flush()
             previous_end = match.end()
 
+            # 문장 첫 단어인지는 토큰 순번이 아니라 앞에 실제로 뭐가 있었는지로
+            # 본다. 순번으로 세면 마스킹된 한글이 통째로 없던 일이 되어
+            # "연구진은 Anthropic과"의 Anthropic이 문장 첫 단어로 둔갑한다.
+            initial = not sentence[: match.start()].strip()
+
             token = match.group()
-            if token[0].isupper():
-                run.append((index, token))
+            possessive = _POSSESSIVE.search(token)
+            if possessive and token[0].isupper():
+                run.append((initial, token[: possessive.start()]))
+                flush()
+            elif token[0].isupper():
+                run.append((initial, token))
             elif token[0].isdigit() and run:
                 # 이름에 붙은 버전 숫자 ("Claude Sonnet 5").
-                run.append((index, token))
+                run.append((initial, token))
             else:
                 flush()
         flush()

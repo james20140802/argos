@@ -1,3 +1,5 @@
+import unicodedata
+
 import pytest
 
 from argos.brain.entity_extraction import ExtractedName, extract_names
@@ -198,6 +200,32 @@ def test_line_break_starts_a_new_sentence():
     [names] = canonicals(["Pricing details\nCustomers pay monthly for the tier."])
     assert "customers" not in names
     assert not any("customers" in name for name in names)
+
+
+def test_latin_name_after_korean_text_is_mid_sentence():
+    # 문장 첫 단어 여부를 토큰 순번으로 보면, 이름 글자가 아닌 앞부분이 통째로
+    # 없던 일이 된다 — 한글 뒤에 나온 이름이 문장 첫 단어로 둔갑해 탈락한다.
+    [names] = canonicals(["연구진은 Anthropic과 협력했다."])
+    assert "anthropic" in names
+
+
+def test_possessive_does_not_swallow_the_next_name():
+    # 소유격은 소유자에서 이름이 끝난다. 이어 붙이면 'anthropics claude'라는
+    # 없는 이름이 되고, 진짜 이름 둘은 어디에도 나오지 않는다.
+    [names] = canonicals(["Reviewers tested Anthropic's Claude against GPT-5.2."])
+    assert {"anthropic", "claude", "gpt 5.2"} <= names
+    assert "anthropics claude" not in names
+
+
+def test_decomposed_accents_are_normalized_before_tokenizing():
+    # 크롤한 글이 NFC라는 보장이 없다. 결합 기호가 분리된 채로 오면 토큰이
+    # 거기서 끊겨 'franc' 같은 조각이 나온다.
+    decomposed = unicodedata.normalize(
+        "NFD", "Reviewers quoted François Chollet on the benchmark."
+    )
+    [names] = canonicals([decomposed])
+    assert "françois chollet" in names
+    assert "franc" not in names
 
 
 def test_korean_particle_does_not_stick_to_a_latin_name():
