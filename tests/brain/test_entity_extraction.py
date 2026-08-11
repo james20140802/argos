@@ -1,0 +1,152 @@
+import pytest
+
+from argos.brain.entity_extraction import ExtractedName, extract_names
+from argos.config import EventDetectionConfig, settings
+
+
+def canonicals(documents, **kwargs):
+    """배치 결과를 문서별 정규형 집합으로 납작하게 만든다."""
+    return [{name.canonical for name in doc} for doc in extract_names(documents, **kwargs)]
+
+
+def test_multi_word_product_name_stays_one_name():
+    [names] = canonicals(["Anthropic today shipped Claude Sonnet 5 to the API."])
+    assert "claude sonnet 5" in names
+    # 조각으로 쪼개져 나오면 안 된다.
+    assert "claude" not in names
+    assert "sonnet" not in names
+
+
+def test_versioned_name_is_extracted():
+    [names] = canonicals(["The lab compared GPT-5.2 against its own baseline."])
+    assert "gpt 5.2" in names
+
+
+def test_sentence_initial_capital_is_not_a_name():
+    [names] = canonicals(
+        ["The pricing page changed quietly. Available today for every customer."]
+    )
+    assert "the" not in names
+    assert "available" not in names
+
+
+def test_common_words_are_not_names():
+    [names] = canonicals(["Report says the rollout slipped. New guidance lands Today."])
+    assert names.isdisjoint({"report", "new", "today"})
+
+
+def test_sentence_initial_name_is_kept_when_it_recurs_mid_sentence():
+    # 문장 첫 단어라는 이유만으로 버리면 진짜 이름을 놓친다. 같은 배치 안에서
+    # 문장 중간에도 대문자로 나오면 그건 문장부호가 아니라 이름이라는 증거다.
+    [names] = canonicals(
+        ["Blackwell shipped in volume. Demand for Blackwell outran supply."]
+    )
+    assert "blackwell" in names
+
+
+def test_sentence_initial_capital_stays_out_without_that_evidence():
+    [names] = canonicals(["Available capacity fell sharply last quarter."])
+    assert "available" not in names
+
+
+def test_results_align_with_input_order_and_length():
+    docs = [
+        "Engineers at Anthropic tuned Claude Sonnet 5 overnight.",
+        "The rival lab shipped GPT-5.2 the same week.",
+        "",
+    ]
+    results = canonicals(docs)
+    assert len(results) == 3
+    assert "claude sonnet 5" in results[0]
+    assert "gpt 5.2" in results[1]
+    assert results[2] == set()
+
+
+def test_names_are_folded_by_the_canonical_form():
+    # 정규형 계약의 소유자는 ARG-250이다. 여기서는 그걸 쓴다는 사실만 고정한다.
+    docs = ["Benchmarks put Sonnet-5 ahead.", "Reviewers preferred Sonnet 5 overall."]
+    first, second = canonicals(docs)
+    assert "sonnet 5" in first
+    assert "sonnet 5" in second
+
+
+def test_surface_form_is_preserved_for_display():
+    [names] = extract_names(["Engineers at Anthropic tuned Claude Sonnet 5 overnight."])
+    by_key = {name.canonical: name for name in names}
+    assert by_key["claude sonnet 5"].surface == "Claude Sonnet 5"
+    assert isinstance(by_key["claude sonnet 5"], ExtractedName)
+
+
+def test_deterministic_across_calls():
+    docs = [
+        "Engineers at Anthropic tuned Claude Sonnet 5 overnight.",
+        "Reviewers at OpenAI measured GPT-5.2 on the same suite.",
+    ]
+    assert extract_names(docs) == extract_names(docs)
+
+
+def test_results_are_sorted_by_canonical_form():
+    [names] = extract_names(["Reviewers compared Claude Sonnet 5 with GPT-5.2 directly."])
+    keys = [name.canonical for name in names]
+    assert keys == sorted(keys)
+
+
+def test_name_in_too_many_documents_is_dropped(monkeypatch):
+    monkeypatch.setattr(
+        settings.user,
+        "event_detection",
+        EventDetectionConfig(entity_max_doc_ratio=0.5, entity_df_min_batch=5),
+    )
+    # 5건 전부에 나오는 이름(비율 1.0)은 변별력이 없다 — 사건을 가르지 못한다.
+    docs = [f"Analysts at Acme Corp reviewed report number {i} closely." for i in range(5)]
+    for names in canonicals(docs):
+        assert "acme corp" not in names
+
+
+def test_name_below_the_ratio_cut_survives(monkeypatch):
+    monkeypatch.setattr(
+        settings.user,
+        "event_detection",
+        EventDetectionConfig(entity_max_doc_ratio=0.5, entity_df_min_batch=5),
+    )
+    docs = [
+        "Engineers at Acme Corp shipped the update.",
+        "Reviewers at Acme Corp confirmed the numbers.",
+        "The city council approved a bicycle lane downtown.",
+        "Farmers reported a dry season across the valley.",
+        "Rail operators extended the weekend timetable.",
+    ]
+    assert "acme corp" in canonicals(docs)[0]
+
+
+def test_ratio_cut_is_skipped_for_small_batches(monkeypatch):
+    monkeypatch.setattr(
+        settings.user,
+        "event_detection",
+        EventDetectionConfig(entity_max_doc_ratio=0.5, entity_df_min_batch=5),
+    )
+    # 문서 1건짜리 배치에서 비율 컷을 적용하면 모든 이름이 탈락한다.
+    [names] = canonicals(["Engineers at Acme Corp shipped Claude Sonnet 5 overnight."])
+    assert "acme corp" in names
+
+
+def test_ngram_width_comes_from_config(monkeypatch):
+    monkeypatch.setattr(
+        settings.user, "event_detection", EventDetectionConfig(entity_max_ngram=2)
+    )
+    [names] = canonicals(["Reviewers tested Claude Sonnet 5 last week."])
+    assert "claude sonnet 5" not in names
+    assert "claude sonnet" in names
+
+
+def test_explicit_max_ngram_overrides_config(monkeypatch):
+    monkeypatch.setattr(
+        settings.user, "event_detection", EventDetectionConfig(entity_max_ngram=2)
+    )
+    [names] = canonicals(["Reviewers tested Claude Sonnet 5 last week."], max_ngram=4)
+    assert "claude sonnet 5" in names
+
+
+@pytest.mark.parametrize("documents", [[], [""], ["   "], ["...  ---  "]])
+def test_degenerate_input_yields_no_names(documents):
+    assert all(names == set() for names in canonicals(documents))
