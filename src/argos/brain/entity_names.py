@@ -102,7 +102,10 @@ def opens_a_position(character: str) -> bool:
 # 같은 회사가 문서빈도에서 둘로 쪼개진다.
 # 가운뎃점(U+00B7·U+2027)도 같은 이유로 넣는다. 지우기만 하면 'DALL·E'가
 # 'dalle'가 되어 'DALL-E'·'DALL E'로 쓴 같은 제품과 다른 키가 된다.
-_SEPARATORS = re.compile(r"[-_/&＆·‧‐-―−]+")
+# 쉼표도 마찬가지다. 회사 이름 안의 쉼표('Acme, Inc.')는 낱말을 가르는데,
+# 지우기만 하면 뒤를 안 띄운 표기('Acme,Inc.')가 'acmeinc'로 붙어 같은 회사가
+# 두 키로 쪼개진다. 전각 쉼표는 NFKC가 먼저 반각으로 접는다.
+_SEPARATORS = re.compile(r"[-_/&＆·‧,‐-―−]+")
 # 글자·숫자·공백·점 이외 전부 제거 (괄호, 따옴표, 쉼표 …). 글자는 ASCII로
 # 한정하지 않는다 — 'François'에서 ç를 지우면 'franois'라는 없는 이름이 된다.
 # 악센트 유무를 접지는(François == Francois) 않는다: 결합 기호를 일괄로

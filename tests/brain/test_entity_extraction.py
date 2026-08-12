@@ -574,6 +574,9 @@ def test_fullwidth_dot_before_an_uppercase_version_stays_in_the_name():
         # 점을 찍어 쓰는 꼬리도 같은 회사다 — 'Acme S.A.'와 한 키여야 한다.
         ("Reviewers discussed Acme, S.A. yesterday.", "acme sa"),
         ("Reviewers discussed Acme, L.L.C. yesterday.", "acme llc"),
+        # 크롤한 표기가 쉼표 뒤를 안 띄우기도 한다. 그래도 같은 회사다.
+        ("Reviewers discussed Acme,Inc. yesterday.", "acme inc"),
+        ("Reviewers discussed Acme,S.A. yesterday.", "acme sa"),
     ],
 )
 def test_a_comma_before_a_corporate_suffix_stays_in_the_name(sentence, name):

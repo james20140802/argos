@@ -98,6 +98,13 @@ def test_idempotent(raw):
     assert canonical_name(once) == once
 
 
+def test_a_comma_folds_to_a_separator():
+    # 회사 이름 안의 쉼표('Acme, Inc.')는 낱말을 가른다. 지우기만 하면 뒤를
+    # 안 띄운 표기가 'acmeinc'로 붙어 같은 회사가 두 키로 쪼개진다.
+    assert canonical_name("Acme,Inc") == "acme inc"
+    assert canonical_name("Acme, Inc") == "acme inc"
+
+
 def test_an_ellipsis_between_names_folds_to_a_separator():
     # 줄임표는 이름 앞점이 아니라 구분자다 — 토큰화·근접중복 쪽 판정과 같다.
     assert canonical_name("Foo…Bar") == "foo bar"
