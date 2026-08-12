@@ -424,6 +424,20 @@ def test_a_name_after_a_colon_is_still_a_name():
     assert "anthropic" in names
 
 
+@pytest.mark.parametrize(
+    "sentence, absent",
+    [
+        ("Analysts said, 'We're shipping today.'", "were"),
+        ("Analysts said, 'Customers' demand rises.'", "customers"),
+    ],
+)
+def test_an_apostrophe_does_not_close_a_quoted_clause(sentence, absent):
+    # 인용문 안의 어포스트로피를 닫는 따옴표로 읽으면, 인용문이 낱말 하나로
+    # 보여 강조로 오인된다 — 절 첫 단어인 보통 명사가 이름 행세를 한다.
+    [names] = canonicals([sentence])
+    assert absent not in names
+
+
 def test_a_bracketed_clause_starts_a_sentence():
     # 대괄호로 끼워 넣은 편집자 주도 새 문장이다. 아니라고 보면 그 안 첫 단어인
     # 보통 명사가 이름 행세를 한다.

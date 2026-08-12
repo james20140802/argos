@@ -579,11 +579,40 @@ def _quotes_a_clause(sentence: str, start: int, opener: str) -> bool:
     가르는 근거는 따옴표 안의 내용이다: 낱말이 둘 이상이거나 종결부호로 끝나면
     문장이다. 닫는 짝이 없으면 문장으로 본다 — 열린 인용은 뒤로 이어진다.
     """
-    end = sentence.find(_CLAUSE_CLOSE[opener], start)
+    closer = _CLAUSE_CLOSE[opener]
+    if opener in STRAIGHT_QUOTES:
+        end = _straight_close(sentence, start, closer)
+    else:
+        end = sentence.find(closer, start)
     if end == -1:
         return True
     inside = sentence[start:end].rstrip()
     return len(_TOKEN.findall(inside)) > 1 or inside.endswith(_SENTENCE_FINAL)
+
+
+def _straight_close(sentence: str, start: int, closer: str) -> int:
+    """곧은 따옴표가 닫히는 자리. 못 가리면 -1.
+
+    낱말 안의 어포스트로피는 닫는 자리가 아니다 — "We're"에서 닫으면 인용문이
+    낱말 하나로 보여 강조로 오인되고, 절 첫 단어인 보통 명사가 이름이 된다.
+
+    그러고도 닫힐 만한 자리가 여럿이면 -1을 준다. 어느 것이 짝인지 가릴 근거가
+    없어서인데("Customers' demand rises."), 그럴 땐 문장으로 보는 쪽이 안전하다 —
+    잘못 보면 인용문 첫 단어가 이름 행세를 하고, 반대로 잘못 봐야 잃는 건
+    배치에 다른 언급이 없는 한 낱말짜리 이름뿐이다.
+    """
+    found = [
+        index
+        for index in range(start, len(sentence))
+        if sentence[index] == closer and not _inside_a_word(sentence, index)
+    ]
+    return found[0] if len(found) == 1 else -1
+
+
+def _inside_a_word(sentence: str, index: int) -> bool:
+    """이 자리가 낱말 안인가. 양옆이 다 글자·숫자면 그렇다."""
+    before = sentence[index - 1] if index else ""
+    return before.isalnum() and sentence[index + 1 : index + 2].isalnum()
 
 
 def _introduces_a_clause(raw_gap: str, sentence: str, start: int) -> bool:
