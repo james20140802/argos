@@ -1,6 +1,17 @@
+import unicodedata
+
 import pytest
 
 from argos.brain.entity_names import canonical_name
+
+
+def test_combining_marks_survive_canonicalization():
+    # NFKC로도 앞 글자에 합성되지 않는 결합 기호가 있다. 잡음으로 지우면 서로
+    # 다른 두 이름이 한 키로 합쳐지고, 문서빈도가 뭉쳐 한쪽 표시형이 사라진다.
+    with_mark = unicodedata.normalize("NFC", "Ọ́lá")
+    without_mark = unicodedata.normalize("NFC", "Ọlá")
+    assert canonical_name(with_mark) != canonical_name(without_mark)
+    assert canonical_name(with_mark) == unicodedata.normalize("NFKC", with_mark).casefold()
 
 
 @pytest.mark.parametrize(

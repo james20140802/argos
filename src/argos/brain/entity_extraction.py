@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from argos.brain import entity_spacy
-from argos.brain.entity_names import canonical_name
+from argos.brain.entity_names import MARK_CLASS, canonical_name
 from argos.config import settings
 
 # 문장 끝: 종결부호 뒤의 공백, 전각 종결부호, 또는 줄바꿈.
@@ -64,34 +64,9 @@ _SENTENCE_END = re.compile(
 # U+2212(빼기 부호). 손대기 전에 코드포인트부터 확인할 것.
 
 
-def _mark_class() -> str:
-    """결합 기호(유니코드 M 계열)를 정규식 문자 클래스 조각으로 만든다.
-
-    `\\w`는 결합 기호를 잡지 않는다. 그런데 NFC로도 앞 글자에 합성되지 않는
-    부호가 있어서('Ọ' + U+0301), 빼 두면 낱말이 거기서 끊겨 이름이 두 동강 나고
-    한 글자짜리 가짜 이름이 남는다 — 정규형 쪽은 결합 기호를 이미 남기므로 두
-    경로의 답이 갈린다.
-
-    블록을 손으로 열거하지 않고 유니코드 속성에서 뽑는다. 열거는 빠뜨린 블록만큼
-    조용히 틀린다. 훑는 구간은 U+0300..U+2FFFF — 살아 있는 문자의 결합 기호는
-    전부 이 안에 있고, 그 위의 변형 선택자(U+E0100..)는 글자가 아니라 표시
-    지시라 이름에 들어갈 일이 없다. 가져오는 데 20ms쯤 든다.
-    """
-    ranges: list[list[int]] = []
-    for code in range(0x300, 0x30000):
-        if unicodedata.category(chr(code))[0] != "M":
-            continue
-        if ranges and ranges[-1][1] == code - 1:
-            ranges[-1][1] = code
-        else:
-            ranges.append([code, code])
-    return "".join(
-        chr(low) if low == high else f"{chr(low)}-{chr(high)}" for low, high in ranges
-    )
-
-
-# 낱말 글자: 글자·숫자(밑줄 제외)에 결합 기호를 더한 것.
-_WORD = f"(?:[^\\W_]|[{_mark_class()}])"
+# 낱말 글자: 글자·숫자(밑줄 제외)에 결합 기호를 더한 것. 결합 기호 정의는
+# 정규화 쪽과 공유한다 — 갈라 두면 두 경로가 같은 이름을 다르게 자른다.
+_WORD = f"(?:[^\\W_]|[{MARK_CLASS}])"
 _TOKEN = re.compile(
     rf"[^\W\d_]{_WORD}*(?:[-'’./‐-–−]{_WORD}+)*[+#]*|\d+(?:\.\d+)*"
 )
