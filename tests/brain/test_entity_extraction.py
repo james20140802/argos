@@ -288,6 +288,14 @@ def test_fullwidth_leading_dot_opens_a_name():
     assert "．ＮＥＴ" in {name.surface for name in names}
 
 
+def test_symbol_suffix_survives_a_name_joiner():
+    # 'C++/CLI'와 'F#/.NET'은 각각 기술 하나다. 빗금에서 끊으면 정규형이 이미
+    # 한 덩어리로 접는 이름이 문서빈도에서 둘로 쪼개진다.
+    [names] = canonicals(["Reviewers tested C++/CLI with F#/.NET yesterday."])
+    assert {"c++ cli", "f# .net"} <= names
+    assert names.isdisjoint({"cli", "c++", "f#"})
+
+
 def test_middle_dot_stays_inside_the_name():
     # 'DALL·E'의 가운뎃점은 이름의 일부다. 거기서 끊으면 제품 하나가 사라지고
     # 조각 둘이 남으며, 통째로 넘어온 spaCy 표기와도 다른 키가 된다.
