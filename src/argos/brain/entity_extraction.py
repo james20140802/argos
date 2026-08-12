@@ -39,6 +39,7 @@ from typing import Sequence
 from argos.brain import entity_spacy
 from argos.brain.entity_names import (
     JOIN_CLASS,
+    JOIN_SYMBOLS,
     MARK_CLASS,
     OPEN_CLASS,
     STRAIGHT_QUOTES,
@@ -478,6 +479,8 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
       '３．Customers …'처럼 공백 없이 번호를 매기는데, 거기까지 이름으로
       보면 번호가 첫 낱말과 붙어 보통 명사가 이름 행세를 한다. 반각 '3.'은
       뒤에 공백을 두므로 이 문제가 없다.
+    * 앞 숫자가 이미 이름에 붙어 있으면 뒤가 대문자여도 그대로 둔다 —
+      'ＧＰＴ－３．Ｘ'다. 목록 번호는 앞이 비어 있어 여기 안 걸린다.
 
     남는 한계: 라틴 문장을 전각 마침표로 끝내고 **공백 없이** 다음 문장을
     붙여 쓰면('slipped．Customers') 두 문장이 이어진다. 공백이 있으면 접힌 뒤
@@ -493,9 +496,33 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
         return match.group()
     if _is_cased(before) and _is_cased(after):
         return match.group()
-    if before.isdigit() and _is_cased(after) and after.islower():
+    if (
+        before.isdigit()
+        and _is_cased(after)
+        and (after.islower() or _extends_a_name(text, index))
+    ):
         return match.group()
     return "。"
+
+
+def _extends_a_name(text: str, index: int) -> bool:
+    """이 자리 앞의 숫자가 이미 이름에 붙어 있는가.
+
+    'ＧＰＴ－３．Ｘ'의 ３은 이름에 붙은 버전 숫자다 — 앞에 이름 글자가 이어진다.
+    줄 머리의 '３．'은 목록 번호라 앞이 비어 있다. 그 둘을 가르는 자리다.
+
+    앞 글자는 대소문자가 있는 글자이거나 이름을 잇는 부호여야 한다. 대소문자가
+    없는 글자(한글·가나·한자)까지 받으면 CJK 산문 한가운데의 번호가 이름으로
+    둔갑한다.
+    """
+    position = index
+    while position and text[position - 1].isdigit():
+        position -= 1
+    if position == index or not position:
+        return False
+    previous = text[position - 1]
+    # 전각 붙임표는 아직 접히기 전이라 여기서 접어 본다.
+    return _is_cased(previous) or unicodedata.normalize("NFKC", previous) in JOIN_SYMBOLS
 
 
 def _clause_opener(raw_gap: str) -> str:

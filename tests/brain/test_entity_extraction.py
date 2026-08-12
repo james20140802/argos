@@ -557,6 +557,13 @@ def test_leading_dot_survives_straight_quotes():
     assert ".net" in {name.canonical for name in names}
 
 
+def test_fullwidth_dot_before_an_uppercase_version_stays_in_the_name():
+    # 'ＧＰＴ－３．Ｘ'의 점은 이름 안이다 — 앞 숫자가 이미 이름에 붙어 있다.
+    # 문장 끝으로 옮기면 반각 'GPT-3.X'(gpt 3x)와 다른 키가 된다.
+    [names] = canonicals(["Reviewers compared ＧＰＴ－３．Ｘ with Deno."])
+    assert "gpt 3x" in names
+
+
 def test_pure_numbers_stay_numbers():
     # 숫자로 시작하는 이름을 받되 순수한 숫자는 그대로 숫자여야 한다 — 버전
     # 숫자가 이름에 붙고, 항목 번호는 번호로 남는다.
