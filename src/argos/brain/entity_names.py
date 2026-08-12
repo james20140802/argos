@@ -68,6 +68,16 @@ OPEN_PUNCTUATION = open_punctuation()
 OPEN_CLASS = "".join(re.escape(character) for character in OPEN_PUNCTUATION)
 
 
+# 낱말 **안에서** 이름을 잇는 부호. 토큰화(고유명사)와 정규화(근접중복)가 같은
+# 정의를 써야 'F#/.NET' 같은 겹이름이 두 경로에서 같게 잘린다.
+# 전각 줄표(U+2014·U+2015)는 일부러 뺀다. 그건 이름 안이 아니라 절 사이에 쓰여,
+# 이름 안 부호로 치면 서로 다른 이름 둘이 없는 이름 하나로 붙는다. 아래 목록에
+# 든 부호는 눈으로 구별되지 않는다: U+2010..U+2013과 U+2212(빼기 부호).
+# 손대기 전에 코드포인트부터 확인할 것.
+JOIN_SYMBOLS = frozenset("-'’/·‧‐‑‒–−")
+JOIN_CLASS = "".join(re.escape(character) for character in sorted(JOIN_SYMBOLS))
+
+
 def opens_a_position(character: str) -> bool:
     """이 글자 뒤가 이름이 시작할 수 있는 자리인가.
 

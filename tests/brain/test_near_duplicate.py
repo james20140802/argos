@@ -221,6 +221,15 @@ def test_leading_dot_names_do_not_collide():
     assert is_near_duplicate(left * 10, right * 10, max_distance=0) is False
 
 
+def test_leading_dot_after_a_joiner_does_not_collide():
+    # 'F#/.NET'의 앞점은 이음부호 뒤에 있다. 지우면 'F#/NET' 기사와 똑같아져,
+    # 나머지 문장이 같기만 하면 거리 0이다. 고유명사 쪽은 이미 둘을 갈라 놓는다.
+    left = "The team migrated the billing service to F#/.NET this quarter. "
+    right = "The team migrated the billing service to F#/NET this quarter. "
+    assert simhash(left * 10) != simhash(right * 10)
+    assert is_near_duplicate(left * 10, right * 10, max_distance=0) is False
+
+
 def test_ellipsis_spacing_does_not_change_the_article():
     # 줄임표 뒤를 띄웠는가만 다른 같은 기사. 마지막 점을 이름 앞점으로 붙잡으면
     # 한쪽만 '.next'를 갖게 되어 같은 기사가 서로 멀어진다.
