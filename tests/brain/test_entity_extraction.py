@@ -202,6 +202,30 @@ def test_digit_leading_names_are_extracted(surface, expected, bogus):
     assert bogus not in names
 
 
+def test_possessive_stays_when_it_is_part_of_the_name():
+    # 'Moody's'·'McDonald's'의 's는 소유격이 아니라 이름의 일부다. 무조건 끊으면
+    # 진짜 회사 이름이 'moody'로 잘리고, spaCy가 넘긴 'moodys'와 갈려 한 회사가
+    # 두 키로 쪼개진다.
+    [names] = canonicals(["Analysts compared Moody's with S&P Global."])
+    assert "moodys" in names
+    assert "moody" not in names
+
+
+def test_possessive_still_splits_before_another_name():
+    # 반대 방향 경계. 소유격 뒤에 다른 이름이 오면 거기서 끊어야 한다.
+    [names] = canonicals(["Reviewers tested Anthropic's Claude against GPT-5.2."])
+    assert {"anthropic", "claude"} <= names
+    assert "anthropics claude" not in names
+
+
+def test_surface_keeps_the_crawled_spelling():
+    # 정규형은 표기를 접지만 표시용 원문은 본 그대로여야 한다. 전각으로 실린
+    # 기사를 반각으로 바꿔 보여 주면 원문 표기를 되살릴 방법이 없다.
+    names = extract_names(["Reviewers compared Ｃ＋＋ with Ｃ＃ yesterday."])[0]
+    assert {"Ｃ＋＋", "Ｃ＃"} <= {name.surface for name in names}
+    assert {"c++", "c#"} <= {name.canonical for name in names}
+
+
 def test_fullwidth_forms_fold_to_their_ascii_names():
     # CJK 본문은 라틴 글자를 전각으로 적는 일이 흔하다. 호환 형태를 접지 않으면
     # 전각 기호가 토큰화에서 버려져 'Ｃ＋＋'와 'Ｃ＃'이 둘 다 'c'로 뭉개진다.

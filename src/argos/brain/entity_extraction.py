@@ -291,16 +291,41 @@ def _ends_with_abbreviation(text: str, boundary: re.Match[str]) -> bool:
     )
 
 
-def _sentences(text: str) -> list[str]:
-    parts: list[str] = []
+def _sentences(text: str) -> list[tuple[int, str]]:
+    """문장을 (시작 위치, 본문) 쌍으로 끊는다.
+
+    위치를 함께 주는 건 표시용 원문 때문이다. 문장 안 위치만으로는 그 조각이
+    원문 어디서 왔는지 되짚을 수 없다.
+    """
+    parts: list[tuple[int, str]] = []
     start = 0
     for boundary in _SENTENCE_END.finditer(text):
         if _ends_with_abbreviation(text, boundary):
             continue
-        parts.append(text[start : boundary.start()])
+        parts.append((start, text[start : boundary.start()]))
         start = boundary.end()
-    parts.append(text[start:])
-    return [part for part in parts if part.strip(f" \t\r\n{_MASK}")]
+    parts.append((start, text[start:]))
+    return [
+        (offset, part) for offset, part in parts if part.strip(f" \t\r\n{_MASK}")
+    ]
+
+
+def _introduces_a_name(sentence: str, end: int) -> bool:
+    """소유격 뒤에 곧바로 다른 이름이 오는가.
+
+    'Anthropic's Claude'의 's는 소유격이지만 'Moody's'·'McDonald's'의 's는 이름의
+    일부다. 무조건 끊으면 진짜 회사 이름이 'moody'로 잘리고, spaCy가 통째로 넘긴
+    'moodys'와 갈려 한 회사가 두 키로 쪼개진다.
+
+    가릴 근거는 뒤에 오는 말뿐이다. 사전 없이 더 정확히는 못 한다 — 'Moody's
+    Analytics'처럼 이름이 이어지면 여전히 소유격으로 읽는다.
+    """
+    rest = sentence[end:]
+    gap = len(rest) - len(rest.lstrip(" \t"))
+    if not gap:
+        return False
+    following = _TOKEN.match(rest, gap)
+    return following is not None and _opens_a_name(following.group())
 
 
 def _candidate(
@@ -334,6 +359,40 @@ def _candidate(
     )
 
 
+def _clusters(text: str) -> list[tuple[int, str]]:
+    """앞 글자와 그 뒤에 붙는 결합 기호를 한 덩이로 끊는다.
+
+    유니코드 합성은 이 덩이 안에서만 일어난다. 그래서 덩이별로 정규화한 결과를
+    이어 붙이면 글 전체를 한 번에 정규화한 것과 같고, 대신 **어느 글자가 원문
+    어디서 왔는지**를 잃지 않는다. 글자 하나씩 정규화하면 'e'+U+0301이 합성되지
+    않아 이름이 다시 조각난다.
+    """
+    if not text:
+        return []
+    starts = [0] + [
+        index for index in range(1, len(text)) if unicodedata.combining(text[index]) == 0
+    ]
+    return [
+        (start, text[start:end]) for start, end in zip(starts, starts[1:] + [len(text)])
+    ]
+
+
+def _normalize_with_origins(document: str) -> tuple[str, list[int]]:
+    """정규화한 글과, 그 글의 각 자리가 원문 어디서 왔는지의 표.
+
+    호환 형태(NFKC)는 길이를 바꾼다('ﬁ' -> 'fi'). 접은 글에서 자른 조각을 그대로
+    표시용 원문으로 쓰면 크롤한 표기가 사라지므로, 자리마다 원문 위치를 들고
+    다니다가 표시할 때 원문에서 다시 자른다.
+    """
+    folded: list[str] = []
+    origins: list[int] = []
+    for start, cluster in _clusters(document):
+        piece = unicodedata.normalize("NFKC", cluster)
+        folded.append(piece)
+        origins.extend([start] * len(piece))
+    return "".join(folded), origins
+
+
 def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     """한 문서에서 대문자 n-gram 후보를 뽑는다 (필터 적용 전)."""
     found: list[_Candidate] = []
@@ -346,11 +405,18 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     # 없다 — 접기는 여기서 해야 이름이 조각나기 **전에** 걸린다.
     # 전각 마침표는 NFKC가 ASCII 마침표로 접는데, ASCII 마침표는 뒤에 공백을
     # 요구한다. 그대로 두면 공백 없이 잇는 CJK 문장 경계를 잃으므로, 접히기 전에
-    # 뜻이 같고 NFKC가 건드리지 않는 고리점으로 옮긴다.
+    # 뜻이 같고 NFKC가 건드리지 않는 고리점으로 옮긴다. 고리점도 한 글자라
+    # 원문 위치는 어긋나지 않는다.
     document = document.replace("．", "。")
-    normalized = _mask_uncased(unicodedata.normalize("NFKC", document))
+    folded, origins = _normalize_with_origins(document)
+    normalized = _mask_uncased(folded)
 
-    for sentence in _sentences(normalized):
+    def source_slice(start: int, end: int) -> str:
+        """접은 글의 구간을 원문 구간으로 되짚는다."""
+        stop = origins[end] if end < len(origins) else len(document)
+        return document[origins[start] : stop]
+
+    for sentence_offset, sentence in _sentences(normalized):
         # (문장 첫 단어인가, 낱말, 문장 안 시작 위치, 끝 위치)
         run: list[tuple[bool, str, int, int]] = []
 
@@ -362,9 +428,13 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
                 candidate = _candidate(
                     [token for _, token, _, _ in window],
                     sentence_initial=window[0][0],
-                    # 표시용 원문은 낱말을 이어 붙이지 않고 원본 구간을 그대로
-                    # 쓴다. 사이에 낀 이음말('&')이 사라지면 안 된다.
-                    surface=sentence[window[0][2] : window[-1][3]],
+                    # 표시용 원문은 낱말을 이어 붙이지 않고 원문 구간을 그대로
+                    # 쓴다. 사이에 낀 이음말('&')이 사라지면 안 되고, 크롤한
+                    # 표기(전각 등)도 접힌 채로 보여 주면 안 된다.
+                    surface=source_slice(
+                        sentence_offset + window[0][2],
+                        sentence_offset + window[-1][3],
+                    ),
                 )
                 if candidate is not None:
                     found.append(candidate)
@@ -393,7 +463,11 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             initial = opening
             seen_content = True
             possessive = _POSSESSIVE.search(token)
-            if possessive and _opens_a_name(token):
+            if (
+                possessive
+                and _opens_a_name(token)
+                and _introduces_a_name(sentence, match.end())
+            ):
                 owner = token[: possessive.start()]
                 run.append((initial, owner, match.start(), match.start() + len(owner)))
                 flush()
