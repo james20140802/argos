@@ -100,7 +100,9 @@ def opens_a_position(character: str) -> bool:
 # 여기 넣는 이유는 'AT&T'와 'AT & T'가 같은 키로 모여야 하기 때문이다 —
 # 규칙 경로는 낱말 둘로 보고 spaCy 경로는 한 덩어리로 넘겨서, 안 접으면
 # 같은 회사가 문서빈도에서 둘로 쪼개진다.
-_SEPARATORS = re.compile(r"[-_/&＆‐-―−]+")
+# 가운뎃점(U+00B7·U+2027)도 같은 이유로 넣는다. 지우기만 하면 'DALL·E'가
+# 'dalle'가 되어 'DALL-E'·'DALL E'로 쓴 같은 제품과 다른 키가 된다.
+_SEPARATORS = re.compile(r"[-_/&＆·‧‐-―−]+")
 # 글자·숫자·공백·점 이외 전부 제거 (괄호, 따옴표, 쉼표 …). 글자는 ASCII로
 # 한정하지 않는다 — 'François'에서 ç를 지우면 'franois'라는 없는 이름이 된다.
 # 악센트 유무를 접지는(François == Francois) 않는다: 결합 기호를 일괄로

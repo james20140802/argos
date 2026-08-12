@@ -303,12 +303,14 @@ def test_symbol_suffix_survives_a_name_joiner():
     assert names.isdisjoint({"cli", "c++", "f#"})
 
 
-def test_middle_dot_stays_inside_the_name():
+@pytest.mark.parametrize("surface", ["DALL·E", "DALL-E", "DALL E"])
+def test_middle_dot_stays_inside_the_name(surface):
     # 'DALL·E'의 가운뎃점은 이름의 일부다. 거기서 끊으면 제품 하나가 사라지고
-    # 조각 둘이 남으며, 통째로 넘어온 spaCy 표기와도 다른 키가 된다.
-    [names] = canonicals(["Analysts examined DALL·E and GPT-5 today."])
-    assert "dalle" in names
-    assert names.isdisjoint({"dall", "e"})
+    # 조각 둘이 남는다. 붙임표·공백으로 쓴 같은 제품과도 한 키로 모여야 한다 —
+    # 아니면 표기만 다른 같은 이름이 문서빈도를 나눠 갖는다.
+    [names] = canonicals([f"Analysts examined {surface} and GPT-5 today."])
+    assert "dall e" in names
+    assert names.isdisjoint({"dall", "e", "dalle"})
 
 
 def test_quoted_sentence_inside_prose_starts_a_sentence():
