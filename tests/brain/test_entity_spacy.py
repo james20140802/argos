@@ -192,3 +192,17 @@ def test_merged_result_stays_sorted_and_deterministic(monkeypatch):
     keys = [name.canonical for name in names]
     assert keys == sorted(keys)
     assert extract_names([text]) == extract_names([text])
+
+
+def test_long_spacy_span_is_windowed_instead_of_truncated(monkeypatch):
+    # 폭(기본 4낱말)을 넘는 묶음을 앞부분만 남기고 자르면 뒤쪽 이름이 결과
+    # 어디에도 나타나지 않는다. 주 경로는 폭 단위로 끊는데 보조 경로만 자르면
+    # 같은 입력에 두 경로가 다르게 답한다.
+    text = "Reviewers watched the ceremony closely all week."
+    span = "United Nations Educational Scientific Cultural Organization"
+    monkeypatch.setattr(
+        entity_spacy, "load_pipeline", lambda: fake_pipeline({text: [(span, "ORG")]})
+    )
+    [names] = canonicals([text])
+    assert "united nations educational scientific" in names
+    assert "cultural organization" in names

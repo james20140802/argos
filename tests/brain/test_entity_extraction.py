@@ -305,6 +305,24 @@ def test_korean_particle_does_not_stick_to_a_latin_name():
     assert not any(name.endswith("를") for name in names)
 
 
+def test_single_letter_name_before_a_colon_is_not_a_list_marker():
+    # 'X:'는 항목 번호가 아니라 회사 이름이다. 목록 기호로 오인해 건너뛰면
+    # 한 글자짜리 진짜 이름이 결과 어디에도 남지 않는다.
+    first, second = canonicals(
+        ["X: Grok 5 ships new features today.", "Analysts said X keeps shipping."]
+    )
+    assert "x" in first
+    assert "x" in second
+
+
+def test_symbol_suffixed_technology_names_stay_distinct():
+    # 낱말 끝에 붙은 '+'·'#'을 버리면 'C++'와 'C#'이 둘 다 'C' 한 글자로
+    # 잘려 하나로 합쳐진다 — 서로 다른 기술 둘이 사라지고 없는 이름이 생긴다.
+    [names] = canonicals(["Reviewers compared C++ with C# yesterday."])
+    assert {"c++", "c#"} <= names
+    assert "c" not in names
+
+
 @pytest.mark.parametrize("documents", [[], [""], ["   "], ["...  ---  "], ["한글만 있는 문장이다."]])
 def test_degenerate_input_yields_no_names(documents):
     assert all(names == set() for names in canonicals(documents))

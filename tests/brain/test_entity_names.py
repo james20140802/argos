@@ -71,3 +71,11 @@ def test_empty_and_whitespace_only():
 
 def test_deterministic_across_calls():
     assert canonical_name("Claude Sonnet 5") == canonical_name("claude   sonnet   5")
+
+
+def test_symbol_suffixed_names_keep_their_symbol():
+    # 'C++'와 'C#'은 서로 다른 기술이다. 기호를 잡음으로 지우면 둘 다 'c'가
+    # 되어 하나로 합쳐지고, 정작 두 이름은 어디에도 남지 않는다.
+    assert canonical_name("C++") == "c++"
+    assert canonical_name("C#") == "c#"
+    assert canonical_name("F#") != canonical_name("F")

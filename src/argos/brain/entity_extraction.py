@@ -45,8 +45,10 @@ from argos.config import settings
 _SENTENCE_END = re.compile(
     r"(?<=[.!?])[\"'’)\]]*\s+|(?<=[。．！？])[\"'’)\]』」]*\s*|[^\S\n]*\n\s*"
 )
-# 낱말(내부 하이픈·아포스트로피·버전 점 포함) 또는 숫자.
-_TOKEN = re.compile(r"[^\W\d_][^\W_]*(?:[-'’.][^\W_]+)*|\d+(?:\.\d+)*")
+# 낱말(내부 하이픈·아포스트로피·버전 점 포함) 또는 숫자. 낱말 끝의 '+'·'#'은
+# 이름의 일부다 — 버리면 'C++'와 'C#'이 둘 다 'C' 한 글자로 잘려 서로 다른
+# 기술 둘이 사라지고 없는 이름 하나가 남는다.
+_TOKEN = re.compile(r"[^\W\d_][^\W_]*(?:[-'’.][^\W_]+)*[+#]*|\d+(?:\.\d+)*")
 # 이름 글자가 아닌 자리를 메우는 표시. 공백이 **아니어야** 한다 — 이 자리에서
 # 이름 묶음이 끊겨야 하기 때문이다. 토큰 정규식에도 걸리지 않는다.
 _MASK = "\x00"
@@ -58,6 +60,9 @@ _POSSESSIVE = re.compile(r"['’][Ss]$")
 _JOINERS = frozenset({"&", "＆"})
 # 항목 번호를 닫는 기호. '1.'은 문장 끝 규칙이 이미 잘라 준다.
 _ENUMERATOR_CLOSE = frozenset({")", "]", ":", ".", "-", "–", "—"})
+# 괄호로 닫는 항목 번호. 대문자 한 글자는 이것만 번호로 인정한다 —
+# 'X: Grok 5 ...'의 X는 항목 번호가 아니라 회사 이름이다.
+_BRACKET_CLOSE = frozenset({")", "]"})
 # 소문자 로마 숫자 목록 기호 ('(ii)'). 대문자는 일부러 뺀다 — 'MIX:' 같은
 # 전부 대문자인 회사명을 목록 기호로 오인해 삼킨다.
 _ROMAN = re.compile(r"^[ivxlcdm]+$")
@@ -157,13 +162,14 @@ def _is_enumerator(token: str, sentence: str, end: int) -> bool:
     번호는 문장 내용이 아니라 여는 표시다. 내용으로 세면 목록 첫 단어가
     문장 첫 단어 필터를 그대로 통과해 보통 명사가 이름 행세를 한다.
     """
-    if not (
-        token.isdigit()
-        or (len(token) == 1 and token.isalpha())
-        or _ROMAN.match(token) is not None
-    ):
-        return False
-    return sentence[end:].lstrip(" \t")[:1] in _ENUMERATOR_CLOSE
+    closer = sentence[end:].lstrip(" \t")[:1]
+    if token.isdigit() or _ROMAN.match(token) is not None:
+        return closer in _ENUMERATOR_CLOSE
+    if len(token) == 1 and token.isalpha():
+        # 대문자 한 글자는 이름일 수 있다 ('X'). 괄호로 닫힐 때만 번호로 본다 —
+        # 쌍점·붙임표까지 인정하면 진짜 이름이 목록 기호로 오인돼 사라진다.
+        return closer in (_BRACKET_CLOSE if token.isupper() else _ENUMERATOR_CLOSE)
+    return False
 
 
 def _sentences(text: str) -> list[str]:
@@ -281,9 +287,15 @@ def extract_names(
     if config.entity_spacy_enabled:
         for document, spans in zip(per_document, entity_spacy.spacy_names(documents)):
             for span in spans:
-                candidate = _candidate(span.split()[:max_ngram], sentence_initial=False)
-                if candidate is not None:
-                    document.append(candidate)
+                # 폭을 넘는 묶음은 주 경로처럼 폭 단위로 끊는다. 앞부분만 남기고
+                # 잘라 버리면 뒤쪽 이름이 결과 어디에도 나타나지 않는다.
+                words = span.split()
+                for start in range(0, len(words), max_ngram):
+                    candidate = _candidate(
+                        words[start : start + max_ngram], sentence_initial=False
+                    )
+                    if candidate is not None:
+                        document.append(candidate)
 
     # 문장 첫 단어라서 대문자인 것과 진짜 이름을 가르는 증거: 같은 이름이
     # 배치 어딘가에서 문장 중간에도 대문자로 나오는가.
