@@ -3,6 +3,7 @@ import unicodedata
 import pytest
 
 from argos.brain.entity_extraction import ExtractedName, extract_names
+from argos.brain.entity_names import canonical_name
 from argos.config import EventDetectionConfig, settings
 
 
@@ -175,6 +176,28 @@ def test_latin_names_inside_korean_text_are_extracted():
         ["앤트로픽이 Claude Sonnet 5를 오늘 공개했다. 성능이 올랐다고 밝혔다."]
     )
     assert "claude sonnet 5" in names
+
+
+def test_lowercase_leading_product_names_are_extracted():
+    # 첫 글자만 보면 'iOS'·'macOS'처럼 소문자로 시작하는 상표명이 통째로
+    # 사라진다 — 이 프로젝트가 쫓는 이름들이 정확히 이 모양이다.
+    [names] = canonicals(["Reviewers compared iOS with macOS yesterday."])
+    assert {"ios", "macos"} <= names
+
+
+def test_lowercase_leading_company_names_are_extracted():
+    [names] = canonicals(["Analysts said eBay and xAI both shipped."])
+    assert {"ebay", "xai"} <= names
+
+
+def test_combining_mark_without_a_precomposed_form_keeps_the_name_whole():
+    # NFC로도 자음에 합성되지 않는 결합 기호가 있다. 낱말이 거기서 끊기면 이름이
+    # 두 동강 나고 한 글자짜리 가짜 이름이 남는다 — 정규형 쪽은 결합 기호를 이미
+    # 남기므로 두 경로의 답이 갈린다.
+    given = unicodedata.normalize("NFC", "Ọ́lá")
+    [names] = canonicals([f"Reviewers quoted {given} Brown on the benchmark."])
+    assert canonical_name(f"{given} Brown") in names
+    assert canonical_name(given[0]) not in names
 
 
 def test_accented_name_stays_one_name():

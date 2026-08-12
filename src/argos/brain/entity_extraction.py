@@ -60,8 +60,38 @@ _SENTENCE_END = re.compile(
 # 묶으면 서로 다른 이름 둘이 없는 이름 하나로 붙는다.
 # 아래 문자 클래스에 든 부호는 눈으로 구별되지 않는다: U+2010..U+2013 범위와
 # U+2212(빼기 부호). 손대기 전에 코드포인트부터 확인할 것.
+
+
+def _mark_class() -> str:
+    """결합 기호(유니코드 M 계열)를 정규식 문자 클래스 조각으로 만든다.
+
+    `\\w`는 결합 기호를 잡지 않는다. 그런데 NFC로도 앞 글자에 합성되지 않는
+    부호가 있어서('Ọ' + U+0301), 빼 두면 낱말이 거기서 끊겨 이름이 두 동강 나고
+    한 글자짜리 가짜 이름이 남는다 — 정규형 쪽은 결합 기호를 이미 남기므로 두
+    경로의 답이 갈린다.
+
+    블록을 손으로 열거하지 않고 유니코드 속성에서 뽑는다. 열거는 빠뜨린 블록만큼
+    조용히 틀린다. 훑는 구간은 U+0300..U+2FFFF — 살아 있는 문자의 결합 기호는
+    전부 이 안에 있고, 그 위의 변형 선택자(U+E0100..)는 글자가 아니라 표시
+    지시라 이름에 들어갈 일이 없다. 가져오는 데 20ms쯤 든다.
+    """
+    ranges: list[list[int]] = []
+    for code in range(0x300, 0x30000):
+        if unicodedata.category(chr(code))[0] != "M":
+            continue
+        if ranges and ranges[-1][1] == code - 1:
+            ranges[-1][1] = code
+        else:
+            ranges.append([code, code])
+    return "".join(
+        chr(low) if low == high else f"{chr(low)}-{chr(high)}" for low, high in ranges
+    )
+
+
+# 낱말 글자: 글자·숫자(밑줄 제외)에 결합 기호를 더한 것.
+_WORD = f"(?:[^\\W_]|[{_mark_class()}])"
 _TOKEN = re.compile(
-    r"[^\W\d_][^\W_]*(?:[-'’.‐-–−][^\W_]+)*[+#]*|\d+(?:\.\d+)*"
+    rf"[^\W\d_]{_WORD}*(?:[-'’.‐-–−]{_WORD}+)*[+#]*|\d+(?:\.\d+)*"
 )
 # 이름 글자가 아닌 자리를 메우는 표시. 공백이 **아니어야** 한다 — 이 자리에서
 # 이름 묶음이 끊겨야 하기 때문이다. 토큰 정규식에도 걸리지 않는다.
@@ -170,6 +200,16 @@ def _is_cased(character: str) -> bool:
     if character.isascii():
         return character.isalpha()
     return character.isalpha() and character.lower() != character.upper()
+
+
+def _opens_a_name(token: str) -> bool:
+    """이름을 여는 낱말인가.
+
+    첫 글자가 대문자면 이름 후보다. 안쪽에 대문자가 있는 표기도 마찬가지다 —
+    'iOS' 'macOS' 'eBay' 'xAI' 'iPhone'처럼 소문자로 시작하는 상표명은 첫 글자만
+    보면 통째로 사라진다. 하필 이 프로젝트가 쫓는 이름들이 그 모양이다.
+    """
+    return token[0].isupper() or any(character.isupper() for character in token[1:])
 
 
 def _mask_uncased(text: str) -> str:
@@ -339,11 +379,11 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             initial = opening
             seen_content = True
             possessive = _POSSESSIVE.search(token)
-            if possessive and token[0].isupper():
+            if possessive and _opens_a_name(token):
                 owner = token[: possessive.start()]
                 run.append((initial, owner, match.start(), match.start() + len(owner)))
                 flush()
-            elif token[0].isupper():
+            elif _opens_a_name(token):
                 run.append((initial, token, match.start(), match.end()))
             elif token[0].isdigit() and run:
                 # 이름에 붙은 버전 숫자 ("Claude Sonnet 5").
