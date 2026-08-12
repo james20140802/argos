@@ -235,6 +235,14 @@ def test_fullwidth_forms_fold_to_their_ascii_names():
     assert "gpt 5" in versioned
 
 
+def test_middle_dot_stays_inside_the_name():
+    # 'DALL·E'의 가운뎃점은 이름의 일부다. 거기서 끊으면 제품 하나가 사라지고
+    # 조각 둘이 남으며, 통째로 넘어온 spaCy 표기와도 다른 키가 된다.
+    [names] = canonicals(["Analysts examined DALL·E and GPT-5 today."])
+    assert "dalle" in names
+    assert names.isdisjoint({"dall", "e"})
+
+
 def test_quoted_sentence_inside_prose_starts_a_sentence():
     # 문장 중간에서 인용이 열리면 그 안은 새 문장의 첫 자리다. 앞에 글이 있었다는
     # 이유로 문장 중간으로 세면 인용문 첫 단어가 보통 명사인데도 이름이 된다.
