@@ -228,3 +228,29 @@ def test_long_spacy_span_is_windowed_instead_of_truncated(monkeypatch):
     [names] = canonicals([text])
     assert "united nations educational scientific" in names
     assert "cultural organization" in names
+
+
+def test_spacy_span_surface_keeps_the_crawled_spacing(monkeypatch):
+    # 표시용 원문은 크롤한 표기 그대로여야 한다. 낱말만 이어 붙이면 줄바꿈 없는
+    # 공백이 보통 공백으로 바뀌어, 규칙 경로에서 지킨 계약이 보조 경로에서 깨진다.
+    text = "Analysts covered bank of America closely this quarter."
+    span = "bank of America"
+    monkeypatch.setattr(
+        entity_spacy, "load_pipeline", lambda: fake_pipeline({text: [(span, "ORG")]})
+    )
+    [names] = extract_names([text])
+    found = next(name for name in names if name.canonical == "bank of america")
+    assert found.surface == span
+
+
+def test_long_spacy_span_chunks_keep_the_crawled_spacing(monkeypatch):
+    # 폭 단위로 끊을 때도 낱말을 이어 붙이지 않고 스팬 구간을 그대로 쓴다.
+    text = "Reviewers watched the ceremony closely all week."
+    span = "Acme Corp Globex Initech Umbrella Systems"
+    monkeypatch.setattr(
+        entity_spacy, "load_pipeline", lambda: fake_pipeline({text: [(span, "ORG")]})
+    )
+    [names] = extract_names([text])
+    surfaces = {name.surface for name in names}
+    assert "Acme Corp Globex Initech" in surfaces
+    assert "Umbrella Systems" in surfaces

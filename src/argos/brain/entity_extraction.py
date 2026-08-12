@@ -173,6 +173,8 @@ _INITIAL_BEFORE = re.compile(r"(?:^|[\s(\[\"'“‘])[^\W\d_]\.[ \t]*$")
 _INITIAL_AFTER = re.compile(r"^[^\W\d_]\.")
 # 바로 앞에 붙어 있는 낱말. 'George W.'의 'George'를 잡는다.
 _WORD_BEFORE = re.compile(r"[^\W_]+$")
+# spaCy 스팬 안의 낱말. 위치를 알아야 표시용 원문을 스팬에서 그대로 자른다.
+_SPAN_WORD = re.compile(r"\S+")
 
 # 대문자로 시작해도 이름이 아닌 말들. 문장 첫 단어 규칙이 대부분을 걸러 주므로
 # 여기 있는 건 문장 중간에서도 대문자로 나오는 것들이다. 최소한만 둔다 —
@@ -816,10 +818,16 @@ def extract_names(
             for span in spans:
                 # 폭을 넘는 묶음은 주 경로처럼 폭 단위로 끊는다. 앞부분만 남기고
                 # 잘라 버리면 뒤쪽 이름이 결과 어디에도 나타나지 않는다.
-                words = span.split()
+                # 표시용 원문은 낱말을 이어 붙이지 않고 스팬 구간을 그대로 쓴다 —
+                # 주 경로와 같은 계약이다. 이어 붙이면 크롤한 표기(줄바꿈 없는
+                # 공백 등)가 보통 공백으로 바뀌어 본 그대로가 아니게 된다.
+                words = list(_SPAN_WORD.finditer(span))
                 for start in range(0, len(words), max_ngram):
+                    window = words[start : start + max_ngram]
                     candidate = _candidate(
-                        words[start : start + max_ngram], sentence_initial=False
+                        [word.group() for word in window],
+                        sentence_initial=False,
+                        surface=span[window[0].start() : window[-1].end()],
                     )
                     if candidate is not None:
                         document.append(candidate)
