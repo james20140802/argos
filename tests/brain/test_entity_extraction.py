@@ -358,6 +358,27 @@ def test_consecutive_connectors_keep_the_person_whole(sentence, name):
     assert name in names
 
 
+@pytest.mark.parametrize(
+    "sentence, name",
+    [
+        ("Reviewers visited University of the Arts yesterday.", "university of the arts"),
+        ("Reviewers watched House of the Dragon yesterday.", "house of the dragon"),
+    ],
+)
+def test_an_article_inside_a_name_does_not_break_it(sentence, name):
+    # 'of the'는 이름 안에서 흔하다. 관사에서 끊으면 이름 하나가 사라지고
+    # 조각 둘이 문서빈도 자리를 차지한다.
+    [names] = canonicals([sentence])
+    assert name in names
+
+
+def test_a_connector_chain_ending_in_a_common_noun_still_breaks():
+    # 반대 방향 경계. 관사를 받되 연쇄 끝이 보통 명사면 문장의 전치사다.
+    [names] = canonicals(["Analysts watched Acme Corp of the year for months."])
+    assert "acme corp" in names
+    assert not any(key.startswith("acme corp of") for key in names)
+
+
 def test_a_connector_chain_without_a_name_still_breaks():
     # 반대 방향 경계. 이음말 연쇄 끝에 이름이 없으면 그냥 문장의 전치사다.
     [names] = canonicals(["Analysts said Acme Corp de la mode sells shoes daily."])

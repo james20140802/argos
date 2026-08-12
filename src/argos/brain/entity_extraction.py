@@ -232,10 +232,11 @@ _STOPWORDS = frozenset(
 # 'and'는 **일부러 뺀다** — 기사에서 'and'는 이름 안의 이음말이 아니라 나열
 # 기호다. 이어 붙이면 'Anthropic and Google'이 없는 이름 하나가 되면서 진짜
 # 회사 둘이 다 사라진다. 'Procter & Gamble'처럼 '&'로 쓴 이름은 이미 붙는다.
-# 관사 쪽('la' 'der' 'den' 'des')도 넣는다 — 이름 안에서는 전치사 뒤에 관사가
-# 잇따르는 게 흔하다('de la Cruz' 'van der Waals'). 목록이 길어져도 위험이
-# 늘지 않는 건 붙이는 조건이 강해서다: 앞에 이미 이름 묶음이 있고, 뒤에
-# (이음말을 몇 개 건너뛰더라도) 대문자 낱말이 이어질 때만 붙는다.
+# 관사 쪽('the' 'la' 'der' 'den' 'des')도 넣는다 — 이름 안에서는 전치사 뒤에
+# 관사가 잇따르는 게 흔하다('University of the Arts' 'de la Cruz' 'van der
+# Waals'). 목록이 길어져도 위험이 늘지 않는 건 붙이는 조건이 강해서다: 앞에
+# 이미 이름 묶음이 있고, 뒤에 (이음말을 몇 개 건너뛰더라도) 대문자 낱말이
+# 이어질 때만 붙는다. 'the'는 한 낱말짜리 후보로는 여전히 흔한 말로 걸린다.
 _CONNECTORS = frozenset(
     {
         "of",
@@ -249,6 +250,7 @@ _CONNECTORS = frozenset(
         "von",
         "la",
         "le",
+        "the",
         "der",
         "den",
         "des",
