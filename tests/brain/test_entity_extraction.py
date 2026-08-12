@@ -365,6 +365,21 @@ def test_a_connector_chain_without_a_name_still_breaks():
     assert not any(key.startswith("acme corp de") for key in names)
 
 
+@pytest.mark.parametrize(
+    "sentence, name",
+    [
+        ("Reviewers called “Claude” promising yesterday.", "claude"),
+        ("Reviewers discussed «Anthropic» yesterday.", "anthropic"),
+        ('Reviewers called "Claude" promising yesterday.', "claude"),
+    ],
+)
+def test_emphasis_quotes_do_not_hide_the_name_inside(sentence, name):
+    # 따옴표로 감싼 이름 하나는 인용문이 아니라 강조다. 문장 첫 자리로 세면
+    # 한 낱말짜리라 배치에 다른 언급이 없는 한 통째로 탈락한다.
+    [names] = canonicals([sentence])
+    assert name in names
+
+
 def test_listing_conjunction_still_separates_names():
     # 반대 방향 경계. 'and'는 이름 안의 이음말이 아니라 나열 기호다 — 이어 붙이면
     # 서로 다른 회사 둘이 사라지고 없는 이름 하나가 생긴다.

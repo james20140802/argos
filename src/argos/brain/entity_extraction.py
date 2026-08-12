@@ -271,6 +271,19 @@ _CLAUSE_OPEN_SPACED = frozenset({"“", "‘", "«", "『", "「"})
 # 훨씬 흔해서('Acme Corp (Globex)'), 첫 자리로 세면 그 이름이 통째로 탈락한다.
 # 문장 **머리**의 괄호는 이 목록과 무관하게 이미 첫 자리로 센다.
 _CLAUSE_OPEN = _CLAUSE_OPEN_SPACED | frozenset({'"', "'"})
+# 여는 기호와 그 짝. 짝을 찾아야 따옴표 **안**을 볼 수 있다. 아무 닫는 기호나
+# 찾으면 'Anthropic's'의 어포스트로피가 닫는 자리로 세어진다.
+_CLAUSE_CLOSE = {
+    "“": "”",
+    "‘": "’",
+    "«": "»",
+    "『": "』",
+    "「": "」",
+    '"': '"',
+    "'": "'",
+}
+# 따옴표 안이 문장이라는 표시. 낱말 수와 함께 본다.
+_SENTENCE_FINAL = (".", "!", "?", "…", "。")
 
 
 @dataclass(frozen=True, order=True)
@@ -437,15 +450,38 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
     return "。"
 
 
-def _opens_a_clause(raw_gap: str) -> bool:
-    """이 틈에서 인용이 열리는가.
+def _clause_opener(raw_gap: str) -> str:
+    """이 틈에서 인용을 여는 기호. 없으면 빈 글자.
 
     붙어 있으면 어느 따옴표든 연 것으로 본다. 떨어져 있으면 여닫는 모양이 다른
     기호만 인정한다 — 곧은 따옴표까지 받으면 닫는 자리가 열림으로 세어진다.
     """
     if raw_gap.endswith(tuple(_CLAUSE_OPEN)):
+        return raw_gap[-1]
+    stripped = raw_gap.rstrip()
+    if stripped.endswith(tuple(_CLAUSE_OPEN_SPACED)):
+        return stripped[-1]
+    return ""
+
+
+def _quotes_a_clause(sentence: str, start: int, opener: str) -> bool:
+    """따옴표 안이 문장인가, 감싸서 힘준 이름 하나인가.
+
+    'Reviewers called “Claude” promising'의 Claude는 문장의 첫 단어가 아니다 —
+    강조 따옴표다. 첫 자리로 세면 한 낱말짜리라 배치 어딘가에 다른 언급이 없는
+    한 통째로 탈락한다. 기사에서 제품·회사 이름을 따옴표로 감싸는 건 흔하다.
+
+    반대로 'Analysts said, "Customers pay monthly."'는 진짜 문장이라 첫 자리로
+    세야 한다. 아니면 인용문 첫 단어인 보통 명사가 이름 행세를 한다.
+
+    가르는 근거는 따옴표 안의 내용이다: 낱말이 둘 이상이거나 종결부호로 끝나면
+    문장이다. 닫는 짝이 없으면 문장으로 본다 — 열린 인용은 뒤로 이어진다.
+    """
+    end = sentence.find(_CLAUSE_CLOSE[opener], start)
+    if end == -1:
         return True
-    return raw_gap.rstrip().endswith(tuple(_CLAUSE_OPEN_SPACED))
+    inside = sentence[start:end].rstrip()
+    return len(_TOKEN.findall(inside)) > 1 or inside.endswith(_SENTENCE_FINAL)
 
 
 def _closes_an_initial(gap: str, previous: str) -> bool:
@@ -719,9 +755,12 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             # 문장 중간이라도 인용·괄호가 열리면 그 안은 새 문장의 첫 자리다.
             # 아니라고 보면 'Analysts said, "Customers pay monthly."'의 첫 단어가
             # 문장 중간 대문자로 위장해 보통 명사가 이름이 된다.
-            opening = (
-                not seen_content and _only_punctuation(gap)
-            ) or _opens_a_clause(raw_gap)
+            # 인용이 열려도 그 안이 문장일 때만이다 — 이름 하나를 감싼
+            # 강조 따옴표까지 첫 자리로 세면 그 이름이 통째로 탈락한다.
+            opener = _clause_opener(raw_gap)
+            opening = (not seen_content and _only_punctuation(gap)) or (
+                bool(opener) and _quotes_a_clause(sentence, match.start(), opener)
+            )
             token = match.group()
             if opening and _is_enumerator(token, sentence, match.end()):
                 previous_end = match.end()
