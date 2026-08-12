@@ -133,8 +133,7 @@ _ABBREVIATIONS = frozenset(
         "st",
     }
 )
-# 문장을 닫는 전각 마침표. 숫자 사이(버전)는 뺀다.
-_FULLWIDTH_STOP = re.compile(r"(?<!\d)．|．(?!\d)")
+_FULLWIDTH_DOT = re.compile(r"．")
 # 문장 경계 바로 앞의 낱말. 'the U.S.'에서는 머리글자 'S'만 잡힌다.
 _BOUNDARY_WORD = re.compile(r"([^\W\d_]+)\.$")
 # 띄어 쓴 머리글자 연쇄('J. K. Rowling')를 알아보는 자리. 한 글자 앞이나 뒤에
@@ -330,6 +329,32 @@ def _ends_with_abbreviation(text: str, boundary: re.Match[str]) -> bool:
     )
 
 
+def _fullwidth_stop(match: re.Match[str]) -> str:
+    """전각 마침표가 문장을 닫는가, 이름에 붙은 점인가.
+
+    닫는 점이면 고리점으로 옮긴다. NFKC가 전각 마침표를 ASCII 마침표로 접는데,
+    ASCII 마침표는 뒤에 공백을 요구해서 공백 없이 잇는 CJK 문장 경계를 잃기
+    때문이다. 한 글자짜리끼리 바꾸므로 원문 위치는 어긋나지 않는다.
+
+    두 자리는 이름 쪽이라 그대로 둔다.
+
+    * 숫자 사이 — 'ＧＰＴ－５．２'의 점은 버전이다. 옮기면 거기서 끊겨 반각으로
+      쓴 같은 제품과 다른 키가 된다.
+    * 앞이 비어 있고 뒤에 글자가 바로 붙은 자리 — '．ＮＥＴ'의 앞점이다. 옮기면
+      이름이 통째로 사라진다. 문장을 닫는 점은 앞 낱말에 붙어 있으므로
+      '背景です．Customers …'는 여기 걸리지 않는다.
+    """
+    text = match.string
+    index = match.start()
+    before = text[index - 1 : index]
+    after = text[index + 1 : index + 2]
+    if before.isdigit() and after.isdigit():
+        return match.group()
+    if not before.strip() and after.isalpha():
+        return match.group()
+    return "。"
+
+
 def _closes_an_initial(gap: str, previous: str) -> bool:
     """낱말 사이에 낀 이 마침표가 앞 낱말의 머리글자 부호인가.
 
@@ -489,13 +514,9 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     # 접지 않으면 전각 기호가 토큰화에서 버려져 'Ｃ＋＋'와 'Ｃ＃'이 둘 다 'c'가
     # 되고 'ＧＰＴ－５'는 'gpt'로 잘린다. 정규형 쪽이 이미 NFKC라 갈라 둘 이유도
     # 없다 — 접기는 여기서 해야 이름이 조각나기 **전에** 걸린다.
-    # 전각 마침표는 NFKC가 ASCII 마침표로 접는데, ASCII 마침표는 뒤에 공백을
-    # 요구한다. 그대로 두면 공백 없이 잇는 CJK 문장 경계를 잃으므로, 접히기 전에
-    # 뜻이 같고 NFKC가 건드리지 않는 고리점으로 옮긴다. 고리점도 한 글자라
-    # 원문 위치는 어긋나지 않는다.
-    # 숫자 사이는 건드리지 않는다 — 'ＧＰＴ－５．２'의 점은 문장 끝이 아니라
-    # 버전이고, 옮기면 거기서 끊겨 반각으로 쓴 같은 제품과 다른 키가 된다.
-    document = _FULLWIDTH_STOP.sub("。", document)
+    # 문장을 닫는 전각 마침표는 접히기 전에 고리점으로 옮긴다. 어느 점이 문장을
+    # 닫고 어느 점이 이름에 붙었는지는 `_fullwidth_stop`이 가른다.
+    document = _FULLWIDTH_DOT.sub(_fullwidth_stop, document)
     folded, origins = _normalize_with_origins(document)
     normalized = _mask_uncased(folded)
 

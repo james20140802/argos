@@ -280,6 +280,14 @@ def test_fullwidth_forms_fold_to_their_ascii_names():
     assert "gpt 5" in versioned
 
 
+def test_fullwidth_leading_dot_opens_a_name():
+    # 전각 마침표를 무조건 문장 끝으로 옮기면 '．ＮＥＴ'의 앞점이 사라지고
+    # 이름이 통째로 결과에서 빠진다. 반각으로 쓴 같은 기술은 '.net'으로 잡힌다.
+    names = extract_names(["Reviewers compared ．ＮＥＴ with Java yesterday."])[0]
+    assert ".net" in {name.canonical for name in names}
+    assert "．ＮＥＴ" in {name.surface for name in names}
+
+
 def test_middle_dot_stays_inside_the_name():
     # 'DALL·E'의 가운뎃점은 이름의 일부다. 거기서 끊으면 제품 하나가 사라지고
     # 조각 둘이 남으며, 통째로 넘어온 spaCy 표기와도 다른 키가 된다.
