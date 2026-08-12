@@ -57,9 +57,47 @@ _SEPARATORS = re.compile(r"[-_/&＆‐-―−]+")
 # 결합 기호도 남긴다: `\w`가 안 잡는데 NFKC가 합성해 주지도 않는 부호가 있어서,
 # 지우면 'Ọ́lá'와 'Ọlá'가 한 키로 합쳐져 서로 다른 두 이름이 하나가 된다.
 _NOISE = re.compile(rf"[^\w\s.+#{MARK_CLASS}]+")
-# 숫자 사이가 아닌 점은 제거 (문장 끝 마침표는 버리고 5.2의 점은 남긴다)
-_LONE_DOT = re.compile(r"(?<!\d)\.|\.(?!\d)")
+_DOT = re.compile(r"\.")
 _SPACES = re.compile(r"\s+")
+
+
+def _segment_length(text: str, start: int, step: int) -> int:
+    """`start`에서 `step` 방향으로 이어지는 글자·숫자의 개수."""
+    length = 0
+    index = start
+    while 0 <= index < len(text) and text[index].isalnum():
+        length += 1
+        index += step
+    return length
+
+
+def _resolve_dot(match: re.Match[str]) -> str:
+    """점 하나를 어떻게 할지 정한다: 남길지, 구분자로 벌릴지, 지울지.
+
+    점은 자리마다 뜻이 다르다.
+
+    - 숫자 사이(`5.2`)는 버전이다. 그대로 둔다.
+    - 이름 앞(`.NET`)은 이름의 일부다. 지우면 약어 `NET`과 구별되지 않는다.
+    - 낱말 사이(`Node.js`)는 구분자다. 지우기만 하면 `nodejs`가 되어 `Node JS`
+      라고 쓴 같은 제품과 다른 키가 되고 문서빈도가 둘로 쪼개진다.
+    - 머리글자 사이(`U.S.`)는 붙여야 한다. 여기까지 벌리면 훨씬 흔한 표기인
+      `US`와 갈라져, 고치려던 것과 똑같은 쪼개짐이 반대편에서 생긴다. 그래서
+      양옆 토막이 **둘 다 두 글자 이상일 때만** 벌린다.
+    - 그 밖(낱말 끝 `Corp.`)은 버린다.
+    """
+    text = match.string
+    index = match.start()
+    before = text[index - 1] if index else ""
+    after = text[index + 1] if index + 1 < len(text) else ""
+    if before.isdigit() and after.isdigit():
+        return "."
+    if not before.isalnum():
+        return "." if after.isalpha() else ""
+    if not after.isalnum():
+        return ""
+    left = _segment_length(text, index - 1, -1)
+    right = _segment_length(text, index + 1, 1)
+    return " " if left > 1 and right > 1 else ""
 
 
 def canonical_name(name: str) -> str:
@@ -69,5 +107,5 @@ def canonical_name(name: str) -> str:
     text = unicodedata.normalize("NFKC", name).casefold()
     text = _SEPARATORS.sub(" ", text)
     text = _NOISE.sub("", text)
-    text = _LONE_DOT.sub("", text)
+    text = _DOT.sub(_resolve_dot, text)
     return _SPACES.sub(" ", text).strip()

@@ -202,6 +202,14 @@ def test_digit_leading_names_are_extracted(surface, expected, bogus):
     assert bogus not in names
 
 
+def test_leading_dot_stays_in_the_surface():
+    # 표시용 원문은 본 그대로여야 한다. 앞의 점을 떼면 '.NET'이 'NET'으로 보이고,
+    # 약어 'NET'과 구별할 방법도 사라진다.
+    [names] = extract_names(["Reviewers compared .NET with Java yesterday."])
+    assert ".NET" in {name.surface for name in names}
+    assert ".net" in {name.canonical for name in names}
+
+
 def test_pure_numbers_stay_numbers():
     # 숫자로 시작하는 이름을 받되 순수한 숫자는 그대로 숫자여야 한다 — 버전
     # 숫자가 이름에 붙고, 항목 번호는 번호로 남는다.

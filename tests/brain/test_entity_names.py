@@ -5,6 +5,25 @@ import pytest
 from argos.brain.entity_names import canonical_name
 
 
+def test_embedded_dot_folds_like_a_separator():
+    # 같은 제품을 'Node.js'로도 'Node JS'로도 쓴다. 점을 지우기만 하면 두 표기가
+    # 서로 다른 키가 되어 같은 제품의 문서빈도가 둘로 쪼개진다.
+    assert canonical_name("Node.js") == canonical_name("Node JS") == "node js"
+
+
+def test_acronym_dots_still_collapse():
+    # 반대 방향 경계. 머리글자 약어의 점까지 구분자로 접으면 훨씬 흔한 표기
+    # 둘('U.S.'와 'US')이 서로 다른 키가 된다.
+    assert canonical_name("U.S.") == canonical_name("US") == "us"
+    assert canonical_name("J.R.R.") == "jrr"
+
+
+def test_leading_dot_belongs_to_the_name():
+    # '.NET'의 점은 이름의 일부다. 지우면 약어 'NET'과 구별되지 않는다.
+    assert canonical_name(".NET") == ".net"
+    assert canonical_name(".NET") != canonical_name("NET")
+
+
 def test_combining_marks_survive_canonicalization():
     # NFKC로도 앞 글자에 합성되지 않는 결합 기호가 있다. 잡음으로 지우면 서로
     # 다른 두 이름이 한 키로 합쳐지고, 문서빈도가 뭉쳐 한쪽 표시형이 사라진다.
