@@ -289,6 +289,14 @@ _CLAUSE_CLOSE = {
 }
 # 따옴표 안이 문장이라는 표시. 낱말 수와 함께 본다.
 _SENTENCE_FINAL = (".", "!", "?", "…", "。")
+# 닫는 짝 없이 절을 여는 부호. 뒤따르는 내용이 문장 끝까지 이어진다.
+# 쌍점은 늘 앞 낱말에 붙어 있어 자리를 안 따진다.
+_CLAUSE_COLON = (":", "：")
+# 줄표는 앞 낱말에서 **떨어져** 있을 때만 절을 연다. 붙어 있는 줄표
+# ('Claude—Anthropic')는 뒤에 절보다 이름이 오는 자리라, 절로 보면 그 이름이
+# 통째로 탈락한다. 반각 붙임표는 아예 뺀다 — 제목·목록에서 이름을 가르는 데
+# 훨씬 많이 쓰인다('Acme Corp - Q3 결과').
+_CLAUSE_DASH = ("—", "―", "–", "‒")
 
 
 @dataclass(frozen=True, order=True)
@@ -505,6 +513,25 @@ def _quotes_a_clause(sentence: str, start: int, opener: str) -> bool:
         return True
     inside = sentence[start:end].rstrip()
     return len(_TOKEN.findall(inside)) > 1 or inside.endswith(_SENTENCE_FINAL)
+
+
+def _introduces_a_clause(raw_gap: str, sentence: str, start: int) -> bool:
+    """쌍점·줄표 뒤에서 새 절이 열리는가.
+
+    'Analysts said: Customers pay monthly.'의 Customers는 절의 첫 단어지
+    이름이 아니다. 따옴표와 같은 근거를 쓰되 닫는 짝이 없으니, 그 자리부터
+    문장 끝까지를 내용으로 보고 낱말이 둘 이상이면 절로 판정한다.
+
+    종결부호는 근거로 쓰지 않는다. 내용이 늘 문장 끝까지 이어지니 그것까지
+    세면 무엇이든 절이 되어, 'Analysts published the note: Anthropic.'처럼
+    이름 하나만 딸린 자리에서 그 이름이 통째로 탈락한다.
+    """
+    stripped = raw_gap.rstrip()
+    if stripped.endswith(_CLAUSE_COLON):
+        pass
+    elif not (stripped.endswith(_CLAUSE_DASH) and raw_gap[:1].isspace()):
+        return False
+    return len(_TOKEN.findall(sentence[start:])) > 1
 
 
 def _closes_an_initial(gap: str, previous: str) -> bool:
@@ -781,8 +808,10 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             # 인용이 열려도 그 안이 문장일 때만이다 — 이름 하나를 감싼
             # 강조 따옴표까지 첫 자리로 세면 그 이름이 통째로 탈락한다.
             opener = _clause_opener(raw_gap)
-            opening = (not seen_content and _only_punctuation(gap)) or (
-                bool(opener) and _quotes_a_clause(sentence, match.start(), opener)
+            opening = (
+                (not seen_content and _only_punctuation(gap))
+                or (bool(opener) and _quotes_a_clause(sentence, match.start(), opener))
+                or _introduces_a_clause(raw_gap, sentence, match.start())
             )
             token = match.group()
             if opening and _is_enumerator(token, sentence, match.end()):

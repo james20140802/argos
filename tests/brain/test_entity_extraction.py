@@ -401,6 +401,27 @@ def test_emphasis_quotes_do_not_hide_the_name_inside(sentence, name):
     assert name in names
 
 
+@pytest.mark.parametrize(
+    "sentence, absent",
+    [
+        ("Analysts said: Customers pay monthly.", "customers"),
+        ("The report found — Users prefer lower prices.", "users"),
+    ],
+)
+def test_a_clause_introducer_starts_a_sentence(sentence, absent):
+    # 쌍점·줄표 뒤도 새 절의 첫 자리다. 아니라고 보면 절 첫 단어인 보통 명사가
+    # 이름 행세를 하며 배치 문서빈도 자리를 차지한다.
+    [names] = canonicals([sentence])
+    assert absent not in names
+
+
+def test_a_name_after_a_colon_is_still_a_name():
+    # 반대 방향 경계. 쌍점 뒤에 이름 하나만 딸린 건 절이 아니다 — 절로 보면
+    # 'Report: Anthropic' 꼴의 제목에서 회사 이름이 통째로 탈락한다.
+    [names] = canonicals(["Analysts published the note: Anthropic."])
+    assert "anthropic" in names
+
+
 def test_a_parenthesized_clause_starts_a_sentence():
     # 문장 중간에 괄호로 문장이 들어오면 그 안은 새 문장의 첫 자리다. 아니라고
     # 보면 괄호 안 첫 단어인 보통 명사가 이름 행세를 한다.
