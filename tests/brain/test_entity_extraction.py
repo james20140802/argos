@@ -424,6 +424,13 @@ def test_a_name_after_a_colon_is_still_a_name():
     assert "anthropic" in names
 
 
+def test_two_quoted_names_both_survive():
+    # 한 문장에 인용이 둘이면 각 여는 따옴표는 **다음** 닫는 자리와 짝이다.
+    # 짝을 못 지으면 앞 인용이 끝나지 않은 절로 보여 그 이름이 탈락한다.
+    [names] = canonicals(['Reviewers compared "Claude" with "Gemini" yesterday.'])
+    assert {"claude", "gemini"} <= names
+
+
 @pytest.mark.parametrize(
     "sentence, absent",
     [

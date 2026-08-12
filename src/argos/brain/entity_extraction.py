@@ -596,17 +596,22 @@ def _straight_close(sentence: str, start: int, closer: str) -> int:
     낱말 안의 어포스트로피는 닫는 자리가 아니다 — "We're"에서 닫으면 인용문이
     낱말 하나로 보여 강조로 오인되고, 절 첫 단어인 보통 명사가 이름이 된다.
 
-    그러고도 닫힐 만한 자리가 여럿이면 -1을 준다. 어느 것이 짝인지 가릴 근거가
-    없어서인데("Customers' demand rises."), 그럴 땐 문장으로 보는 쪽이 안전하다 —
-    잘못 보면 인용문 첫 단어가 이름 행세를 하고, 반대로 잘못 봐야 잃는 건
-    배치에 다른 언급이 없는 한 낱말짜리 이름뿐이다.
+    그러고 남은 자리의 **개수**로 짝이 맞는지 본다. 짝이 맞으면 여는 자리마다
+    바로 다음 자리가 그 짝이다 — 한 문장에 인용이 둘이어도('"Claude" with
+    "Gemini"') 각각 제 짝을 찾는다. 홀수면 하나는 따옴표가 아니라 소유격
+    어포스트로피라는 뜻이라("Customers' demand rises."), 어느 것인지 가릴
+    근거가 없으니 문장으로 본다. 잘못 보면 인용문 첫 단어가 이름 행세를 하고,
+    반대로 잘못 봐야 잃는 건 배치에 다른 언급이 없는 한 낱말짜리 이름뿐이다.
     """
     found = [
         index
-        for index in range(start, len(sentence))
+        for index in range(len(sentence))
         if sentence[index] == closer and not _inside_a_word(sentence, index)
     ]
-    return found[0] if len(found) == 1 else -1
+    if len(found) % 2:
+        return -1
+    following = [index for index in found if index >= start]
+    return following[0] if following else -1
 
 
 def _inside_a_word(sentence: str, index: int) -> bool:
