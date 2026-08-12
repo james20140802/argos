@@ -137,6 +137,12 @@ _NUMBERING = re.compile(r"^\d+(?:\.\d+)*$")
 # 서수. 숫자머리 이름('4chan')을 받으면서 'the 3rd quarter'는 안 받으려면
 # 이것만 빼면 된다 — 어떤 이름과도 겹치지 않는 닫힌 목록이다.
 _ORDINAL = re.compile(r"\d+(?:st|nd|rd|th)")
+# 이름 뒤에 붙어도 버전이 아닌 숫자. 기사에 흔한 건 연도라, 그것만 뺀다 —
+# 'Nvidia 2025 revenue'가 'nvidia 2025'가 되면 같은 회사가 'nvidia'와 두
+# 키로 쪼개진다. 네 자리라고 다 연도는 아니므로 범위를 좁게 잡는다
+# ('RTX 4090'은 그대로 붙는다). 치르는 값은 연도를 이름에 쓴 제품이다 —
+# 'Windows 2000'은 'windows'로 남는다. 기사에서 연도 쪽이 훨씬 흔하다.
+_YEAR = re.compile(r"(?:19|20)\d{2}")
 # 마침표로 끝나도 문장을 끝내지 않는 말. 뒤에 곧바로 이름이 오는 호칭만 둔다 —
 # 'etc.'처럼 실제로 문장을 끝내는 말까지 넣으면 반대로 두 문장이 붙어, 다음
 # 문장 첫 단어가 문장 중간 대문자로 위장한다.
@@ -832,8 +838,10 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
                 flush()
             elif _opens_a_name(token):
                 run.append((initial, token, match.start(), match.end()))
-            elif token[0].isdigit() and run:
-                # 이름에 붙은 버전 숫자 ("Claude Sonnet 5").
+            elif token[0].isdigit() and run and _YEAR.fullmatch(token) is None:
+                # 이름에 붙은 버전 숫자 ("Claude Sonnet 5"). 연도는 뺀다 —
+                # 'Nvidia 2025 revenue'의 2025는 이름이 아니라 기사의 시점이라,
+                # 붙이면 같은 회사가 두 키로 쪼개진다.
                 run.append((initial, token, match.start(), match.end()))
             elif (
                 run

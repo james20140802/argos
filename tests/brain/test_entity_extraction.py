@@ -522,6 +522,20 @@ def test_an_ellipsis_tail_is_not_a_leading_dot():
     assert ".next" not in names
 
 
+def test_a_year_does_not_join_the_name():
+    # 이름 뒤의 연도는 버전이 아니다. 붙이면 같은 회사가 'nvidia'와 'nvidia
+    # 2025' 두 키로 쪼개져 문서빈도가 갈린다.
+    [names] = canonicals(["Analysts reviewed Nvidia 2025 revenue forecasts."])
+    assert "nvidia" in names
+    assert "nvidia 2025" not in names
+
+
+def test_a_product_number_still_joins_the_name():
+    # 반대 방향 경계. 네 자리라고 다 연도는 아니다 — 제품 번호는 붙어야 한다.
+    [names] = canonicals(["Reviewers benchmarked RTX 4090 cards last week."])
+    assert "rtx 4090" in names
+
+
 def test_pure_numbers_stay_numbers():
     # 숫자로 시작하는 이름을 받되 순수한 숫자는 그대로 숫자여야 한다 — 버전
     # 숫자가 이름에 붙고, 항목 번호는 번호로 남는다.
