@@ -174,8 +174,37 @@ _STOPWORDS = frozenset(
         "friday",
         "saturday",
         "sunday",
+        # 달 이름과 1인칭 대명사도 문장 중간에서 대문자로 쓴다. 문장 첫 단어
+        # 규칙이 못 걸러내므로 그냥 두면 없는 이름이 문서빈도 자리를 차지한다.
+        # 한 낱말일 때만 걸러지므로 'Theresa May' 같은 이름은 그대로 남는다.
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+        "i",
     }
 )
+# 이름 안에 끼는 소문자 낱말. 여기서 끊으면 'Bank of America'가 조각 둘로
+# 남고 회사 하나가 사라진다.
+# 'and'는 **일부러 뺀다** — 기사에서 'and'는 이름 안의 이음말이 아니라 나열
+# 기호다. 이어 붙이면 'Anthropic and Google'이 없는 이름 하나가 되면서 진짜
+# 회사 둘이 다 사라진다. 'Procter & Gamble'처럼 '&'로 쓴 이름은 이미 붙는다.
+_CONNECTORS = frozenset({"of", "de", "del", "della", "di", "da", "du", "van", "von"})
+# 문장 중간에서 인용을 여는 기호. 낱말에 **붙어** 있을 때만 여는 것으로 본다 —
+# 곧은 따옴표는 열고 닫는 모양이 같아서, 닫는 자리(`said "hello" Anthropic`)까지
+# 열림으로 세면 뒤의 진짜 이름이 문장 첫 단어로 둔갑해 탈락한다.
+# 괄호는 일부러 뺀다. 기사에서 문장 중간 괄호 안에 오는 건 문장보다 이름 쪽이
+# 훨씬 흔해서('Acme Corp (Globex)'), 첫 자리로 세면 그 이름이 통째로 탈락한다.
+# 문장 **머리**의 괄호는 이 목록과 무관하게 이미 첫 자리로 센다.
+_CLAUSE_OPEN = frozenset({'"', "'", "“", "‘", "«", "『", "「"})
 
 
 @dataclass(frozen=True, order=True)
@@ -447,7 +476,8 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
         previous_end = 0
         seen_content = False
         for match in _TOKEN.finditer(sentence):
-            gap = sentence[previous_end : match.start()].strip()
+            raw_gap = sentence[previous_end : match.start()]
+            gap = raw_gap.strip()
             # 낱말 사이에 공백이 아닌 게 끼면(쉼표·괄호·따옴표) 거기서 이름이
             # 끊긴다. "Acme Corp, Globex"를 한 이름으로 붙이면 안 된다.
             # 이음말('&')은 예외다 — 거기서 끊으면 이름이 부서진다.
@@ -457,7 +487,12 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             # 문장 첫 단어인지는 토큰 순번이 아니라 앞에 실제로 뭐가 있었는지로
             # 본다. 순번으로 세면 마스킹된 한글이 통째로 없던 일이 되어
             # "연구진은 Anthropic과"의 Anthropic이 문장 첫 단어로 둔갑한다.
-            opening = not seen_content and _only_punctuation(gap)
+            # 문장 중간이라도 인용·괄호가 열리면 그 안은 새 문장의 첫 자리다.
+            # 아니라고 보면 'Analysts said, "Customers pay monthly."'의 첫 단어가
+            # 문장 중간 대문자로 위장해 보통 명사가 이름이 된다.
+            opening = (not seen_content and _only_punctuation(gap)) or raw_gap.endswith(
+                tuple(_CLAUSE_OPEN)
+            )
             token = match.group()
             if opening and _is_enumerator(token, sentence, match.end()):
                 previous_end = match.end()
@@ -479,6 +514,14 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
                 run.append((initial, token, match.start(), match.end()))
             elif token[0].isdigit() and run:
                 # 이름에 붙은 버전 숫자 ("Claude Sonnet 5").
+                run.append((initial, token, match.start(), match.end()))
+            elif (
+                run
+                and token.casefold() in _CONNECTORS
+                and _introduces_a_name(sentence, match.end())
+            ):
+                # 이름 안에 끼는 소문자 낱말 ("Bank of America"). 뒤에 이름이 이어질
+                # 때만 이어 붙인다 — 아니면 문장의 보통 전치사라 거기서 끊어야 한다.
                 run.append((initial, token, match.start(), match.end()))
             else:
                 flush()

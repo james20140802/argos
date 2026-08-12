@@ -235,6 +235,45 @@ def test_fullwidth_forms_fold_to_their_ascii_names():
     assert "gpt 5" in versioned
 
 
+def test_quoted_sentence_inside_prose_starts_a_sentence():
+    # 문장 중간에서 인용이 열리면 그 안은 새 문장의 첫 자리다. 앞에 글이 있었다는
+    # 이유로 문장 중간으로 세면 인용문 첫 단어가 보통 명사인데도 이름이 된다.
+    [straight] = canonicals(['Analysts said, "Customers pay monthly."'])
+    assert "customers" not in straight
+    [curly] = canonicals(["The CEO said “Users subscribe online.”"])
+    assert "users" not in curly
+
+
+def test_name_connectors_keep_the_organization_whole():
+    # 'Bank of America'의 of에서 끊으면 회사 하나가 사라지고 조각 둘이 남는다.
+    [names] = canonicals(["Analysts covered Bank of America closely this quarter."])
+    assert "bank of america" in names
+    assert "bank" not in names
+    assert "america" not in names
+
+
+def test_listing_conjunction_still_separates_names():
+    # 반대 방향 경계. 'and'는 이름 안의 이음말이 아니라 나열 기호다 — 이어 붙이면
+    # 서로 다른 회사 둘이 사라지고 없는 이름 하나가 생긴다.
+    [names] = canonicals(["Reviewers compared Anthropic and Google this quarter."])
+    assert {"anthropic", "google"} <= names
+    assert "anthropic and google" not in names
+
+
+@pytest.mark.parametrize(
+    "document,bogus",
+    [
+        ("Analysts said I agree with the plan.", "i"),
+        ("Analysts met in March to review the plan.", "march"),
+    ],
+)
+def test_intrinsically_capitalized_words_are_not_names(document, bogus):
+    # 문장 중간에서도 대문자로 쓰는 말들이다. 문장 첫 단어 규칙이 못 걸러내므로
+    # 그냥 두면 없는 이름이 배치 문서빈도 자리를 차지한다.
+    [names] = canonicals([document])
+    assert bogus not in names
+
+
 def test_fullwidth_version_keeps_its_decimal_point():
     # 전각 마침표를 문장 끝으로 옮길 때 숫자 사이까지 옮기면 버전이 거기서
     # 끊긴다 — 반각으로 쓴 같은 제품과 다른 키가 되어 문서빈도가 쪼개진다.
