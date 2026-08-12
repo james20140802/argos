@@ -8,10 +8,12 @@
 spaCy는 optional extra다. 없으면 예외 없이 빈 결과를 돌려주고 재현율만
 낮아진다. 기본 설치와 릴리스 CI는 이 폴백 경로로 돈다.
 
-    uv sync --extra nlp && uv run python -m spacy download en_core_web_sm
+    uv sync --extra nlp
+    uv run python -m spacy download "$(uv run argos config get event_detection.entity_spacy_model)"
 
-모델 이름은 설정(`event_detection.entity_spacy_model`)이 정한다. 위 명령의
-`en_core_web_sm`은 기본값일 뿐이다.
+모델 이름은 설정(`event_detection.entity_spacy_model`)이 정한다. 기본값은
+`en_core_web_sm`이다. 내려받을 이름을 문서에 박아 두면 설정을 바꾼 운영자가
+엉뚱한 모델을 받고, 보조 경로는 조용히 꺼진 채로 돈다.
 """
 
 from __future__ import annotations
