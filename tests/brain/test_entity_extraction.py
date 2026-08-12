@@ -401,6 +401,20 @@ def test_emphasis_quotes_do_not_hide_the_name_inside(sentence, name):
     assert name in names
 
 
+def test_a_parenthesized_clause_starts_a_sentence():
+    # 문장 중간에 괄호로 문장이 들어오면 그 안은 새 문장의 첫 자리다. 아니라고
+    # 보면 괄호 안 첫 단어인 보통 명사가 이름 행세를 한다.
+    [names] = canonicals(["Analysts said, (Customers pay monthly.)"])
+    assert "customers" not in names
+
+
+def test_a_parenthesized_name_is_not_a_sentence():
+    # 반대 방향 경계. 문장 중간 괄호 안에는 문장보다 이름이 훨씬 흔하다 —
+    # 첫 자리로 세면 그 이름이 통째로 탈락한다.
+    [names] = canonicals(["Analysts covered Acme Corp (Globex) closely this quarter."])
+    assert "globex" in names
+
+
 def test_listing_conjunction_still_separates_names():
     # 반대 방향 경계. 'and'는 이름 안의 이음말이 아니라 나열 기호다 — 이어 붙이면
     # 서로 다른 회사 둘이 사라지고 없는 이름 하나가 생긴다.
