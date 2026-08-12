@@ -611,9 +611,13 @@ def _joins_a_corporate_suffix(gap: str, token: str) -> bool:
     꼬리 목록에 든 것만 이어 붙이므로 나열은 그대로 끊긴다.
 
     앞 꼬리에 붙은 마침표는 세지 않는다 — 'Foo Co., Ltd.'처럼 꼬리가 겹치면
-    틈이 '.,'가 된다.
+    틈이 '.,'가 된다. 꼬리 자체도 정규형으로 접어서 본다: 점을 찍어 쓰는
+    표기('S.A.' 'L.L.C.')가 같은 꼬리이기 때문이다.
     """
-    return gap.replace(".", "") == "," and token.casefold() in _CORPORATE_SUFFIXES
+    return (
+        gap.replace(".", "") == ","
+        and canonical_name(token) in _CORPORATE_SUFFIXES
+    )
 
 
 def _dot_stays_in_the_name(gap: str, previous: str) -> bool:
