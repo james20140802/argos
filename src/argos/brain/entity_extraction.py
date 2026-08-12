@@ -210,13 +210,18 @@ _STOPWORDS = frozenset(
 # 기호다. 이어 붙이면 'Anthropic and Google'이 없는 이름 하나가 되면서 진짜
 # 회사 둘이 다 사라진다. 'Procter & Gamble'처럼 '&'로 쓴 이름은 이미 붙는다.
 _CONNECTORS = frozenset({"of", "de", "del", "della", "di", "da", "du", "van", "von"})
-# 문장 중간에서 인용을 여는 기호. 낱말에 **붙어** 있을 때만 여는 것으로 본다 —
-# 곧은 따옴표는 열고 닫는 모양이 같아서, 닫는 자리(`said "hello" Anthropic`)까지
-# 열림으로 세면 뒤의 진짜 이름이 문장 첫 단어로 둔갑해 탈락한다.
+# 문장 중간에서 인용을 여는 기호. 두 갈래로 나눠 둔다.
+# 여닫는 모양이 다른 기호(“ ‘ « 「 『)는 뒤에 공백이 있어도 여는 것으로 본다 —
+# 크롤한 본문은 여는 따옴표와 첫 낱말 사이를 띄우는 일이 흔한데(줄바꿈 없는
+# 공백도 마찬가지), 못 알아보면 인용문 첫 단어가 문장 중간 대문자로 위장한다.
+_CLAUSE_OPEN_SPACED = frozenset({"“", "‘", "«", "『", "「"})
+# 곧은 따옴표는 열고 닫는 모양이 같아서 낱말에 **붙어** 있을 때만 연다. 공백까지
+# 허용하면 닫는 자리(`said "hello" Anthropic`)가 열림으로 세어져 뒤의 진짜
+# 이름이 문장 첫 단어로 둔갑해 탈락한다.
 # 괄호는 일부러 뺀다. 기사에서 문장 중간 괄호 안에 오는 건 문장보다 이름 쪽이
 # 훨씬 흔해서('Acme Corp (Globex)'), 첫 자리로 세면 그 이름이 통째로 탈락한다.
 # 문장 **머리**의 괄호는 이 목록과 무관하게 이미 첫 자리로 센다.
-_CLAUSE_OPEN = frozenset({'"', "'", "“", "‘", "«", "『", "「"})
+_CLAUSE_OPEN = _CLAUSE_OPEN_SPACED | frozenset({'"', "'"})
 
 
 @dataclass(frozen=True, order=True)
@@ -364,6 +369,17 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
     if _opens_a_position(before) and after.isalpha():
         return match.group()
     return "。"
+
+
+def _opens_a_clause(raw_gap: str) -> bool:
+    """이 틈에서 인용이 열리는가.
+
+    붙어 있으면 어느 따옴표든 연 것으로 본다. 떨어져 있으면 여닫는 모양이 다른
+    기호만 인정한다 — 곧은 따옴표까지 받으면 닫는 자리가 열림으로 세어진다.
+    """
+    if raw_gap.endswith(tuple(_CLAUSE_OPEN)):
+        return True
+    return raw_gap.rstrip().endswith(tuple(_CLAUSE_OPEN_SPACED))
 
 
 def _opens_a_position(character: str) -> bool:
@@ -597,9 +613,9 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             # 문장 중간이라도 인용·괄호가 열리면 그 안은 새 문장의 첫 자리다.
             # 아니라고 보면 'Analysts said, "Customers pay monthly."'의 첫 단어가
             # 문장 중간 대문자로 위장해 보통 명사가 이름이 된다.
-            opening = (not seen_content and _only_punctuation(gap)) or raw_gap.endswith(
-                tuple(_CLAUSE_OPEN)
-            )
+            opening = (
+                not seen_content and _only_punctuation(gap)
+            ) or _opens_a_clause(raw_gap)
             token = match.group()
             if opening and _is_enumerator(token, sentence, match.end()):
                 previous_end = match.end()

@@ -320,6 +320,22 @@ def test_quoted_sentence_inside_prose_starts_a_sentence():
     assert "users" not in curly
 
 
+@pytest.mark.parametrize("space", [" ", " "])
+def test_opening_quote_starts_a_sentence_across_whitespace(space):
+    # 크롤한 본문은 여는 따옴표와 첫 낱말 사이에 공백을 두는 일이 흔하다
+    # (줄바꿈 없는 공백도 마찬가지). 붙어 있을 때만 여는 것으로 보면 인용문
+    # 첫 단어가 문장 중간 대문자로 위장해 배치 문서빈도를 오염시킨다.
+    [names] = canonicals([f"Analysts said,{space}“{space}Customers pay monthly.”"])
+    assert "customers" not in names
+
+
+def test_closing_straight_quote_still_does_not_open_a_sentence():
+    # 반대 방향 경계. 곧은 따옴표는 여닫는 모양이 같아서 공백까지 허용하면
+    # 닫는 자리가 열림으로 세어져 뒤의 진짜 이름이 통째로 탈락한다.
+    [names] = canonicals(['Reviewers said "hello" Anthropic shipped it fast.'])
+    assert "anthropic" in names
+
+
 def test_name_connectors_keep_the_organization_whole():
     # 'Bank of America'의 of에서 끊으면 회사 하나가 사라지고 조각 둘이 남는다.
     [names] = canonicals(["Analysts covered Bank of America closely this quarter."])
