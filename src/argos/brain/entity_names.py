@@ -43,6 +43,42 @@ def mark_class() -> str:
 # 정규화와 토큰화가 같은 정의를 써야 두 경로가 같은 키로 모인다.
 MARK_CLASS = mark_class()
 
+
+def open_punctuation() -> str:
+    """여는 구두점(유니코드 Ps·Pi)을 모은다.
+
+    `mark_class()`와 같은 이유로 손으로 열거하지 않는다 — 빠뜨린 기호만큼
+    조용히 틀린다. 훑는 구간도 같게 둔다(U+0300 위는 U+FF62가 마지막이고 그
+    위에는 없다).
+
+    닫는 쪽(Pe·Pf)은 일부러 뺀다. 여는 자리만 이름이 시작할 수 있는 자리다.
+    곧은 따옴표는 Po라 애초에 안 들어온다 — 여는 모양과 닫는 모양이 같아
+    가릴 근거가 없다.
+    """
+    return "".join(
+        chr(code)
+        for code in range(0x30000)
+        if unicodedata.category(chr(code)) in {"Ps", "Pi"}
+    )
+
+
+OPEN_PUNCTUATION = open_punctuation()
+# 정규식 문자 클래스에 그대로 끼워 넣을 수 있는 꼴. 안에 '[' ']' '\'이 들어 있어
+# escape 없이 넣으면 클래스가 깨진다.
+OPEN_CLASS = "".join(re.escape(character) for character in OPEN_PUNCTUATION)
+
+
+def opens_a_position(character: str) -> bool:
+    """이 글자 뒤가 이름이 시작할 수 있는 자리인가.
+
+    글머리(빈 글자)와 공백, 그리고 여는 구두점이다. 이름 앞에 붙는 점('.NET')을
+    문장 부호와 가르는 자리 판정이라, 정규형·토큰화·근접중복 세 경로가 같은
+    정의를 써야 한다. 갈라 두면 같은 글이 경로마다 다르게 잘린다.
+    """
+    if not character.strip():
+        return True
+    return character in OPEN_PUNCTUATION
+
 # 하이픈/언더스코어/슬래시/유니코드 대시류/앰퍼샌드 -> 공백. 앰퍼샌드까지
 # 여기 넣는 이유는 'AT&T'와 'AT & T'가 같은 키로 모여야 하기 때문이다 —
 # 규칙 경로는 낱말 둘로 보고 spaCy 경로는 한 덩어리로 넘겨서, 안 접으면

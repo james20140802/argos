@@ -221,6 +221,14 @@ def test_leading_dot_names_do_not_collide():
     assert is_near_duplicate(left * 10, right * 10, max_distance=0) is False
 
 
+def test_ellipsis_spacing_does_not_change_the_article():
+    # 줄임표 뒤를 띄웠는가만 다른 같은 기사. 마지막 점을 이름 앞점으로 붙잡으면
+    # 한쪽만 '.next'를 갖게 되어 같은 기사가 서로 멀어진다.
+    left = "The rollout slipped...Next quarter the team revisits the billing plan. "
+    right = "The rollout slipped... Next quarter the team revisits the billing plan. "
+    assert simhash(left * 10) == simhash(right * 10)
+
+
 def test_symbol_bearing_names_do_not_collide():
     # 기호를 지우면 'C++' 기사와 'C#' 기사가 똑같이 'c'가 되어, 나머지 문장이
     # 같기만 하면 거리 0 — 서로 다른 기술을 다룬 기사가 무조건 재배포본이 된다.

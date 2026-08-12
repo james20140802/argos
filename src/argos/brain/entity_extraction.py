@@ -33,7 +33,7 @@ from dataclasses import dataclass, replace
 from typing import Sequence
 
 from argos.brain import entity_spacy
-from argos.brain.entity_names import MARK_CLASS, canonical_name
+from argos.brain.entity_names import MARK_CLASS, canonical_name, opens_a_position
 from argos.config import settings
 
 # 문장 끝: 종결부호 뒤의 공백, 전각 종결부호, 또는 줄바꿈.
@@ -366,7 +366,7 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
     after = text[index + 1 : index + 2]
     if before.isdigit() and after.isdigit():
         return match.group()
-    if _opens_a_position(before) and after.isalpha():
+    if opens_a_position(before) and after.isalpha():
         return match.group()
     return "。"
 
@@ -380,19 +380,6 @@ def _opens_a_clause(raw_gap: str) -> bool:
     if raw_gap.endswith(tuple(_CLAUSE_OPEN)):
         return True
     return raw_gap.rstrip().endswith(tuple(_CLAUSE_OPEN_SPACED))
-
-
-def _opens_a_position(character: str) -> bool:
-    """이 글자 뒤가 이름이 시작할 수 있는 자리인가.
-
-    글머리(빈 글자)와 공백, 그리고 여는 구두점이다. 여닫는 짝을 손으로 세지
-    않고 유니코드 분류로 본다 — Ps(여는 짝)와 Pi(여는 따옴표). 닫는 쪽(Pe·Pf)은
-    빠지므로 '」．Customers'는 문장 끝으로 남는다. 곧은 따옴표는 Po라 여기
-    안 들어온다 — 여는 모양과 닫는 모양이 같아 가릴 근거가 없다.
-    """
-    if not character.strip():
-        return True
-    return unicodedata.category(character) in {"Ps", "Pi"}
 
 
 def _closes_an_initial(gap: str, previous: str) -> bool:
