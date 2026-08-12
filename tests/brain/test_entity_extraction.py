@@ -381,6 +381,13 @@ def test_leading_dot_stays_in_the_surface():
     assert ".net" in {name.canonical for name in names}
 
 
+def test_an_ellipsis_tail_is_not_a_leading_dot():
+    # 'slipped...Next'의 마지막 점은 줄임표의 꼬리지 '.NET'의 앞점이 아니다.
+    # 붙잡으면 없는 이름 '.next'가 생기고, 근접중복 쪽 정규화와도 어긋난다.
+    [names] = canonicals(["The rollout slipped...Next quarter the team revisits it."])
+    assert ".next" not in names
+
+
 def test_pure_numbers_stay_numbers():
     # 숫자로 시작하는 이름을 받되 순수한 숫자는 그대로 숫자여야 한다 — 버전
     # 숫자가 이름에 붙고, 항목 번호는 번호로 남는다.

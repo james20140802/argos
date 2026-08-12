@@ -33,7 +33,12 @@ from dataclasses import dataclass, replace
 from typing import Sequence
 
 from argos.brain import entity_spacy
-from argos.brain.entity_names import MARK_CLASS, canonical_name, opens_a_position
+from argos.brain.entity_names import (
+    MARK_CLASS,
+    OPEN_CLASS,
+    canonical_name,
+    opens_a_position,
+)
 from argos.config import settings
 
 # 문장 끝: 종결부호 뒤의 공백, 전각 종결부호, 또는 줄바꿈.
@@ -83,16 +88,23 @@ _JOIN = rf"(?:{_JOIN_SYMBOL}\.?|\.)"
 # 낱말 뒤에 붙는 이름 기호. 이음부호로 이어진 **토막마다** 붙을 수 있다 —
 # 맨 끝에만 두면 'C++/CLI'가 'c++'와 'cli'로 갈라진다.
 _SYMBOL_SUFFIX = r"[+#]*"
+# 이름 앞에 붙는 점. 이름이 시작할 수 있는 자리(글머리·공백·여는 구두점)에
+# 놓인 것만 품는다 — 판정은 정규형·근접중복과 같은 것을 쓴다.
+# 뒤보기가 아니라 **앞보기**로 자리를 가리는 이유: 점을 못 품는 자리에서 토큰
+# 자체를 버리면 안 되기 때문이다. 'slipped...Next'의 'Next'는 남아야 한다.
+_LEAD_DOT = rf"(?:(?<![^\s{OPEN_CLASS}])\.)?"
 # 갈래 셋을 이 순서로 본다.
 #  1. 글자로 시작하는 낱말. 앞의 점은 이름의 일부라 품는다 — '.NET'에서 떼면
 #     표시용 원문이 'NET'이 되어 본 그대로가 아니게 되고, 약어 'NET'과 구별할
 #     방법도 사라진다. 뒤에 글자가 바로 붙을 때만이라 문장 끝 마침표는 안 걸린다.
+#     줄임표의 꼬리는 앞이 또 점이라 안 걸린다 — 품으면 없는 이름 '.next'가
+#     생기고 근접중복 쪽 정규화와도 어긋난다.
 #  2. 순수한 숫자 — 뒤에 글자나 '이음부호+글자'가 오면 이름의 앞부분이므로 뺀다.
 #     이 앞보기가 없으면 '3M'이 '3'에서 잘려 다음 갈래로 넘어가지 못한다.
 #  3. 숫자로 시작하는 이름('3M' '1Password' '7-Zip'). 이 갈래가 없으면 숫자가
 #     떨어져 나가고 꼬리('m' 'password' 'zip')만 남아 없는 이름이 생긴다.
 _TOKEN = re.compile(
-    rf"\.?[^\W\d_]{_WORD}*{_SYMBOL_SUFFIX}(?:{_JOIN}{_WORD}+{_SYMBOL_SUFFIX})*"
+    rf"{_LEAD_DOT}[^\W\d_]{_WORD}*{_SYMBOL_SUFFIX}(?:{_JOIN}{_WORD}+{_SYMBOL_SUFFIX})*"
     rf"|\d+(?:\.\d+)*(?![^\W_]|{_JOIN}[^\W_])"
     rf"|\d+{_WORD}*{_SYMBOL_SUFFIX}(?:{_JOIN}{_WORD}+{_SYMBOL_SUFFIX})*"
 )
