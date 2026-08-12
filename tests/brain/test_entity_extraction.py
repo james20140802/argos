@@ -707,8 +707,11 @@ def test_spaced_initials_stay_with_the_surname():
 
 def test_an_initial_before_a_name_does_not_end_the_sentence():
     # 머리글자 약어도 마찬가지다. 'U.S.'에서 끊으면 'Army'가 사라진다.
+    # 조직 이름 하나라 통째로 나와야 한다 — 조각 둘로 남으면 spaCy가 넘기는
+    # 'U.S. Army'와도 다른 키가 되어 한 조직이 셋으로 쪼개진다.
     [names] = canonicals(["Officials briefed the U.S. Army about deployment."])
-    assert "army" in names
+    assert "us army" in names
+    assert names.isdisjoint({"us", "army"})
 
 
 def test_a_sentence_ending_in_a_single_letter_still_ends():

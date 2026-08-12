@@ -215,6 +215,9 @@ _BOUNDARY_WORD = re.compile(r"([^\W\d_]+)\.$")
 # 그것뿐이다. 앞만 보면 'J.'를, 뒤만 보면 'K.'를 놓친다.
 _INITIAL_BEFORE = re.compile(r"(?:^|[\s(\[\"'“‘])[^\W\d_]\.[ \t]*$")
 _INITIAL_AFTER = re.compile(r"^[^\W\d_]\.")
+# 점으로 이은 머리글자 약어('U.S.' 'J.R.R.'). 토큰이 점을 품고 오므로 마지막
+# 점만 낱말 밖에 남는다 — 거기서 끊으면 뒤따르는 이름이 떨어져 나간다.
+_INITIALISM = re.compile(r"(?:[^\W\d_]\.)+[^\W\d_]")
 # 바로 앞에 붙어 있는 낱말. 'George W.'의 'George'를 잡는다.
 _WORD_BEFORE = re.compile(r"[^\W_]+$")
 # spaCy 스팬 안의 낱말. 위치를 알아야 표시용 원문을 스팬에서 그대로 자른다.
@@ -682,9 +685,11 @@ def _joins_a_name_suffix(gap: str, token: str) -> bool:
 def _dot_stays_in_the_name(gap: str, previous: str) -> bool:
     """낱말 사이에 낀 이 마침표가 이름에 붙은 부호인가.
 
-    두 자리다. 하나는 머리글자 — 'George W. Bush'에서 끊으면 성이 떨어져 나가
+    세 자리다. 하나는 머리글자 — 'George W. Bush'에서 끊으면 성이 떨어져 나가
     이름 하나가 반쪽 둘이 된다. 다른 하나는 이름 앞머리 약어 — 'St. Louis'에서
-    끊으면 도시 하나가 'louis'로 남는다.
+    끊으면 도시 하나가 'louis'로 남는다. 나머지 하나는 점으로 이은 머리글자
+    약어 — 'U.S. Army'에서 끊으면 조직 하나가 'us'와 'army'로 남고, spaCy가
+    통째로 넘기는 'us army'와도 달라 한 조직이 셋으로 쪼개진다.
 
     점이 앞 낱말에 **붙어** 있을 때만이다. 그러고도 'Acme Corp. Globex'처럼
     아무 낱말이나 오면 평범한 문장 부호로 보고 끊는다.
@@ -692,6 +697,8 @@ def _dot_stays_in_the_name(gap: str, previous: str) -> bool:
     if not (gap.startswith(".") and not gap[1:].strip()):
         return False
     if previous.casefold() in _NAME_PREFIXES:
+        return True
+    if _INITIALISM.fullmatch(previous) and previous.isupper():
         return True
     return len(previous) == 1 and _is_cased(previous) and previous.isupper()
 
