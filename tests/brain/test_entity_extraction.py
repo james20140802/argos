@@ -577,9 +577,12 @@ def test_fullwidth_dot_before_an_uppercase_version_stays_in_the_name():
         # 크롤한 표기가 쉼표 뒤를 안 띄우기도 한다. 그래도 같은 회사다.
         ("Reviewers discussed Acme,Inc. yesterday.", "acme inc"),
         ("Reviewers discussed Acme,S.A. yesterday.", "acme sa"),
+        # 사람 이름의 꼬리도 쉼표를 앞에 두고 쓴다 — 'King Jr.'와 한 키여야 한다.
+        ("Reviewers quoted Martin Luther King, Jr. yesterday.", "martin luther king jr"),
+        ("Reviewers quoted Sammy Davis, Sr. yesterday.", "sammy davis sr"),
     ],
 )
-def test_a_comma_before_a_corporate_suffix_stays_in_the_name(sentence, name):
+def test_a_comma_before_a_name_suffix_stays_in_the_name(sentence, name):
     # 회사 이름 안의 쉼표는 나열 기호가 아니다. 끊으면 회사 하나가 조각 둘로
     # 남고, 쉼표 없이 쓴 'Acme Inc.'와 다른 키가 된다.
     [names] = canonicals([sentence])
