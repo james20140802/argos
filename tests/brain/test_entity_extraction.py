@@ -190,6 +190,27 @@ def test_lowercase_leading_company_names_are_extracted():
     assert {"ebay", "xai"} <= names
 
 
+@pytest.mark.parametrize(
+    "surface,expected,bogus",
+    [("3M", "3m", "m"), ("1Password", "1password", "password"), ("7-Zip", "7 zip", "zip")],
+)
+def test_digit_leading_names_are_extracted(surface, expected, bogus):
+    # 숫자로 시작하는 상표명은 숫자 토큰과 꼬리로 갈라져, 진짜 이름은 사라지고
+    # 없는 이름('m' 'password' 'zip')이 문서빈도를 오염시킨다.
+    [names] = canonicals([f"Reviewers compared {surface} with rivals yesterday."])
+    assert expected in names
+    assert bogus not in names
+
+
+def test_pure_numbers_stay_numbers():
+    # 숫자로 시작하는 이름을 받되 순수한 숫자는 그대로 숫자여야 한다 — 버전
+    # 숫자가 이름에 붙고, 항목 번호는 번호로 남는다.
+    [versioned] = canonicals(["Anthropic today shipped Claude Sonnet 5 to the API."])
+    assert "claude sonnet 5" in versioned
+    [numbered] = canonicals(["2.1) Customers pay monthly for the tier."])
+    assert "customers" not in numbered
+
+
 def test_combining_mark_without_a_precomposed_form_keeps_the_name_whole():
     # NFC로도 자음에 합성되지 않는 결합 기호가 있다. 낱말이 거기서 끊기면 이름이
     # 두 동강 나고 한 글자짜리 가짜 이름이 남는다 — 정규형 쪽은 결합 기호를 이미
