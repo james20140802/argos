@@ -349,9 +349,11 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
 
     * 숫자 사이 — 'ＧＰＴ－５．２'의 점은 버전이다. 옮기면 거기서 끊겨 반각으로
       쓴 같은 제품과 다른 키가 된다.
-    * 앞이 비어 있고 뒤에 글자가 바로 붙은 자리 — '．ＮＥＴ'의 앞점이다. 옮기면
-      이름이 통째로 사라진다. 문장을 닫는 점은 앞 낱말에 붙어 있으므로
-      '背景です．Customers …'는 여기 걸리지 않는다.
+    * 앞이 이름이 시작할 수 있는 자리이고 뒤에 글자가 바로 붙은 자리 —
+      '．ＮＥＴ'의 앞점이다. 옮기면 이름이 통째로 사라진다. 글머리·공백에
+      더해 **여는** 구두점도 그 자리다('（．ＮＥＴ）'). 문장을 닫는 점은 앞
+      낱말에 붙어 있으므로 '背景です．Customers …'는 여기 걸리지 않고,
+      닫는 따옴표 뒤('「引用」．Customers …')도 그대로 문장 끝으로 본다.
     """
     text = match.string
     index = match.start()
@@ -359,9 +361,22 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
     after = text[index + 1 : index + 2]
     if before.isdigit() and after.isdigit():
         return match.group()
-    if not before.strip() and after.isalpha():
+    if _opens_a_position(before) and after.isalpha():
         return match.group()
     return "。"
+
+
+def _opens_a_position(character: str) -> bool:
+    """이 글자 뒤가 이름이 시작할 수 있는 자리인가.
+
+    글머리(빈 글자)와 공백, 그리고 여는 구두점이다. 여닫는 짝을 손으로 세지
+    않고 유니코드 분류로 본다 — Ps(여는 짝)와 Pi(여는 따옴표). 닫는 쪽(Pe·Pf)은
+    빠지므로 '」．Customers'는 문장 끝으로 남는다. 곧은 따옴표는 Po라 여기
+    안 들어온다 — 여는 모양과 닫는 모양이 같아 가릴 근거가 없다.
+    """
+    if not character.strip():
+        return True
+    return unicodedata.category(character) in {"Ps", "Pi"}
 
 
 def _closes_an_initial(gap: str, previous: str) -> bool:

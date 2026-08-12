@@ -288,6 +288,13 @@ def test_fullwidth_leading_dot_opens_a_name():
     assert "．ＮＥＴ" in {name.surface for name in names}
 
 
+def test_fullwidth_leading_dot_survives_opening_punctuation():
+    # 여는 괄호·따옴표 뒤도 이름이 시작하는 자리다. 앞이 공백일 때만 앞점으로
+    # 보면 '（．ＮＥＴ）'의 이름이 다시 통째로 사라진다.
+    [names] = canonicals(["Reviewers compared （．ＮＥＴ） with Java yesterday."])
+    assert ".net" in names
+
+
 def test_symbol_suffix_survives_a_name_joiner():
     # 'C++/CLI'와 'F#/.NET'은 각각 기술 하나다. 빗금에서 끊으면 정규형이 이미
     # 한 덩어리로 접는 이름이 문서빈도에서 둘로 쪼개진다.
