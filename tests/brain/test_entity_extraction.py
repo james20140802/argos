@@ -422,6 +422,19 @@ def test_a_name_after_a_colon_is_still_a_name():
     assert "anthropic" in names
 
 
+def test_a_bracketed_clause_starts_a_sentence():
+    # 대괄호로 끼워 넣은 편집자 주도 새 문장이다. 아니라고 보면 그 안 첫 단어인
+    # 보통 명사가 이름 행세를 한다.
+    [names] = canonicals(["Analysts said [Customers pay monthly.]"])
+    assert "customers" not in names
+
+
+def test_a_bracketed_name_is_not_a_sentence():
+    # 반대 방향 경계. 대괄호 안의 이름 하나는 문장이 아니다.
+    [names] = canonicals(["Analysts covered Acme Corp [Globex] closely this quarter."])
+    assert "globex" in names
+
+
 def test_a_parenthesized_clause_starts_a_sentence():
     # 문장 중간에 괄호로 문장이 들어오면 그 안은 새 문장의 첫 자리다. 아니라고
     # 보면 괄호 안 첫 단어인 보통 명사가 이름 행세를 한다.
