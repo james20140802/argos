@@ -458,6 +458,20 @@ def test_fullwidth_dot_inside_a_name_is_not_a_sentence_end(sentence, name):
     assert name in names
 
 
+def test_fullwidth_dot_after_a_digit_stays_inside_the_name():
+    # '３．ｊｓ'의 점은 이름 안이다. 문장 끝으로 옮기면 제품이 통째로 사라진다 —
+    # 반각으로 쓴 '3.js'는 '3js'로 잡히던 터라 표기에 따라 결과가 갈렸다.
+    [names] = canonicals(["Reviewers compared ３．ｊｓ with Deno."])
+    assert "3js" in names
+
+
+def test_a_fullwidth_list_number_still_closes_the_line():
+    # 반대 방향 경계. CJK 목록은 '３．'처럼 공백 없이 번호를 매긴다 — 이름 안의
+    # 점으로 보면 번호가 첫 낱말과 붙어 보통 명사가 이름 행세를 한다.
+    [names] = canonicals(["３．Customers pay monthly for the tier."])
+    assert "customers" not in names
+
+
 def test_leading_dot_stays_in_the_surface():
     # 표시용 원문은 본 그대로여야 한다. 앞의 점을 떼면 '.NET'이 'NET'으로 보이고,
     # 약어 'NET'과 구별할 방법도 사라진다.

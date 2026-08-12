@@ -448,6 +448,11 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
       제품과 다른 키가 된다. **대소문자가 있는** 글자를 요구하는 게 CJK 문장
       끝과 가르는 근거다 — '背景です．Customers …'의 앞 글자는 대소문자가
       없어 여기 안 걸린다.
+    * 숫자 뒤에 **소문자**가 붙은 자리 — '３．ｊｓ'다. 숫자머리 이름을 이미
+      한 토큰으로 잡는 것과 짝을 맞춘다. 소문자를 요구하는 이유: CJK 목록은
+      '３．Customers …'처럼 공백 없이 번호를 매기는데, 거기까지 이름으로
+      보면 번호가 첫 낱말과 붙어 보통 명사가 이름 행세를 한다. 반각 '3.'은
+      뒤에 공백을 두므로 이 문제가 없다.
 
     남는 한계: 라틴 문장을 전각 마침표로 끝내고 **공백 없이** 다음 문장을
     붙여 쓰면('slipped．Customers') 두 문장이 이어진다. 공백이 있으면 접힌 뒤
@@ -462,6 +467,8 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
     if opens_a_position(before) and after.isalpha():
         return match.group()
     if _is_cased(before) and _is_cased(after):
+        return match.group()
+    if before.isdigit() and _is_cased(after) and after.islower():
         return match.group()
     return "。"
 
