@@ -344,6 +344,27 @@ def test_name_connectors_keep_the_organization_whole():
     assert "america" not in names
 
 
+@pytest.mark.parametrize(
+    "sentence, name",
+    [
+        ("Reviewers interviewed José de la Cruz yesterday.", "josé de la cruz"),
+        ("Reviewers cited Ludwig van der Waals yesterday.", "ludwig van der waals"),
+    ],
+)
+def test_consecutive_connectors_keep_the_person_whole(sentence, name):
+    # 이음말이 둘 이어지는 이름. 하나만 볼 수 있으면 'de' 뒤의 'la'가 이름이
+    # 아니라서 거기서 끊기고, 사람 하나가 조각 둘로 남는다.
+    [names] = canonicals([sentence])
+    assert name in names
+
+
+def test_a_connector_chain_without_a_name_still_breaks():
+    # 반대 방향 경계. 이음말 연쇄 끝에 이름이 없으면 그냥 문장의 전치사다.
+    [names] = canonicals(["Analysts said Acme Corp de la mode sells shoes daily."])
+    assert "acme corp" in names
+    assert not any(key.startswith("acme corp de") for key in names)
+
+
 def test_listing_conjunction_still_separates_names():
     # 반대 방향 경계. 'and'는 이름 안의 이음말이 아니라 나열 기호다 — 이어 붙이면
     # 서로 다른 회사 둘이 사라지고 없는 이름 하나가 생긴다.

@@ -230,7 +230,35 @@ _STOPWORDS = frozenset(
 # 'and'는 **일부러 뺀다** — 기사에서 'and'는 이름 안의 이음말이 아니라 나열
 # 기호다. 이어 붙이면 'Anthropic and Google'이 없는 이름 하나가 되면서 진짜
 # 회사 둘이 다 사라진다. 'Procter & Gamble'처럼 '&'로 쓴 이름은 이미 붙는다.
-_CONNECTORS = frozenset({"of", "de", "del", "della", "di", "da", "du", "van", "von"})
+# 관사 쪽('la' 'der' 'den' 'des')도 넣는다 — 이름 안에서는 전치사 뒤에 관사가
+# 잇따르는 게 흔하다('de la Cruz' 'van der Waals'). 목록이 길어져도 위험이
+# 늘지 않는 건 붙이는 조건이 강해서다: 앞에 이미 이름 묶음이 있고, 뒤에
+# (이음말을 몇 개 건너뛰더라도) 대문자 낱말이 이어질 때만 붙는다.
+_CONNECTORS = frozenset(
+    {
+        "of",
+        "de",
+        "del",
+        "della",
+        "di",
+        "da",
+        "du",
+        "van",
+        "von",
+        "la",
+        "le",
+        "der",
+        "den",
+        "des",
+        "dos",
+        "das",
+        "ter",
+    }
+)
+# 이름 안에 이음말이 잇따를 수 있는 최대 개수. 'de la' 'van der'가 둘이고,
+# 셋을 넘는 이름은 못 봤다. 끝을 두지 않으면 소문자 낱말이 길게 이어지는
+# 문장에서 이름이 아닌 데까지 훑는다.
+_CONNECTOR_RUN_MAX = 3
 # 문장 중간에서 인용을 여는 기호. 두 갈래로 나눠 둔다.
 # 여닫는 모양이 다른 기호(“ ‘ « 「 『)는 뒤에 공백이 있어도 여는 것으로 본다 —
 # 크롤한 본문은 여는 따옴표와 첫 낱말 사이를 띄우는 일이 흔한데(줄바꿈 없는
@@ -512,6 +540,33 @@ def _introduces_a_name(sentence: str, end: int) -> bool:
     return following is not None and _opens_a_name(following.group())
 
 
+def _leads_to_a_name(sentence: str, end: int) -> bool:
+    """이 자리 뒤에 이름이 이어지는가. 이음말은 몇 개까지 건너뛴다.
+
+    이름 안에서는 전치사 뒤에 관사가 잇따른다 — 'José de la Cruz',
+    'Ludwig van der Waals'. 바로 다음 낱말만 보면 'de' 뒤의 'la'가 이름이
+    아니라서 거기서 끊기고, 사람 하나가 조각 둘로 남는다.
+
+    건너뛰는 개수에 끝을 둔다. 안 두면 소문자 낱말이 길게 이어지는 문장을
+    이름이 아닌 데까지 훑는다.
+    """
+    position = end
+    for _ in range(_CONNECTOR_RUN_MAX):
+        rest = sentence[position:]
+        gap = len(rest) - len(rest.lstrip(" \t"))
+        if not gap:
+            return False
+        following = _TOKEN.match(sentence, position + gap)
+        if following is None:
+            return False
+        if _opens_a_name(following.group()):
+            return True
+        if following.group().casefold() not in _CONNECTORS:
+            return False
+        position = following.end()
+    return False
+
+
 def _candidate(
     words: Sequence[str], *, sentence_initial: bool, surface: str | None = None
 ) -> _Candidate | None:
@@ -692,10 +747,11 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             elif (
                 run
                 and token.casefold() in _CONNECTORS
-                and _introduces_a_name(sentence, match.end())
+                and _leads_to_a_name(sentence, match.end())
             ):
                 # 이름 안에 끼는 소문자 낱말 ("Bank of America"). 뒤에 이름이 이어질
                 # 때만 이어 붙인다 — 아니면 문장의 보통 전치사라 거기서 끊어야 한다.
+                # 이음말이 잇따르는 이름('de la Cruz')이 있어 몇 개는 건너뛰고 본다.
                 run.append((initial, token, match.start(), match.end()))
             else:
                 flush()
