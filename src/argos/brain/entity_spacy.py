@@ -11,9 +11,10 @@ spaCy는 optional extra다. 없으면 예외 없이 빈 결과를 돌려주고 �
     uv sync --extra nlp
     uv run python -m spacy download "$(uv run argos config get event_detection.entity_spacy_model)"
 
-모델 이름은 설정(`event_detection.entity_spacy_model`)이 정한다. 기본값은
-`en_core_web_sm`이다. 내려받을 이름을 문서에 박아 두면 설정을 바꾼 운영자가
-엉뚱한 모델을 받고, 보조 경로는 조용히 꺼진 채로 돈다.
+모델 이름은 설정(`event_detection.entity_spacy_model`)이 정한다. 기본값을
+문서에 적지 않는 것도 같은 이유다 — 벤치마크에 따라 바뀔 값을 산문에 박아
+두면, 설정을 바꾼 운영자가 엉뚱한 모델을 받고 보조 경로는 조용히 꺼진 채로
+돈다. 위 명령이 설정에서 이름을 읽어 오는 것도 그래서다.
 """
 
 from __future__ import annotations
