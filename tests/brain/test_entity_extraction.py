@@ -218,6 +218,44 @@ def test_middle_initial_stays_with_the_surname():
     assert "george w bush" in names
 
 
+def test_possessive_folds_when_the_bare_name_appears_in_the_batch():
+    # 배치 어딘가에 맨 이름이 나오면 그 's는 소유격이었다는 뜻이다. 안 접으면
+    # 같은 회사가 'anthropic'과 'anthropics' 두 키로 쪼개진다.
+    first, _ = canonicals(
+        [
+            "Analysts discussed Anthropic's new model.",
+            "Reviewers said Anthropic shipped it fast.",
+        ]
+    )
+    assert "anthropic" in first
+    assert "anthropics" not in first
+
+
+def test_folded_possessive_drops_the_s_from_the_display_surface():
+    # 정규형만 접고 표시용을 그대로 두면 같은 키를 "Anthropic's"로 보여 준다.
+    first, _ = extract_names(
+        [
+            "Analysts discussed Anthropic's new model.",
+            "Reviewers said Anthropic shipped it fast.",
+        ]
+    )
+    assert "Anthropic" in {name.surface for name in first}
+    assert "Anthropic's" not in {name.surface for name in first}
+
+
+def test_possessive_does_not_fold_without_a_bare_mention():
+    # 반대 방향 경계. 배치가 소유격만 담고 있으면 그 's가 이름의 일부인지
+    # 소유격인지 가릴 근거가 없다 — 접지 않는 쪽이 'McDonald's'를 지킨다.
+    first, _ = canonicals(
+        [
+            "Analysts reviewed McDonald's quarterly filing.",
+            "Reporters cited McDonald's earlier statement.",
+        ]
+    )
+    assert "mcdonalds" in first
+    assert "mcdonald" not in first
+
+
 def test_possessive_still_splits_before_another_name():
     # 반대 방향 경계. 소유격 뒤에 다른 이름이 오면 거기서 끊어야 한다.
     [names] = canonicals(["Reviewers tested Anthropic's Claude against GPT-5.2."])

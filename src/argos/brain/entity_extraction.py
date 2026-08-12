@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence
 
 from argos.brain import entity_spacy
@@ -225,6 +225,8 @@ class _Candidate:
     surface: str
     word_count: int
     sentence_initial: bool
+    # 소유격 's를 뗀 정규형. 뗄 게 없으면 빈 문자열.
+    stem: str = ""
 
 
 def _is_cased(character: str) -> bool:
@@ -417,12 +419,30 @@ def _candidate(
     # 행세를 한다.
     if len(words) == 1 and (canonical in _STOPWORDS or canonical in _ABBREVIATIONS):
         return None
+    trimmed = _without_possessive(surface)
+    stem = canonical_name(trimmed) if trimmed is not None else ""
     return _Candidate(
         canonical=canonical,
         surface=surface,
         word_count=len(words),
         sentence_initial=sentence_initial,
+        stem="" if stem == canonical else stem,
     )
+
+
+def _without_possessive(surface: str) -> str | None:
+    """소유격 's를 뗀 원문. 뗄 게 없으면 None.
+
+    판정은 마지막 두 글자를 NFKC로 접어서 한다 — CJK 매체는 전각 어포스트로피로
+    싣는데, 그것도 같은 소유격이다. 자르기는 원문 쪽에서 한다: 표시용은 크롤한
+    표기 그대로여야 하기 때문이다. 어포스트로피와 s는 호환 형태도 한 글자씩이라
+    접어도 자릿수가 어긋나지 않는다.
+    """
+    if len(surface) < 3:
+        return None
+    if _POSSESSIVE.search(unicodedata.normalize("NFKC", surface[-2:])) is None:
+        return None
+    return surface[:-2]
 
 
 def _clusters(text: str) -> list[tuple[int, str]]:
@@ -596,6 +616,26 @@ def extract_names(
                     )
                     if candidate is not None:
                         document.append(candidate)
+
+    # 소유격은 배치에 맨 이름이 나올 때만 접는다. 무조건 떼면 's가 이름의
+    # 일부인 회사("Moody's" "McDonald's")가 망가지고, 그대로 두면 같은 회사가
+    # 'anthropic'과 'anthropics' 두 키로 쪼개진다. 한 문장만 보고는 가를 수
+    # 없다 — 둘 다 뒤에 소문자가 온다. 배치 어딘가에 맨 이름이 나온다는 것이
+    # 그 's가 소유격이었다는 증거다. 문서빈도를 세기 **전에** 접어야 한 회사가
+    # 두 키로 세어지지 않는다.
+    bare = {
+        candidate.canonical
+        for document in per_document
+        for candidate in document
+        if not candidate.stem
+    }
+    for document in per_document:
+        for index, candidate in enumerate(document):
+            if candidate.stem and candidate.stem in bare:
+                surface = _without_possessive(candidate.surface) or candidate.surface
+                document[index] = replace(
+                    candidate, canonical=candidate.stem, surface=surface, stem=""
+                )
 
     # 문장 첫 단어라서 대문자인 것과 진짜 이름을 가르는 증거: 같은 이름이
     # 배치 어딘가에서 문장 중간에도 대문자로 나오는가.
