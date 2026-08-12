@@ -417,6 +417,20 @@ def test_a_clause_introducer_starts_a_sentence(sentence, absent):
     assert absent not in names
 
 
+@pytest.mark.parametrize(
+    "sentence, expected",
+    [
+        ("The finalists are: Anthropic and OpenAI.", {"anthropic", "openai"}),
+        ("The stack includes: Python, Rust, and Go.", {"python", "rust", "go"}),
+    ],
+)
+def test_a_colon_list_keeps_its_first_name(sentence, expected):
+    # 쌍점 뒤가 절이 아니라 목록이면 첫 항목은 문장 첫 단어가 아니다. 절로 보면
+    # 목록 첫 이름만 골라 탈락시켜 나열이 반쪽이 된다.
+    [names] = canonicals([sentence])
+    assert expected <= names
+
+
 def test_a_name_after_a_colon_is_still_a_name():
     # 반대 방향 경계. 쌍점 뒤에 이름 하나만 딸린 건 절이 아니다 — 절로 보면
     # 'Report: Anthropic' 꼴의 제목에서 회사 이름이 통째로 탈락한다.

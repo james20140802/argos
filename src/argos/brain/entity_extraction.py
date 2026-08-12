@@ -342,6 +342,9 @@ _CLAUSE_COLON = (":", "：")
 # 통째로 탈락한다. 반각 붙임표는 아예 뺀다 — 제목·목록에서 이름을 가르는 데
 # 훨씬 많이 쓰인다('Acme Corp - Q3 결과').
 _CLAUSE_DASH = ("—", "―", "–", "‒")
+# 이름을 나열할 때 끼는 이음말. 절인지 목록인지 가릴 때만 쓴다 — 이름 안에
+# 이어 붙이지는 않는다(43번: 'Anthropic and Google'은 회사 둘이다).
+_LIST_GLUE = frozenset({"and", "or"})
 
 
 @dataclass(frozen=True, order=True)
@@ -636,7 +639,24 @@ def _introduces_a_clause(raw_gap: str, sentence: str, start: int) -> bool:
         pass
     elif not (stripped.endswith(_CLAUSE_DASH) and raw_gap[:1].isspace()):
         return False
-    return len(_TOKEN.findall(sentence[start:])) > 1
+    tokens = _TOKEN.findall(sentence[start:])
+    return len(tokens) > 1 and not _lists_names(tokens)
+
+
+def _lists_names(tokens: Sequence[str]) -> bool:
+    """이어지는 낱말들이 절이 아니라 이름의 나열인가.
+
+    'The finalists are: Anthropic and OpenAI.'의 Anthropic은 절의 첫 단어가
+    아니라 목록의 첫 항목이다. 절로 보면 목록에서 첫 이름만 골라 탈락시켜
+    나열이 반쪽이 된다.
+
+    가르는 근거는 낱말의 성질이다. 이름과 나열 이음말·붙은 숫자만 이어지면
+    목록이고, 소문자 낱말이 섞이면 절이다 — 절에는 동사가 있다.
+    """
+    return all(
+        _opens_a_name(token) or token[0].isdigit() or token.casefold() in _LIST_GLUE
+        for token in tokens
+    )
 
 
 def _joins_a_name_suffix(gap: str, token: str) -> bool:
