@@ -235,6 +235,13 @@ def test_fullwidth_forms_fold_to_their_ascii_names():
     assert "gpt 5" in versioned
 
 
+def test_fullwidth_version_keeps_its_decimal_point():
+    # 전각 마침표를 문장 끝으로 옮길 때 숫자 사이까지 옮기면 버전이 거기서
+    # 끊긴다 — 반각으로 쓴 같은 제품과 다른 키가 되어 문서빈도가 쪼개진다.
+    [names] = canonicals(["Engineers benchmarked ＧＰＴ－５．２ against rivals."])
+    assert "gpt 5.2" in names
+
+
 def test_leading_dot_stays_in_the_surface():
     # 표시용 원문은 본 그대로여야 한다. 앞의 점을 떼면 '.NET'이 'NET'으로 보이고,
     # 약어 'NET'과 구별할 방법도 사라진다.

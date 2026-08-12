@@ -131,6 +131,8 @@ _ABBREVIATIONS = frozenset(
         "st",
     }
 )
+# 문장을 닫는 전각 마침표. 숫자 사이(버전)는 뺀다.
+_FULLWIDTH_STOP = re.compile(r"(?<!\d)．|．(?!\d)")
 # 문장 경계 바로 앞의 낱말. 'the U.S.'에서는 머리글자 'S'만 잡힌다.
 _BOUNDARY_WORD = re.compile(r"([^\W\d_]+)\.$")
 # 띄어 쓴 머리글자 연쇄('J. K. Rowling')를 알아보는 자리. 한 글자 앞이나 뒤에
@@ -407,7 +409,9 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     # 요구한다. 그대로 두면 공백 없이 잇는 CJK 문장 경계를 잃으므로, 접히기 전에
     # 뜻이 같고 NFKC가 건드리지 않는 고리점으로 옮긴다. 고리점도 한 글자라
     # 원문 위치는 어긋나지 않는다.
-    document = document.replace("．", "。")
+    # 숫자 사이는 건드리지 않는다 — 'ＧＰＴ－５．２'의 점은 문장 끝이 아니라
+    # 버전이고, 옮기면 거기서 끊겨 반각으로 쓴 같은 제품과 다른 키가 된다.
+    document = _FULLWIDTH_STOP.sub("。", document)
     folded, origins = _normalize_with_origins(document)
     normalized = _mask_uncased(folded)
 
