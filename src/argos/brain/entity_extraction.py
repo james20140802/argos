@@ -22,6 +22,10 @@ LLM도 DB도 쓰지 않는다.
    Title Case인 문장은 동사·형용사까지 한 묶음에 들어간다. 폭 단위로 끊어
    버리는 낱말은 없게 했지만, 그 안에서 진짜 이름만 골라내지는 못한다.
    이름 사전으로 거르는 건 ARG-240 소관이다.
+3. **숫자로 시작하는 낱말은 이름과 단위를 가르지 못한다.** '4chan'·'500px'를
+   잡는 대가로 붙여 쓴 단위('5km' '3pm')도 후보로 남는다. 단위를 목록으로
+   막으면 '4k'·'5g'처럼 진짜 이름과 겹쳐 함께 사라진다. 서수('3rd')만은
+   어떤 이름과도 겹치지 않아 걸러낸다.
 """
 
 from __future__ import annotations
@@ -130,6 +134,9 @@ _ROMAN = re.compile(r"^[ivxlcdm]+$")
 # 항목 번호로 쓰이는 숫자. 계층 번호('2.1)')까지 받는다 — 한 덩어리 숫자만
 # 보면 번호가 내용으로 세어져 목록 첫 단어가 문장 첫 단어 필터를 통과한다.
 _NUMBERING = re.compile(r"^\d+(?:\.\d+)*$")
+# 서수. 숫자머리 이름('4chan')을 받으면서 'the 3rd quarter'는 안 받으려면
+# 이것만 빼면 된다 — 어떤 이름과도 겹치지 않는 닫힌 목록이다.
+_ORDINAL = re.compile(r"\d+(?:st|nd|rd|th)")
 # 마침표로 끝나도 문장을 끝내지 않는 말. 뒤에 곧바로 이름이 오는 호칭만 둔다 —
 # 'etc.'처럼 실제로 문장을 끝내는 말까지 넣으면 반대로 두 문장이 붙어, 다음
 # 문장 첫 단어가 문장 중간 대문자로 위장한다.
@@ -269,8 +276,23 @@ def _opens_a_name(token: str) -> bool:
     첫 글자가 대문자면 이름 후보다. 안쪽에 대문자가 있는 표기도 마찬가지다 —
     'iOS' 'macOS' 'eBay' 'xAI' 'iPhone'처럼 소문자로 시작하는 상표명은 첫 글자만
     보면 통째로 사라진다. 하필 이 프로젝트가 쫓는 이름들이 그 모양이다.
+
+    대문자가 하나도 없어도 숫자로 시작하고 글자가 섞여 있으면 이름 후보다 —
+    '3.js' '4chan' '500px' '6sense'가 그 모양이다. 순수한 숫자는 뺀다. 버전
+    숫자와 항목 번호가 홀로 이름이 되면 안 된다.
+
+    서수는 걸러낸다. 'the 3rd quarter'의 '3rd'는 이름이 아니다. 단위까지
+    목록으로 막지는 **않는다** — '4k'·'5g'처럼 진짜 이름과 겹쳐서, 막으면
+    고치려던 것과 똑같은 누락이 반대편에서 생긴다. 대신 붙여 쓴 단위('5km')는
+    후보로 남는다. 서수는 어떤 이름과도 겹치지 않는 닫힌 목록이라 다르다.
     """
-    return token[0].isupper() or any(character.isupper() for character in token[1:])
+    if token[0].isupper() or any(character.isupper() for character in token[1:]):
+        return True
+    return (
+        token[0].isdigit()
+        and any(character.isalpha() for character in token)
+        and _ORDINAL.fullmatch(token) is None
+    )
 
 
 def _mask_uncased(text: str) -> str:

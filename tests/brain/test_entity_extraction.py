@@ -381,6 +381,20 @@ def test_leading_dot_stays_in_the_surface():
     assert ".net" in {name.canonical for name in names}
 
 
+def test_lowercase_digit_leading_names_are_kept():
+    # '3.js' '4chan' '500px'는 대문자가 하나도 없다. 첫 글자 대문자만 보면
+    # 통째로 사라지는데, 하필 이 프로젝트가 쫓는 이름들이 그 모양이다.
+    [names] = canonicals(["Reviewers compared 3.js with 4chan and 500px daily."])
+    assert {"3js", "4chan", "500px"} <= names
+
+
+def test_ordinals_are_not_names():
+    # 숫자머리를 받되 서수는 이름이 아니다. 받아 주면 'the 3rd quarter'의 '3rd'가
+    # 배치 문서빈도 자리를 차지한다.
+    [names] = canonicals(["Reviewers compared revenue in the 3rd quarter with Java."])
+    assert "3rd" not in names
+
+
 def test_an_ellipsis_tail_is_not_a_leading_dot():
     # 'slipped...Next'의 마지막 점은 줄임표의 꼬리지 '.NET'의 앞점이 아니다.
     # 붙잡으면 없는 이름 '.next'가 생기고, 근접중복 쪽 정규화와도 어긋난다.
