@@ -216,6 +216,28 @@ def test_an_initial_before_a_name_does_not_end_the_sentence():
     assert "army" in names
 
 
+def test_a_sentence_ending_in_a_single_letter_still_ends():
+    # 머리글자 예외를 '한 글자 낱말' 전부로 넓히면 반대로 망가진다. 'option A.'
+    # 처럼 평범하게 끝난 문장이 다음 문장과 붙어, 다음 문장 첫 단어가 문장 중간
+    # 대문자로 위장한다.
+    [names] = canonicals(["We selected option A. Customers pay monthly."])
+    assert "customers" not in names
+
+
+def test_hierarchical_list_numbers_are_list_markers():
+    # '2.1)'은 숫자 한 덩어리가 아니라서 항목 번호로 안 걸렸다. 번호가 내용으로
+    # 세어지면 목록 첫 단어가 문장 첫 단어 필터를 그대로 통과한다.
+    [names] = canonicals(["2.1) Customers pay monthly for the tier."])
+    assert "customers" not in names
+
+
+def test_ellipsis_ends_a_sentence():
+    # 활자 줄임표는 크롤한 산문에 흔하다. 문장 끝으로 보지 않으면 다음 문장 첫
+    # 단어가 문장 중간 대문자로 위장한다.
+    [names] = canonicals(["Prices rose… Customers pay monthly."])
+    assert "customers" not in names
+
+
 def test_typographic_closing_quote_ends_a_sentence():
     # 크롤한 본문의 인용은 곧은 따옴표가 아니라 활자 따옴표로 닫힌다. 닫는
     # 따옴표를 못 알아보면 문장이 안 끊겨 다음 문장 첫 단어가 '문장 중간

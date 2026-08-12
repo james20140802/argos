@@ -45,8 +45,10 @@ from argos.config import settings
 # 닫는 기호에 활자 따옴표(”«»)까지 넣는다. 크롤한 인용문은 곧은 따옴표가 아니라
 # 활자 따옴표로 닫히는데, 못 알아보면 문장이 안 끊겨 다음 문장 첫 단어가
 # 문장 중간으로 위장한다.
+# 줄임표(…)도 종결부호에 넣는다. 크롤한 산문에 흔한데 빠뜨리면 그 뒤 문장이
+# 앞 문장에 붙어 첫 단어가 문장 중간 대문자로 위장한다.
 _SENTENCE_END = re.compile(
-    r"(?<=[.!?])[\"'’”»)\]]*\s+|(?<=[。．！？])[\"'’”»)\]』」]*\s*|[^\S\n]*\n\s*"
+    r"(?<=[.!?…])[\"'’”»)\]]*\s+|(?<=[。．！？…])[\"'’”»)\]』」]*\s*|[^\S\n]*\n\s*"
 )
 # 낱말(내부 하이픈·아포스트로피·버전 점 포함) 또는 숫자. 낱말 끝의 '+'·'#'은
 # 이름의 일부다 — 버리면 'C++'와 'C#'이 둘 다 'C' 한 글자로 잘려 서로 다른
@@ -78,6 +80,9 @@ _BRACKET_CLOSE = frozenset({")", "]"})
 # 소문자 로마 숫자 목록 기호 ('(ii)'). 대문자는 일부러 뺀다 — 'MIX:' 같은
 # 전부 대문자인 회사명을 목록 기호로 오인해 삼킨다.
 _ROMAN = re.compile(r"^[ivxlcdm]+$")
+# 항목 번호로 쓰이는 숫자. 계층 번호('2.1)')까지 받는다 — 한 덩어리 숫자만
+# 보면 번호가 내용으로 세어져 목록 첫 단어가 문장 첫 단어 필터를 통과한다.
+_NUMBERING = re.compile(r"^\d+(?:\.\d+)*$")
 # 마침표로 끝나도 문장을 끝내지 않는 말. 뒤에 곧바로 이름이 오는 호칭만 둔다 —
 # 'etc.'처럼 실제로 문장을 끝내는 말까지 넣으면 반대로 두 문장이 붙어, 다음
 # 문장 첫 단어가 문장 중간 대문자로 위장한다.
@@ -203,7 +208,7 @@ def _is_enumerator(token: str, sentence: str, end: int) -> bool:
     문장 첫 단어 필터를 그대로 통과해 보통 명사가 이름 행세를 한다.
     """
     closer = sentence[end:].lstrip(" \t")[:1]
-    if token.isdigit() or _ROMAN.match(token) is not None:
+    if _NUMBERING.match(token) is not None or _ROMAN.match(token) is not None:
         return closer in _ENUMERATOR_CLOSE
     if len(token) == 1 and token.isalpha():
         # 대문자 한 글자는 이름일 수 있다 ('X'). 괄호로 닫힐 때만 번호로 본다 —
@@ -220,9 +225,13 @@ def _ends_with_abbreviation(text: str, boundary: re.Match[str]) -> bool:
 
     뒤에 대문자가 올 때만 이어 붙인다 — 'expanded into the U.S. the company
     said'처럼 소문자가 오면 이름이 걸린 자리가 아니라서 붙일 이유가 없다.
-    한계는 남는다: 정말로 머리글자로 끝난 문장('...a Ph.D. Later he joined')은
-    다음 문장과 붙는다. 이걸 가르려면 문장 분리기가 필요한데 그건 spaCy 몫이고,
-    주 경로는 spaCy 없이도 돌아야 한다.
+
+    한 글자는 점으로 이어진 약어의 일부일 때만 머리글자로 본다. 한 글자 낱말을
+    전부 머리글자로 치면 'We selected option A. Customers ...'처럼 평범하게 끝난
+    문장이 다음 문장과 붙어, 고치려던 것과 똑같은 위장이 반대편에서 생긴다.
+    한계는 남는다: 'a Ph.D. Later he joined'처럼 진짜 약어로 끝난 문장은 여전히
+    붙는다. 이걸 가르려면 문장 분리기가 필요한데 그건 spaCy 몫이고, 주 경로는
+    spaCy 없이도 돌아야 한다.
     """
     word = _BOUNDARY_WORD.search(text[: boundary.start()])
     if word is None:
@@ -230,7 +239,10 @@ def _ends_with_abbreviation(text: str, boundary: re.Match[str]) -> bool:
     following = text[boundary.end() : boundary.end() + 1]
     if not (following and _is_cased(following) and following.isupper()):
         return False
-    return len(word.group(1)) == 1 or word.group(1).casefold() in _ABBREVIATIONS
+    if word.group(1).casefold() in _ABBREVIATIONS:
+        return True
+    start = word.start(1)
+    return len(word.group(1)) == 1 and start > 0 and text[start - 1] == "."
 
 
 def _sentences(text: str) -> list[str]:
