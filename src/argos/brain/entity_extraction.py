@@ -142,6 +142,8 @@ _BOUNDARY_WORD = re.compile(r"([^\W\d_]+)\.$")
 # 그것뿐이다. 앞만 보면 'J.'를, 뒤만 보면 'K.'를 놓친다.
 _INITIAL_BEFORE = re.compile(r"(?:^|[\s(\[\"'“‘])[^\W\d_]\.[ \t]*$")
 _INITIAL_AFTER = re.compile(r"^[^\W\d_]\.")
+# 바로 앞에 붙어 있는 낱말. 'George W.'의 'George'를 잡는다.
+_WORD_BEFORE = re.compile(r"[^\W_]+$")
 
 # 대문자로 시작해도 이름이 아닌 말들. 문장 첫 단어 규칙이 대부분을 걸러 주므로
 # 여기 있는 건 문장 중간에서도 대문자로 나오는 것들이다. 최소한만 둔다 —
@@ -296,15 +298,16 @@ def _ends_with_abbreviation(text: str, boundary: re.Match[str]) -> bool:
     뒤에 대문자가 올 때만 이어 붙인다 — 'expanded into the U.S. the company
     said'처럼 소문자가 오면 이름이 걸린 자리가 아니라서 붙일 이유가 없다.
 
-    한 글자는 다른 머리글자와 이웃할 때만 머리글자로 본다 — 점으로 이어졌거나
-    ('U.S.', 'J.R.R.') 앞뒤에 또 다른 '한 글자 + 마침표'가 있거나('J. K.').
-    한 글자 낱말을 전부 머리글자로 치면 'We selected option A. Customers ...'
-    처럼 평범하게 끝난 문장이 다음 문장과 붙어, 고치려던 것과 똑같은 위장이
-    반대편에서 생긴다.
+    한 글자는 이름의 자리에 있을 때만 머리글자로 본다 — 점으로 이어졌거나
+    ('U.S.', 'J.R.R.'), 앞뒤에 또 다른 '한 글자 + 마침표'가 있거나('J. K.'),
+    앞에 이름이 붙어 있거나('George W. Bush'). 한 글자 낱말을 전부 머리글자로
+    치면 'We selected option A. Customers ...'처럼 평범하게 끝난 문장이 다음
+    문장과 붙어, 고치려던 것과 똑같은 위장이 반대편에서 생긴다.
 
-    한계는 남는다: 'a Ph.D. Later he joined'처럼 진짜 약어로 끝난 문장은 여전히
-    붙는다. 이걸 가르려면 문장 분리기가 필요한데 그건 spaCy 몫이고, 주 경로는
-    spaCy 없이도 돌아야 한다.
+    한계는 남는다: 'a Ph.D. Later he joined'처럼 진짜 약어로 끝난 문장, 그리고
+    'The plan is Option A. Customers ...'처럼 대문자 낱말 뒤에 한 글자로 끝난
+    문장은 여전히 붙는다. 이걸 가르려면 문장 분리기가 필요한데 그건 spaCy
+    몫이고, 주 경로는 spaCy 없이도 돌아야 한다.
     """
     word = _BOUNDARY_WORD.search(text[: boundary.start()])
     if word is None:
@@ -321,7 +324,37 @@ def _ends_with_abbreviation(text: str, boundary: re.Match[str]) -> bool:
         (start > 0 and text[start - 1] == ".")
         or _INITIAL_BEFORE.search(text[:start]) is not None
         or _INITIAL_AFTER.match(text[boundary.end() :]) is not None
+        or _name_precedes(text, start)
     )
+
+
+def _closes_an_initial(gap: str, previous: str) -> bool:
+    """낱말 사이에 낀 이 마침표가 앞 낱말의 머리글자 부호인가.
+
+    'George W. Bush'에서 끊으면 성이 떨어져 나가 이름 하나가 반쪽 둘이 된다.
+    점이 앞 낱말에 **붙어** 있고 그 낱말이 대문자 한 글자일 때만이다 — 'Acme
+    Corp. Globex'처럼 여러 글자로 끝나면 평범한 문장 부호로 보고 끊는다.
+    """
+    return (
+        len(previous) == 1
+        and _is_cased(previous)
+        and previous.isupper()
+        and gap.startswith(".")
+        and not gap[1:].strip()
+    )
+
+
+def _name_precedes(text: str, start: int) -> bool:
+    """한 글자 바로 앞에 이름으로 쓰이는 낱말이 붙어 있는가.
+
+    'George W. Bush'의 W는 가운데 이름이다. 앞의 'George'가 근거다 —
+    'We selected option A.'의 'option'은 소문자라 여기 걸리지 않는다.
+    """
+    head = text[:start]
+    if not head.endswith((" ", "\t")):
+        return False
+    word = _WORD_BEFORE.search(head.rstrip(" \t"))
+    return word is not None and _opens_a_name(word.group())
 
 
 def _sentences(text: str) -> list[tuple[int, str]]:
@@ -483,7 +516,14 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             # 낱말 사이에 공백이 아닌 게 끼면(쉼표·괄호·따옴표) 거기서 이름이
             # 끊긴다. "Acme Corp, Globex"를 한 이름으로 붙이면 안 된다.
             # 이음말('&')은 예외다 — 거기서 끊으면 이름이 부서진다.
-            if run and gap and gap not in _JOINERS:
+            # 머리글자 뒤의 마침표도 예외다 — 'George W. Bush'의 점은 낱말에
+            # 붙은 머리글자 부호지 구분 기호가 아니다.
+            if (
+                run
+                and gap
+                and gap not in _JOINERS
+                and not _closes_an_initial(raw_gap, run[-1][1])
+            ):
                 flush()
 
             # 문장 첫 단어인지는 토큰 순번이 아니라 앞에 실제로 뭐가 있었는지로

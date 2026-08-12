@@ -211,6 +211,13 @@ def test_possessive_stays_when_it_is_part_of_the_name():
     assert "moody" not in names
 
 
+def test_middle_initial_stays_with_the_surname():
+    # 'George W. Bush'의 W는 가운데 이름이다. 거기서 끊으면 성이 문장 첫 단어로
+    # 둔갑해 탈락하고 'george w'라는 반쪽 이름만 남는다.
+    [names] = canonicals(["Reporters met George W. Bush yesterday."])
+    assert "george w bush" in names
+
+
 def test_possessive_still_splits_before_another_name():
     # 반대 방향 경계. 소유격 뒤에 다른 이름이 오면 거기서 끊어야 한다.
     [names] = canonicals(["Reviewers tested Anthropic's Claude against GPT-5.2."])
@@ -358,10 +365,10 @@ def test_slash_separated_technology_names_stay_whole():
 
 
 def test_spaced_initials_stay_with_the_surname():
-    # 'J. K. Rowling'처럼 띄어 쓴 머리글자에서 끊으면 성이 문장 첫 단어로
-    # 둔갑해 탈락하고 머리글자만 남는다.
+    # 'J. K. Rowling'처럼 띄어 쓴 머리글자에서 끊으면 성이 떨어져 나간다.
+    # 통째로 묶여야 spaCy가 같은 이름에 붙이는 키('j k rowling')와 만난다.
     [names] = canonicals(["Reviewers quoted J. K. Rowling yesterday."])
-    assert "rowling" in names
+    assert "j k rowling" in names
 
 
 def test_an_initial_before_a_name_does_not_end_the_sentence():
