@@ -211,6 +211,16 @@ def test_fullwidth_copy_is_the_same_article():
     assert is_near_duplicate(article, _fullwidth(article)) is True
 
 
+def test_leading_dot_names_do_not_collide():
+    # '.NET'과 'NET'은 서로 다른 기술이다. 이름 앞의 점을 공백으로 지우면 두
+    # 글이 똑같아져, 나머지 문장이 같기만 하면 거리 0 — 다른 기술을 다룬
+    # 기사가 재배포본으로 판정된다. 고유명사 쪽은 이미 둘을 갈라 놓는다.
+    left = "The team migrated the billing service to .NET this quarter. "
+    right = "The team migrated the billing service to NET this quarter. "
+    assert simhash(left * 10) != simhash(right * 10)
+    assert is_near_duplicate(left * 10, right * 10, max_distance=0) is False
+
+
 def test_symbol_bearing_names_do_not_collide():
     # 기호를 지우면 'C++' 기사와 'C#' 기사가 똑같이 'c'가 되어, 나머지 문장이
     # 같기만 하면 거리 0 — 서로 다른 기술을 다룬 기사가 무조건 재배포본이 된다.

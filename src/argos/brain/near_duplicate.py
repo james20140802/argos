@@ -50,13 +50,22 @@ def _keep_name_symbols(match: re.Match[str]) -> str:
 
     낱말 **뒤**에 붙은 것만 남긴다. 앞에 붙는 '#해시태그'나 마크다운 제목의
     '###'까지 남기면 구두점 차이를 지운다는 원칙이 깨진다.
+
+    이름 **앞**에 붙은 점도 같은 이유로 남긴다 — 지우면 '.NET' 기사와 'NET'
+    기사가 똑같아진다. 앞 낱말에 붙은 점(문장 끝·약어)은 남기지 않는다.
+    고유명사 쪽 토큰화가 앞점을 붙잡는 조건과 같은 모양이다.
     """
     run = match.group()
-    before = match.string[match.start() - 1] if match.start() else ""
+    text = match.string
+    before = text[match.start() - 1] if match.start() else ""
+    after = text[match.end() : match.end() + 1]
+    # 점 바로 앞의 글자. 덩어리 안에 있으면 거기서, 없으면 덩어리 앞에서 본다.
+    ahead = run[-2] if len(run) > 1 else before
+    lead = "." if run.endswith(".") and after.isalpha() and not ahead.isalnum() else ""
     if not before.isalnum():
-        return " "
+        return f" {lead}"
     kept = run[: len(run) - len(run.lstrip("+#"))]
-    return f"{kept} "
+    return f"{kept} {lead}"
 
 
 def _normalize(text: str) -> str:
