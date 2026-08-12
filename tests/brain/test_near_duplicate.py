@@ -188,3 +188,12 @@ def test_combining_vowel_signs_keep_articles_apart(left, right):
     # 두 기사가 같은 shingle을 내고 같은 기사로 판정된다.
     assert simhash(left * 10) != simhash(right * 10)
     assert is_near_duplicate(left * 10, right * 10) is False
+
+
+def test_symbol_bearing_names_do_not_collide():
+    # 기호를 지우면 'C++' 기사와 'C#' 기사가 똑같이 'c'가 되어, 나머지 문장이
+    # 같기만 하면 거리 0 — 서로 다른 기술을 다룬 기사가 무조건 재배포본이 된다.
+    left = "The team shipped a C++ compiler update for the runtime today. "
+    right = "The team shipped a C# compiler update for the runtime today. "
+    assert simhash(left * 10) != simhash(right * 10)
+    assert is_near_duplicate(left * 10, right * 10, max_distance=0) is False

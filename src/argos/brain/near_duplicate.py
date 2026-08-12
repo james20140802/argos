@@ -26,35 +26,42 @@ import re
 import unicodedata
 from collections import Counter
 
+from argos.brain.entity_names import MARK_CLASS
 from argos.config import settings
 
 _HASH_BITS = 64
-# 글자·숫자만 남기고 나머지(구두점, 공백)는 하나의 공백으로. 스크립트를 가리지
-# 않는다 — 라틴 문자만 남기면 한글 기사가 통째로 빈 글이 되어 전부 SimHash 0으로
-# 뭉개지고, 서로 무관한 기사끼리 같은 기사로 판정된다.
-_NON_TEXT = re.compile(r"[\W_]+", re.UNICODE)
+# 글자·숫자·결합 기호만 남기고 나머지(구두점, 공백)는 하나의 공백으로. 스크립트를
+# 가리지 않는다 — 라틴 문자만 남기면 한글 기사가 통째로 빈 글이 되어 전부 SimHash
+# 0으로 뭉개지고, 서로 무관한 기사끼리 같은 기사로 판정된다.
+# 결합 기호(유니코드 M 계열)를 남기는 이유: 데바나가리·타이 문자는 모음이 자음에
+# 붙는 부호로 적히는데 NFC는 이걸 자음에 합성해 주지 않는다. 지워 버리면 모음이
+# 통째로 사라져 'कि'와 'कु'가 똑같이 'क'가 되고, 서로 다른 낱말로 쓰인 두 기사가
+# 같은 기사로 판정된다.
+_NON_TEXT = re.compile(rf"(?:[^\w{MARK_CLASS}]|_)+", re.UNICODE)
 _WHITESPACE = re.compile(r"\s+")
 
 
-def _is_text(character: str) -> bool:
-    """본문 내용으로 남길 글자인가.
+def _keep_name_symbols(match: re.Match[str]) -> str:
+    """구두점 덩어리를 공백으로 바꾸되, 낱말에 붙은 '+'·'#'은 남긴다.
 
-    글자·숫자에 더해 **결합 기호**(유니코드 M 계열)까지 남긴다. 데바나가리·
-    타이 문자는 모음이 자음에 붙는 부호로 적히는데 NFC는 이걸 자음에 합성해
-    주지 않는다. 지워 버리면 모음이 통째로 사라져 'कि'와 'कु'가 똑같이 'क'가
-    되고, 서로 다른 낱말로 쓰인 두 기사가 같은 기사로 판정된다.
+    이 둘은 구두점이 아니라 이름의 일부다. 지우면 'C++' 기사와 'C#' 기사가
+    똑같이 'c'가 되어, 나머지 문장이 같기만 하면 거리 0이 나온다 — 서로 다른
+    기술을 다룬 두 기사가 무조건 재배포본으로 판정된다.
+
+    낱말 **뒤**에 붙은 것만 남긴다. 앞에 붙는 '#해시태그'나 마크다운 제목의
+    '###'까지 남기면 구두점 차이를 지운다는 원칙이 깨진다.
     """
-    return character.isalnum() or unicodedata.category(character)[0] == "M"
+    run = match.group()
+    before = match.string[match.start() - 1] if match.start() else ""
+    if not before.isalnum():
+        return " "
+    kept = run[: len(run) - len(run.lstrip("+#"))]
+    return f"{kept} "
 
 
 def _normalize(text: str) -> str:
     """대소문자·구두점·공백 차이를 지운다. 재배포본은 이런 게 흔히 다르다."""
-    folded = text.casefold()
-    # ASCII에는 결합 기호가 없다. 흔한 경우는 정규식 한 번으로 끝낸다.
-    if folded.isascii():
-        return _NON_TEXT.sub(" ", folded).strip()
-    kept = "".join(character if _is_text(character) else " " for character in folded)
-    return _WHITESPACE.sub(" ", kept).strip()
+    return _NON_TEXT.sub(_keep_name_symbols, text.casefold()).strip()
 
 
 def _feature_hash(feature: str) -> int:
