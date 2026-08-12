@@ -58,6 +58,8 @@ _SENTENCE_END = re.compile(
 # 'gpt'만 남는다 — 정규형 쪽은 이미 이 부호들을 붙임표와 같게 접는다.
 # 전각 줄표(U+2014·U+2015)는 일부러 뺀다. 그건 이름 안이 아니라 절 사이에 쓰여,
 # 묶으면 서로 다른 이름 둘이 없는 이름 하나로 붙는다.
+# 빗금도 낱말 안에 남긴다 — 'HTTP/2'는 버전 숫자를 잃고 'TCP/IP'는 둘로 쪼개진다.
+# 정규형 쪽은 이미 빗금을 붙임표와 같은 구분자로 접는다.
 # 아래 문자 클래스에 든 부호는 눈으로 구별되지 않는다: U+2010..U+2013 범위와
 # U+2212(빼기 부호). 손대기 전에 코드포인트부터 확인할 것.
 
@@ -91,7 +93,7 @@ def _mark_class() -> str:
 # 낱말 글자: 글자·숫자(밑줄 제외)에 결합 기호를 더한 것.
 _WORD = f"(?:[^\\W_]|[{_mark_class()}])"
 _TOKEN = re.compile(
-    rf"[^\W\d_]{_WORD}*(?:[-'’.‐-–−]{_WORD}+)*[+#]*|\d+(?:\.\d+)*"
+    rf"[^\W\d_]{_WORD}*(?:[-'’./‐-–−]{_WORD}+)*[+#]*|\d+(?:\.\d+)*"
 )
 # 이름 글자가 아닌 자리를 메우는 표시. 공백이 **아니어야** 한다 — 이 자리에서
 # 이름 묶음이 끊겨야 하기 때문이다. 토큰 정규식에도 걸리지 않는다.
@@ -141,6 +143,11 @@ _ABBREVIATIONS = frozenset(
 )
 # 문장 경계 바로 앞의 낱말. 'the U.S.'에서는 머리글자 'S'만 잡힌다.
 _BOUNDARY_WORD = re.compile(r"([^\W\d_]+)\.$")
+# 띄어 쓴 머리글자 연쇄('J. K. Rowling')를 알아보는 자리. 한 글자 앞이나 뒤에
+# 또 다른 '한 글자 + 마침표'가 있는지 본다 — 'option A.'와 갈라내는 단서가
+# 그것뿐이다. 앞만 보면 'J.'를, 뒤만 보면 'K.'를 놓친다.
+_INITIAL_BEFORE = re.compile(r"(?:^|[\s(\[\"'“‘])[^\W\d_]\.[ \t]*$")
+_INITIAL_AFTER = re.compile(r"^[^\W\d_]\.")
 
 # 대문자로 시작해도 이름이 아닌 말들. 문장 첫 단어 규칙이 대부분을 걸러 주므로
 # 여기 있는 건 문장 중간에서도 대문자로 나오는 것들이다. 최소한만 둔다 —
@@ -266,9 +273,12 @@ def _ends_with_abbreviation(text: str, boundary: re.Match[str]) -> bool:
     뒤에 대문자가 올 때만 이어 붙인다 — 'expanded into the U.S. the company
     said'처럼 소문자가 오면 이름이 걸린 자리가 아니라서 붙일 이유가 없다.
 
-    한 글자는 점으로 이어진 약어의 일부일 때만 머리글자로 본다. 한 글자 낱말을
-    전부 머리글자로 치면 'We selected option A. Customers ...'처럼 평범하게 끝난
-    문장이 다음 문장과 붙어, 고치려던 것과 똑같은 위장이 반대편에서 생긴다.
+    한 글자는 다른 머리글자와 이웃할 때만 머리글자로 본다 — 점으로 이어졌거나
+    ('U.S.', 'J.R.R.') 앞뒤에 또 다른 '한 글자 + 마침표'가 있거나('J. K.').
+    한 글자 낱말을 전부 머리글자로 치면 'We selected option A. Customers ...'
+    처럼 평범하게 끝난 문장이 다음 문장과 붙어, 고치려던 것과 똑같은 위장이
+    반대편에서 생긴다.
+
     한계는 남는다: 'a Ph.D. Later he joined'처럼 진짜 약어로 끝난 문장은 여전히
     붙는다. 이걸 가르려면 문장 분리기가 필요한데 그건 spaCy 몫이고, 주 경로는
     spaCy 없이도 돌아야 한다.
@@ -281,8 +291,14 @@ def _ends_with_abbreviation(text: str, boundary: re.Match[str]) -> bool:
         return False
     if word.group(1).casefold() in _ABBREVIATIONS:
         return True
+    if len(word.group(1)) != 1:
+        return False
     start = word.start(1)
-    return len(word.group(1)) == 1 and start > 0 and text[start - 1] == "."
+    return (
+        (start > 0 and text[start - 1] == ".")
+        or _INITIAL_BEFORE.search(text[:start]) is not None
+        or _INITIAL_AFTER.match(text[boundary.end() :]) is not None
+    )
 
 
 def _sentences(text: str) -> list[str]:

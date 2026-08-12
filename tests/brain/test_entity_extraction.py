@@ -233,6 +233,21 @@ def test_a_title_before_a_name_does_not_end_the_sentence():
     assert "dr" not in names
 
 
+def test_slash_separated_technology_names_stay_whole():
+    # 'HTTP/2'·'TCP/IP'는 이름 하나다. 빗금에서 끊으면 버전 숫자가 떨어져 나가고
+    # 한 이름이 둘로 쪼개진다 — 정규형 쪽은 이미 빗금을 구분자로 접는다.
+    [names] = canonicals(["Reviewers tested HTTP/2 with TCP/IP."])
+    assert {"http 2", "tcp ip"} <= names
+    assert "http" not in names
+
+
+def test_spaced_initials_stay_with_the_surname():
+    # 'J. K. Rowling'처럼 띄어 쓴 머리글자에서 끊으면 성이 문장 첫 단어로
+    # 둔갑해 탈락하고 머리글자만 남는다.
+    [names] = canonicals(["Reviewers quoted J. K. Rowling yesterday."])
+    assert "rowling" in names
+
+
 def test_an_initial_before_a_name_does_not_end_the_sentence():
     # 머리글자 약어도 마찬가지다. 'U.S.'에서 끊으면 'Army'가 사라진다.
     [names] = canonicals(["Officials briefed the U.S. Army about deployment."])
