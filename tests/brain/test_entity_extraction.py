@@ -564,6 +564,20 @@ def test_fullwidth_dot_before_an_uppercase_version_stays_in_the_name():
     assert "gpt 3x" in names
 
 
+@pytest.mark.parametrize(
+    "sentence, name",
+    [
+        ("Reviewers discussed Acme, Inc. yesterday.", "acme inc"),
+        ("Reviewers discussed Foo Co., Ltd. yesterday.", "foo co ltd"),
+    ],
+)
+def test_a_comma_before_a_corporate_suffix_stays_in_the_name(sentence, name):
+    # 회사 이름 안의 쉼표는 나열 기호가 아니다. 끊으면 회사 하나가 조각 둘로
+    # 남고, 쉼표 없이 쓴 'Acme Inc.'와 다른 키가 된다.
+    [names] = canonicals([sentence])
+    assert name in names
+
+
 def test_pure_numbers_stay_numbers():
     # 숫자로 시작하는 이름을 받되 순수한 숫자는 그대로 숫자여야 한다 — 버전
     # 숫자가 이름에 붙고, 항목 번호는 번호로 남는다.

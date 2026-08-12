@@ -129,6 +129,29 @@ _POSSESSIVE = re.compile(r"['’][Ss]$")
 # 낱말 사이에 끼어도 이름을 가르지 않는 것. 'AT&T', 'Johnson & Johnson'에서
 # 끊으면 회사 하나가 사라지고 한 글자짜리 가짜 이름이 생긴다.
 _JOINERS = frozenset({"&", "＆"})
+# 회사 이름의 꼬리. 앞에 쉼표를 두고 쓰는 관례가 있어('Acme, Inc.',
+# 'Foo Co., Ltd.'), 쉼표에서 끊으면 회사 하나가 조각 둘로 남고 쉼표 없이 쓴
+# 같은 회사와 다른 키가 된다. 쉼표로 나열한 이름들과는 **뒤에 오는 낱말**로
+# 가른다 — 이 목록에 든 것만 이어 붙인다.
+_CORPORATE_SUFFIXES = frozenset(
+    {
+        "inc",
+        "llc",
+        "llp",
+        "ltd",
+        "plc",
+        "co",
+        "corp",
+        "gmbh",
+        "ag",
+        "sa",
+        "bv",
+        "nv",
+        "pty",
+        "oy",
+        "ab",
+    }
+)
 # 항목 번호를 닫는 기호. '1.'은 문장 끝 규칙이 이미 잘라 준다.
 _ENUMERATOR_CLOSE = frozenset({")", "]", ":", ".", "-", "–", "—"})
 # 괄호로 닫는 항목 번호. 대문자 한 글자는 이것만 번호로 인정한다 —
@@ -578,6 +601,21 @@ def _introduces_a_clause(raw_gap: str, sentence: str, start: int) -> bool:
     return len(_TOKEN.findall(sentence[start:])) > 1
 
 
+def _joins_a_corporate_suffix(gap: str, token: str) -> bool:
+    """쉼표 뒤의 이 낱말이 회사 이름의 꼬리인가.
+
+    'Acme, Inc.'의 쉼표는 나열 기호가 아니라 이름 안이다 — 끊으면 회사 하나가
+    'acme'와 'inc' 조각 둘로 남고, 쉼표 없이 쓴 'Acme Inc.'와 다른 키가 된다.
+
+    쉼표로 나열한 이름들('Acme Corp, Globex …')과는 뒤에 오는 낱말로 가른다.
+    꼬리 목록에 든 것만 이어 붙이므로 나열은 그대로 끊긴다.
+
+    앞 꼬리에 붙은 마침표는 세지 않는다 — 'Foo Co., Ltd.'처럼 꼬리가 겹치면
+    틈이 '.,'가 된다.
+    """
+    return gap.replace(".", "") == "," and token.casefold() in _CORPORATE_SUFFIXES
+
+
 def _dot_stays_in_the_name(gap: str, previous: str) -> bool:
     """낱말 사이에 낀 이 마침표가 이름에 붙은 부호인가.
 
@@ -836,11 +874,13 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             # 이음말('&')은 예외다 — 거기서 끊으면 이름이 부서진다.
             # 이름에 붙은 마침표도 예외다 — 'George W. Bush'의 머리글자 부호와
             # 'St. Louis'의 앞머리 약어는 구분 기호가 아니다.
+            # 회사 꼬리 앞의 쉼표도 예외다 — 'Acme, Inc.'는 이름 하나다.
             if (
                 run
                 and gap
                 and gap not in _JOINERS
                 and not _dot_stays_in_the_name(raw_gap, run[-1][1])
+                and not _joins_a_corporate_suffix(gap, match.group())
             ):
                 flush()
 
