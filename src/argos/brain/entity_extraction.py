@@ -41,6 +41,7 @@ from argos.brain.entity_names import (
     JOIN_CLASS,
     MARK_CLASS,
     OPEN_CLASS,
+    STRAIGHT_QUOTES,
     canonical_name,
     opens_a_position,
 )
@@ -96,9 +97,13 @@ _JOIN = rf"(?:{_JOIN_SYMBOL}\.?|\.)"
 _SYMBOL_SUFFIX = r"[+#]*"
 # 이름 앞에 붙는 점. 이름이 시작할 수 있는 자리(글머리·공백·여는 구두점)에
 # 놓인 것만 품는다 — 판정은 정규형·근접중복과 같은 것을 쓴다.
+# 곧은 따옴표는 여기서만 여는 쪽으로 친다. 자리 판정 일반에는 못 쓰지만
+# ('"hello" Anthropic'의 닫는 자리), 점이 붙고 뒤에 글자가 이어지는 이 모양은
+# 여는 쪽뿐이다 — '".NET"'이 앞점을 잃으면 약어 'NET'과 구별되지 않는다.
 # 뒤보기가 아니라 **앞보기**로 자리를 가리는 이유: 점을 못 품는 자리에서 토큰
 # 자체를 버리면 안 되기 때문이다. 'slipped...Next'의 'Next'는 남아야 한다.
-_LEAD_DOT = rf"(?:(?<![^\s{OPEN_CLASS}])\.)?"
+_QUOTE_CLASS = "".join(re.escape(character) for character in sorted(STRAIGHT_QUOTES))
+_LEAD_DOT = rf"(?:(?<![^\s{OPEN_CLASS}{_QUOTE_CLASS}])\.)?"
 # 갈래 셋을 이 순서로 본다.
 #  1. 글자로 시작하는 낱말. 앞의 점은 이름의 일부라 품는다 — '.NET'에서 떼면
 #     표시용 원문이 'NET'이 되어 본 그대로가 아니게 되고, 약어 'NET'과 구별할

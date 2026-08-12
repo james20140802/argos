@@ -230,6 +230,14 @@ def test_leading_dot_after_a_joiner_does_not_collide():
     assert is_near_duplicate(left * 10, right * 10, max_distance=0) is False
 
 
+def test_quoted_leading_dot_names_do_not_collide():
+    # 곧은 따옴표 안의 '.NET'도 앞점을 잃으면 'NET' 기사와 똑같아진다.
+    # 고유명사 쪽 토큰화가 이 자리를 이름의 시작으로 보는 것과 같아야 한다.
+    left = 'The team migrated the billing service to ".NET" this quarter. '
+    right = 'The team migrated the billing service to "NET" this quarter. '
+    assert simhash(left * 10) != simhash(right * 10)
+
+
 def test_ellipsis_spacing_does_not_change_the_article():
     # 줄임표 뒤를 띄웠는가만 다른 같은 기사. 마지막 점을 이름 앞점으로 붙잡으면
     # 한쪽만 '.next'를 갖게 되어 같은 기사가 서로 멀어진다.

@@ -26,7 +26,12 @@ import re
 import unicodedata
 from collections import Counter
 
-from argos.brain.entity_names import JOIN_SYMBOLS, MARK_CLASS, opens_a_position
+from argos.brain.entity_names import (
+    JOIN_SYMBOLS,
+    MARK_CLASS,
+    STRAIGHT_QUOTES,
+    opens_a_position,
+)
 from argos.config import settings
 
 _HASH_BITS = 64
@@ -52,9 +57,10 @@ def _keep_name_symbols(match: re.Match[str]) -> str:
     '###'까지 남기면 구두점 차이를 지운다는 원칙이 깨진다.
 
     이름 **앞**에 붙은 점도 같은 이유로 남긴다 — 지우면 '.NET' 기사와 'NET'
-    기사가 똑같아진다. 이름이 시작할 수 있는 자리(글머리·공백·여는 구두점)와
-    낱말 안의 이음부호 뒤('F#/.NET')가 그 자리다. 판정은 고유명사 쪽 토큰화와
-    같은 것을 쓴다 — 갈라 두면 같은 글이 두 경로에서 다르게 잘린다.
+    기사가 똑같아진다. 이름이 시작할 수 있는 자리(글머리·공백·여는 구두점),
+    낱말 안의 이음부호 뒤('F#/.NET'), 그리고 곧은 따옴표 뒤('".NET"')가 그
+    자리다. 판정은 고유명사 쪽 토큰화와 같은 것을 쓴다 — 갈라 두면 같은 글이
+    두 경로에서 다르게 잘린다.
 
     그래서 줄임표의 꼬리는 안 걸린다. 앞이 또 점이라 이름이 시작할 자리가
     아니다 — 붙잡으면 'slipped...Next'와 'slipped... Next'가, 띄어쓰기만 다른
@@ -66,7 +72,11 @@ def _keep_name_symbols(match: re.Match[str]) -> str:
     after = text[match.end() : match.end() + 1]
     # 점 바로 앞의 글자. 덩어리 안에 있으면 거기서, 없으면 덩어리 앞에서 본다.
     ahead = run[-2] if len(run) > 1 else before
-    starts_a_name = opens_a_position(ahead) or ahead in JOIN_SYMBOLS
+    starts_a_name = (
+        opens_a_position(ahead)
+        or ahead in JOIN_SYMBOLS
+        or ahead in STRAIGHT_QUOTES
+    )
     lead = "." if run.endswith(".") and after.isalpha() and starts_a_name else ""
     if not before.isalnum():
         return f" {lead}"

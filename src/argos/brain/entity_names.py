@@ -78,6 +78,13 @@ JOIN_SYMBOLS = frozenset("-'’/·‧‐‑‒–−")
 JOIN_CLASS = "".join(re.escape(character) for character in sorted(JOIN_SYMBOLS))
 
 
+# 곧은 따옴표. 여닫는 모양이 같아 자리 판정(`opens_a_position`)에는 못 쓴다 —
+# 닫는 자리를 열림으로 세면 뒤의 진짜 이름이 문장 첫 단어로 둔갑한다.
+# 다만 이름 앞점 바로 앞이라면 여는 쪽이다: 닫는 따옴표에 점이 붙고 그 뒤에
+# 글자가 바로 이어지는 표기는 없다. '".NET"'이 앞점을 잃으면 안 된다.
+STRAIGHT_QUOTES = frozenset({'"', "'"})
+
+
 def opens_a_position(character: str) -> bool:
     """이 글자 뒤가 이름이 시작할 수 있는 자리인가.
 
