@@ -371,9 +371,11 @@ cd argos
 uv sync --all-extras
 
 # (선택) 고유명사 추출 보조 경로 — 없어도 규칙 기반으로 동작하고 재현율만 낮아진다
+# 패키지는 위 --all-extras가 이미 깔았고, 모델만 따로 내려받으면 된다.
+# 여기서 'uv sync --extra nlp'를 다시 부르면 안 된다 — 그건 nlp만 남기고
+# dev(pytest·ruff)를 지워서 아래 명령들이 동작하지 않게 된다.
 # 모델 이름은 설정에서 읽는다. 이름을 여기 박아 두면 event_detection.entity_spacy_model을
 # 바꿨을 때 엉뚱한 모델을 받아, 보조 경로가 조용히 꺼진 채로 돈다.
-uv sync --extra nlp
 uv run python -m spacy download "$(uv run argos config get event_detection.entity_spacy_model)"
 
 # 2. 환경 파일 생성

@@ -8,8 +8,11 @@
 spaCy는 optional extra다. 없으면 예외 없이 빈 결과를 돌려주고 재현율만
 낮아진다. 기본 설치와 릴리스 CI는 이 폴백 경로로 돈다.
 
-    uv sync --extra nlp
+    uv sync --all-extras
     uv run python -m spacy download "$(uv run argos config get event_detection.entity_spacy_model)"
+
+`--extra nlp`가 아니라 `--all-extras`인 이유: 앞엣것은 고른 extra만 남기고
+나머지를 지운다. dev가 빠지면 pytest·ruff가 사라진다.
 
 모델 이름은 설정(`event_detection.entity_spacy_model`)이 정한다. 기본값을
 문서에 적지 않는 것도 같은 이유다 — 벤치마크에 따라 바뀔 값을 산문에 박아
