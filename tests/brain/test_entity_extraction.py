@@ -580,6 +580,20 @@ def test_line_break_starts_a_new_sentence():
     assert not any("customers" in name for name in names)
 
 
+@pytest.mark.parametrize(
+    "sentence, name",
+    [
+        ("Reviewers visited St. Louis with Acme Corp.", "st louis"),
+        ("Reviewers climbed Mt. Fuji with Acme Corp.", "mt fuji"),
+    ],
+)
+def test_a_place_abbreviation_stays_with_the_name(sentence, name):
+    # 'St. Louis'의 St는 호칭이 아니라 이름의 일부다. 점에서 끊으면 도시 하나가
+    # 'louis'로 남고, spaCy가 통째로 넘기는 'st louis'와 갈려 두 키가 된다.
+    [names] = canonicals([sentence])
+    assert name in names
+
+
 def test_a_title_before_a_name_does_not_end_the_sentence():
     # 'Dr.'의 점을 문장 끝으로 읽으면 뒤따르는 진짜 이름이 문장 첫 단어로
     # 둔갑해 탈락하고, 정작 호칭만 이름 행세를 하며 남는다.

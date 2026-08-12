@@ -169,6 +169,11 @@ _ABBREVIATIONS = frozenset(
         "st",
     }
 )
+# 그중 이름 **앞머리**인 것. 'St. Louis' 'Mt. Fuji'의 St·Mt는 호칭이 아니라
+# 이름의 일부라, 점에서 끊으면 도시 하나가 'louis'로 남는다.
+# 호칭(Dr·Mr·Prof …)은 여기 넣지 않는다. spaCy가 넘기는 이름 스팬에는 호칭이
+# 빠져 있어서, 붙이면 같은 사람이 'dr smith'와 'smith' 두 키로 쪼개진다.
+_NAME_PREFIXES = frozenset({"st", "mt"})
 _FULLWIDTH_DOT = re.compile(r"．")
 # 문장 경계 바로 앞의 낱말. 'the U.S.'에서는 머리글자 'S'만 잡힌다.
 _BOUNDARY_WORD = re.compile(r"([^\W\d_]+)\.$")
@@ -540,20 +545,21 @@ def _introduces_a_clause(raw_gap: str, sentence: str, start: int) -> bool:
     return len(_TOKEN.findall(sentence[start:])) > 1
 
 
-def _closes_an_initial(gap: str, previous: str) -> bool:
-    """낱말 사이에 낀 이 마침표가 앞 낱말의 머리글자 부호인가.
+def _dot_stays_in_the_name(gap: str, previous: str) -> bool:
+    """낱말 사이에 낀 이 마침표가 이름에 붙은 부호인가.
 
-    'George W. Bush'에서 끊으면 성이 떨어져 나가 이름 하나가 반쪽 둘이 된다.
-    점이 앞 낱말에 **붙어** 있고 그 낱말이 대문자 한 글자일 때만이다 — 'Acme
-    Corp. Globex'처럼 여러 글자로 끝나면 평범한 문장 부호로 보고 끊는다.
+    두 자리다. 하나는 머리글자 — 'George W. Bush'에서 끊으면 성이 떨어져 나가
+    이름 하나가 반쪽 둘이 된다. 다른 하나는 이름 앞머리 약어 — 'St. Louis'에서
+    끊으면 도시 하나가 'louis'로 남는다.
+
+    점이 앞 낱말에 **붙어** 있을 때만이다. 그러고도 'Acme Corp. Globex'처럼
+    아무 낱말이나 오면 평범한 문장 부호로 보고 끊는다.
     """
-    return (
-        len(previous) == 1
-        and _is_cased(previous)
-        and previous.isupper()
-        and gap.startswith(".")
-        and not gap[1:].strip()
-    )
+    if not (gap.startswith(".") and not gap[1:].strip()):
+        return False
+    if previous.casefold() in _NAME_PREFIXES:
+        return True
+    return len(previous) == 1 and _is_cased(previous) and previous.isupper()
 
 
 def _name_precedes(text: str, start: int) -> bool:
@@ -795,13 +801,13 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
             # 낱말 사이에 공백이 아닌 게 끼면(쉼표·괄호·따옴표) 거기서 이름이
             # 끊긴다. "Acme Corp, Globex"를 한 이름으로 붙이면 안 된다.
             # 이음말('&')은 예외다 — 거기서 끊으면 이름이 부서진다.
-            # 머리글자 뒤의 마침표도 예외다 — 'George W. Bush'의 점은 낱말에
-            # 붙은 머리글자 부호지 구분 기호가 아니다.
+            # 이름에 붙은 마침표도 예외다 — 'George W. Bush'의 머리글자 부호와
+            # 'St. Louis'의 앞머리 약어는 구분 기호가 아니다.
             if (
                 run
                 and gap
                 and gap not in _JOINERS
-                and not _closes_an_initial(raw_gap, run[-1][1])
+                and not _dot_stays_in_the_name(raw_gap, run[-1][1])
             ):
                 flush()
 
