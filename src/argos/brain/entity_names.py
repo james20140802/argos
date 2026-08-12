@@ -103,7 +103,10 @@ _SEPARATORS = re.compile(r"[-_/&＆‐-―−]+")
 # 결합 기호도 남긴다: `\w`가 안 잡는데 NFKC가 합성해 주지도 않는 부호가 있어서,
 # 지우면 'Ọ́lá'와 'Ọlá'가 한 키로 합쳐져 서로 다른 두 이름이 하나가 된다.
 _NOISE = re.compile(rf"[^\w\s.+#{MARK_CLASS}]+")
-_DOT = re.compile(r"\.")
+# 점은 **덩어리째** 본다. 하나씩 보면 줄임표(호환 형태를 접으면 점 셋)의
+# 마지막 점만 이름 앞점으로 남아, 한 번 더 접었을 때 결과가 달라진다 —
+# 멱등 계약이 깨진다.
+_DOT = re.compile(r"\.+")
 _SPACES = re.compile(r"\s+")
 
 
@@ -118,12 +121,14 @@ def _segment_length(text: str, start: int, step: int) -> int:
 
 
 def _resolve_dot(match: re.Match[str]) -> str:
-    """점 하나를 어떻게 할지 정한다: 남길지, 구분자로 벌릴지, 지울지.
+    """점 덩어리를 어떻게 할지 정한다: 남길지, 구분자로 벌릴지, 지울지.
 
     점은 자리마다 뜻이 다르다.
 
     - 숫자 사이(`5.2`)는 버전이다. 그대로 둔다.
     - 이름 앞(`.NET`)은 이름의 일부다. 지우면 약어 `NET`과 구별되지 않는다.
+      **점 하나일 때만**이다 — 줄임표 뒤(`Foo…Bar`)는 이름 앞점이 아니라
+      구분자다. 토큰화·근접중복 쪽 판정과 같은 결이다.
     - 낱말 사이(`Node.js`)는 구분자다. 지우기만 하면 `nodejs`가 되어 `Node JS`
       라고 쓴 같은 제품과 다른 키가 되고 문서빈도가 둘로 쪼개진다.
     - 머리글자 사이(`U.S.`)는 붙여야 한다. 여기까지 벌리면 훨씬 흔한 표기인
@@ -132,17 +137,18 @@ def _resolve_dot(match: re.Match[str]) -> str:
     - 그 밖(낱말 끝 `Corp.`)은 버린다.
     """
     text = match.string
-    index = match.start()
-    before = text[index - 1] if index else ""
-    after = text[index + 1] if index + 1 < len(text) else ""
-    if before.isdigit() and after.isdigit():
+    start, end = match.span()
+    single = end - start == 1
+    before = text[start - 1] if start else ""
+    after = text[end] if end < len(text) else ""
+    if single and before.isdigit() and after.isdigit():
         return "."
     if not before.isalnum():
-        return "." if after.isalpha() else ""
+        return "." if single and after.isalpha() else ""
     if not after.isalnum():
         return ""
-    left = _segment_length(text, index - 1, -1)
-    right = _segment_length(text, index + 1, 1)
+    left = _segment_length(text, start - 1, -1)
+    right = _segment_length(text, end, 1)
     return " " if left > 1 and right > 1 else ""
 
 

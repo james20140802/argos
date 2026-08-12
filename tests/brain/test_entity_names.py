@@ -87,11 +87,20 @@ def test_accented_letters_survive():
         "  ",
         "NVIDIA Blackwell",
         "François Chollet",
+        # 줄임표는 호환 형태를 접으면 점 여럿이 된다. 점을 하나씩 보면 마지막
+        # 점만 이름 앞점으로 남아, 한 번 더 접었을 때 결과가 달라진다.
+        "Foo…Bar",
+        "Foo...Bar",
     ],
 )
 def test_idempotent(raw):
     once = canonical_name(raw)
     assert canonical_name(once) == once
+
+
+def test_an_ellipsis_between_names_folds_to_a_separator():
+    # 줄임표는 이름 앞점이 아니라 구분자다 — 토큰화·근접중복 쪽 판정과 같다.
+    assert canonical_name("Foo…Bar") == "foo bar"
 
 
 def test_empty_and_whitespace_only():
