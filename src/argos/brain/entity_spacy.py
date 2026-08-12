@@ -9,6 +9,9 @@ spaCy는 optional extra다. 없으면 예외 없이 빈 결과를 돌려주고 �
 낮아진다. 기본 설치와 릴리스 CI는 이 폴백 경로로 돈다.
 
     uv sync --extra nlp && uv run python -m spacy download en_core_web_sm
+
+모델 이름은 설정(`event_detection.entity_spacy_model`)이 정한다. 위 명령의
+`en_core_web_sm`은 기본값일 뿐이다.
 """
 
 from __future__ import annotations
@@ -17,17 +20,17 @@ import logging
 from functools import lru_cache
 from typing import Sequence
 
-logger = logging.getLogger(__name__)
+from argos.config import settings
 
-MODEL_NAME = "en_core_web_sm"
+logger = logging.getLogger(__name__)
 
 # 이름으로 취급할 라벨. DATE/PERCENT/CARDINAL 같은 건 이름이 아니다.
 _NAME_LABELS = frozenset({"PERSON", "ORG", "PRODUCT", "GPE", "NORP", "FAC", "WORK_OF_ART"})
 
 
-@lru_cache(maxsize=1)
-def load_pipeline():
-    """`en_core_web_sm` 파이프라인. 없으면 None — 예외를 올리지 않는다."""
+@lru_cache(maxsize=4)
+def _load_pipeline(model_name: str):
+    """이름으로 파이프라인을 연다. 없으면 None — 예외를 올리지 않는다."""
     try:
         import spacy
     except ImportError:
@@ -35,10 +38,20 @@ def load_pipeline():
         return None
 
     try:
-        return spacy.load(MODEL_NAME)
+        return spacy.load(model_name)
     except OSError:
-        logger.debug("spaCy 모델 %s이 없다 — 규칙 경로만 사용한다", MODEL_NAME)
+        logger.debug("spaCy 모델 %s이 없다 — 규칙 경로만 사용한다", model_name)
         return None
+
+
+def load_pipeline():
+    """설정이 가리키는 파이프라인. 없으면 None.
+
+    모델 이름을 코드에 박아 두면 다른 호환 모델을 설치해 벤치마크해도 보조
+    경로가 조용히 꺼진 채로 돈다. 캐시 키가 이름이라 설정을 바꾸면 그 모델을
+    새로 연다.
+    """
+    return _load_pipeline(settings.user.event_detection.entity_spacy_model)
 
 
 def spacy_names(documents: Sequence[str]) -> list[list[str]]:

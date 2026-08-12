@@ -55,9 +55,9 @@ def fake_pipeline(mapping):
 
 @pytest.fixture(autouse=True)
 def _clear_pipeline_cache():
-    entity_spacy.load_pipeline.cache_clear()
+    entity_spacy._load_pipeline.cache_clear()
     yield
-    entity_spacy.load_pipeline.cache_clear()
+    entity_spacy._load_pipeline.cache_clear()
 
 
 def canonicals(documents):
@@ -80,6 +80,28 @@ def test_missing_model_returns_no_pipeline(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "spacy", FakeSpacy)
     assert entity_spacy.load_pipeline() is None
+
+
+def test_pipeline_model_name_comes_from_config(monkeypatch):
+    # 다른 호환 파이프라인을 설치해 벤치마크하려면 모델 이름이 설정으로 열려
+    # 있어야 한다. 코드에 박아 두면 쓸 수 있는 모델이 깔려 있어도 보조 경로가
+    # 조용히 꺼진 채로 돈다.
+    requested: list[str] = []
+
+    class FakeSpacy:
+        @staticmethod
+        def load(name):
+            requested.append(name)
+            return fake_pipeline({})
+
+    monkeypatch.setitem(sys.modules, "spacy", FakeSpacy)
+    monkeypatch.setattr(
+        settings.user,
+        "event_detection",
+        EventDetectionConfig(entity_spacy_model="en_core_web_md"),
+    )
+    assert entity_spacy.load_pipeline() is not None
+    assert requested == ["en_core_web_md"]
 
 
 def test_extraction_still_works_without_spacy(monkeypatch):

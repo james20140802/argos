@@ -281,6 +281,9 @@ class EventDetectionConfig(BaseModel):
     entity_df_min_batch: int = Field(default=5, ge=1)
     # spaCy 보강(ARG-253)은 켜져 있어도 미설치면 조용히 건너뛴다.
     entity_spacy_enabled: bool = True
+    # 열어 둘 파이프라인 이름. 코드에 박아 두면 다른 호환 모델을 설치해
+    # 벤치마크해도 보조 경로가 조용히 꺼진 채로 돈다.
+    entity_spacy_model: str = "en_core_web_sm"
 
 
 class UserConfig(BaseModel):

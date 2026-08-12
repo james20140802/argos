@@ -14,6 +14,7 @@ def test_defaults_match_design_decision():
     assert cfg.entity_min_doc_count == 1
     assert cfg.entity_max_doc_ratio == pytest.approx(0.5)
     assert cfg.entity_df_min_batch == 5
+    assert cfg.entity_spacy_model == "en_core_web_sm"
 
 
 def test_user_config_exposes_section_with_defaults():
