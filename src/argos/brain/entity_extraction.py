@@ -327,14 +327,15 @@ def _ends_with_abbreviation(text: str, boundary: re.Match[str]) -> bool:
 
     한 글자는 이름의 자리에 있을 때만 머리글자로 본다 — 점으로 이어졌거나
     ('U.S.', 'J.R.R.'), 앞뒤에 또 다른 '한 글자 + 마침표'가 있거나('J. K.'),
-    앞에 이름이 붙어 있거나('George W. Bush'). 한 글자 낱말을 전부 머리글자로
-    치면 'We selected option A. Customers ...'처럼 평범하게 끝난 문장이 다음
-    문장과 붙어, 고치려던 것과 똑같은 위장이 반대편에서 생긴다.
+    앞에 이름이 붙어 있거나('George W. Bush'), 뒤에 이름이 이어지거나
+    ('W. Somerset Maugham'). 한 글자 낱말을 전부 머리글자로 치면 'We selected
+    option A. Customers ...'처럼 평범하게 끝난 문장이 다음 문장과 붙어,
+    고치려던 것과 똑같은 위장이 반대편에서 생긴다.
 
     한계는 남는다: 'a Ph.D. Later he joined'처럼 진짜 약어로 끝난 문장, 그리고
-    'The plan is Option A. Customers ...'처럼 대문자 낱말 뒤에 한 글자로 끝난
-    문장은 여전히 붙는다. 이걸 가르려면 문장 분리기가 필요한데 그건 spaCy
-    몫이고, 주 경로는 spaCy 없이도 돌아야 한다.
+    'Option A. Customers Bank sued ...'처럼 한 글자로 끝난 뒤에 대문자 낱말이
+    둘 이어지는 문장은 여전히 붙는다. 이걸 가르려면 문장 분리기가 필요한데
+    그건 spaCy 몫이고, 주 경로는 spaCy 없이도 돌아야 한다.
     """
     word = _BOUNDARY_WORD.search(text[: boundary.start()])
     if word is None:
@@ -352,6 +353,7 @@ def _ends_with_abbreviation(text: str, boundary: re.Match[str]) -> bool:
         or _INITIAL_BEFORE.search(text[:start]) is not None
         or _INITIAL_AFTER.match(text[boundary.end() :]) is not None
         or _name_precedes(text, start)
+        or (word.group(1).isupper() and _names_follow(text, boundary.end()))
     )
 
 
@@ -421,6 +423,32 @@ def _name_precedes(text: str, start: int) -> bool:
         return False
     word = _WORD_BEFORE.search(head.rstrip(" \t"))
     return word is not None and _opens_a_name(word.group())
+
+
+def _names_follow(text: str, index: int) -> bool:
+    """이 자리 뒤에 이름으로 쓰이는 낱말이 둘 이어지는가.
+
+    'W. Somerset Maugham'의 W는 이름의 첫머리다. 앞에는 근거가 없다 —
+    앞 낱말('discussed')은 소문자다. 남은 근거는 뒤에 오는 말뿐이다.
+
+    **둘**을 요구하는 것이 'We selected option A. Customers pay monthly'와
+    갈라내는 단서다: 평범하게 끝난 문장의 다음 문장은 첫 단어만 대문자이고
+    그 뒤는 동사라 소문자다. 사이에 쉼표 같은 게 끼면 토큰이 그 자리에서
+    안 잡혀 저절로 걸러진다 — 이름 안에 낄 것이 아니기 때문이다.
+
+    값을 치르는 쪽은 이름이 하나뿐인 경우다. 'W. Maugham'은 여전히 끊긴다.
+    하나로 낮추면 'option A. Customers pay'가 바로 붙어 버려서, 둘 중
+    하나는 포기해야 한다. 사전 없이 더 갈라내지 못한다 (ARG-240).
+    """
+    position = index
+    for _ in range(2):
+        rest = text[position:]
+        gap = len(rest) - len(rest.lstrip(" \t"))
+        following = _TOKEN.match(text, position + gap)
+        if following is None or not _opens_a_name(following.group()):
+            return False
+        position = following.end()
+    return True
 
 
 def _sentences(text: str) -> list[tuple[int, str]]:

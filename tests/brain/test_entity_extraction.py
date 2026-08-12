@@ -469,6 +469,16 @@ def test_a_sentence_ending_in_a_single_letter_still_ends():
     assert "customers" not in names
 
 
+def test_leading_initial_stays_with_the_personal_name():
+    # 'W. Somerset Maugham'의 W는 이름의 첫머리다. 끊으면 성만 남고 한 글자짜리
+    # 가짜 이름이 하나 더 생긴다. 앞 낱말('discussed')은 소문자라 근거가 못 되고,
+    # 뒤에 대문자 낱말이 **둘** 이어지는 것이 'option A. Customers pay'와
+    # 갈라내는 단서다.
+    [names] = canonicals(["Reviewers discussed W. Somerset Maugham yesterday."])
+    assert "w somerset maugham" in names
+    assert "w" not in names
+
+
 def test_hierarchical_list_numbers_are_list_markers():
     # '2.1)'은 숫자 한 덩어리가 아니라서 항목 번호로 안 걸렸다. 번호가 내용으로
     # 세어지면 목록 첫 단어가 문장 첫 단어 필터를 그대로 통과한다.
