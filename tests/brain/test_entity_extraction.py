@@ -409,6 +409,20 @@ def test_fullwidth_version_keeps_its_decimal_point():
     assert "gpt 5.2" in names
 
 
+@pytest.mark.parametrize(
+    "sentence, name",
+    [
+        ("Reviewers compared Ｎｏｄｅ．ｊｓ with Deno.", "node js"),
+        ("Reviewers compared ＡＳＰ．ＮＥＴ with Deno.", "asp net"),
+    ],
+)
+def test_fullwidth_dot_inside_a_name_is_not_a_sentence_end(sentence, name):
+    # 이름 가운데의 전각 마침표를 문장 끝으로 옮기면 제품 이름이 거기서 잘려
+    # 앞 토막만 남는다 — 반각으로 쓴 같은 제품과 다른 키가 된다.
+    [names] = canonicals([sentence])
+    assert name in names
+
+
 def test_leading_dot_stays_in_the_surface():
     # 표시용 원문은 본 그대로여야 한다. 앞의 점을 떼면 '.NET'이 'NET'으로 보이고,
     # 약어 'NET'과 구별할 방법도 사라진다.

@@ -431,7 +431,7 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
     ASCII 마침표는 뒤에 공백을 요구해서 공백 없이 잇는 CJK 문장 경계를 잃기
     때문이다. 한 글자짜리끼리 바꾸므로 원문 위치는 어긋나지 않는다.
 
-    두 자리는 이름 쪽이라 그대로 둔다.
+    세 자리는 이름 쪽이라 그대로 둔다.
 
     * 숫자 사이 — 'ＧＰＴ－５．２'의 점은 버전이다. 옮기면 거기서 끊겨 반각으로
       쓴 같은 제품과 다른 키가 된다.
@@ -440,6 +440,15 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
       더해 **여는** 구두점도 그 자리다('（．ＮＥＴ）'). 문장을 닫는 점은 앞
       낱말에 붙어 있으므로 '背景です．Customers …'는 여기 걸리지 않고,
       닫는 따옴표 뒤('「引用」．Customers …')도 그대로 문장 끝으로 본다.
+    * 대소문자가 있는 글자 사이 — 'Ｎｏｄｅ．ｊｓ' 'ＡＳＰ．ＮＥＴ'의 가운데
+      점이다. 옮기면 제품 이름이 거기서 잘려 앞 토막만 남고, 반각으로 쓴 같은
+      제품과 다른 키가 된다. **대소문자가 있는** 글자를 요구하는 게 CJK 문장
+      끝과 가르는 근거다 — '背景です．Customers …'의 앞 글자는 대소문자가
+      없어 여기 안 걸린다.
+
+    남는 한계: 라틴 문장을 전각 마침표로 끝내고 **공백 없이** 다음 문장을
+    붙여 쓰면('slipped．Customers') 두 문장이 이어진다. 공백이 있으면 접힌 뒤
+    문장 끝 규칙이 잡아 준다.
     """
     text = match.string
     index = match.start()
@@ -448,6 +457,8 @@ def _fullwidth_stop(match: re.Match[str]) -> str:
     if before.isdigit() and after.isdigit():
         return match.group()
     if opens_a_position(before) and after.isalpha():
+        return match.group()
+    if _is_cased(before) and _is_cased(after):
         return match.group()
     return "。"
 
