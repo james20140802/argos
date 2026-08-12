@@ -173,3 +173,18 @@ def test_encoding_variants_are_the_same_article(body):
 @pytest.mark.parametrize("a,b,expected", [(0, 0, 0), (0b1011, 0b1001, 1), (0, 2**64 - 1, 64)])
 def test_hamming_distance(a, b, expected):
     assert hamming_distance(a, b) == expected
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        ("कि खबर पढ़ें और समझें। ", "कु खबर पढ़ें और समझें। "),
+        ("กิน ข้าว ทุก วัน อย่าง สม่ำเสมอ. ", "กุน ข้าว ทุก วัน อย่าง สม่ำเสมอ. "),
+    ],
+)
+def test_combining_vowel_signs_keep_articles_apart(left, right):
+    # 데바나가리·타이 문자는 모음이 자음에 붙는 결합 기호다. NFC가 합성해 주지
+    # 않으므로 결합 기호를 지우면 모음이 통째로 사라져, 서로 다른 낱말로 쓰인
+    # 두 기사가 같은 shingle을 내고 같은 기사로 판정된다.
+    assert simhash(left * 10) != simhash(right * 10)
+    assert is_near_duplicate(left * 10, right * 10) is False

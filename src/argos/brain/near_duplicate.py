@@ -36,9 +36,25 @@ _NON_TEXT = re.compile(r"[\W_]+", re.UNICODE)
 _WHITESPACE = re.compile(r"\s+")
 
 
+def _is_text(character: str) -> bool:
+    """본문 내용으로 남길 글자인가.
+
+    글자·숫자에 더해 **결합 기호**(유니코드 M 계열)까지 남긴다. 데바나가리·
+    타이 문자는 모음이 자음에 붙는 부호로 적히는데 NFC는 이걸 자음에 합성해
+    주지 않는다. 지워 버리면 모음이 통째로 사라져 'कि'와 'कु'가 똑같이 'क'가
+    되고, 서로 다른 낱말로 쓰인 두 기사가 같은 기사로 판정된다.
+    """
+    return character.isalnum() or unicodedata.category(character)[0] == "M"
+
+
 def _normalize(text: str) -> str:
     """대소문자·구두점·공백 차이를 지운다. 재배포본은 이런 게 흔히 다르다."""
-    return _NON_TEXT.sub(" ", text.casefold()).strip()
+    folded = text.casefold()
+    # ASCII에는 결합 기호가 없다. 흔한 경우는 정규식 한 번으로 끝낸다.
+    if folded.isascii():
+        return _NON_TEXT.sub(" ", folded).strip()
+    kept = "".join(character if _is_text(character) else " " for character in folded)
+    return _WHITESPACE.sub(" ", kept).strip()
 
 
 def _feature_hash(feature: str) -> int:
