@@ -202,6 +202,45 @@ def test_line_break_starts_a_new_sentence():
     assert not any("customers" in name for name in names)
 
 
+def test_a_title_before_a_name_does_not_end_the_sentence():
+    # 'Dr.'의 점을 문장 끝으로 읽으면 뒤따르는 진짜 이름이 문장 첫 단어로
+    # 둔갑해 탈락하고, 정작 호칭만 이름 행세를 하며 남는다.
+    [names] = canonicals(["Reviewers quoted Dr. Smith on the benchmark."])
+    assert "smith" in names
+    assert "dr" not in names
+
+
+def test_an_initial_before_a_name_does_not_end_the_sentence():
+    # 머리글자 약어도 마찬가지다. 'U.S.'에서 끊으면 'Army'가 사라진다.
+    [names] = canonicals(["Officials briefed the U.S. Army about deployment."])
+    assert "army" in names
+
+
+def test_typographic_closing_quote_ends_a_sentence():
+    # 크롤한 본문의 인용은 곧은 따옴표가 아니라 활자 따옴표로 닫힌다. 닫는
+    # 따옴표를 못 알아보면 문장이 안 끊겨 다음 문장 첫 단어가 '문장 중간
+    # 대문자'로 위장하고 보통 명사가 이름 행세를 한다.
+    [names] = canonicals(["“Customers pay monthly.” Users subscribe online."])
+    assert "users" not in names
+
+
+@pytest.mark.parametrize("dash", ["-", "‑", "–"])
+def test_unicode_dashes_stay_inside_versioned_names(dash):
+    # HTML 본문은 'GPT‑5'를 줄바꿈 없는 붙임표(U+2011)나 반각 줄표(U+2013)로
+    # 적는 일이 흔하다. 거기서 낱말을 끊으면 버전 숫자가 떨어져 나가 'gpt'만
+    # 남는다 — 정규형 쪽은 이미 이 부호들을 붙임표와 같게 접는다.
+    [names] = canonicals([f"Engineers benchmarked GPT{dash}5 against rivals."])
+    assert "gpt 5" in names
+
+
+def test_em_dash_still_separates_names():
+    # 전각 줄표는 이름 안이 아니라 절 사이에 쓴다. 붙임표류와 같이 묶으면
+    # 서로 다른 이름 둘이 'claude anthropic'이라는 없는 이름 하나로 붙는다.
+    [names] = canonicals(["Reviewers praised Claude—Anthropic shipped it fast."])
+    assert {"claude", "anthropic"} <= names
+    assert "claude anthropic" not in names
+
+
 def test_latin_name_after_korean_text_is_mid_sentence():
     # 문장 첫 단어 여부를 토큰 순번으로 보면, 이름 글자가 아닌 앞부분이 통째로
     # 없던 일이 된다 — 한글 뒤에 나온 이름이 문장 첫 단어로 둔갑해 탈락한다.

@@ -42,13 +42,25 @@ from argos.config import settings
 # 크롤한 본문은 소제목·문단이 마침표 없이 줄만 바꾸는 일도 흔하다 — 한 문장으로
 # 붙여 두면 문단 첫 단어가 '문장 중간 대문자'로 위장해 아래 문장 첫 단어
 # 필터를 통과해 버린다.
+# 닫는 기호에 활자 따옴표(”«»)까지 넣는다. 크롤한 인용문은 곧은 따옴표가 아니라
+# 활자 따옴표로 닫히는데, 못 알아보면 문장이 안 끊겨 다음 문장 첫 단어가
+# 문장 중간으로 위장한다.
 _SENTENCE_END = re.compile(
-    r"(?<=[.!?])[\"'’)\]]*\s+|(?<=[。．！？])[\"'’)\]』」]*\s*|[^\S\n]*\n\s*"
+    r"(?<=[.!?])[\"'’”»)\]]*\s+|(?<=[。．！？])[\"'’”»)\]』」]*\s*|[^\S\n]*\n\s*"
 )
 # 낱말(내부 하이픈·아포스트로피·버전 점 포함) 또는 숫자. 낱말 끝의 '+'·'#'은
 # 이름의 일부다 — 버리면 'C++'와 'C#'이 둘 다 'C' 한 글자로 잘려 서로 다른
 # 기술 둘이 사라지고 없는 이름 하나가 남는다.
-_TOKEN = re.compile(r"[^\W\d_][^\W_]*(?:[-'’.][^\W_]+)*[+#]*|\d+(?:\.\d+)*")
+# 붙임표는 ASCII만이 아니다. HTML 본문의 'GPT‑5'는 줄바꿈 없는 붙임표(U+2011)나
+# 반각 줄표(U+2013)로 적히는 일이 흔한데, 거기서 끊으면 버전 숫자가 떨어져 나가
+# 'gpt'만 남는다 — 정규형 쪽은 이미 이 부호들을 붙임표와 같게 접는다.
+# 전각 줄표(U+2014·U+2015)는 일부러 뺀다. 그건 이름 안이 아니라 절 사이에 쓰여,
+# 묶으면 서로 다른 이름 둘이 없는 이름 하나로 붙는다.
+# 아래 문자 클래스에 든 부호는 눈으로 구별되지 않는다: U+2010..U+2013 범위와
+# U+2212(빼기 부호). 손대기 전에 코드포인트부터 확인할 것.
+_TOKEN = re.compile(
+    r"[^\W\d_][^\W_]*(?:[-'’.‐-–−][^\W_]+)*[+#]*|\d+(?:\.\d+)*"
+)
 # 이름 글자가 아닌 자리를 메우는 표시. 공백이 **아니어야** 한다 — 이 자리에서
 # 이름 묶음이 끊겨야 하기 때문이다. 토큰 정규식에도 걸리지 않는다.
 _MASK = "\x00"
@@ -66,6 +78,34 @@ _BRACKET_CLOSE = frozenset({")", "]"})
 # 소문자 로마 숫자 목록 기호 ('(ii)'). 대문자는 일부러 뺀다 — 'MIX:' 같은
 # 전부 대문자인 회사명을 목록 기호로 오인해 삼킨다.
 _ROMAN = re.compile(r"^[ivxlcdm]+$")
+# 마침표로 끝나도 문장을 끝내지 않는 말. 뒤에 곧바로 이름이 오는 호칭만 둔다 —
+# 'etc.'처럼 실제로 문장을 끝내는 말까지 넣으면 반대로 두 문장이 붙어, 다음
+# 문장 첫 단어가 문장 중간 대문자로 위장한다.
+_ABBREVIATIONS = frozenset(
+    {
+        "capt",
+        "col",
+        "dr",
+        "gen",
+        "gov",
+        "hon",
+        "jr",
+        "lt",
+        "mr",
+        "mrs",
+        "ms",
+        "mt",
+        "prof",
+        "rep",
+        "rev",
+        "sen",
+        "sgt",
+        "sr",
+        "st",
+    }
+)
+# 문장 경계 바로 앞의 낱말. 'the U.S.'에서는 머리글자 'S'만 잡힌다.
+_BOUNDARY_WORD = re.compile(r"([^\W\d_]+)\.$")
 
 # 대문자로 시작해도 이름이 아닌 말들. 문장 첫 단어 규칙이 대부분을 걸러 주므로
 # 여기 있는 건 문장 중간에서도 대문자로 나오는 것들이다. 최소한만 둔다 —
@@ -172,8 +212,37 @@ def _is_enumerator(token: str, sentence: str, end: int) -> bool:
     return False
 
 
+def _ends_with_abbreviation(text: str, boundary: re.Match[str]) -> bool:
+    """문장 끝처럼 보이지만 실은 호칭·머리글자인가.
+
+    'Dr. Smith'에서 끊으면 뒤따르는 진짜 이름이 문장 첫 단어로 둔갑해 탈락하고,
+    정작 호칭만 이름 행세를 하며 남는다. 'U.S. Army'도 마찬가지다.
+
+    뒤에 대문자가 올 때만 이어 붙인다 — 'expanded into the U.S. the company
+    said'처럼 소문자가 오면 이름이 걸린 자리가 아니라서 붙일 이유가 없다.
+    한계는 남는다: 정말로 머리글자로 끝난 문장('...a Ph.D. Later he joined')은
+    다음 문장과 붙는다. 이걸 가르려면 문장 분리기가 필요한데 그건 spaCy 몫이고,
+    주 경로는 spaCy 없이도 돌아야 한다.
+    """
+    word = _BOUNDARY_WORD.search(text[: boundary.start()])
+    if word is None:
+        return False
+    following = text[boundary.end() : boundary.end() + 1]
+    if not (following and _is_cased(following) and following.isupper()):
+        return False
+    return len(word.group(1)) == 1 or word.group(1).casefold() in _ABBREVIATIONS
+
+
 def _sentences(text: str) -> list[str]:
-    return [part for part in _SENTENCE_END.split(text) if part.strip(f" \t\r\n{_MASK}")]
+    parts: list[str] = []
+    start = 0
+    for boundary in _SENTENCE_END.finditer(text):
+        if _ends_with_abbreviation(text, boundary):
+            continue
+        parts.append(text[start : boundary.start()])
+        start = boundary.end()
+    parts.append(text[start:])
+    return [part for part in parts if part.strip(f" \t\r\n{_MASK}")]
 
 
 def _candidate(
@@ -194,8 +263,10 @@ def _candidate(
     if not any(character.isalpha() for character in surface):
         return None
     # 한 낱말짜리 흔한 말은 이름이 아니다. 여러 낱말이면 그대로 둔다 —
-    # "New York"의 New까지 잘라내면 이름이 부서진다.
-    if len(words) == 1 and canonical in _STOPWORDS:
+    # "New York"의 New까지 잘라내면 이름이 부서진다. 호칭도 같이 걸러낸다 —
+    # 'Dr. Smith'의 'Dr'는 마침표에서 묶음이 끊겨 혼자 남는데, 두면 사람 이름
+    # 행세를 한다.
+    if len(words) == 1 and (canonical in _STOPWORDS or canonical in _ABBREVIATIONS):
         return None
     return _Candidate(
         canonical=canonical,
