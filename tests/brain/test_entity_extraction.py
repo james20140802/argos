@@ -202,6 +202,15 @@ def test_digit_leading_names_are_extracted(surface, expected, bogus):
     assert bogus not in names
 
 
+def test_fullwidth_forms_fold_to_their_ascii_names():
+    # CJK 본문은 라틴 글자를 전각으로 적는 일이 흔하다. 호환 형태를 접지 않으면
+    # 전각 기호가 토큰화에서 버려져 'Ｃ＋＋'와 'Ｃ＃'이 둘 다 'c'로 뭉개진다.
+    [symbols] = canonicals(["Reviewers compared Ｃ＋＋ with Ｃ＃ yesterday."])
+    assert {"c++", "c#"} <= symbols
+    [versioned] = canonicals(["Engineers benchmarked ＧＰＴ－５ against rivals."])
+    assert "gpt 5" in versioned
+
+
 def test_leading_dot_stays_in_the_surface():
     # 표시용 원문은 본 그대로여야 한다. 앞의 점을 떼면 '.NET'이 'NET'으로 보이고,
     # 약어 'NET'과 구별할 방법도 사라진다.
@@ -399,6 +408,9 @@ def test_spaced_ampersand_keeps_one_company_name():
         "背景です。Customers pay monthly.",
         "背景です！Customers pay monthly.",
         "背景です？Customers pay monthly.",
+        # 전각 마침표는 NFKC가 ASCII 마침표로 접는다. ASCII 마침표는 뒤에 공백을
+        # 요구하므로, 접히기 전에 옮겨 두지 않으면 이 경계가 사라진다.
+        "背景です．Customers pay monthly.",
     ],
 )
 def test_unicode_terminator_starts_a_new_sentence(document):

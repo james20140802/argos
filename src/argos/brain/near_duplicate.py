@@ -78,8 +78,10 @@ def _feature_hash(feature: str) -> int:
 def _shingles(text: str, size: int) -> Counter[str]:
     # 같은 글을 NFC로 저장한 곳과 NFD로 저장한 곳에서 각각 긁어 오는 일이 있다.
     # 합성해 두지 않으면 바이트 표현만 다른 같은 글이 완전히 다른 피처를 낸다.
-    # ASCII 본문은 이미 NFC라서 기존 해시는 그대로다.
-    text = unicodedata.normalize("NFC", text)
+    # 호환 형태(NFKC)까지 접는다 — CJK 매체는 같은 기사를 전각 라틴으로 싣는데,
+    # 접지 않으면 인코딩만 다른 같은 글이 해밍 32로 벌어져 재배포본을 놓친다.
+    # ASCII 본문에는 NFKC가 아무 일도 하지 않아서 기존 해시는 그대로다.
+    text = unicodedata.normalize("NFKC", text)
     normalized = _normalize(text)
     if not normalized:
         # 글자·숫자가 하나도 없는 글(렌더 전에 긁힌 자리표시자 페이지 등)은

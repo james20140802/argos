@@ -190,6 +190,27 @@ def test_combining_vowel_signs_keep_articles_apart(left, right):
     assert is_near_duplicate(left * 10, right * 10) is False
 
 
+def _fullwidth(text: str) -> str:
+    """ASCII를 전각으로 옮긴다. CJK 매체가 라틴 글자를 이렇게 싣는다."""
+    return "".join(
+        "　"
+        if character == " "
+        else chr(ord(character) - 0x21 + 0xFF01)
+        if "!" <= character <= "~"
+        else character
+        for character in text
+    )
+
+
+def test_fullwidth_copy_is_the_same_article():
+    # 같은 기사를 CJK 매체가 전각으로 실어 오면 인코딩만 다른 같은 글이다.
+    # 호환 형태를 접지 않으면 피처가 통째로 갈려 다른 기사로 판정된다.
+    article = (
+        "Anthropic shipped a new model today. Analysts welcomed the update. " * 8
+    )
+    assert is_near_duplicate(article, _fullwidth(article)) is True
+
+
 def test_symbol_bearing_names_do_not_collide():
     # 기호를 지우면 'C++' 기사와 'C#' 기사가 똑같이 'c'가 되어, 나머지 문장이
     # 같기만 하면 거리 0 — 서로 다른 기술을 다룬 기사가 무조건 재배포본이 된다.

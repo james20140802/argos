@@ -47,8 +47,11 @@ from argos.config import settings
 # 문장 중간으로 위장한다.
 # 줄임표(…)도 종결부호에 넣는다. 크롤한 산문에 흔한데 빠뜨리면 그 뒤 문장이
 # 앞 문장에 붙어 첫 단어가 문장 중간 대문자로 위장한다.
+# 마침표만 뒤에 공백을 요구한다. 'GPT-5.2'의 점과 '.NET'의 점이 문장을 끊으면
+# 안 되기 때문이다. 느낌표·물음표·줄임표·고리점은 공백 없이도 문장을 닫는다 —
+# CJK 본문은 종결부호 뒤에 공백을 두지 않는다.
 _SENTENCE_END = re.compile(
-    r"(?<=[.!?…])[\"'’”»)\]]*\s+|(?<=[。．！？…])[\"'’”»)\]』」]*\s*|[^\S\n]*\n\s*"
+    r"(?<=\.)[\"'’”»)\]]*\s+|(?<=[!?…。])[\"'’”»)\]』」]*\s*|[^\S\n]*\n\s*"
 )
 # 낱말(내부 하이픈·아포스트로피·버전 점 포함) 또는 숫자. 낱말 끝의 '+'·'#'은
 # 이름의 일부다 — 버리면 'C++'와 'C#'이 둘 다 'C' 한 글자로 잘려 서로 다른
@@ -335,9 +338,17 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     """한 문서에서 대문자 n-gram 후보를 뽑는다 (필터 적용 전)."""
     found: list[_Candidate] = []
 
-    # 크롤한 글이 NFC라는 보장이 없다. 결합 기호가 분리된 채로 오면 토큰이
+    # 크롤한 글이 합성형이라는 보장이 없다. 결합 기호가 분리된 채로 오면 토큰이
     # 거기서 끊겨 'François'가 'Franc'과 'ois'로 갈라진다.
-    normalized = _mask_uncased(unicodedata.normalize("NFC", document))
+    # 호환 형태(NFKC)까지 접는 이유: CJK 매체는 라틴 글자를 전각으로 싣는데,
+    # 접지 않으면 전각 기호가 토큰화에서 버려져 'Ｃ＋＋'와 'Ｃ＃'이 둘 다 'c'가
+    # 되고 'ＧＰＴ－５'는 'gpt'로 잘린다. 정규형 쪽이 이미 NFKC라 갈라 둘 이유도
+    # 없다 — 접기는 여기서 해야 이름이 조각나기 **전에** 걸린다.
+    # 전각 마침표는 NFKC가 ASCII 마침표로 접는데, ASCII 마침표는 뒤에 공백을
+    # 요구한다. 그대로 두면 공백 없이 잇는 CJK 문장 경계를 잃으므로, 접히기 전에
+    # 뜻이 같고 NFKC가 건드리지 않는 고리점으로 옮긴다.
+    document = document.replace("．", "。")
+    normalized = _mask_uncased(unicodedata.normalize("NFKC", document))
 
     for sentence in _sentences(normalized):
         # (문장 첫 단어인가, 낱말, 문장 안 시작 위치, 끝 위치)
