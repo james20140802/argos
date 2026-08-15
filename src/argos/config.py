@@ -263,6 +263,29 @@ class FeedRankingConfig(BaseModel):
     interest_bonus: float = Field(default=0.05, ge=0.0)
 
 
+class EventDetectionConfig(BaseModel):
+    # ARG-249: 근접중복(SimHash)·고유명사 추출 임계값의 유일한 소유처.
+    # 코드 상수로 두면 "판정 기준의 엄격함을 설정으로 조절할 수 있다"가 깨진다.
+    # SimHash 64bit / 해밍 거리 <= 3 은 확정된 설계 결정(ARG-239)이다.
+    simhash_hamming_max: int = Field(default=3, ge=0, le=64)
+    # 문자 n-gram 폭. 실측상 4가 재배포본(제목 교체·문단 재배열)은 거리 1로,
+    # 무관한 기사는 22로 벌려 놓는다. 3으로 좁히면 제목 교체가 거리 3이라
+    # 컷에 딱 붙어 마진이 사라진다.
+    simhash_shingle_size: int = Field(default=4, ge=1, le=10)
+    # 후보 이름의 최대 단어 수 ("Claude Sonnet 5" = 3).
+    entity_max_ngram: int = Field(default=4, ge=1, le=8)
+    # 배치 내 문서빈도(DF) 컷. 배치가 entity_df_min_batch 미만이면
+    # 비율 컷은 적용하지 않는다 — 문서 1건짜리 배치에서 전부 탈락하는 걸 막는다.
+    entity_min_doc_count: int = Field(default=1, ge=1)
+    entity_max_doc_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
+    entity_df_min_batch: int = Field(default=5, ge=1)
+    # spaCy 보강(ARG-253)은 켜져 있어도 미설치면 조용히 건너뛴다.
+    entity_spacy_enabled: bool = True
+    # 열어 둘 파이프라인 이름. 코드에 박아 두면 다른 호환 모델을 설치해
+    # 벤치마크해도 보조 경로가 조용히 꺼진 채로 돈다.
+    entity_spacy_model: str = "en_core_web_sm"
+
+
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
@@ -279,6 +302,7 @@ class UserConfig(BaseModel):
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     trust: TrustConfig = Field(default_factory=TrustConfig)
     feed_ranking: FeedRankingConfig = Field(default_factory=FeedRankingConfig)
+    event_detection: EventDetectionConfig = Field(default_factory=EventDetectionConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:
