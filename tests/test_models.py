@@ -31,11 +31,13 @@ class TestBaseMetadata:
             "feed_events",
             "tech_events",
             "event_documents",
+            "entities",
+            "event_entities",
         }
         assert expected == table_names
 
     def test_metadata_is_not_empty(self):
-        assert len(Base.metadata.tables) == 8
+        assert len(Base.metadata.tables) == 10
 
 
 # ──────────────────────────────────────────
@@ -519,3 +521,74 @@ class TestEventDocumentModel:
         column_names = {col.key for col in inspect(TechItem).columns}
         assert "event_id" not in column_names
         assert not any(name.startswith("event") for name in column_names)
+
+
+# ──────────────────────────────────────────
+# Entity / EventEntity 테스트 (ARG-256)
+# ──────────────────────────────────────────
+
+class TestEntityModel:
+    """entities — 이름 사전. 정규화 키 기준으로 같은 이름이 하나로 모인다."""
+
+    def test_tablename(self):
+        from argos.models import Entity
+
+        assert Entity.__tablename__ == "entities"
+
+    def test_keeps_both_display_name_and_normalized_key(self):
+        from argos.models import Entity
+
+        column_names = {col.key for col in inspect(Entity).columns}
+        assert {"name", "normalized_key", "kind"}.issubset(column_names)
+
+    def test_normalized_key_is_unique(self):
+        from argos.models import Entity
+
+        assert inspect(Entity).columns["normalized_key"].unique is True
+
+    def test_kind_is_nullable(self):
+        # A4: 분류 로직은 다음 사이클이므로 kind 없이도 저장돼야 한다.
+        from argos.models import Entity
+
+        assert inspect(Entity).columns["kind"].nullable is True
+
+    def test_kind_enum_values_are_pascal_case(self):
+        from argos.models.entity import EntityKind
+
+        values = {member.value for member in EntityKind}
+        assert "Technology" in values
+        assert "Organization" in values
+        assert all(value[0].isupper() for value in values)
+
+
+class TestEventEntityModel:
+    """event_entities — 사건↔엔티티 N:N 링크."""
+
+    def test_tablename(self):
+        from argos.models import EventEntity
+
+        assert EventEntity.__tablename__ == "event_entities"
+
+    def test_event_id_points_at_tech_events(self):
+        from argos.models import EventEntity
+
+        fk = list(inspect(EventEntity).columns["event_id"].foreign_keys)[0]
+        assert fk.column.table.name == "tech_events"
+
+    def test_entity_id_points_at_entities(self):
+        from argos.models import EventEntity
+
+        fk = list(inspect(EventEntity).columns["entity_id"].foreign_keys)[0]
+        assert fk.column.table.name == "entities"
+
+    def test_same_entity_cannot_be_linked_twice_to_one_event(self):
+        from sqlalchemy import UniqueConstraint
+
+        from argos.models import EventEntity
+
+        unique_sets = {
+            tuple(sorted(col.name for col in constraint.columns))
+            for constraint in EventEntity.__table__.constraints
+            if isinstance(constraint, UniqueConstraint)
+        }
+        assert ("entity_id", "event_id") in unique_sets
