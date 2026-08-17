@@ -1,6 +1,7 @@
 from argos.models.base import Base
 from argos.models.crawl_queue import CrawlQueue
 from argos.models.feed_event import FeedEvent
+from argos.models.tech_event import TechEvent
 from argos.models.tech_item import TechItem
 from argos.models.tech_succession import TechSuccession
 from argos.models.user_asset import UserAsset
@@ -10,6 +11,7 @@ __all__ = [
     "Base",
     "CrawlQueue",
     "FeedEvent",
+    "TechEvent",
     "TechItem",
     "TechSuccession",
     "UserAsset",
