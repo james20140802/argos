@@ -30,11 +30,12 @@ class TestBaseMetadata:
             "track_history",
             "feed_events",
             "tech_events",
+            "event_documents",
         }
         assert expected == table_names
 
     def test_metadata_is_not_empty(self):
-        assert len(Base.metadata.tables) == 7
+        assert len(Base.metadata.tables) == 8
 
 
 # ──────────────────────────────────────────
@@ -465,3 +466,56 @@ class TestTechEventModel:
 
         relationships = {rel.key for rel in inspect(TechEvent).relationships}
         assert {"merged_into", "merged_from"}.issubset(relationships)
+
+
+# ──────────────────────────────────────────
+# EventDocument 링크 테이블 테스트 (ARG-255)
+# ──────────────────────────────────────────
+
+class TestEventDocumentModel:
+    """event_documents — 사건↔문서 N:N 근거 링크."""
+
+    def test_tablename(self):
+        from argos.models import EventDocument
+
+        assert EventDocument.__tablename__ == "event_documents"
+
+    def test_required_columns_exist(self):
+        from argos.models import EventDocument
+
+        column_names = {col.key for col in inspect(EventDocument).columns}
+        assert {"id", "event_id", "tech_item_id"}.issubset(column_names)
+
+    def test_event_id_points_at_tech_events(self):
+        from argos.models import EventDocument
+
+        fk = list(inspect(EventDocument).columns["event_id"].foreign_keys)[0]
+        assert fk.column.table.name == "tech_events"
+        assert fk.ondelete == "CASCADE"
+
+    def test_tech_item_id_points_at_tech_items(self):
+        from argos.models import EventDocument
+
+        fk = list(inspect(EventDocument).columns["tech_item_id"].foreign_keys)[0]
+        assert fk.column.table.name == "tech_items"
+        assert fk.ondelete == "CASCADE"
+
+    def test_same_document_cannot_be_linked_twice_to_one_event(self):
+        from sqlalchemy import UniqueConstraint
+
+        from argos.models import EventDocument
+
+        unique_sets = {
+            tuple(sorted(col.name for col in constraint.columns))
+            for constraint in EventDocument.__table__.constraints
+            if isinstance(constraint, UniqueConstraint)
+        }
+        assert ("event_id", "tech_item_id") in unique_sets
+
+    def test_tech_items_gains_no_event_column(self):
+        # A2: tech_items 스키마는 손대지 않는다.
+        from argos.models import TechItem
+
+        column_names = {col.key for col in inspect(TechItem).columns}
+        assert "event_id" not in column_names
+        assert not any(name.startswith("event") for name in column_names)
