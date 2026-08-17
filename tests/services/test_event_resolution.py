@@ -48,23 +48,35 @@ class TestResolveEventChain:
 
     async def test_cycle_stops_without_raising(self):
         a, b = _ids(2)
-        chain = {a: b, b: a}  # a → b → a → ...
+        # a → b → a → ...; correct cycle detection stops after 2 calls at b,
+        # distinct from the 8-call hop-limit backstop.
+        fetch = AsyncMock(side_effect=[b, a])
 
-        result = await resolve_event_chain(a, _fetcher(chain))
+        result = await resolve_event_chain(a, fetch)
 
-        assert result in (a, b)
+        assert result == b
+        assert fetch.await_count == 2
 
     async def test_self_referential_cycle_stops_without_raising(self):
         (a,) = _ids(1)
+        # a → a; correct cycle detection stops after a single call.
+        fetch = AsyncMock(side_effect=[a])
 
-        assert await resolve_event_chain(a, _fetcher({a: a})) == a
+        result = await resolve_event_chain(a, fetch)
+
+        assert result == a
+        assert fetch.await_count == 1
 
     async def test_cycle_logs_a_warning(self, caplog):
         a, b = _ids(2)
         with caplog.at_level(logging.WARNING):
             await resolve_event_chain(a, _fetcher({a: b, b: a}))
 
-        assert any(record.levelno == logging.WARNING for record in caplog.records)
+        # Must be the cycle-specific warning, not merely any WARNING record
+        # (the post-loop hop-limit warning would also satisfy a looser check).
+        assert any(
+            "cycles back to" in record.getMessage() for record in caplog.records
+        )
 
     async def test_chain_longer_than_the_hop_limit_stops_and_warns(self, caplog):
         ids = _ids(MAX_MERGE_HOPS + 5)
