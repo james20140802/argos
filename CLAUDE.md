@@ -57,7 +57,15 @@ argos/
 - **crawl_queue** — staging table for freshly crawled items not yet processed by the brain
   pipeline (daily-limit throttle, ARG-93)
 
-All FK deletions use CASCADE. All tables have UUID primary keys.
+All FK deletions use CASCADE, with exactly one exception: the merge-tombstone
+self-FK `tech_events.merged_into_id` uses **RESTRICT**. A merge is a tombstone,
+not a delete — the absorbed event keeps its row and only points at the survivor,
+so CASCADE there would delete the very events the pointer exists to preserve.
+Do not "fix" it to CASCADE for consistency. The model relationship also needs
+`passive_deletes="all"`, or SQLAlchemy nulls the pointer before the DELETE and
+the RESTRICT never fires (see `src/argos/models/tech_event.py`).
+
+All tables have UUID primary keys.
 
 ## Development Commands
 
