@@ -18,7 +18,7 @@ from argos.models.user_asset import AssetStatus
 # ──────────────────────────────────────────
 
 class TestBaseMetadata:
-    """Base.metadata에 5개 테이블이 정상 등록되었는지 검증."""
+    """Base.metadata에 테이블이 정상 등록되었는지 검증."""
 
     def test_all_tables_registered(self):
         table_names = set(Base.metadata.tables.keys())
@@ -29,11 +29,15 @@ class TestBaseMetadata:
             "user_assets",
             "track_history",
             "feed_events",
+            "tech_events",
+            "event_documents",
+            "entities",
+            "event_entities",
         }
         assert expected == table_names
 
     def test_metadata_is_not_empty(self):
-        assert len(Base.metadata.tables) == 6
+        assert len(Base.metadata.tables) == 10
 
 
 # ──────────────────────────────────────────
@@ -366,3 +370,225 @@ class TestInfraFiles:
         assert "pgdata/" in content
         assert ".env" in content
         assert "__pycache__" in content
+
+
+# ──────────────────────────────────────────
+# TechEvent 모델 테스트 (ARG-254)
+# ──────────────────────────────────────────
+
+class TestTechEventModel:
+    """tech_events — 사건 테이블. 병합은 삭제가 아니라 툼스톤이다."""
+
+    def test_tablename_is_tech_events_not_events(self):
+        # feed_events(행동 로그)와 헷갈리면 안 되므로 이름을 못박는다.
+        from argos.models import TechEvent
+
+        assert TechEvent.__tablename__ == "tech_events"
+
+    def test_required_columns_exist(self):
+        from argos.models import TechEvent
+
+        mapper = inspect(TechEvent)
+        column_names = {col.key for col in mapper.columns}
+        required = {
+            "id",
+            "title",
+            "summary",
+            "occurred_at",
+            "naming_stale",
+            "merged_into_id",
+            "created_at",
+            "updated_at",
+        }
+        assert required.issubset(column_names)
+
+    def test_no_embedding_column(self):
+        # A1: 사건 임베딩은 이번 범위 밖이다.
+        from argos.models import TechEvent
+
+        mapper = inspect(TechEvent)
+        assert "embedding" not in {col.key for col in mapper.columns}
+
+    def test_id_is_uuid_primary_key(self):
+        from argos.models import TechEvent
+
+        mapper = inspect(TechEvent)
+        pk_cols = [col.name for col in mapper.columns if col.primary_key]
+        assert pk_cols == ["id"]
+
+    def test_title_and_summary_are_nullable(self):
+        # 이름 짓기는 2단계이므로 사건은 이름 없이 생길 수 있어야 한다.
+        from argos.models import TechEvent
+
+        columns = inspect(TechEvent).columns
+        assert columns["title"].nullable is True
+        assert columns["summary"].nullable is True
+
+    def test_occurred_at_and_naming_stale_are_not_nullable(self):
+        from argos.models import TechEvent
+
+        columns = inspect(TechEvent).columns
+        assert columns["occurred_at"].nullable is False
+        assert columns["naming_stale"].nullable is False
+
+    def test_naming_stale_defaults_to_false(self):
+        from argos.models import TechEvent
+
+        event = TechEvent()
+        # SQLAlchemy는 flush 전까지 Python-side default를 적용하지 않으므로
+        # 컬럼 정의에 default가 걸려 있는지를 직접 본다.
+        default = inspect(TechEvent).columns["naming_stale"].default
+        assert default is not None
+        assert default.arg is False
+        assert event.naming_stale is None  # flush 전 상태
+
+    def test_merged_into_id_is_nullable_self_fk(self):
+        from argos.models import TechEvent
+
+        column = inspect(TechEvent).columns["merged_into_id"]
+        assert column.nullable is True
+        fks = list(column.foreign_keys)
+        assert len(fks) == 1
+        assert fks[0].column.table.name == "tech_events"
+
+    def test_merged_into_fk_restricts_delete_to_keep_tombstones(self):
+        # 툼스톤은 절대 연쇄 삭제되면 안 된다 — CASCADE였다면 옛 링크가 죽는다.
+        from argos.models import TechEvent
+
+        fk = list(inspect(TechEvent).columns["merged_into_id"].foreign_keys)[0]
+        assert fk.ondelete == "RESTRICT"
+
+    def test_merged_into_id_is_indexed_for_chain_walks(self):
+        from argos.models import TechEvent
+
+        assert inspect(TechEvent).columns["merged_into_id"].index is True
+
+    def test_self_referential_relationships_exist(self):
+        from argos.models import TechEvent
+
+        relationships = {rel.key for rel in inspect(TechEvent).relationships}
+        assert {"merged_into", "merged_from"}.issubset(relationships)
+
+
+# ──────────────────────────────────────────
+# EventDocument 링크 테이블 테스트 (ARG-255)
+# ──────────────────────────────────────────
+
+class TestEventDocumentModel:
+    """event_documents — 사건↔문서 N:N 근거 링크."""
+
+    def test_tablename(self):
+        from argos.models import EventDocument
+
+        assert EventDocument.__tablename__ == "event_documents"
+
+    def test_required_columns_exist(self):
+        from argos.models import EventDocument
+
+        column_names = {col.key for col in inspect(EventDocument).columns}
+        assert {"id", "event_id", "tech_item_id"}.issubset(column_names)
+
+    def test_event_id_points_at_tech_events(self):
+        from argos.models import EventDocument
+
+        fk = list(inspect(EventDocument).columns["event_id"].foreign_keys)[0]
+        assert fk.column.table.name == "tech_events"
+        assert fk.ondelete == "CASCADE"
+
+    def test_tech_item_id_points_at_tech_items(self):
+        from argos.models import EventDocument
+
+        fk = list(inspect(EventDocument).columns["tech_item_id"].foreign_keys)[0]
+        assert fk.column.table.name == "tech_items"
+        assert fk.ondelete == "CASCADE"
+
+    def test_same_document_cannot_be_linked_twice_to_one_event(self):
+        from sqlalchemy import UniqueConstraint
+
+        from argos.models import EventDocument
+
+        unique_sets = {
+            tuple(sorted(col.name for col in constraint.columns))
+            for constraint in EventDocument.__table__.constraints
+            if isinstance(constraint, UniqueConstraint)
+        }
+        assert ("event_id", "tech_item_id") in unique_sets
+
+    def test_tech_items_gains_no_event_column(self):
+        # A2: tech_items 스키마는 손대지 않는다.
+        from argos.models import TechItem
+
+        column_names = {col.key for col in inspect(TechItem).columns}
+        assert "event_id" not in column_names
+        assert not any(name.startswith("event") for name in column_names)
+
+
+# ──────────────────────────────────────────
+# Entity / EventEntity 테스트 (ARG-256)
+# ──────────────────────────────────────────
+
+class TestEntityModel:
+    """entities — 이름 사전. 정규화 키 기준으로 같은 이름이 하나로 모인다."""
+
+    def test_tablename(self):
+        from argos.models import Entity
+
+        assert Entity.__tablename__ == "entities"
+
+    def test_keeps_both_display_name_and_normalized_key(self):
+        from argos.models import Entity
+
+        column_names = {col.key for col in inspect(Entity).columns}
+        assert {"name", "normalized_key", "kind"}.issubset(column_names)
+
+    def test_normalized_key_is_unique(self):
+        from argos.models import Entity
+
+        assert inspect(Entity).columns["normalized_key"].unique is True
+
+    def test_kind_is_nullable(self):
+        # A4: 분류 로직은 다음 사이클이므로 kind 없이도 저장돼야 한다.
+        from argos.models import Entity
+
+        assert inspect(Entity).columns["kind"].nullable is True
+
+    def test_kind_enum_values_are_pascal_case(self):
+        from argos.models.entity import EntityKind
+
+        values = {member.value for member in EntityKind}
+        assert "Technology" in values
+        assert "Organization" in values
+        assert all(value[0].isupper() for value in values)
+
+
+class TestEventEntityModel:
+    """event_entities — 사건↔엔티티 N:N 링크."""
+
+    def test_tablename(self):
+        from argos.models import EventEntity
+
+        assert EventEntity.__tablename__ == "event_entities"
+
+    def test_event_id_points_at_tech_events(self):
+        from argos.models import EventEntity
+
+        fk = list(inspect(EventEntity).columns["event_id"].foreign_keys)[0]
+        assert fk.column.table.name == "tech_events"
+
+    def test_entity_id_points_at_entities(self):
+        from argos.models import EventEntity
+
+        fk = list(inspect(EventEntity).columns["entity_id"].foreign_keys)[0]
+        assert fk.column.table.name == "entities"
+
+    def test_same_entity_cannot_be_linked_twice_to_one_event(self):
+        from sqlalchemy import UniqueConstraint
+
+        from argos.models import EventEntity
+
+        unique_sets = {
+            tuple(sorted(col.name for col in constraint.columns))
+            for constraint in EventEntity.__table__.constraints
+            if isinstance(constraint, UniqueConstraint)
+        }
+        assert ("entity_id", "event_id") in unique_sets
