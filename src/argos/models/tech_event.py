@@ -20,6 +20,14 @@ class TechEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     ``DELETE`` 하지 않고 ``merged_into_id = B.id``만 채운다. 그래야 A의 id를 담은
     옛 링크가 죽지 않고 B로 이어진다. self-FK에 ``ondelete="RESTRICT"``를 건 것도
     같은 이유 — 누군가 흡수해 간 사건은 DB 레벨에서 삭제를 거부한다.
+
+    단, FK만 걸어서는 그 방어가 서지 않는다. ``AsyncSession``으로 B를 지우면
+    SQLAlchemy의 기본 delete synchronization이 A의 ``merged_into_id``를 먼저
+    ``NULL``로 밀어버리고, 그러면 Postgres는 참조하는 행을 못 보므로 RESTRICT가
+    발동하지 않는다 — 삭제는 조용히 성공하고 A의 id는 더 이상 B로 이어지지
+    않는다. 아래 ``merged_from``의 ``passive_deletes="all"``이 그 사전 NULL
+    처리를 끄고 FK가 실제로 말하게 한다. 회귀 테스트:
+    ``tests/test_tech_event_tombstone_db.py``.
     """
 
     __tablename__ = "tech_events"
@@ -51,6 +59,9 @@ class TechEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     merged_from = relationship(
         "TechEvent",
         back_populates="merged_into",
+        # 이미 세션에 로드된 자식까지 포함해 ORM이 FK를 건드리지 않게 한다.
+        # 이게 없으면 위 docstring대로 RESTRICT가 우회된다.
+        passive_deletes="all",
     )
 
     def __repr__(self) -> str:
