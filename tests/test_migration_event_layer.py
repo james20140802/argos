@@ -10,12 +10,24 @@ tables):
   ``tech_items`` rows keep their id and ``source_url`` unchanged.
 - ``upgrade head`` again brings the four tables back.
 
-Runs entirely against its own throwaway database (``argos_migration_test``),
-created and dropped by this test. It never touches the dev DB (``argos``,
-which holds the real corpus) nor the pytest scratch DB (``argos_test`` — that DB
-already has these four tables via ``Base.metadata.create_all`` at session
-start, so running ``alembic upgrade`` against it would fail with "already
-exists"; see ``tests/conftest.py``).
+Runs entirely against its own throwaway database, named
+``argos_migration_test_<random>`` — **a fresh name per run**. It never touches
+the dev DB (``argos``, which holds the real corpus) nor the pytest scratch DB
+(``argos_test`` — that DB already has these four tables via
+``Base.metadata.create_all`` at session start, so running ``alembic upgrade``
+against it would fail with "already exists"; see ``tests/conftest.py``).
+
+The name is randomized rather than fixed because this repo is worked on from
+several git worktrees against one shared Docker Postgres. With a fixed name,
+two test runs started from different worktrees would force-drop each other's
+database mid-migration. Randomizing also means this module only ever drops a
+database **it created itself**: setup does a bare ``CREATE DATABASE`` with no
+preceding force-drop, so a name that somehow already exists fails loudly
+instead of being destroyed silently.
+
+A run killed between CREATE and teardown leaks one empty database. They are all
+prefixed ``argos_migration_test_`` — ``psql -l`` shows them, and dropping any of
+them is always safe.
 
 Skips cleanly when Postgres is unreachable, matching release CI (no DB
 service) — see ``tests/test_cli_backfill_images_db.py`` for the same pattern.
@@ -38,7 +50,10 @@ from tests.conftest import db_reachable as _db_reachable
 # time this module is imported; only host/port/credentials from it are used
 # below — the throwaway migration DB name is substituted explicitly.
 _BASE_URL: str = settings.database_url
-_MIGRATION_DB_NAME = "argos_migration_test"
+_MIGRATION_DB_PREFIX = "argos_migration_test"
+# 실행마다 새 이름 — 같은 Postgres를 공유하는 다른 워크트리의 실행과 겹치지
+# 않게. 덕분에 이 모듈은 자기가 만든 DB만 드롭한다 (모듈 docstring 참고).
+_MIGRATION_DB_NAME = f"{_MIGRATION_DB_PREFIX}_{uuid.uuid4().hex[:12]}"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _EVENT_LAYER_TABLES = ["tech_events", "event_documents", "entities", "event_entities"]
 
@@ -48,15 +63,19 @@ def _assert_migration_db_is_disposable(
 ) -> None:
     """``migration_db``가 지워도 되는 이름인지 확인한다 — 아니면 던진다.
 
-    ``_recreate_migration_db``는 이 이름에 대고 ``DROP DATABASE ... WITH
-    (FORCE)``를 무조건 실행한다. 그래서 이름이 개발자의 진짜 dev DB나 pytest
-    스크래치 DB와 겹치면 그 DB가 통째로 날아간다.
+    teardown은 이 이름에 대고 ``DROP DATABASE ... WITH (FORCE)``를 실행한다.
+    이름이 개발자의 진짜 dev DB나 pytest 스크래치 DB와 겹치면 그 DB가 통째로
+    날아간다.
 
-    conftest의 기존 충돌 검사만으로는 이 경우를 못 막는다. 그 검사는
-    ``ARGOS_TEST_DB_NAME``(스크래치)을 dev DB 이름과 비교할 뿐, 여기서 쓰는
-    ``argos_migration_test``는 보지 않는다. 즉 ``POSTGRES_DB``가 하필
-    ``argos_migration_test``인 개발자는 검사를 그대로 통과한 뒤(스크래치
-    ``argos_test``와는 다르니까) 자기 DB가 드롭된다.
+    1차 방어는 이름 자체다 — ``_MIGRATION_DB_NAME``은 실행마다 랜덤 접미사를
+    달아서 어떤 실제 DB와도 겹치지 않는다. 이 함수는 그 뒤를 받치는 마지막
+    방어선이다: 나중에 누군가 이름을 고정값으로 되돌리면 그 순간 여기서 걸린다.
+
+    이 검사가 따로 필요한 이유는 conftest의 기존 충돌 검사가 이 이름을 보지
+    않기 때문이다. 그 검사는 ``ARGOS_TEST_DB_NAME``(스크래치)만 dev DB 이름과
+    비교한다. 즉 이름을 ``argos_migration_test``로 고정해 두면, ``POSTGRES_DB``
+    가 하필 그 값인 개발자는 검사를 그대로 통과한 뒤(스크래치 ``argos_test``와는
+    다르니까) 자기 DB가 드롭된다.
 
     skip이 아니라 예외로 멈춘다 — 조용히 건너뛰면 잘못된 설정이 안 보이고,
     이건 파괴적 작업 직전의 마지막 방어선이다.
@@ -66,10 +85,10 @@ def _assert_migration_db_is_disposable(
             f"migration test DB name {migration_db!r} collides with the "
             f"{'dev' if migration_db == dev_db else 'pytest scratch'} database "
             f"(dev={dev_db!r}, scratch={scratch_db!r}). This module runs "
-            f'`DROP DATABASE IF EXISTS "{migration_db}" WITH (FORCE)` — '
-            f"running it against that database would destroy it. Point "
-            f"POSTGRES_DB at a different database, or rename the throwaway "
-            f"migration DB in this module."
+            f'`DROP DATABASE IF EXISTS "{migration_db}" WITH (FORCE)` at '
+            f"teardown — running it against that database would destroy it. "
+            f"Point POSTGRES_DB at a different database, or restore the "
+            f"per-run random suffix on the throwaway migration DB name."
         )
 
 
@@ -80,7 +99,7 @@ def _require_db():
             "pgvector DB not reachable — skipping ARG-258 event-layer "
             "migration round-trip test (start the Docker DB to run it)"
         )
-    # DB가 살아 있을 때만 — 여기서부터 DROP/CREATE가 실제로 나간다.
+    # DB가 살아 있을 때만 — 여기서부터 CREATE/DROP이 실제로 나간다.
     _assert_migration_db_is_disposable(
         _MIGRATION_DB_NAME, DEV_DB_NAME, TEST_DB_NAME
     )
@@ -96,20 +115,20 @@ def _connect_params() -> dict:
     }
 
 
-async def _recreate_migration_db() -> None:
-    """DROP/CREATE the throwaway migration DB and enable its extensions.
+async def _create_migration_db() -> None:
+    """Create this run's throwaway migration DB and enable its extensions.
 
-    Only ever targets ``argos_migration_test`` via the maintenance
-    ``postgres`` DB on the same server — never the dev DB or scratch DB.
+    Plain ``CREATE DATABASE`` — deliberately **no** preceding
+    ``DROP ... WITH (FORCE)``. The name carries a per-run random suffix, so if
+    it somehow already exists that is a genuine surprise and should fail loudly
+    rather than destroy whatever is there. Teardown only ever drops the
+    database this function created.
     """
     import asyncpg
 
     params = _connect_params()
     admin_conn = await asyncpg.connect(database="postgres", **params)
     try:
-        await admin_conn.execute(
-            f'DROP DATABASE IF EXISTS "{_MIGRATION_DB_NAME}" WITH (FORCE)'
-        )
         await admin_conn.execute(f'CREATE DATABASE "{_MIGRATION_DB_NAME}"')
     finally:
         await admin_conn.close()
@@ -237,7 +256,7 @@ def test_event_layer_migration_round_trip():
     synchronous and using ``asyncio.run()`` per async helper call avoids that
     nesting entirely.
     """
-    asyncio.run(_recreate_migration_db())
+    asyncio.run(_create_migration_db())
     try:
         _run_alembic("upgrade", "head")
 
