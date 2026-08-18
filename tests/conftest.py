@@ -107,6 +107,16 @@ if TEST_DB_NAME in (_HARDCODED_DEV_DB_NAME, _real_dev_db_name_resolved):
         f"(default: argos_test)."
     )
 
+DEV_DB_NAME = _real_dev_db_name_resolved
+"""개발자의 진짜 dev DB 이름 — 아래 ``POSTGRES_DB`` 덮어쓰기 **이전** 값.
+
+덮어쓰고 나면 ``POSTGRES_DB``도 ``settings.database_url``도 스크래치 DB만
+가리키므로, 그 뒤로는 dev DB 이름을 알아낼 방법이 없다. 자기만의 throwaway DB를
+만들어 ``DROP``하는 테스트는 고른 이름을 이 값(그리고 ``TEST_DB_NAME``)과
+비교한 뒤에 파괴적 작업을 해야 한다 —
+``tests/test_migration_event_layer.py`` 참고.
+"""
+
 os.environ["POSTGRES_DB"] = TEST_DB_NAME
 
 

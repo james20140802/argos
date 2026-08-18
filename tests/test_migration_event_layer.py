@@ -30,6 +30,7 @@ import pytest
 from sqlalchemy.engine.url import make_url
 
 from argos.config import settings
+from tests.conftest import DEV_DB_NAME, TEST_DB_NAME
 from tests.conftest import db_reachable as _db_reachable
 
 # Captured at import time, same pattern as tests/test_cli_backfill_images_db.py.
@@ -42,6 +43,36 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _EVENT_LAYER_TABLES = ["tech_events", "event_documents", "entities", "event_entities"]
 
 
+def _assert_migration_db_is_disposable(
+    migration_db: str, dev_db: str, scratch_db: str
+) -> None:
+    """``migration_db``가 지워도 되는 이름인지 확인한다 — 아니면 던진다.
+
+    ``_recreate_migration_db``는 이 이름에 대고 ``DROP DATABASE ... WITH
+    (FORCE)``를 무조건 실행한다. 그래서 이름이 개발자의 진짜 dev DB나 pytest
+    스크래치 DB와 겹치면 그 DB가 통째로 날아간다.
+
+    conftest의 기존 충돌 검사만으로는 이 경우를 못 막는다. 그 검사는
+    ``ARGOS_TEST_DB_NAME``(스크래치)을 dev DB 이름과 비교할 뿐, 여기서 쓰는
+    ``argos_migration_test``는 보지 않는다. 즉 ``POSTGRES_DB``가 하필
+    ``argos_migration_test``인 개발자는 검사를 그대로 통과한 뒤(스크래치
+    ``argos_test``와는 다르니까) 자기 DB가 드롭된다.
+
+    skip이 아니라 예외로 멈춘다 — 조용히 건너뛰면 잘못된 설정이 안 보이고,
+    이건 파괴적 작업 직전의 마지막 방어선이다.
+    """
+    if migration_db in (dev_db, scratch_db):
+        raise RuntimeError(
+            f"migration test DB name {migration_db!r} collides with the "
+            f"{'dev' if migration_db == dev_db else 'pytest scratch'} database "
+            f"(dev={dev_db!r}, scratch={scratch_db!r}). This module runs "
+            f'`DROP DATABASE IF EXISTS "{migration_db}" WITH (FORCE)` — '
+            f"running it against that database would destroy it. Point "
+            f"POSTGRES_DB at a different database, or rename the throwaway "
+            f"migration DB in this module."
+        )
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _require_db():
     if not _db_reachable(_BASE_URL):
@@ -49,6 +80,10 @@ def _require_db():
             "pgvector DB not reachable — skipping ARG-258 event-layer "
             "migration round-trip test (start the Docker DB to run it)"
         )
+    # DB가 살아 있을 때만 — 여기서부터 DROP/CREATE가 실제로 나간다.
+    _assert_migration_db_is_disposable(
+        _MIGRATION_DB_NAME, DEV_DB_NAME, TEST_DB_NAME
+    )
 
 
 def _connect_params() -> dict:
