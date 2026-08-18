@@ -26,11 +26,13 @@ class EventDocument(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ),
     )
 
+    # index=True를 걸지 않는다 — uq_event_documents_event_item(event_id,
+    # tech_item_id) 유니크 인덱스의 선행 컬럼이 event_id라서 event_id 단독
+    # 조회도 그 인덱스로 처리된다. 따로 만들면 쓰기 비용만 늘어난다.
     event_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("tech_events.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     tech_item_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

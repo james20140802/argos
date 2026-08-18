@@ -12,7 +12,7 @@ tables):
 
 Runs entirely against its own throwaway database (``argos_migration_test``),
 created and dropped by this test. It never touches the dev DB (``argos``,
-556 real documents) nor the pytest scratch DB (``argos_test`` — that DB
+which holds the real corpus) nor the pytest scratch DB (``argos_test`` — that DB
 already has these four tables via ``Base.metadata.create_all`` at session
 start, so running ``alembic upgrade`` against it would fail with "already
 exists"; see ``tests/conftest.py``).
