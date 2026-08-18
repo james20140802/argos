@@ -4,6 +4,13 @@
 돌아야 하고, (2) 형제 이슈 ARG-225가 정규화 산식을 바꿀 때 갈아끼울 자리가
 한 곳이어야 하기 때문이다. 산식이 바뀌면 ``normalized_key`` 재계산 백필이
 한 번 필요하다.
+
+``build_event_entities_query``/``list_event_entities``도 넘겨받은 ``event_id``를
+그대로 매치한다 — 툼스톤 체인은 따라가지 않는다. 사건이 병합돼도 흡수된 사건
+아래 걸린 엔티티 링크는 저절로 생존 사건 쪽으로 옮겨오지 않으므로, 호출자는
+``resolve_event()``로 미리 해석한 id를 넘겨야 한다. 링크를 생존 사건으로
+옮기는 일은 병합 작성자(merge-writer, 후속 이슈)의 몫이며 이 이슈에서는
+구현하지 않는다.
 """
 from __future__ import annotations
 

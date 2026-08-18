@@ -57,7 +57,9 @@ class TestQueryBuilders:
 
     def test_events_for_entity_query_filters_on_normalized_key(self):
         compiled = _compile(build_events_for_entity_query("claude opus"))
-        assert "tech_events" in str(compiled)
+        sql = str(compiled)
+        assert "tech_events" in sql
+        assert "normalized_key" in sql
         assert "claude opus" in compiled.params.values()
 
 

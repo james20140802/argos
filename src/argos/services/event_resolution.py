@@ -7,6 +7,11 @@
 
 코어(``resolve_event_chain``)는 세션을 모르고 "id → merged_into_id" 조회를
 주입받는다. 덕분에 Postgres 없이 dict 기반 가짜 조회로 전 동작이 단위 테스트된다.
+
+주의: 여기서 해석하는 건 ``TechEvent`` id 하나뿐이다. ``EventDocument``/
+``EventEntity`` 링크를 흡수된 사건에서 생존 사건으로 옮기는 일은 하지 않는다
+— 그건 병합 작성자(merge-writer, 후속 이슈)의 몫이다. 자세한 내용은
+``services/events.py``, ``services/entities.py``의 모듈 docstring 참고.
 """
 from __future__ import annotations
 

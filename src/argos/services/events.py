@@ -3,6 +3,12 @@
 쿼리 조립부(``build_evidence_documents_query``)와 실행부
 (``list_evidence_documents``)를 나눠 둔 이유는, 조립부가 세션 없이 컴파일만으로
 검증 가능해서 Postgres 없는 환경에서도 단위 테스트가 돌기 때문이다.
+
+이 쿼리들은 넘겨받은 ``event_id``를 그대로 매치한다 — 툼스톤 체인은 따라가지
+않는다. 사건이 병합돼도 흡수된 사건 아래 걸린 근거 문서 링크는 저절로 생존
+사건 쪽으로 옮겨오지 않으므로, 호출자는 ``resolve_event()``로 미리 해석한 id를
+넘겨야 한다. 링크를 생존 사건으로 옮기는 일은 병합 작성자(merge-writer, 후속
+이슈)의 몫이며 이 이슈에서는 구현하지 않는다.
 """
 from __future__ import annotations
 

@@ -13,8 +13,8 @@ class EventDocument(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """사건↔문서 N:N 근거 링크.
 
     ``tech_items``에 ``event_id`` 컬럼을 다는 대신 별도 링크 테이블을 쓴다 (A2).
-    그래야 기존 문서 556건의 스키마가 무변경으로 남고, 한 문서가 두 사건의
-    근거가 되는 경우도 열린다.
+    그래야 기존 문서(코퍼스 전체)의 스키마가 무변경으로 남고, 한 문서가 두
+    사건의 근거가 되는 경우도 열린다.
     """
 
     __tablename__ = "event_documents"
