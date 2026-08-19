@@ -612,22 +612,45 @@ def _straight_close(sentence: str, start: int, closer: str) -> int:
     낱말 안의 어포스트로피는 닫는 자리가 아니다 — "We're"에서 닫으면 인용문이
     낱말 하나로 보여 강조로 오인되고, 절 첫 단어인 보통 명사가 이름이 된다.
 
-    그러고 남은 자리의 **개수**로 짝이 맞는지 본다. 짝이 맞으면 여는 자리마다
-    바로 다음 자리가 그 짝이다 — 한 문장에 인용이 둘이어도('"Claude" with
-    "Gemini"') 각각 제 짝을 찾는다. 홀수면 하나는 따옴표가 아니라 소유격
-    어포스트로피라는 뜻이라("Customers' demand rises."), 어느 것인지 가릴
-    근거가 없으니 문장으로 본다. 잘못 보면 인용문 첫 단어가 이름 행세를 하고,
-    반대로 잘못 봐야 잃는 건 배치에 다른 언급이 없는 한 낱말짜리 이름뿐이다.
+    남은 자리들은 둘로 나뉜다. 소유격 어포스트로피는 늘 낱말에 붙는다 — 앞
+    글자가 항상 글자·숫자다. 그래서 앞 글자가 글자·숫자가 **아닌** 자리는
+    소유격일 수 없고 따옴표가 확정이다("Customers' demand rises."의 맨 끝
+    자리처럼). 앞 글자가 글자·숫자인 자리는 확정할 수 없다 — 닫는 따옴표
+    ("Claude')일 수도, 소유격 어포스트로피(James')일 수도 있다.
+
+    그래서 start 뒤를 앞에서부터 훑다가 처음 만나는 **확정** 자리로 판정한다.
+    그 자리 뒤가 글자·숫자가 아니면(닫는 모양) 그 자리가 짝이고, 그 사이에
+    지나친 확정 못한 자리들은 전부 소유격으로 접는다. 그 자리 뒤가 글자·숫자면
+    (여는 모양 — 다음 인용이 막 열린 것) 확정 자리로는 못 가린다는 뜻이니,
+    그 앞에서 지나친 첫 확정 못한 자리를 짝으로 쓴다. 확정 자리를 끝까지 못
+    만나면 지나친 첫 확정 못한 자리를 쓴다. 어느 쪽도 없으면 -1(문장으로 봄).
+
+    이 근거로 'Claude' with James' Gemini에서 James'는 확정 못한 자리라
+    앞쪽 'Claude'의 닫는 자리를 흔들지 않는다 — James' 앞에 확정 자리가 없어
+    앞쪽 확정 못한 자리(그 자체)가 짝으로 쓰이고, 그건 애초에 Claude의 짝을
+    가리는 스캔에서 이미 지나친 자리라 영향이 없다. 문자열을 왼쪽에서
+    오른쪽으로 한 번만 훑으므로 집합 순회 같은 비결정적 근거가 끼지 않는다.
+    잘못 보면 인용문 첫 단어가 이름 행세를 하고, 반대로 잘못 봐야 잃는 건
+    배치에 다른 언급이 없는 한 낱말짜리 이름뿐이다.
     """
-    found = [
+    candidates = [
         index
-        for index in range(len(sentence))
+        for index in range(start, len(sentence))
         if sentence[index] == closer and not _inside_a_word(sentence, index)
     ]
-    if len(found) % 2:
-        return -1
-    following = [index for index in found if index >= start]
-    return following[0] if following else -1
+    first_ambiguous = -1
+    for index in candidates:
+        preceding = sentence[index - 1] if index else ""
+        if preceding.isalnum():
+            if first_ambiguous == -1:
+                first_ambiguous = index
+            continue
+        # 확정 자리: 소유격일 수 없다.
+        following = sentence[index + 1 : index + 2]
+        if not following.isalnum():
+            return index  # 닫는 모양 — 이 자리가 짝이다.
+        break  # 여는 모양 — 그 앞의 확정 못한 자리를 짝으로 쓴다.
+    return first_ambiguous
 
 
 def _inside_a_word(sentence: str, index: int) -> bool:

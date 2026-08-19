@@ -941,3 +941,18 @@ def test_the_counted_quantity_rule_is_deterministic():
     document = "Analysts valued Nvidia 50 percent higher. Reviewers tested RTX 4090 today."
     first = canonicals([document])
     assert all(canonicals([document]) == first for _ in range(5))
+
+
+def test_a_trailing_possessive_does_not_break_an_earlier_quote():
+    # 문장 뒤쪽의 소유격 어포스트로피가 앞쪽 인용의 짝짓기를 깨면, 감싼
+    # 이름이 인용절의 첫 단어로 둔갑해 통째로 탈락한다. 'James'의 소유격은
+    # 앞쪽 'Claude'의 따옴표와 아무 관계가 없다.
+    [names] = canonicals(["Reviewers compared 'Claude' with James' Gemini yesterday."])
+    assert "claude" in names
+
+
+def test_quote_pairing_is_deterministic():
+    # ARG-239 완료 기준: 같은 입력에 항상 같은 출력.
+    document = "Reviewers compared 'Claude' with James' Gemini yesterday."
+    first = canonicals([document])
+    assert all(canonicals([document]) == first for _ in range(5))
