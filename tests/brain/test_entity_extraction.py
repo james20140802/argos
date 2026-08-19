@@ -898,3 +898,46 @@ def test_symbol_suffixed_technology_names_stay_distinct():
 @pytest.mark.parametrize("documents", [[], [""], ["   "], ["...  ---  "], ["한글만 있는 문장이다."]])
 def test_degenerate_input_yields_no_names(documents):
     assert all(names == set() for names in canonicals(documents))
+
+
+@pytest.mark.parametrize(
+    "sentence, name, absent",
+    [
+        ("Analysts valued Nvidia 50 percent higher.", "nvidia", "nvidia 50"),
+        ("Analysts counted Acme 300 employees today.", "acme", "acme 300"),
+    ],
+)
+def test_a_counted_quantity_does_not_join_the_name(sentence, name, absent):
+    # 이름 뒤 숫자가 세는 단위에 걸린 수치면 이름이 아니라 기사의 수치다.
+    # 붙이면 같은 회사가 'nvidia'와 'nvidia 50' 두 키로 쪼개져, 근접중복
+    # 판정이 같은 대상을 다른 대상으로 본다.
+    [names] = canonicals([sentence])
+    assert name in names
+    assert absent not in names
+
+
+@pytest.mark.parametrize(
+    "sentence, name",
+    [
+        ("Reviewers tested RTX 4090 today.", "rtx 4090"),
+        ("Reviewers tested Claude Sonnet 5 today.", "claude sonnet 5"),
+        ("Reviewers tested GPT-5.2 today.", "gpt 5.2"),
+    ],
+)
+def test_a_product_number_still_joins_the_name_despite_the_counted_unit_check(sentence, name):
+    # 반대 방향 경계. 수치를 거른다고 제품 번호·버전 숫자까지 떨어져 나가면
+    # 'RTX 4090'과 'RTX'가 다른 제품인데도 한 키로 합쳐진다.
+    #
+    # 이름은 기존 test_a_product_number_still_joins_the_name(연도 경계용,
+    # 위쪽에 있음)과 겹치지 않게 늘렸다 — 겹치면 뒤 정의가 앞 정의를 덮어써
+    # 그 테스트가 조용히 수집에서 빠진다.
+    [names] = canonicals([sentence])
+    assert name in names
+
+
+def test_the_counted_quantity_rule_is_deterministic():
+    # ARG-239 완료 기준: 같은 입력에 항상 같은 출력. 판정에 집합 순회 같은
+    # 비결정적 근거가 끼면 배치마다 키가 흔들려 근접중복 판정이 요동친다.
+    document = "Analysts valued Nvidia 50 percent higher. Reviewers tested RTX 4090 today."
+    first = canonicals([document])
+    assert all(canonicals([document]) == first for _ in range(5))

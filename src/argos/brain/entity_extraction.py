@@ -176,6 +176,16 @@ _ORDINAL = re.compile(r"\d+(?:st|nd|rd|th)")
 # ('RTX 4090'은 그대로 붙는다). 치르는 값은 연도를 이름에 쓴 제품이다 —
 # 'Windows 2000'은 'windows'로 남는다. 기사에서 연도 쪽이 훨씬 흔하다.
 _YEAR = re.compile(r"(?:19|20)\d{2}")
+# 이름 뒤 숫자를 붙일지는 그 다음 낱말도 봐야 갈린다. 'Nvidia 50 percent'와
+# 'RTX 4090 today'는 둘 다 '이름 + 숫자 + 소문자 낱말' 모양이라, 숫자 뒤
+# 낱말의 대소문자만으로는 안 갈린다 — 실제로 세는 단위인지 봐야 한다. 세는
+# 단위 앞의 숫자는 이름이 아니라 기사의 수치다: 'Nvidia 50 percent'의 50을
+# 붙이면 같은 회사가 'nvidia'와 'nvidia 50' 두 키로 쪼개진다. 목록은 최소
+# 크기로 둔다 — 이 모듈이 지금 덮어야 할 성공 장면(퍼센트·인원수) 두 개만
+# 담는다. 치르는 값은 이 목록에 없는 세는 단위다: 'Acme 300 units'의
+# 'units'는 여기 없어 그대로 이름에 붙는다. 더 넓히려면 새 성공 장면이
+# 먼저 있어야 한다.
+_COUNTED_UNITS = frozenset({"percent", "employees"})
 # 마침표로 끝나도 문장을 끝내지 않는 말. 뒤에 곧바로 이름이 오는 호칭만 둔다 —
 # 'etc.'처럼 실제로 문장을 끝내는 말까지 넣으면 반대로 두 문장이 붙어, 다음
 # 문장 첫 단어가 문장 중간 대문자로 위장한다.
@@ -806,6 +816,25 @@ def _leads_to_a_name(sentence: str, end: int) -> bool:
     return False
 
 
+def _counts_a_quantity(sentence: str, end: int) -> bool:
+    """숫자 바로 뒤에 세는 단위가 오는가.
+
+    'Nvidia 50 percent'의 50과 'RTX 4090 today'의 4090은 둘 다 '이름 + 숫자
+    + 소문자 낱말' 모양이라 뒤따르는 낱말의 대소문자만으로는 갈리지 않는다.
+    실제로 `_COUNTED_UNITS`에 있는 세는 단위인지를 봐야 한다.
+
+    `_leads_to_a_name`과 달리 이음말을 건너뛰지 않는다 — 숫자 바로 뒤 낱말
+    하나만 세는 단위인지 보면 충분하고, 건너뛰면 'RTX 4090 and employees'
+    처럼 무관한 낱말 너머의 단위까지 집어 제품 번호를 잘못 끊는다.
+    """
+    rest = sentence[end:]
+    gap = len(rest) - len(rest.lstrip(" \t"))
+    if not gap:
+        return False
+    following = _TOKEN.match(sentence, end + gap)
+    return following is not None and following.group().casefold() in _COUNTED_UNITS
+
+
 def _candidate(
     words: Sequence[str], *, sentence_initial: bool, surface: str | None = None
 ) -> _Candidate | None:
@@ -988,10 +1017,17 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
                 flush()
             elif _opens_a_name(token):
                 run.append((initial, token, match.start(), match.end()))
-            elif token[0].isdigit() and run and _YEAR.fullmatch(token) is None:
+            elif (
+                token[0].isdigit()
+                and run
+                and _YEAR.fullmatch(token) is None
+                and not _counts_a_quantity(sentence, match.end())
+            ):
                 # 이름에 붙은 버전 숫자 ("Claude Sonnet 5"). 연도는 뺀다 —
                 # 'Nvidia 2025 revenue'의 2025는 이름이 아니라 기사의 시점이라,
-                # 붙이면 같은 회사가 두 키로 쪼개진다.
+                # 붙이면 같은 회사가 두 키로 쪼개진다. 세는 단위가 뒤따르는
+                # 수치도 뺀다 — 'Nvidia 50 percent'의 50은 이름이 아니라
+                # 기사의 수치다.
                 run.append((initial, token, match.start(), match.end()))
             elif (
                 run
