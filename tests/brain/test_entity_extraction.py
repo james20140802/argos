@@ -956,3 +956,18 @@ def test_quote_pairing_is_deterministic():
     document = "Reviewers compared 'Claude' with James' Gemini yesterday."
     first = canonicals([document])
     assert all(canonicals([document]) == first for _ in range(5))
+
+
+def test_a_quoted_symbol_suffixed_name_survives_a_possessive_s():
+    # 기호로 끝난 이름을 인용부호로 감싸고 소유격을 붙이면("'C++'s") 닫는 자리
+    # 뒤에 글자가 와서 다음 인용이 열린 것처럼 보인다. 짝을 못 지으면 인용문이
+    # 안 닫힌 것으로 읽혀 그 언급이 통째로 사라진다 — 인용부호를 둘렀다는
+    # 이유만으로 이름이 없어지면 안 된다.
+    #
+    # 기대값을 문자열로 박지 않고 인용 없는 같은 문장과 맞춘다. 소유격 s가
+    # 이름에 붙어 남는 건(`c++s`) 인용과 무관한 이 모듈의 기존 동작이라,
+    # 나중에 그쪽을 고쳐도 이 테스트는 여전히 옳은 것을 지킨다.
+    [quoted] = canonicals(["Reviewers praised 'C++'s compiler today."])
+    [bare] = canonicals(["Reviewers praised C++'s compiler today."])
+    assert quoted
+    assert quoted == bare

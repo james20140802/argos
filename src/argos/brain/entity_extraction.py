@@ -661,12 +661,31 @@ def _straight_close(sentence: str, start: int, closer: str) -> int:
             if first_ambiguous == -1:
                 first_ambiguous = index
             continue
-        # 확정 자리: 소유격일 수 없다.
+        # 확정 자리: 낱말에 붙은 소유격일 수 없다.
         following = sentence[index + 1 : index + 2]
         if not following.isalnum():
             return index  # 닫는 모양 — 이 자리가 짝이다.
+        if not preceding.isspace() and _takes_a_possessive_s(sentence, index):
+            # 기호로 끝난 이름을 닫고 그 위에 소유격 s가 붙은 자리("'C++'s").
+            # 'C++'는 글자·숫자로 끝나지 않아 낱말 안으로 보이지 않으므로
+            # 여기까지 온다. 여는 따옴표는 앞이 빈칸이라 이 갈래로 오지 않는다.
+            return index
         break  # 여는 모양 — 그 앞의 확정 못한 자리를 짝으로 쓴다.
     return first_ambiguous
+
+
+def _takes_a_possessive_s(sentence: str, index: int) -> bool:
+    """이 자리 뒤가 소유격 s 하나인가.
+
+    낱말이 기호로 끝나면("C++") 그 뒤 어포스트로피는 낱말 안으로 보이지
+    않아 따옴표 후보로 남는다. 뒤가 s 하나뿐이고 그 다음이 글자·숫자가
+    아니면 소유격이 붙은 것이지 다음 인용이 열린 게 아니다 — 여는 따옴표
+    뒤에는 낱말이 통째로 오지 s 하나만 오지 않는다.
+    """
+    return (
+        sentence[index + 1 : index + 2] in {"s", "S"}
+        and not sentence[index + 2 : index + 3].isalnum()
+    )
 
 
 def _inside_a_word(sentence: str, index: int) -> bool:
