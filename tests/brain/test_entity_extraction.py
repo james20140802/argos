@@ -898,3 +898,76 @@ def test_symbol_suffixed_technology_names_stay_distinct():
 @pytest.mark.parametrize("documents", [[], [""], ["   "], ["...  ---  "], ["한글만 있는 문장이다."]])
 def test_degenerate_input_yields_no_names(documents):
     assert all(names == set() for names in canonicals(documents))
+
+
+@pytest.mark.parametrize(
+    "sentence, name, absent",
+    [
+        ("Analysts valued Nvidia 50 percent higher.", "nvidia", "nvidia 50"),
+        ("Analysts counted Acme 300 employees today.", "acme", "acme 300"),
+    ],
+)
+def test_a_counted_quantity_does_not_join_the_name(sentence, name, absent):
+    # 이름 뒤 숫자가 세는 단위에 걸린 수치면 이름이 아니라 기사의 수치다.
+    # 붙이면 같은 회사가 'nvidia'와 'nvidia 50' 두 키로 쪼개져, 근접중복
+    # 판정이 같은 대상을 다른 대상으로 본다.
+    [names] = canonicals([sentence])
+    assert name in names
+    assert absent not in names
+
+
+@pytest.mark.parametrize(
+    "sentence, name",
+    [
+        ("Reviewers tested RTX 4090 today.", "rtx 4090"),
+        ("Reviewers tested Claude Sonnet 5 today.", "claude sonnet 5"),
+        ("Reviewers tested GPT-5.2 today.", "gpt 5.2"),
+    ],
+)
+def test_a_product_number_still_joins_the_name_despite_the_counted_unit_check(sentence, name):
+    # 반대 방향 경계. 수치를 거른다고 제품 번호·버전 숫자까지 떨어져 나가면
+    # 'RTX 4090'과 'RTX'가 다른 제품인데도 한 키로 합쳐진다.
+    #
+    # 이름은 기존 test_a_product_number_still_joins_the_name(연도 경계용,
+    # 위쪽에 있음)과 겹치지 않게 늘렸다 — 겹치면 뒤 정의가 앞 정의를 덮어써
+    # 그 테스트가 조용히 수집에서 빠진다.
+    [names] = canonicals([sentence])
+    assert name in names
+
+
+def test_the_counted_quantity_rule_is_deterministic():
+    # ARG-239 완료 기준: 같은 입력에 항상 같은 출력. 판정에 집합 순회 같은
+    # 비결정적 근거가 끼면 배치마다 키가 흔들려 근접중복 판정이 요동친다.
+    document = "Analysts valued Nvidia 50 percent higher. Reviewers tested RTX 4090 today."
+    first = canonicals([document])
+    assert all(canonicals([document]) == first for _ in range(5))
+
+
+def test_a_trailing_possessive_does_not_break_an_earlier_quote():
+    # 문장 뒤쪽의 소유격 어포스트로피가 앞쪽 인용의 짝짓기를 깨면, 감싼
+    # 이름이 인용절의 첫 단어로 둔갑해 통째로 탈락한다. 'James'의 소유격은
+    # 앞쪽 'Claude'의 따옴표와 아무 관계가 없다.
+    [names] = canonicals(["Reviewers compared 'Claude' with James' Gemini yesterday."])
+    assert "claude" in names
+
+
+def test_quote_pairing_is_deterministic():
+    # ARG-239 완료 기준: 같은 입력에 항상 같은 출력.
+    document = "Reviewers compared 'Claude' with James' Gemini yesterday."
+    first = canonicals([document])
+    assert all(canonicals([document]) == first for _ in range(5))
+
+
+def test_a_quoted_symbol_suffixed_name_survives_a_possessive_s():
+    # 기호로 끝난 이름을 인용부호로 감싸고 소유격을 붙이면("'C++'s") 닫는 자리
+    # 뒤에 글자가 와서 다음 인용이 열린 것처럼 보인다. 짝을 못 지으면 인용문이
+    # 안 닫힌 것으로 읽혀 그 언급이 통째로 사라진다 — 인용부호를 둘렀다는
+    # 이유만으로 이름이 없어지면 안 된다.
+    #
+    # 기대값을 문자열로 박지 않고 인용 없는 같은 문장과 맞춘다. 소유격 s가
+    # 이름에 붙어 남는 건(`c++s`) 인용과 무관한 이 모듈의 기존 동작이라,
+    # 나중에 그쪽을 고쳐도 이 테스트는 여전히 옳은 것을 지킨다.
+    [quoted] = canonicals(["Reviewers praised 'C++'s compiler today."])
+    [bare] = canonicals(["Reviewers praised C++'s compiler today."])
+    assert quoted
+    assert quoted == bare

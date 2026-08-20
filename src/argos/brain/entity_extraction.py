@@ -176,6 +176,24 @@ _ORDINAL = re.compile(r"\d+(?:st|nd|rd|th)")
 # ('RTX 4090'은 그대로 붙는다). 치르는 값은 연도를 이름에 쓴 제품이다 —
 # 'Windows 2000'은 'windows'로 남는다. 기사에서 연도 쪽이 훨씬 흔하다.
 _YEAR = re.compile(r"(?:19|20)\d{2}")
+# 이름 뒤 숫자를 붙일지는 그 다음 낱말도 봐야 갈린다. 'Nvidia 50 percent'와
+# 'RTX 4090 today'는 둘 다 '이름 + 숫자 + 소문자 낱말' 모양이라, 숫자 뒤
+# 낱말의 대소문자만으로는 안 갈린다 — 실제로 세는 단위인지 봐야 한다. 세는
+# 단위 앞의 숫자는 이름이 아니라 기사의 수치다: 'Nvidia 50 percent'의 50을
+# 붙이면 같은 회사가 'nvidia'와 'nvidia 50' 두 키로 쪼개진다. 목록은 최소
+# 크기로 둔다 — 이 모듈이 지금 덮어야 할 성공 장면(퍼센트·인원수) 두 개만
+# 담는다. 치르는 값은 이 목록에 없는 세는 단위다: 'Acme 300 units'의
+# 'units'는 여기 없어 그대로 이름에 붙는다. 더 넓히려면 새 성공 장면이
+# 먼저 있어야 한다.
+#
+# 반대 방향으로 치르는 값도 있다: 목록에 있는 단어가 마침 보통 명사로 제품
+# 번호 뒤에 오면('Office 365 employees') 번호가 떨어져 'office'로 남는다.
+# 이건 이 규칙을 다듬어 없앨 수 있는 값이 아니다 — 'Acme 300 employees'와
+# 'Office 365 employees'는 '이름 + 숫자 + 세는 단위'로 모양이 완전히 같고,
+# 앞은 수치를 떼는 게 맞고 뒤는 붙이는 게 맞다. 가르려면 'Office 365'가
+# 제품명이라는 걸 아는 이름 사전이 있어야 하는데, 이 모듈은 사전 없이
+# 도는 걸 전제로 한다. 둘 중 흔한 쪽(수치)을 고른 결과다.
+_COUNTED_UNITS = frozenset({"percent", "employees"})
 # 마침표로 끝나도 문장을 끝내지 않는 말. 뒤에 곧바로 이름이 오는 호칭만 둔다 —
 # 'etc.'처럼 실제로 문장을 끝내는 말까지 넣으면 반대로 두 문장이 붙어, 다음
 # 문장 첫 단어가 문장 중간 대문자로 위장한다.
@@ -602,22 +620,72 @@ def _straight_close(sentence: str, start: int, closer: str) -> int:
     낱말 안의 어포스트로피는 닫는 자리가 아니다 — "We're"에서 닫으면 인용문이
     낱말 하나로 보여 강조로 오인되고, 절 첫 단어인 보통 명사가 이름이 된다.
 
-    그러고 남은 자리의 **개수**로 짝이 맞는지 본다. 짝이 맞으면 여는 자리마다
-    바로 다음 자리가 그 짝이다 — 한 문장에 인용이 둘이어도('"Claude" with
-    "Gemini"') 각각 제 짝을 찾는다. 홀수면 하나는 따옴표가 아니라 소유격
-    어포스트로피라는 뜻이라("Customers' demand rises."), 어느 것인지 가릴
-    근거가 없으니 문장으로 본다. 잘못 보면 인용문 첫 단어가 이름 행세를 하고,
-    반대로 잘못 봐야 잃는 건 배치에 다른 언급이 없는 한 낱말짜리 이름뿐이다.
+    남은 자리들은 둘로 나뉜다. 소유격 어포스트로피는 늘 낱말에 붙는다 — 앞
+    글자가 항상 글자·숫자다. 그래서 앞 글자가 글자·숫자가 **아닌** 자리는
+    소유격일 수 없고 따옴표가 확정이다("Customers' demand rises."의 맨 끝
+    자리처럼). 앞 글자가 글자·숫자인 자리는 확정할 수 없다 — 닫는 따옴표
+    ("Claude')일 수도, 소유격 어포스트로피(James')일 수도 있다.
+
+    그래서 start 뒤를 앞에서부터 훑다가 처음 만나는 **확정** 자리로 판정한다.
+    그 자리 뒤가 글자·숫자가 아니면(닫는 모양) 그 자리가 짝이고, 그 사이에
+    지나친 확정 못한 자리들은 전부 소유격으로 접는다. 그 자리 뒤가 글자·숫자면
+    (여는 모양 — 다음 인용이 막 열린 것) 확정 자리로는 못 가린다는 뜻이니,
+    그 앞에서 지나친 첫 확정 못한 자리를 짝으로 쓴다. 확정 자리를 끝까지 못
+    만나면 지나친 첫 확정 못한 자리를 쓴다. 어느 쪽도 없으면 -1(문장으로 봄).
+
+    이 근거로 'Claude' with James' Gemini에서 James'는 확정 못한 자리라
+    앞쪽 'Claude'의 닫는 자리를 흔들지 않는다 — James' 앞에 확정 자리가 없어
+    앞쪽 확정 못한 자리(그 자체)가 짝으로 쓰이고, 그건 애초에 Claude의 짝을
+    가리는 스캔에서 이미 지나친 자리라 영향이 없다. 문자열을 왼쪽에서
+    오른쪽으로 한 번만 훑으므로 집합 순회 같은 비결정적 근거가 끼지 않는다.
+    잘못 보면 인용문 첫 단어가 이름 행세를 하고, 반대로 잘못 봐야 잃는 건
+    배치에 다른 언급이 없는 한 낱말짜리 이름뿐이다.
+
+    확정 자리가 하나도 없어 확정 못한 자리들만 남을 때 치르는 값이 있다:
+    첫 자리를 쓰므로, 첫 낱말이 소유격인 인용절("Analysts said, 'Customers'
+    demand rises' during the quarter.")은 'Customers'에서 일찍 닫혀 그 낱말이
+    이름으로 새어 나온다. 뒤쪽 자리를 쓰면 이 문장은 낫지만 'Claude' with
+    James' Gemini가 깨진다 — 이 함수가 보는 정보만으로는 두 문장이 같은
+    모양이라, 가르려면 인용을 여는 말('said,' 같은 전달 동사)까지 봐야 한다.
+    그건 이 함수의 입력 밖이다.
     """
-    found = [
+    candidates = [
         index
-        for index in range(len(sentence))
+        for index in range(start, len(sentence))
         if sentence[index] == closer and not _inside_a_word(sentence, index)
     ]
-    if len(found) % 2:
-        return -1
-    following = [index for index in found if index >= start]
-    return following[0] if following else -1
+    first_ambiguous = -1
+    for index in candidates:
+        preceding = sentence[index - 1] if index else ""
+        if preceding.isalnum():
+            if first_ambiguous == -1:
+                first_ambiguous = index
+            continue
+        # 확정 자리: 낱말에 붙은 소유격일 수 없다.
+        following = sentence[index + 1 : index + 2]
+        if not following.isalnum():
+            return index  # 닫는 모양 — 이 자리가 짝이다.
+        if not preceding.isspace() and _takes_a_possessive_s(sentence, index):
+            # 기호로 끝난 이름을 닫고 그 위에 소유격 s가 붙은 자리("'C++'s").
+            # 'C++'는 글자·숫자로 끝나지 않아 낱말 안으로 보이지 않으므로
+            # 여기까지 온다. 여는 따옴표는 앞이 빈칸이라 이 갈래로 오지 않는다.
+            return index
+        break  # 여는 모양 — 그 앞의 확정 못한 자리를 짝으로 쓴다.
+    return first_ambiguous
+
+
+def _takes_a_possessive_s(sentence: str, index: int) -> bool:
+    """이 자리 뒤가 소유격 s 하나인가.
+
+    낱말이 기호로 끝나면("C++") 그 뒤 어포스트로피는 낱말 안으로 보이지
+    않아 따옴표 후보로 남는다. 뒤가 s 하나뿐이고 그 다음이 글자·숫자가
+    아니면 소유격이 붙은 것이지 다음 인용이 열린 게 아니다 — 여는 따옴표
+    뒤에는 낱말이 통째로 오지 s 하나만 오지 않는다.
+    """
+    return (
+        sentence[index + 1 : index + 2] in {"s", "S"}
+        and not sentence[index + 2 : index + 3].isalnum()
+    )
 
 
 def _inside_a_word(sentence: str, index: int) -> bool:
@@ -806,6 +874,25 @@ def _leads_to_a_name(sentence: str, end: int) -> bool:
     return False
 
 
+def _counts_a_quantity(sentence: str, end: int) -> bool:
+    """숫자 바로 뒤에 세는 단위가 오는가.
+
+    'Nvidia 50 percent'의 50과 'RTX 4090 today'의 4090은 둘 다 '이름 + 숫자
+    + 소문자 낱말' 모양이라 뒤따르는 낱말의 대소문자만으로는 갈리지 않는다.
+    실제로 `_COUNTED_UNITS`에 있는 세는 단위인지를 봐야 한다.
+
+    `_leads_to_a_name`과 달리 이음말을 건너뛰지 않는다 — 숫자 바로 뒤 낱말
+    하나만 세는 단위인지 보면 충분하고, 건너뛰면 'RTX 4090 and employees'
+    처럼 무관한 낱말 너머의 단위까지 집어 제품 번호를 잘못 끊는다.
+    """
+    rest = sentence[end:]
+    gap = len(rest) - len(rest.lstrip(" \t"))
+    if not gap:
+        return False
+    following = _TOKEN.match(sentence, end + gap)
+    return following is not None and following.group().casefold() in _COUNTED_UNITS
+
+
 def _candidate(
     words: Sequence[str], *, sentence_initial: bool, surface: str | None = None
 ) -> _Candidate | None:
@@ -988,10 +1075,17 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
                 flush()
             elif _opens_a_name(token):
                 run.append((initial, token, match.start(), match.end()))
-            elif token[0].isdigit() and run and _YEAR.fullmatch(token) is None:
+            elif (
+                token[0].isdigit()
+                and run
+                and _YEAR.fullmatch(token) is None
+                and not _counts_a_quantity(sentence, match.end())
+            ):
                 # 이름에 붙은 버전 숫자 ("Claude Sonnet 5"). 연도는 뺀다 —
                 # 'Nvidia 2025 revenue'의 2025는 이름이 아니라 기사의 시점이라,
-                # 붙이면 같은 회사가 두 키로 쪼개진다.
+                # 붙이면 같은 회사가 두 키로 쪼개진다. 세는 단위가 뒤따르는
+                # 수치도 뺀다 — 'Nvidia 50 percent'의 50은 이름이 아니라
+                # 기사의 수치다.
                 run.append((initial, token, match.start(), match.end()))
             elif (
                 run
