@@ -1,14 +1,21 @@
 """ARG-258 DB integration test — event layer migration round trip.
 
-Verifies the parent AC "``alembic upgrade head`` → ``downgrade -1`` runs
+Verifies the parent AC "``alembic upgrade head`` → ``downgrade`` runs
 without losing existing data" for revision ``855cb67b5096`` (add event layer
 tables):
 
 - ``upgrade head`` creates ``tech_events`` / ``event_documents`` / ``entities``
   / ``event_entities`` in one shot.
-- ``downgrade -1`` drops all four (plus the ``entity_kind`` enum) and existing
-  ``tech_items`` rows keep their id and ``source_url`` unchanged.
+- downgrading back to ``855cb67b5096``'s parent revision drops all four
+  (plus the ``entity_kind`` enum) and existing ``tech_items`` rows keep their
+  id and ``source_url`` unchanged.
 - ``upgrade head`` again brings the four tables back.
+
+Downgrades to the absolute parent revision (``_EVENT_LAYER_DOWN_REVISION``)
+rather than the relative ``downgrade -1`` this test originally used — ARG-262
+stacked a new revision on top of ``855cb67b5096``, so "head" moved and a
+relative ``-1`` from head would now only undo the ARG-262 revision, leaving
+these four tables in place. See ``_EVENT_LAYER_DOWN_REVISION``'s comment.
 
 Runs entirely against its own throwaway database, named
 ``argos_migration_test_<random>`` — **a fresh name per run**. It never touches
@@ -56,6 +63,12 @@ _MIGRATION_DB_PREFIX = "argos_migration_test"
 _MIGRATION_DB_NAME = f"{_MIGRATION_DB_PREFIX}_{uuid.uuid4().hex[:12]}"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _EVENT_LAYER_TABLES = ["tech_events", "event_documents", "entities", "event_entities"]
+# 리비전 855cb67b5096(이 테스트가 검증하는 이벤트 레이어 리비전)의 down_revision.
+# 상대 경로 "-1" 대신 이 절대 리비전으로 내려간다 — ARG-262가 그 위에 새
+# 리비전을 쌓은 뒤로 "head"가 더 이상 855cb67b5096이 아니라서, "-1"은 이제
+# ARG-262 리비전 하나만 되돌리고 이벤트 레이어 테이블은 그대로 남긴다. 절대
+# 리비전 타깃은 앞으로 head 위에 몇 개가 더 쌓이든 정확히 이 리비전만 되돌린다.
+_EVENT_LAYER_DOWN_REVISION = "16778301d264"
 
 
 def _assert_migration_db_is_disposable(
@@ -270,12 +283,12 @@ def test_event_layer_migration_round_trip():
             f"upgrade head, found: {before_downgrade}"
         )
 
-        _run_alembic("downgrade", "-1")
+        _run_alembic("downgrade", _EVENT_LAYER_DOWN_REVISION)
 
         remaining = asyncio.run(_existing_tables(_EVENT_LAYER_TABLES))
         assert remaining == set(), (
-            "downgrade -1 should drop all four event-layer tables, but "
-            f"these survived: {remaining}"
+            "downgrading to the event-layer revision's parent should drop "
+            f"all four event-layer tables, but these survived: {remaining}"
         )
 
         survivors = asyncio.run(_fetch_tech_items(seeded_ids))

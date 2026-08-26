@@ -33,11 +33,12 @@ class TestBaseMetadata:
             "event_documents",
             "entities",
             "event_entities",
+            "document_entities",
         }
         assert expected == table_names
 
     def test_metadata_is_not_empty(self):
-        assert len(Base.metadata.tables) == 10
+        assert len(Base.metadata.tables) == 11
 
 
 # ──────────────────────────────────────────
