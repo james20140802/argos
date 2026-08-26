@@ -2,20 +2,98 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from argos.brain.entity_extraction import extract_names
+from argos.brain.entity_store import canonical_names
 from argos.brain.graph_state import BrainState
 from argos.brain.nodes.triage import triage_node, batch_triage_states
 from argos.brain.nodes.digest import digest_node, batch_digest_states
 from argos.brain.nodes.embed import embed_and_search_node, batch_embed_and_search_node
 from argos.brain.nodes.genealogist import genealogist_node
+from argos.brain.near_duplicate import simhash
+from argos.brain.nodes.assign_event import assign_event_node
 from argos.brain.nodes.save import save_node
 from argos.brain.llm_client import get_genealogist_llm_client
 from argos.models.tech_item import CategoryType
 
 logger = logging.getLogger(__name__)
+
+
+async def _assign_then_save(
+    state: BrainState, session: AsyncSession, *, flush: bool = True
+) -> BrainState:
+    """``assign_event_node`` 뒤에 ``save_node``를 잇는다 — ARG-266.
+
+    ``save_node``를 부르는 세 자리(genealogy-skip, low-trust, 정상 경로) 모두
+    이 헬퍼를 거친다. ``flush``는 그대로 ``save_node``에 넘긴다 — 배치 경로가
+    ``flush=False``로 불러 자체 savepoint 안에서 직접 flush하기 때문에, 여기서
+    누락하면 배치가 매 문서마다 조용히 flush를 두 번 하게 된다.
+
+    ``assign_event_node``는 계약상 이미 모든 예외를 삼키고
+    ``event_assigned=False``로 돌아온다. 그래도 여기서 한 번 더 감싼다 —
+    배정은 품질 기능이지 필수 경로가 아니므로(부모 AC), 그 계약이 나중에
+    깨지더라도(회귀) 저장까지 막지 않기 위한 이중 방어다. ``event_assigned``도
+    반드시 함께 ``False``로 둔다 — ``event_id=None``만으로는 "판정을 끝냈지만
+    못 찾음"과 "판정 자체가 안 됨"을 구분할 수 없고, save_node는 후자일 때
+    새 사건을 만들면 안 된다(assign_event.py 모듈 docstring 참고).
+    """
+    try:
+        assigned = await assign_event_node(state, session=session)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "_assign_then_save: assign_event_node raised for %s: %r — saving without an event",
+            state.get("source_url"),
+            exc,
+        )
+        assigned = {**state, "event_id": None, "event_assigned": False}
+    return await save_node(assigned, session=session, flush=flush)
+
+
+def _attach_extracted_names(states: list[BrainState]) -> list[BrainState]:
+    """배치 단위로 이름을 뽑아 state에 싣는다.
+
+    문서빈도를 배치 안에서 세는 추출기 계약 때문에 배치로 한 번에 부른다 —
+    문서마다 따로 부르면 흔한 말을 걷어낼 근거가 사라진다. 유효하지 않은
+    state는 애초에 저장되지 않으므로 건드리지 않는다. 추출이 실패해도 크롤을
+    멈추면 안 되므로 예외를 삼키고 빈 목록으로 이어간다.
+
+    ``extract_names``는 이 모듈에 이름으로 바인딩된 전역을 직접 부른다 —
+    테스트는 ``monkeypatch.setattr(brain_pipeline, "extract_names", mock)``로
+    갈아 끼운다 (이 파일의 다른 노드 함수들과 같은 관례). 기본 인자로
+    def-time에 바인딩해 버리면 그 관용구가 조용히 안 먹는다.
+
+    ARG-267: SimHash도 여기서 같이 계산해 싣는다 — raw_text를 이미 손에 든
+    자리라 근거 수 집계를 위한 별도 패스를 만들지 않는다. 이름 추출과 달리
+    실패할 일이 없는(예외를 던지지 않는 순수 함수) 계산이라 try/except 밖에
+    둔다 — 이름 추출이 실패해 빈 목록으로 대체되는 경로에서도 SimHash는
+    정상적으로 채워져야 한다.
+    """
+    valid_indices = [i for i, state in enumerate(states) if state.get("is_valid")]
+    if not valid_indices:
+        return states
+
+    documents = [states[i]["raw_text"] for i in valid_indices]
+    for i in valid_indices:
+        states[i] = {**states[i], "simhash": simhash(states[i].get("raw_text") or "")}
+
+    try:
+        extracted_batch = extract_names(documents)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_attach_extracted_names: extraction failed: %r", exc)
+        for i in valid_indices:
+            states[i] = {**states[i], "entity_names": [], "entity_names_extracted": []}
+        return states
+
+    for i, extracted in zip(valid_indices, extracted_batch):
+        states[i] = {
+            **states[i],
+            "entity_names": canonical_names(extracted),
+            "entity_names_extracted": list(extracted),
+        }
+    return states
 
 
 async def run_brain_pipeline(
@@ -62,8 +140,9 @@ async def run_brain_pipeline(
     # 32B prewarm. On cold start the genealogist branch is skipped and we never
     # need to load the large model.
     embedded = await embed_and_search_node(digested, session=session)
+    embedded = _attach_extracted_names([embedded])[0]
     if embedded.get("genealogy_skipped"):
-        return await save_node(embedded, session=session)
+        return await _assign_then_save(embedded, session=session)
 
     trust_score = digested.get("trust_score")
     from argos.config import settings as _settings
@@ -74,12 +153,12 @@ async def run_brain_pipeline(
             "genealogy_skipped": True,
             "genealogy_skip_reason": "low_trust",
         }
-        return await save_node(skipped, session=session)
+        return await _assign_then_save(skipped, session=session)
 
     prewarm_task = asyncio.create_task(get_genealogist_llm_client().prewarm("large"))
     try:
         genealogized = await genealogist_node(embedded, prewarm_task=prewarm_task)
-        return await save_node(genealogized, session=session)
+        return await _assign_then_save(genealogized, session=session)
     finally:
         if not prewarm_task.done():
             prewarm_task.cancel()
@@ -126,6 +205,10 @@ async def run_batch_brain_pipeline(
     The single-URL run_brain_pipeline is preserved for backwards compatibility
     and single-URL callers (e.g. tests, future Slack Deep-Dive paths).
 
+    The returned list is in **assignment order, not input order** — before Stage 4
+    the states are sorted by ``(published_at, source_url)`` so event assignment is
+    deterministic (ARG-266). Match results by ``source_url``, never by index.
+
     Parameters
     ----------
     items, session:
@@ -166,6 +249,11 @@ async def run_batch_brain_pipeline(
     embedded_states = await batch_embed_and_search_node(
         digested_states, session, on_item_done=on_embed_item_done
     )
+
+    # ── Stage 2.5: batch name extraction (ARG-263) ────────────────────────
+    # 배정(ARG-266)이 새 문서 쪽 이름 항 입력으로 쓴다. raw_text가 이 시점
+    # 모든 유효한 state에 다 있으므로 배치 전체를 한 번에 넘긴다.
+    embedded_states = _attach_extracted_names(embedded_states)
 
     # ── Stage 3: trust-score gate + batch genealogy (32B loaded once) ─────
     threshold = _settings.user.genealogist.trust_skip_threshold
@@ -216,6 +304,17 @@ async def run_batch_brain_pipeline(
         except Exception:
             pass
 
+    # ARG-266: 배정은 앞 문서가 만든 사건을 뒤 문서가 볼 수 있어야 하므로
+    # 순서가 결과를 가른다. 크롤이 준 순서에 맡기면 같은 입력에 다른 배정이
+    # 나온다 — (시각, URL) 오름차순으로 고정한다. id는 아직 없으므로 URL을
+    # 두 번째 키로 쓴다(문서마다 유일하다).
+    embedded_states.sort(
+        key=lambda s: (
+            s.get("published_at") or datetime.max.replace(tzinfo=timezone.utc),
+            s.get("source_url") or "",
+        )
+    )
+
     # ── Stage 4: per-item save (savepoint + flush per item) ──────────────────
     #
     # Each item is saved inside a begin_nested() savepoint and flushed within
@@ -226,6 +325,10 @@ async def run_batch_brain_pipeline(
     # does not issue the flush; the savepoint block does it explicitly after
     # save_node returns, giving us the same pre-flush logic-error isolation
     # while also catching post-flush constraint errors per item.
+    #
+    # Assignment (ARG-266) runs one item at a time inside the same savepoint,
+    # immediately before save — never in parallel — so an event created by
+    # one document is visible to the next document's candidate query.
     results: list[BrainState] = []
     for s in embedded_states:
         try:
@@ -243,7 +346,7 @@ async def run_batch_brain_pipeline(
                 continue
             try:
                 async with session.begin_nested():
-                    saved = await save_node(s, session=session, flush=False)
+                    saved = await _assign_then_save(s, session=session, flush=False)
                     await session.flush()
                     saved["saved"] = True
                 results.append(saved)

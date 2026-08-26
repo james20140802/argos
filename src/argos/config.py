@@ -284,6 +284,28 @@ class EventDetectionConfig(BaseModel):
     # 열어 둘 파이프라인 이름. 코드에 박아 두면 다른 호환 모델을 설치해
     # 벤치마크해도 보조 경로가 조용히 꺼진 채로 돈다.
     entity_spacy_model: str = "en_core_web_sm"
+    # ARG-264: 간선 가중치 네 항. 합이 1일 필요는 없다 — 판정 전에 합으로
+    # 정규화하므로 join_threshold의 뜻("네 항의 가중 평균")이 유지된다.
+    weight_cosine: float = Field(default=0.55, ge=0.0)
+    weight_entity: float = Field(default=0.25, ge=0.0)
+    weight_time: float = Field(default=0.15, ge=0.0)
+    weight_keyword: float = Field(default=0.05, ge=0.0)
+    # 이 값 이상이면 기존 사건에 붙고, 아니면 새 사건이 생긴다.
+    join_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+    # ARG-265: 후보 이웃을 찾는 시간 창(일)과 창 안에서 가져올 상위 K.
+    # 창은 문서 발행 시각 앞뒤로 각각 window_days — 늦게 크롤된 과거 발행
+    # 기사도 이미 저장된 더 최신 기사를 이웃으로 본다.
+    # 실측(2026-08-23, 코퍼스 1071건): 7일 60건 / 14일 140건 / 30일 268건.
+    # 창을 넓히면 **점수를 매길 후보 수**가 는다 — 이 값이 조절하는 건 그쪽이다.
+    # 쿼리 비용 자체는 창과 거의 무관하다: 필터가 COALESCE(published_at,
+    # created_at) 위에 걸려 ix_tech_items_published_at을 못 타고 매번 tech_items
+    # 전수 순차 스캔이 돈다(2026-08-26, 1091건 기준 Rows Removed by Filter 979,
+    # 7~8ms) — 비용은 코퍼스 전체 크기를 따라 자란다. COALESCE 표현식에 부분
+    # 인덱스(WHERE embedding IS NOT NULL)를 걸면 정확한 정렬을 유지한 채 인덱스를
+    # 다시 타게 되지만, 마이그레이션이 필요해 후속으로 미뤄 뒀다. ANN 인덱스를
+    # 두지 않는 이유는 성능이 아니라 결정성이다 — event_candidates 모듈 docstring.
+    window_days: float = Field(default=14.0, gt=0.0)
+    candidate_k: int = Field(default=25, ge=1)
 
 
 class UserConfig(BaseModel):

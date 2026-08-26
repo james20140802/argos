@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, Integer, String, Text
+from sqlalchemy import BigInteger, DateTime, Enum, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
@@ -44,6 +44,12 @@ class TechItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # ARG-206: count of corroborating independent sources (T2 fills this in;
     # new items start at 0/NULL and corroboration_score(0) == 0.0).
     corroboration_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ARG-262: 본문 SimHash(64bit). 근거 수 집계 때마다 본문을 다시 해싱하지
+    # 않으려고 저장한다. unsigned 64bit를 signed BIGINT에 담으므로 읽고 쓸 때
+    # 반드시 argos.brain.simhash_storage의 to_storage/from_storage를 거친다.
+    # nullable — 기존 코퍼스 백필은 다음 이슈 소관이고, NULL인 문서는 근거 수
+    # 집계에서 각각 별개로 센다.
+    simhash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # ARG-212: recommendation-feed ranking score (recency + profile similarity
     # + trust + trending), recomputed in bulk at the end of every `argos run`.
     feed_score: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)

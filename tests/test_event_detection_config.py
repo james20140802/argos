@@ -48,6 +48,27 @@ def test_out_of_range_values_rejected(payload):
         EventDetectionConfig(**payload)
 
 
+def test_edge_weights_default_to_the_confirmed_design():
+    config = EventDetectionConfig()
+    assert config.weight_cosine == 0.55
+    assert config.weight_entity == 0.25
+    assert config.weight_time == 0.15
+    assert config.weight_keyword == 0.05
+
+
+def test_join_threshold_has_a_default_and_a_range():
+    assert EventDetectionConfig().join_threshold == 0.55
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(join_threshold=1.5)
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(join_threshold=-0.1)
+
+
+def test_negative_weights_are_rejected():
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(weight_cosine=-0.1)
+
+
 def test_loads_from_toml_file(tmp_path: Path):
     path = tmp_path / "config.toml"
     path.write_text(
@@ -59,3 +80,16 @@ def test_loads_from_toml_file(tmp_path: Path):
     assert user.event_detection.entity_max_doc_ratio == pytest.approx(0.8)
     # 지정하지 않은 항목은 기본값 유지
     assert user.event_detection.entity_max_ngram == 4
+
+
+def test_candidate_window_and_k_have_defaults():
+    config = EventDetectionConfig()
+    assert config.window_days == 14
+    assert config.candidate_k == 25
+
+
+def test_window_and_k_reject_nonsense():
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(window_days=0)
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(candidate_k=0)
