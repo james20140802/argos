@@ -20,15 +20,18 @@ from argos.models.tech_item import CategoryType
 logger = logging.getLogger(__name__)
 
 
-def _attach_extracted_names(
-    states: list[BrainState], *, extractor: Callable = extract_names
-) -> list[BrainState]:
+def _attach_extracted_names(states: list[BrainState]) -> list[BrainState]:
     """배치 단위로 이름을 뽑아 state에 싣는다.
 
     문서빈도를 배치 안에서 세는 추출기 계약 때문에 배치로 한 번에 부른다 —
     문서마다 따로 부르면 흔한 말을 걷어낼 근거가 사라진다. 유효하지 않은
     state는 애초에 저장되지 않으므로 건드리지 않는다. 추출이 실패해도 크롤을
     멈추면 안 되므로 예외를 삼키고 빈 목록으로 이어간다.
+
+    ``extract_names``는 이 모듈에 이름으로 바인딩된 전역을 직접 부른다 —
+    테스트는 ``monkeypatch.setattr(brain_pipeline, "extract_names", mock)``로
+    갈아 끼운다 (이 파일의 다른 노드 함수들과 같은 관례). 기본 인자로
+    def-time에 바인딩해 버리면 그 관용구가 조용히 안 먹는다.
     """
     valid_indices = [i for i, state in enumerate(states) if state.get("is_valid")]
     if not valid_indices:
@@ -36,7 +39,7 @@ def _attach_extracted_names(
 
     documents = [states[i]["raw_text"] for i in valid_indices]
     try:
-        extracted_batch = extractor(documents)
+        extracted_batch = extract_names(documents)
     except Exception as exc:  # noqa: BLE001
         logger.warning("_attach_extracted_names: extraction failed: %r", exc)
         for i in valid_indices:

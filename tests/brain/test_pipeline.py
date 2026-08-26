@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from argos.brain import pipeline as brain_pipeline
+from argos.brain.entity_extraction import ExtractedName
 from argos.models.tech_item import CategoryType
 
 
@@ -625,3 +626,111 @@ async def test_run_brain_pipeline_published_at_defaults_to_none(monkeypatch):
     await brain_pipeline.run_brain_pipeline("x", "https://e.com", MagicMock())
 
     assert captured_initial["published_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# name extraction wiring (ARG-263) — guards the actual pipeline call sites,
+# not just the _attach_extracted_names helper in isolation. If the wiring
+# call at either site is deleted, or moved past a future assignment stage,
+# these must fail.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_brain_pipeline_attaches_extracted_names_before_save(monkeypatch):
+    """단일 경로: embed 뒤·save 앞에서 이름이 실제로 state에 실려야 한다."""
+    triaged = _triaged_state()
+    cold = _triaged_state(genealogy_skipped=True, genealogy_skip_reason="cold_start")
+
+    monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
+    monkeypatch.setattr(
+        brain_pipeline, "embed_and_search_node", AsyncMock(return_value=cold)
+    )
+
+    extracted = [[ExtractedName(canonical="anthropic", surface="Anthropic")]]
+    extract_mock = MagicMock(return_value=extracted)
+    monkeypatch.setattr(brain_pipeline, "extract_names", extract_mock)
+
+    async def _fake_save(state, *, session, flush=True):
+        return {**state, "saved": True}
+
+    monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
+
+    session = MagicMock()
+    result = await brain_pipeline.run_brain_pipeline("x", "https://e.com", session)
+
+    extract_mock.assert_called_once_with([cold["raw_text"]])
+    assert result["entity_names"] == ["anthropic"]
+    assert result["entity_names_extracted"] == [
+        ExtractedName(canonical="anthropic", surface="Anthropic")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_pipeline_attaches_extracted_names_to_valid_states_only(
+    monkeypatch,
+):
+    """배치 경로: Stage 2 뒤에서 유효한 state에만 이름이 실린다.
+
+    유효하지 않은 state는 애초에 이름을 매달 문서로 저장되지 않으므로
+    건드리지 않아야 한다 — 이 구분이 무너지면 배정 단계가 존재하지 않는
+    문서에도 이름 항을 계산하려 들게 된다.
+    """
+    valid = _batch_state(
+        source_url="https://example.com/valid",
+        genealogy_skipped=True,
+        genealogy_skip_reason="cold_start",
+    )
+    invalid = _batch_state(
+        is_valid=False, raw_text="junk", source_url="https://example.com/invalid"
+    )
+
+    monkeypatch.setattr(
+        brain_pipeline, "batch_triage_states", AsyncMock(return_value=[valid, invalid])
+    )
+    monkeypatch.setattr(
+        brain_pipeline,
+        "batch_embed_and_search_node",
+        AsyncMock(return_value=[valid, invalid]),
+    )
+
+    extracted = [[ExtractedName(canonical="anthropic", surface="Anthropic")]]
+    extract_mock = MagicMock(return_value=extracted)
+    monkeypatch.setattr(brain_pipeline, "extract_names", extract_mock)
+
+    genealogist_mock = AsyncMock()
+    monkeypatch.setattr(brain_pipeline, "genealogist_node", genealogist_mock)
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
+
+    async def _fake_save(state, *, session, flush=True):
+        return {**state, "saved": True}
+
+    monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
+
+    session = MagicMock()
+    session.begin_nested = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    session.flush = AsyncMock()
+
+    results = await brain_pipeline.run_batch_brain_pipeline(
+        [
+            _item(url="https://example.com/valid"),
+            _item(url="https://example.com/invalid"),
+        ],
+        session,
+    )
+
+    # 배치 계약: 유효한 문서(1개)만 한 번의 호출로 넘긴다 — invalid의 raw_text
+    # ("junk")는 여기 나타나면 안 된다.
+    extract_mock.assert_called_once_with([valid["raw_text"]])
+
+    assert results[0]["entity_names"] == ["anthropic"]
+    assert results[0]["entity_names_extracted"] == [
+        ExtractedName(canonical="anthropic", surface="Anthropic")
+    ]
+    assert "entity_names" not in results[1]
+    assert "entity_names_extracted" not in results[1]
