@@ -7,6 +7,8 @@ We mock every node so the tests run without Docker or Ollama.
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -728,9 +730,259 @@ async def test_batch_pipeline_attaches_extracted_names_to_valid_states_only(
     # ("junk")는 여기 나타나면 안 된다.
     extract_mock.assert_called_once_with([valid["raw_text"]])
 
-    assert results[0]["entity_names"] == ["anthropic"]
-    assert results[0]["entity_names_extracted"] == [
+    # ARG-266: Stage 4 now sorts by (published_at, source_url) before saving,
+    # so results are no longer in input order — look each one up by URL.
+    by_url = {r["source_url"]: r for r in results}
+    valid_result = by_url["https://example.com/valid"]
+    invalid_result = by_url["https://example.com/invalid"]
+
+    assert valid_result["entity_names"] == ["anthropic"]
+    assert valid_result["entity_names_extracted"] == [
         ExtractedName(canonical="anthropic", surface="Anthropic")
     ]
-    assert "entity_names" not in results[1]
-    assert "entity_names_extracted" not in results[1]
+    assert "entity_names" not in invalid_result
+    assert "entity_names_extracted" not in invalid_result
+
+
+# ---------------------------------------------------------------------------
+# ARG-266: assign_event_node wiring in front of every save_node call site
+# ---------------------------------------------------------------------------
+#
+# run_brain_pipeline calls save_node from three places (genealogy-skipped,
+# low-trust, normal) and run_batch_brain_pipeline calls it from a fourth
+# (Stage 4). All four now go through the module-private _assign_then_save
+# helper. These tests prove assign_event_node runs immediately before
+# save_node at each site, and that save_node receives the event_id it
+# produced — not that assign_event_node itself makes correct decisions
+# (that's tests/brain/test_assign_event.py's job).
+
+
+@pytest.mark.asyncio
+async def test_run_brain_pipeline_cold_start_assigns_before_saving(monkeypatch):
+    """Genealogy-skipped (cold start) path: assign runs, then save sees its event_id."""
+    triaged = _triaged_state()
+    cold = _triaged_state(genealogy_skipped=True, genealogy_skip_reason="cold_start")
+    event_id = uuid.uuid4()
+    call_order: list[str] = []
+
+    monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
+    monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock(return_value=cold))
+
+    async def _fake_assign(state, *, session):
+        call_order.append("assign")
+        return {**state, "event_id": event_id}
+
+    async def _fake_save(state, *, session, flush=True):
+        call_order.append("save")
+        assert state["event_id"] == event_id
+        return {**state, "saved": True}
+
+    monkeypatch.setattr(brain_pipeline, "assign_event_node", _fake_assign)
+    monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
+
+    result = await brain_pipeline.run_brain_pipeline("x", "https://e.com", MagicMock())
+
+    assert call_order == ["assign", "save"]
+    assert result["saved"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_brain_pipeline_low_trust_assigns_before_saving(monkeypatch):
+    """Low-trust (genealogy-skip) path: assign runs, then save sees its event_id."""
+    triaged = _triaged_state()
+    digested = _triaged_state(trust_score=0.1)
+    embedded = _triaged_state(trust_score=0.1)
+    event_id = uuid.uuid4()
+    call_order: list[str] = []
+
+    monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
+    monkeypatch.setattr(brain_pipeline, "digest_node", AsyncMock(return_value=digested))
+    monkeypatch.setattr(
+        brain_pipeline, "embed_and_search_node", AsyncMock(return_value=embedded)
+    )
+
+    async def _fake_assign(state, *, session):
+        call_order.append("assign")
+        assert state["genealogy_skip_reason"] == "low_trust"
+        return {**state, "event_id": event_id}
+
+    async def _fake_save(state, *, session, flush=True):
+        call_order.append("save")
+        assert state["event_id"] == event_id
+        return {**state, "saved": True}
+
+    monkeypatch.setattr(brain_pipeline, "assign_event_node", _fake_assign)
+    monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
+
+    result = await brain_pipeline.run_brain_pipeline("x", "https://e.com", MagicMock())
+
+    assert call_order == ["assign", "save"]
+    assert result["genealogy_skip_reason"] == "low_trust"
+    assert result["saved"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_brain_pipeline_normal_path_assigns_before_saving(monkeypatch):
+    """Normal (genealogist-ran) path: assign runs, then save sees its event_id."""
+    triaged = _triaged_state()
+    warm = _triaged_state(trust_score=0.9, related_tech_ids=["abc"])
+    succession = {**warm, "succession_result": {"relation_type": "Enhance"}}
+    event_id = uuid.uuid4()
+    call_order: list[str] = []
+
+    class _FakeClient:
+        async def prewarm(self, role):
+            return None
+
+    monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
+    monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock(return_value=warm))
+
+    async def _fake_genealogist(state, *, prewarm_task=None):
+        return succession
+
+    async def _fake_assign(state, *, session):
+        call_order.append("assign")
+        assert state["succession_result"] == {"relation_type": "Enhance"}
+        return {**state, "event_id": event_id}
+
+    async def _fake_save(state, *, session, flush=True):
+        call_order.append("save")
+        assert state["event_id"] == event_id
+        return {**state, "saved": True}
+
+    monkeypatch.setattr(brain_pipeline, "genealogist_node", _fake_genealogist)
+    monkeypatch.setattr(brain_pipeline, "assign_event_node", _fake_assign)
+    monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: _FakeClient())
+
+    result = await brain_pipeline.run_brain_pipeline("x", "https://e.com", MagicMock())
+
+    assert call_order == ["assign", "save"]
+    assert result["saved"] is True
+
+
+def _begin_nested_session() -> MagicMock:
+    session = MagicMock()
+    session.begin_nested = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    session.flush = AsyncMock()
+    return session
+
+
+@pytest.mark.asyncio
+async def test_batch_pipeline_assigns_before_saving_each_item(monkeypatch):
+    """Stage 4: assign_event_node runs immediately before save_node per item."""
+    state = _batch_state(genealogy_skipped=True, genealogy_skip_reason="cold_start")
+
+    monkeypatch.setattr(
+        brain_pipeline, "batch_triage_states", AsyncMock(return_value=[state])
+    )
+    monkeypatch.setattr(
+        brain_pipeline, "batch_embed_and_search_node", AsyncMock(return_value=[state])
+    )
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
+
+    event_id = uuid.uuid4()
+    call_order: list[str] = []
+
+    async def _fake_assign(s, *, session):
+        call_order.append("assign")
+        return {**s, "event_id": event_id}
+
+    async def _fake_save(s, *, session, flush=True):
+        call_order.append("save")
+        assert s["event_id"] == event_id
+        return {**s, "saved": True}
+
+    monkeypatch.setattr(brain_pipeline, "assign_event_node", _fake_assign)
+    monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
+
+    results = await brain_pipeline.run_batch_brain_pipeline([_item()], _begin_nested_session())
+
+    assert len(results) == 1
+    assert call_order == ["assign", "save"]
+    assert results[0]["saved"] is True
+
+
+@pytest.mark.asyncio
+async def test_batch_pipeline_forwards_flush_false_through_assignment(monkeypatch):
+    """Stage 4 must still call save_node with flush=False through the
+    assignment helper — the savepoint block does its own explicit flush, so a
+    duplicate flush here would double round-trips at batch scale."""
+    state = _batch_state(genealogy_skipped=True, genealogy_skip_reason="cold_start")
+
+    monkeypatch.setattr(
+        brain_pipeline, "batch_triage_states", AsyncMock(return_value=[state])
+    )
+    monkeypatch.setattr(
+        brain_pipeline, "batch_embed_and_search_node", AsyncMock(return_value=[state])
+    )
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
+    monkeypatch.setattr(
+        brain_pipeline,
+        "assign_event_node",
+        AsyncMock(side_effect=lambda s, *, session: {**s, "event_id": None}),
+    )
+    save_mock = AsyncMock(side_effect=lambda s, *, session, flush=True: {**s, "saved": True})
+    monkeypatch.setattr(brain_pipeline, "save_node", save_mock)
+
+    results = await brain_pipeline.run_batch_brain_pipeline([_item()], _begin_nested_session())
+
+    assert len(results) == 1
+    save_mock.assert_awaited_once()
+    assert save_mock.await_args.kwargs["flush"] is False
+
+
+@pytest.mark.asyncio
+async def test_batch_pipeline_saves_in_published_at_then_url_order(monkeypatch):
+    """Determinism (parent AC): Stage 4 must process items sorted by
+    (published_at, source_url), not the order the batch happened to arrive in
+    — a later document's assignment must be able to see an earlier one's
+    freshly-created event."""
+    later = _batch_state(
+        source_url="https://example.com/b",
+        published_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        genealogy_skipped=True,
+        genealogy_skip_reason="cold_start",
+    )
+    earlier = _batch_state(
+        source_url="https://example.com/a",
+        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        genealogy_skipped=True,
+        genealogy_skip_reason="cold_start",
+    )
+
+    # Feed in reverse-of-sorted order to prove the sort (not input order) wins.
+    monkeypatch.setattr(
+        brain_pipeline, "batch_triage_states", AsyncMock(return_value=[later, earlier])
+    )
+    monkeypatch.setattr(
+        brain_pipeline,
+        "batch_embed_and_search_node",
+        AsyncMock(return_value=[later, earlier]),
+    )
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
+    monkeypatch.setattr(
+        brain_pipeline,
+        "assign_event_node",
+        AsyncMock(side_effect=lambda s, *, session: {**s, "event_id": None}),
+    )
+
+    save_order: list[str] = []
+
+    async def _fake_save(state, *, session, flush=True):
+        save_order.append(state["source_url"])
+        return {**state, "saved": True}
+
+    monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
+
+    await brain_pipeline.run_batch_brain_pipeline(
+        [_item(url="https://example.com/b"), _item(url="https://example.com/a")],
+        _begin_nested_session(),
+    )
+
+    assert save_order == ["https://example.com/a", "https://example.com/b"]

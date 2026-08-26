@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.entity_store import attach_names
 from argos.brain.graph_state import BrainState
+from argos.models.event_document import EventDocument
+from argos.models.tech_event import TechEvent
 from argos.models.tech_item import CategoryType, TechItem
 from argos.models.tech_succession import RelationType, TechSuccession
 
@@ -94,6 +98,31 @@ async def save_node(
         item.embedding = extracted_info["embedding"]
 
     session.add(item)
+
+    # ARG-266: 배정 노드(assign_event_node)가 고른 사건에 문서를 매단다.
+    # event_id가 None이면(임계값을 넘는 기존 사건이 없었다는 뜻) 여기서 새
+    # 사건을 만든다 — 배정 노드가 미리 만들지 않는 이유는 이 모듈 docstring
+    # 참고. occurred_at은 이 문서의 published_at(없으면 지금) — 아직 flush
+    # 전이라 created_at은 쓸 수 없다. 실패는 삼킨다: 사건 배정은 품질
+    # 기능이지 필수 경로가 아니다 — 문서 저장 자체를 막으면 안 된다.
+    try:
+        event_id = state.get("event_id")
+        if event_id is None:
+            event = TechEvent(
+                id=uuid.uuid4(),
+                occurred_at=state.get("published_at") or datetime.now(timezone.utc),
+            )
+            session.add(event)
+            event_id = event.id
+        await session.execute(
+            pg_insert(EventDocument)
+            .values(id=uuid.uuid4(), event_id=event_id, tech_item_id=item.id)
+            .on_conflict_do_nothing(constraint="uq_event_documents_event_item"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "save_node: linking %s to an event failed: %r", state["source_url"], exc
+        )
 
     # ARG-263: 이 문서에서 뽑은 이름을 가제티어 + document_entities 링크로
     # 옮긴다. item.id는 생성자에서 미리 배정돼 flush 전에도 쓸 수 있다.

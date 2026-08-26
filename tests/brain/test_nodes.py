@@ -637,7 +637,9 @@ def _mock_session_with_existing() -> MagicMock:
 async def test_save_node_creates_item_when_valid():
     session = _mock_session_no_existing()
     await save_node(_state(is_valid=True), session=session)
-    session.add.assert_called_once()
+    # ARG-266: no event_id on state -> save_node also creates a TechEvent
+    # (the lone-article-still-gets-an-event path), so add() fires twice.
+    assert session.add.call_count == 2
     session.flush.assert_awaited_once()
 
 
@@ -656,7 +658,7 @@ async def test_save_node_attaches_embedding():
         _state(is_valid=True, extracted_info={"embedding": embedding}),
         session=session,
     )
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.embedding == embedding
 
 
@@ -664,7 +666,7 @@ async def test_save_node_attaches_embedding():
 async def test_save_node_persists_trust_score():
     session = _mock_session_no_existing()
     await save_node(_state(is_valid=True, trust_score=0.73), session=session)
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.trust_score == 0.73
 
 
@@ -681,7 +683,7 @@ async def test_save_node_persists_trust_rubric():
         "marketing_intensity": "medium",
     }
     await save_node(_state(is_valid=True, trust_rubric=rubric), session=session)
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.trust_rubric == rubric
 
 
@@ -689,7 +691,7 @@ async def test_save_node_persists_trust_rubric():
 async def test_save_node_persists_null_trust_rubric_by_default():
     session = _mock_session_no_existing()
     await save_node(_state(is_valid=True), session=session)
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.trust_rubric is None
 
 
@@ -699,7 +701,7 @@ async def test_save_node_persists_summary():
     await save_node(
         _state(is_valid=True, summary="A short blurb."), session=session
     )
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.summary == "A short blurb."
 
 
@@ -707,7 +709,7 @@ async def test_save_node_persists_summary():
 async def test_save_node_persists_null_summary_by_default():
     session = _mock_session_no_existing()
     await save_node(_state(is_valid=True), session=session)
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.summary is None
 
 
@@ -717,7 +719,7 @@ async def test_save_node_persists_published_at():
     session = _mock_session_no_existing()
     pub = datetime(2024, 7, 4, 15, 0, 0, tzinfo=timezone.utc)
     await save_node(_state(is_valid=True, published_at=pub), session=session)
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.published_at == pub
 
 
@@ -725,7 +727,7 @@ async def test_save_node_persists_published_at():
 async def test_save_node_persists_null_published_at_by_default():
     session = _mock_session_no_existing()
     await save_node(_state(is_valid=True), session=session)
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.published_at is None
 
 
@@ -735,7 +737,7 @@ async def test_save_node_persists_image_url():
     session = _mock_session_no_existing()
     url = "https://cdn.example.com/cover.jpg"
     await save_node(_state(is_valid=True, image_url=url), session=session)
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.image_url == url
 
 
@@ -744,19 +746,24 @@ async def test_save_node_persists_null_image_url_by_default():
     """ARG-135: missing image_url stays NULL (UI falls back to per-source banner)."""
     session = _mock_session_no_existing()
     await save_node(_state(is_valid=True), session=session)
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.image_url is None
 
 
 @pytest.mark.asyncio
 async def test_save_node_creates_succession():
-    # execute is called twice: source_url duplicate check (None) then predecessor existence check (found)
+    # execute is called three times: source_url duplicate check (None), the
+    # ARG-266 event_documents link insert (result unused), then predecessor
+    # existence check (found).
     no_existing = MagicMock()
     no_existing.scalar_one_or_none.return_value = None
+    event_link_result = MagicMock()
     predecessor_found = MagicMock()
     predecessor_found.scalar_one_or_none.return_value = uuid.uuid4()
     session = MagicMock()
-    session.execute = AsyncMock(side_effect=[no_existing, predecessor_found])
+    session.execute = AsyncMock(
+        side_effect=[no_existing, event_link_result, predecessor_found]
+    )
     session.flush = AsyncMock()
 
     predecessor_id = str(uuid.uuid4())
@@ -771,8 +778,8 @@ async def test_save_node_creates_succession():
         ),
         session=session,
     )
-    # add called twice: TechItem + TechSuccession
-    assert session.add.call_count == 2
+    # add called three times: TechItem + TechEvent (ARG-266) + TechSuccession
+    assert session.add.call_count == 3
 
 
 @pytest.mark.asyncio
@@ -789,7 +796,7 @@ async def test_save_node_skips_succession_on_unknown_relation_type():
         ),
         session=session,
     )
-    assert session.add.call_count == 1  # only TechItem, no TechSuccession
+    assert session.add.call_count == 2  # TechItem + TechEvent, no TechSuccession
 
 
 @pytest.mark.asyncio
@@ -806,14 +813,14 @@ async def test_save_node_skips_succession_when_replace_target_is_none():
         ),
         session=session,
     )
-    assert session.add.call_count == 1
+    assert session.add.call_count == 2  # TechItem + TechEvent, no TechSuccession
 
 
 @pytest.mark.asyncio
 async def test_save_node_uses_untitled_when_raw_text_empty():
     session = _mock_session_no_existing()
     await save_node(_state(is_valid=True, raw_text=""), session=session)
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.title == "Untitled"
 
 
@@ -1197,7 +1204,7 @@ async def test_save_node_skips_succession_on_invalid_uuid():
         ),
         session=session,
     )
-    assert session.add.call_count == 1  # TechItem only, TechSuccession skipped
+    assert session.add.call_count == 2  # TechItem + TechEvent, TechSuccession skipped
     session.flush.assert_awaited_once()
 
 
@@ -1213,7 +1220,7 @@ async def test_save_node_skips_on_empty_source_url():
 async def test_save_node_uses_untitled_when_raw_text_is_whitespace_only():
     session = _mock_session_no_existing()
     await save_node(_state(is_valid=True, raw_text="   \n\t\n  "), session=session)
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.title == "Untitled"
 
 
@@ -1304,7 +1311,7 @@ async def test_save_node_persists_triage_decided_mainstream_category():
     await save_node(
         _state(is_valid=True, category=CategoryType.MAINSTREAM), session=session
     )
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.category is CategoryType.MAINSTREAM
 
 
@@ -1316,7 +1323,7 @@ async def test_save_node_persists_triage_decided_alpha_category():
     await save_node(
         _state(is_valid=True, category=CategoryType.ALPHA), session=session
     )
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.category is CategoryType.ALPHA
 
 
@@ -1327,7 +1334,7 @@ async def test_save_node_falls_back_to_alpha_when_category_is_none():
 
     session = _mock_session_no_existing()
     await save_node(_state(is_valid=True, category=None), session=session)
-    added_item = session.add.call_args[0][0]
+    added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.category is CategoryType.ALPHA
 
 
@@ -1349,7 +1356,8 @@ async def test_save_node_flush_false_skips_flush():
     """save_node(state, flush=False) must NOT call session.flush() at all."""
     session = _mock_session_no_existing()
     await save_node(_state(is_valid=True), session=session, flush=False)
-    session.add.assert_called_once()  # item was still added
+    # item + ARG-266 event were still added even with flush=False
+    assert session.add.call_count == 2
     session.flush.assert_not_awaited()
 
 

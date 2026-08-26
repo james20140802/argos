@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,11 +13,39 @@ from argos.brain.nodes.triage import triage_node, batch_triage_states
 from argos.brain.nodes.digest import digest_node, batch_digest_states
 from argos.brain.nodes.embed import embed_and_search_node, batch_embed_and_search_node
 from argos.brain.nodes.genealogist import genealogist_node
+from argos.brain.nodes.assign_event import assign_event_node
 from argos.brain.nodes.save import save_node
 from argos.brain.llm_client import get_genealogist_llm_client
 from argos.models.tech_item import CategoryType
 
 logger = logging.getLogger(__name__)
+
+
+async def _assign_then_save(
+    state: BrainState, session: AsyncSession, *, flush: bool = True
+) -> BrainState:
+    """``assign_event_node`` 뒤에 ``save_node``를 잇는다 — ARG-266.
+
+    ``save_node``를 부르는 세 자리(genealogy-skip, low-trust, 정상 경로) 모두
+    이 헬퍼를 거친다. ``flush``는 그대로 ``save_node``에 넘긴다 — 배치 경로가
+    ``flush=False``로 불러 자체 savepoint 안에서 직접 flush하기 때문에, 여기서
+    누락하면 배치가 매 문서마다 조용히 flush를 두 번 하게 된다.
+
+    ``assign_event_node``는 계약상 이미 모든 예외를 삼키고 ``event_id=None``으로
+    돌아온다. 그래도 여기서 한 번 더 감싼다 — 배정은 품질 기능이지 필수
+    경로가 아니므로(부모 AC), 그 계약이 나중에 깨지더라도(회귀) 저장까지
+    막지 않기 위한 이중 방어다.
+    """
+    try:
+        assigned = await assign_event_node(state, session=session)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "_assign_then_save: assign_event_node raised for %s: %r — saving without an event",
+            state.get("source_url"),
+            exc,
+        )
+        assigned = {**state, "event_id": None}
+    return await save_node(assigned, session=session, flush=flush)
 
 
 def _attach_extracted_names(states: list[BrainState]) -> list[BrainState]:
@@ -101,7 +129,7 @@ async def run_brain_pipeline(
     embedded = await embed_and_search_node(digested, session=session)
     embedded = _attach_extracted_names([embedded])[0]
     if embedded.get("genealogy_skipped"):
-        return await save_node(embedded, session=session)
+        return await _assign_then_save(embedded, session=session)
 
     trust_score = digested.get("trust_score")
     from argos.config import settings as _settings
@@ -112,12 +140,12 @@ async def run_brain_pipeline(
             "genealogy_skipped": True,
             "genealogy_skip_reason": "low_trust",
         }
-        return await save_node(skipped, session=session)
+        return await _assign_then_save(skipped, session=session)
 
     prewarm_task = asyncio.create_task(get_genealogist_llm_client().prewarm("large"))
     try:
         genealogized = await genealogist_node(embedded, prewarm_task=prewarm_task)
-        return await save_node(genealogized, session=session)
+        return await _assign_then_save(genealogized, session=session)
     finally:
         if not prewarm_task.done():
             prewarm_task.cancel()
@@ -259,6 +287,17 @@ async def run_batch_brain_pipeline(
         except Exception:
             pass
 
+    # ARG-266: 배정은 앞 문서가 만든 사건을 뒤 문서가 볼 수 있어야 하므로
+    # 순서가 결과를 가른다. 크롤이 준 순서에 맡기면 같은 입력에 다른 배정이
+    # 나온다 — (시각, URL) 오름차순으로 고정한다. id는 아직 없으므로 URL을
+    # 두 번째 키로 쓴다(문서마다 유일하다).
+    embedded_states.sort(
+        key=lambda s: (
+            s.get("published_at") or datetime.max.replace(tzinfo=timezone.utc),
+            s.get("source_url") or "",
+        )
+    )
+
     # ── Stage 4: per-item save (savepoint + flush per item) ──────────────────
     #
     # Each item is saved inside a begin_nested() savepoint and flushed within
@@ -269,6 +308,10 @@ async def run_batch_brain_pipeline(
     # does not issue the flush; the savepoint block does it explicitly after
     # save_node returns, giving us the same pre-flush logic-error isolation
     # while also catching post-flush constraint errors per item.
+    #
+    # Assignment (ARG-266) runs one item at a time inside the same savepoint,
+    # immediately before save — never in parallel — so an event created by
+    # one document is visible to the next document's candidate query.
     results: list[BrainState] = []
     for s in embedded_states:
         try:
@@ -286,7 +329,7 @@ async def run_batch_brain_pipeline(
                 continue
             try:
                 async with session.begin_nested():
-                    saved = await save_node(s, session=session, flush=False)
+                    saved = await _assign_then_save(s, session=session, flush=False)
                     await session.flush()
                     saved["saved"] = True
                 results.append(saved)

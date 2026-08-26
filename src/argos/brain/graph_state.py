@@ -57,3 +57,9 @@ class BrainState(TypedDict):
     # 링크를 쓸 때 표시용 원문(Entity.name)이 필요하기 때문이다.
     entity_names: NotRequired[list[str] | None]
     entity_names_extracted: NotRequired[list[ExtractedName] | None]
+    # ARG-266: assign_event_node이 채운다. 임계값을 넘는 기존 사건이 있으면
+    # 그 id, 없으면 None(=새 사건이 필요하다는 뜻). 배정 노드는 사건 row를
+    # 만들지 않는다 — 새 사건 생성은 save_node가 문서 저장과 같은 자리에서
+    # 한다(배정 뒤 저장이 실패하면 문서 없는 빈 사건이 남는 것을 막기 위해).
+    # 배정 자체가 실패해도 None으로 두고 예외를 밖으로 내보내지 않는다.
+    event_id: NotRequired[uuid.UUID | None]
