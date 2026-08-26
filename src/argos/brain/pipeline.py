@@ -31,10 +31,13 @@ async def _assign_then_save(
     ``flush=False``로 불러 자체 savepoint 안에서 직접 flush하기 때문에, 여기서
     누락하면 배치가 매 문서마다 조용히 flush를 두 번 하게 된다.
 
-    ``assign_event_node``는 계약상 이미 모든 예외를 삼키고 ``event_id=None``으로
-    돌아온다. 그래도 여기서 한 번 더 감싼다 — 배정은 품질 기능이지 필수
-    경로가 아니므로(부모 AC), 그 계약이 나중에 깨지더라도(회귀) 저장까지
-    막지 않기 위한 이중 방어다.
+    ``assign_event_node``는 계약상 이미 모든 예외를 삼키고
+    ``event_assigned=False``로 돌아온다. 그래도 여기서 한 번 더 감싼다 —
+    배정은 품질 기능이지 필수 경로가 아니므로(부모 AC), 그 계약이 나중에
+    깨지더라도(회귀) 저장까지 막지 않기 위한 이중 방어다. ``event_assigned``도
+    반드시 함께 ``False``로 둔다 — ``event_id=None``만으로는 "판정을 끝냈지만
+    못 찾음"과 "판정 자체가 안 됨"을 구분할 수 없고, save_node는 후자일 때
+    새 사건을 만들면 안 된다(assign_event.py 모듈 docstring 참고).
     """
     try:
         assigned = await assign_event_node(state, session=session)
@@ -44,7 +47,7 @@ async def _assign_then_save(
             state.get("source_url"),
             exc,
         )
-        assigned = {**state, "event_id": None}
+        assigned = {**state, "event_id": None, "event_assigned": False}
     return await save_node(assigned, session=session, flush=flush)
 
 

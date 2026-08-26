@@ -100,29 +100,39 @@ async def save_node(
     session.add(item)
 
     # ARG-266: 배정 노드(assign_event_node)가 고른 사건에 문서를 매단다.
-    # event_id가 None이면(임계값을 넘는 기존 사건이 없었다는 뜻) 여기서 새
-    # 사건을 만든다 — 배정 노드가 미리 만들지 않는 이유는 이 모듈 docstring
-    # 참고. occurred_at은 이 문서의 published_at(없으면 지금) — 아직 flush
-    # 전이라 created_at은 쓸 수 없다. 실패는 삼킨다: 사건 배정은 품질
-    # 기능이지 필수 경로가 아니다 — 문서 저장 자체를 막으면 안 된다.
-    try:
-        event_id = state.get("event_id")
-        if event_id is None:
-            event = TechEvent(
-                id=uuid.uuid4(),
-                occurred_at=state.get("published_at") or datetime.now(timezone.utc),
+    # event_assigned가 True일 때만 이 블록을 탄다 — False(또는 키 자체가
+    # 없음)는 배정이 시도조차 안 됐거나 도중에 실패했다는 뜻이고, 이때는
+    # 사건도 링크도 만들지 않는다. event_id=None을 "찾지 못함"과 "실패함"
+    # 둘 다에 새 사건을 만드는 신호로 겹쳐 쓰면, 배정이 조직적으로 실패하는
+    # 사고(설정 오류, DB 장애 등)가 문서마다 잘못된 사건을 하나씩 영구히
+    # 남긴다 — 그 사건들은 링크가 "있어서" 나중 백필이 무소속으로 찾아내지도
+    # 못한다(부모 AC: 배정에 **성공한** 문서만 무소속 없음을 보장한다).
+    #
+    # event_assigned=True이고 event_id가 None이면(임계값을 넘는 기존 사건이
+    # 없었다는 뜻) 여기서 새 사건을 만든다 — 배정 노드가 미리 만들지 않는
+    # 이유는 그 모듈 docstring 참고. occurred_at은 이 문서의 published_at
+    # (없으면 지금) — 아직 flush 전이라 created_at은 쓸 수 없다. 링크 쓰기
+    # 자체의 실패는 삼킨다: 사건 배정은 품질 기능이지 필수 경로가 아니다 —
+    # 문서 저장 자체를 막으면 안 된다.
+    if state.get("event_assigned"):
+        try:
+            event_id = state.get("event_id")
+            if event_id is None:
+                event = TechEvent(
+                    id=uuid.uuid4(),
+                    occurred_at=state.get("published_at") or datetime.now(timezone.utc),
+                )
+                session.add(event)
+                event_id = event.id
+            await session.execute(
+                pg_insert(EventDocument)
+                .values(id=uuid.uuid4(), event_id=event_id, tech_item_id=item.id)
+                .on_conflict_do_nothing(constraint="uq_event_documents_event_item"),
             )
-            session.add(event)
-            event_id = event.id
-        await session.execute(
-            pg_insert(EventDocument)
-            .values(id=uuid.uuid4(), event_id=event_id, tech_item_id=item.id)
-            .on_conflict_do_nothing(constraint="uq_event_documents_event_item"),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "save_node: linking %s to an event failed: %r", state["source_url"], exc
-        )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "save_node: linking %s to an event failed: %r", state["source_url"], exc
+            )
 
     # ARG-263: 이 문서에서 뽑은 이름을 가제티어 + document_entities 링크로
     # 옮긴다. item.id는 생성자에서 미리 배정돼 flush 전에도 쓸 수 있다.

@@ -220,6 +220,10 @@ async def test_unrelated_articles_get_their_own_events(session_factory):
     async with session_factory() as session:
         events_a = await _event_ids_for(session, [a["saved_item_id"]])
         events_b = await _event_ids_for(session, [b["saved_item_id"]])
+        # 단순히 달라야 할 뿐 아니라, 둘 다 실제로 사건 하나씩을 가져야 한다
+        # — 한쪽이 아예 무소속(len==0)이어도 "!="는 통과해 버린다.
+        assert len(events_a) == 1
+        assert len(events_b) == 1
         assert events_a != events_b
 
 
@@ -434,11 +438,19 @@ async def test_a_lower_threshold_merges_what_a_higher_one_splits(session_factory
 
 @pytest.mark.asyncio
 async def test_a_failing_assignment_still_saves_the_document(session_factory, monkeypatch):
-    """assign_event_node가 던지도록 갈아 끼워도 _assign_then_save는 삼키고
-    save_node를 정상 호출한다 — 문서는 저장된다(부모 AC). save_node는
-    event_id=None을 "새 사건이 필요하다"는 신호로도 함께 쓰므로, 이 경우도
-    새 사건이 하나 생겨 붙는다 — "배정 성공한 문서 중 무소속이 없다"(다른
-    부모 AC)는 이 경로에서도 깨지지 않는다."""
+    """assign_event_node가 던지도록 갈아 끼우면 ``_assign_then_save``의 방어적
+    try/except가 삼키고 ``save_node``를 정상 호출한다 — 문서는 저장된다
+    (부모 AC: "배정 단계가 실패해도 문서 저장과 나머지 파이프라인은 정상").
+
+    하지만 ``event_assigned=False``로 넘어가므로 ``save_node``는 사건도
+    링크도 만들지 **않는다**(ARG-266 C1). ``event_id=None``을 "찾지 못함"과
+    "실패함" 양쪽에 다 새 사건을 만드는 신호로 겹쳐 쓰면, 배정이 조직적으로
+    실패하는 사고(설정 오류, 임베딩 포맷 변경, DB 장애 — 문서 하나만의
+    문제가 아니다)가 문서마다 잘못된 사건을 하나씩 영구히 남긴다. 그 사건은
+    링크가 "있어서" 나중 백필이 무소속 문서를 찾는 유일한 신호(링크 없음)로
+    잡아내지도 못한다 — 부모 이슈가 명시한 "실패 시 문서는 사건 없이
+    저장되고 나중 백필이 줍는다"와 정확히 반대가 된다.
+    """
 
     async def _raise(state, *, session):
         raise RuntimeError("assign_event_node exploded")
@@ -462,4 +474,76 @@ async def test_a_failing_assignment_still_saves_the_document(session_factory, mo
 
     async with session_factory() as session:
         events = await _event_ids_for(session, [item_id])
-        assert len(events) == 1
+        # 링크가 전혀 없어야 한다 — 이게 나중 백필이 무소속 문서를 찾는
+        # 유일한 신호다.
+        assert events == set()
+
+
+@pytest.mark.asyncio
+async def test_a_db_level_assignment_failure_still_saves_the_document(
+    session_factory, monkeypatch
+):
+    """ARG-266 C2 회귀: 위 테스트의 순수 ``RuntimeError`` 몽키패치는 세션을
+    전혀 건드리지 않는 실패라서 C2 버그를 가리지 못했다 — 실제로는
+    ``assign_event_node``가 세션 위에서 진짜 쿼리를 날리다 실패한다.
+
+    실제 ``fetch_candidates``를 그대로 타되 검색 임베딩만 3차원(``tech_items.
+    embedding``은 ``vector(768)``)으로 바꿔치기해, ``ORDER BY embedding <=>
+    CAST(:emb AS vector)``가 Postgres에서 진짜
+    ``DataError: different vector dimensions 768 and 3``로 죽게 만든다.
+    문서 자체의 저장용 임베딩(768차원, 정상)은 건드리지 않는다 — 그래야 이
+    테스트가 "배정 실패"만 검증하고 "저장 실패"와 섞이지 않는다.
+
+    pgvector는 ``<=>``를 실제로 어떤 행에 대해 평가할 때만 차원을 검사한다
+    — 비교 대상 행이 하나도 없으면(빈 스크래치 DB) 조용히 빈 결과만 돌아와
+    버그가 가려진다. 그래서 먼저 정상 임베딩을 가진 동반 문서를 하나
+    저장해 시간 창 안에 비교 대상 행을 만들어 둔다.
+
+    (재현: 이 실패를 그냥 ``except``로만 잡으면 세션의 트랜잭션은 이미
+    aborted 상태로 남아, 뒤이은 ``save_node``의 첫 쿼리(중복 URL 체크)부터
+    ``InFailedSQLTransactionError``로 다시 실패해 문서가 아예 저장되지
+    않는다 — ``fetch_candidates`` 호출을 ``session.begin_nested()``
+    세이브포인트로 감싸 롤백해야 세션이 다시 쓸 수 있는 상태로 돌아온다.)
+    """
+    from argos.brain import event_candidates as event_candidates_module
+    from argos.brain.nodes import assign_event as assign_event_module
+
+    async with session_factory() as session:
+        companion = await _process(
+            session,
+            _state(
+                "assign-fails-db-level-companion",
+                embedding=_embedding(0.0, 1.0),
+                published_at=NOW,
+                names=("arg-266-test-companion",),
+            ),
+        )
+    assert companion["saved"] is True
+
+    real_fetch_candidates = event_candidates_module.fetch_candidates
+
+    async def _bad_dimension_fetch(session, *, embedding, at, **kwargs):
+        return await real_fetch_candidates(
+            session, embedding=[0.1, 0.2, 0.3], at=at, **kwargs
+        )
+
+    monkeypatch.setattr(assign_event_module, "fetch_candidates", _bad_dimension_fetch)
+
+    async with session_factory() as session:
+        result = await _process(
+            session,
+            _state(
+                "assign-fails-db-level",
+                embedding=_embedding(1.0, 0.0),  # 768차원, 정상 — 문서 자체는 문제없다
+                published_at=NOW,
+                names=("arg-266-test-acme",),
+            ),
+        )
+
+    assert result["saved"] is True
+    item_id = result["saved_item_id"]
+    assert item_id is not None
+
+    async with session_factory() as session:
+        events = await _event_ids_for(session, [item_id])
+        assert events == set()

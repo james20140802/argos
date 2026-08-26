@@ -636,10 +636,10 @@ def _mock_session_with_existing() -> MagicMock:
 @pytest.mark.asyncio
 async def test_save_node_creates_item_when_valid():
     session = _mock_session_no_existing()
+    # ARG-266: no event_assigned on state -> assignment never ran, so
+    # save_node's event/link block is gated off entirely (add() fires once).
     await save_node(_state(is_valid=True), session=session)
-    # ARG-266: no event_id on state -> save_node also creates a TechEvent
-    # (the lone-article-still-gets-an-event path), so add() fires twice.
-    assert session.add.call_count == 2
+    session.add.assert_called_once()
     session.flush.assert_awaited_once()
 
 
@@ -660,6 +660,58 @@ async def test_save_node_attaches_embedding():
     )
     added_item = session.add.call_args_list[0][0][0]  # first add() call is always the TechItem
     assert added_item.embedding == embedding
+
+
+# ---------------------------------------------------------------------------
+# save_node — ARG-266 event_assigned gate
+# ---------------------------------------------------------------------------
+#
+# event_assigned distinguishes "assignment completed" from "assignment never
+# ran / failed" (ARG-266 review C1). Only the former may create a fallback
+# event when event_id is None; the latter must leave the document unlinked
+# so a later backfill can find it by absence of a link.
+
+
+@pytest.mark.asyncio
+async def test_save_node_creates_event_when_assigned_and_no_match():
+    """event_assigned=True + event_id=None: assignment ran, found nothing
+    over threshold -> save_node creates a fresh standalone event."""
+    session = _mock_session_no_existing()
+    await save_node(
+        _state(is_valid=True, event_assigned=True, event_id=None), session=session
+    )
+    # item + the new TechEvent
+    assert session.add.call_count == 2
+    added_event = session.add.call_args_list[1][0][0]
+    from argos.models.tech_event import TechEvent
+
+    assert isinstance(added_event, TechEvent)
+
+
+@pytest.mark.asyncio
+async def test_save_node_links_existing_event_without_creating_one():
+    """event_assigned=True + a real event_id: save_node must link to it
+    without creating a second TechEvent row."""
+    session = _mock_session_no_existing()
+    existing_event_id = uuid.uuid4()
+    await save_node(
+        _state(is_valid=True, event_assigned=True, event_id=existing_event_id),
+        session=session,
+    )
+    # only the TechItem is added -- no new TechEvent
+    session.add.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_save_node_skips_event_block_entirely_when_assignment_did_not_run():
+    """event_assigned=False (or absent): assignment never completed, so no
+    event and no link are created -- the document stays unlinked so a
+    backfill can find it later (ARG-266 C1)."""
+    session = _mock_session_no_existing()
+    await save_node(
+        _state(is_valid=True, event_assigned=False, event_id=None), session=session
+    )
+    session.add.assert_called_once()  # TechItem only
 
 
 @pytest.mark.asyncio
@@ -752,18 +804,15 @@ async def test_save_node_persists_null_image_url_by_default():
 
 @pytest.mark.asyncio
 async def test_save_node_creates_succession():
-    # execute is called three times: source_url duplicate check (None), the
-    # ARG-266 event_documents link insert (result unused), then predecessor
-    # existence check (found).
+    # execute is called twice: source_url duplicate check (None) then predecessor existence check (found)
+    # ARG-266: no event_assigned on state -> the event/link block is gated
+    # off, so this stays a 2-call sequence exactly as before ARG-266.
     no_existing = MagicMock()
     no_existing.scalar_one_or_none.return_value = None
-    event_link_result = MagicMock()
     predecessor_found = MagicMock()
     predecessor_found.scalar_one_or_none.return_value = uuid.uuid4()
     session = MagicMock()
-    session.execute = AsyncMock(
-        side_effect=[no_existing, event_link_result, predecessor_found]
-    )
+    session.execute = AsyncMock(side_effect=[no_existing, predecessor_found])
     session.flush = AsyncMock()
 
     predecessor_id = str(uuid.uuid4())
@@ -778,8 +827,8 @@ async def test_save_node_creates_succession():
         ),
         session=session,
     )
-    # add called three times: TechItem + TechEvent (ARG-266) + TechSuccession
-    assert session.add.call_count == 3
+    # add called twice: TechItem + TechSuccession
+    assert session.add.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -796,7 +845,7 @@ async def test_save_node_skips_succession_on_unknown_relation_type():
         ),
         session=session,
     )
-    assert session.add.call_count == 2  # TechItem + TechEvent, no TechSuccession
+    assert session.add.call_count == 1  # only TechItem, no TechSuccession
 
 
 @pytest.mark.asyncio
@@ -813,7 +862,7 @@ async def test_save_node_skips_succession_when_replace_target_is_none():
         ),
         session=session,
     )
-    assert session.add.call_count == 2  # TechItem + TechEvent, no TechSuccession
+    assert session.add.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -1204,7 +1253,7 @@ async def test_save_node_skips_succession_on_invalid_uuid():
         ),
         session=session,
     )
-    assert session.add.call_count == 2  # TechItem + TechEvent, TechSuccession skipped
+    assert session.add.call_count == 1  # TechItem only, TechSuccession skipped
     session.flush.assert_awaited_once()
 
 
@@ -1356,8 +1405,7 @@ async def test_save_node_flush_false_skips_flush():
     """save_node(state, flush=False) must NOT call session.flush() at all."""
     session = _mock_session_no_existing()
     await save_node(_state(is_valid=True), session=session, flush=False)
-    # item + ARG-266 event were still added even with flush=False
-    assert session.add.call_count == 2
+    session.add.assert_called_once()  # item was still added
     session.flush.assert_not_awaited()
 
 

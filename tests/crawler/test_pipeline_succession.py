@@ -374,9 +374,9 @@ async def test_save_node_populates_saved_item_id():
     # saved_item_id must be populated (pre-assigned UUID) and match the added item's id.
     assert result["saved_item_id"] is not None
     assert isinstance(result["saved_item_id"], uuid.UUID)
-    # ARG-266: save_node also adds a TechEvent (no event_id was assigned), so
-    # two objects are captured; the TechItem is always added first.
-    assert len(captured) == 2
+    # ARG-266: no event_assigned on state -> assignment never ran, so
+    # save_node's event/link block is gated off (only the TechItem is added).
+    assert len(captured) == 1
     assert captured[0].id == result["saved_item_id"]
 
 

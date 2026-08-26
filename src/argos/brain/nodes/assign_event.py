@@ -9,8 +9,27 @@
 하나 없는 빈 사건이 남는다. 새 사건 생성은 문서 저장과 같은 자리에서
 ``save_node``가 한다.
 
+**``event_id=None``은 두 가지 다른 뜻을 가릴 수 있다** — "판정을 끝냈지만
+임계값을 넘는 사건이 없었다"와 "판정 자체가 실패했다"는 서로 다르다. 앞의
+경우만 새 사건을 만들어도 된다; 뒤의 경우 새 사건을 만들면 실패가 영구적인
+잘못된 사건으로 굳어버려 나중 백필이 되돌릴 수 없다(무소속 문서는 링크가
+없다는 신호로 찾지만, 잘못 만들어진 사건에는 링크가 **있다**). 그래서 이
+둘을 ``event_assigned``로 명시적으로 분리한다:
+
+- 배정이 끝까지 돌았다 → ``event_assigned=True`` (``event_id``는 찾은 사건
+  또는 ``None`` — 새 사건이 필요하다는 뜻으로만 쓰인다).
+- 임베딩이 없어 시도조차 안 했다, 또는 도중에 실패했다 → ``event_assigned=False``.
+  이때 ``save_node``는 사건도 링크도 만들지 않는다 — 문서는 그냥 무소속으로
+  저장되고, 링크 부재 자체가 나중 백필의 대상 표시가 된다.
+
 이 단계의 실패는 삼킨다. 배정은 품질 기능이지 필수 경로가 아니다 —
 실패하면 문서는 사건 없이 저장되고 나중 백필이 줍는다 (부모 확정 결정).
+
+``fetch_candidates``만 ``session.begin_nested()`` 세이브포인트 안에서 부른다
+— DB 예외(예: 임베딩 차원 불일치로 인한 ``InFailedSQLTransactionError``)를
+그냥 잡기만 하면 세션의 트랜잭션은 이미 중단된(aborted) 상태로 남아, 뒤이어
+``save_node``가 던지는 첫 쿼리부터 다시 실패해 문서 저장 자체가 무산된다.
+세이브포인트가 그 중단 상태를 롤백해 세션을 다시 쓸 수 있게 돌려놓는다.
 """
 
 from __future__ import annotations
@@ -35,12 +54,20 @@ async def assign_event_node(state: BrainState, session: AsyncSession) -> BrainSt
     extracted_info = state.get("extracted_info") or {}
     embedding = extracted_info.get("embedding")
     if not embedding:
-        return {**state, "event_id": None}
+        return {**state, "event_id": None, "event_assigned": False}
 
-    at = state.get("published_at") or datetime.now(timezone.utc)
-    config = settings.user.event_detection
     try:
-        candidates = await fetch_candidates(session, embedding=embedding, at=at)
+        # 전제부(발행 시각 계산, config 조회)도 try 안에 둔다 — 여기서 나는
+        # 예외(예: 설정 파싱 오류)도 "배정 실패, 새 사건은 만들지 않는다"로
+        # 처리돼야 하기 때문이다.
+        at = state.get("published_at") or datetime.now(timezone.utc)
+        config = settings.user.event_detection
+
+        # DB를 건드리는 부분만 세이브포인트로 감싼다 — 실패해도 세션을
+        # 계속 쓸 수 있어야 한다(모듈 docstring 참고).
+        async with session.begin_nested():
+            candidates = await fetch_candidates(session, embedding=embedding, at=at)
+
         subject = DocumentFeatures(
             embedding=tuple(float(value) for value in embedding),
             names=frozenset(state.get("entity_names") or ()),
@@ -68,6 +95,6 @@ async def assign_event_node(state: BrainState, session: AsyncSession) -> BrainSt
             state.get("source_url"),
             exc,
         )
-        return {**state, "event_id": None}
+        return {**state, "event_id": None, "event_assigned": False}
 
-    return {**state, "event_id": event_id}
+    return {**state, "event_id": event_id, "event_assigned": True}
