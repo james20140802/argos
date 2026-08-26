@@ -49,6 +49,7 @@ from argos.brain.entity_store import names_for_documents
 from argos.brain.event_scoring import DocumentFeatures
 from argos.config import settings
 from argos.models.event_document import EventDocument
+from argos.services.event_resolution import resolve_event
 
 _CANDIDATE_SQL = text(
     """
@@ -131,7 +132,8 @@ async def fetch_candidates(
     않는다.
 
     반환 순서는 코사인 거리 오름차순이고, 동점은 ``tech_items.id`` 오름차순
-    으로 깨진다 (결정성 — 같은 입력은 항상 같은 순서).
+    으로 깨진다 (결정성 — 같은 입력은 항상 같은 순서). 이웃의 ``event_ids``는
+    툼스톤 체인을 생존 사건까지 해석한 뒤 중복을 접은, id 오름차순 튜플이다.
     """
     config = settings.user.event_detection
     if window_days is None:
@@ -165,9 +167,23 @@ async def fetch_candidates(
         .where(EventDocument.tech_item_id.in_(ids))
         .order_by(EventDocument.event_id)
     )
-    events_by_item: dict[uuid.UUID, list[uuid.UUID]] = {}
+    # 링크가 흡수된(tombstoned) 사건을 가리키면 생존 사건으로 해석한다 —
+    # 옛 id로 표를 모으면 choose_event가 툼스톤을 골라 새 근거가 산 사건
+    # 대신 툼스톤에 쌓인다. 해석은 "모든 사건 조회"의 공용 불변식이다
+    # (services/event_resolution docstring). 같은 생존자로 접히는 중복은
+    # 한 번만 남긴다 — 두 번 실으면 그 이웃의 표가 두 배로 계산된다.
+    resolved_cache: dict[uuid.UUID, uuid.UUID] = {}
+    raw_events_by_item: dict[uuid.UUID, list[uuid.UUID]] = {}
     for tech_item_id, event_id in event_rows.all():
-        events_by_item.setdefault(tech_item_id, []).append(event_id)
+        if event_id not in resolved_cache:
+            resolved_cache[event_id] = await resolve_event(session, event_id)
+        resolved = resolved_cache[event_id]
+        bucket = raw_events_by_item.setdefault(tech_item_id, [])
+        if resolved not in bucket:
+            bucket.append(resolved)
+    events_by_item = {
+        item_id: sorted(bucket) for item_id, bucket in raw_events_by_item.items()
+    }
 
     names_by_item = await names_for_documents(session, ids)
 

@@ -60,6 +60,13 @@ async def session_factory():
                 await session.execute(
                     delete(DocumentEntity).where(DocumentEntity.tech_item_id.in_(item_ids))
                 )
+            # 자식(툼스톤)을 먼저 지워야 merged_into_id RESTRICT에 걸리지 않는다.
+            await session.execute(
+                delete(TechEvent).where(
+                    TechEvent.title.like("ARG-265 event candidates test%"),
+                    TechEvent.merged_into_id.isnot(None),
+                )
+            )
             await session.execute(
                 delete(TechEvent).where(TechEvent.title.like("ARG-265 event candidates test%"))
             )
@@ -308,6 +315,49 @@ async def test_eventless_neighbours_do_not_crowd_out_linked_ones(session_factory
         ids = {c.tech_item_id for c in results}
         assert linked_id in ids
         assert eventless_id not in ids
+
+
+@pytest.mark.asyncio
+async def test_merged_event_ids_resolve_to_the_survivor(session_factory):
+    """흡수된 사건에 걸린 링크는 생존 사건 id로 해석돼 나온다 (PR #122 리뷰).
+
+    옛 id 그대로 표를 모으면 choose_event가 툼스톤을 골라 새 근거가 산 사건
+    대신 툼스톤에 쌓인다. 생존자와 흡수분 양쪽에 걸린 문서는 한 번만 센다.
+    """
+    async with session_factory() as session:
+        survivor = TechEvent(
+            title="ARG-265 event candidates test — survivor",
+            occurred_at=NOW,
+        )
+        absorbed = TechEvent(
+            title="ARG-265 event candidates test — absorbed",
+            occurred_at=NOW,
+        )
+        session.add_all([survivor, absorbed])
+        await session.flush()
+        absorbed.merged_into_id = survivor.id
+
+        only_absorbed_id = await _make_item(
+            session,
+            "tombstone-absorbed-only",
+            embedding=_embedding(1.0),
+            published_at=NOW - timedelta(days=1),
+        )
+        both_id = await _make_item(
+            session,
+            "tombstone-both",
+            embedding=_embedding(1.0),
+            published_at=NOW - timedelta(days=1),
+        )
+        session.add(EventDocument(event_id=absorbed.id, tech_item_id=only_absorbed_id))
+        session.add(EventDocument(event_id=absorbed.id, tech_item_id=both_id))
+        session.add(EventDocument(event_id=survivor.id, tech_item_id=both_id))
+        await session.commit()
+
+        results = await fetch_candidates(session, embedding=_embedding(1.0), at=NOW, window_days=14)
+        by_id = {c.tech_item_id: c for c in results}
+        assert by_id[only_absorbed_id].event_ids == (survivor.id,)
+        assert by_id[both_id].event_ids == (survivor.id,)
 
 
 @pytest.mark.asyncio
