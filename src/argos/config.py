@@ -293,8 +293,15 @@ class EventDetectionConfig(BaseModel):
     # 이 값 이상이면 기존 사건에 붙고, 아니면 새 사건이 생긴다.
     join_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     # ARG-265: 후보 이웃을 찾는 시간 창(일)과 창 안에서 가져올 상위 K.
-    # 실측(2026-08-23, 코퍼스 1071건): 7일 60건 2.6ms / 14일 140건 3.5ms /
-    # 30일 268건 4.7ms. 창이 전수 비교를 막는 수단이라 ANN 인덱스는 두지 않는다.
+    # 실측(2026-08-23, 코퍼스 1071건): 7일 60건 / 14일 140건 / 30일 268건.
+    # 창을 넓히면 **점수를 매길 후보 수**가 는다 — 이 값이 조절하는 건 그쪽이다.
+    # 쿼리 비용 자체는 창과 거의 무관하다: 필터가 COALESCE(published_at,
+    # created_at) 위에 걸려 ix_tech_items_published_at을 못 타고 매번 tech_items
+    # 전수 순차 스캔이 돈다(2026-08-26, 1091건 기준 Rows Removed by Filter 979,
+    # 7~8ms) — 비용은 코퍼스 전체 크기를 따라 자란다. COALESCE 표현식에 부분
+    # 인덱스(WHERE embedding IS NOT NULL)를 걸면 정확한 정렬을 유지한 채 인덱스를
+    # 다시 타게 되지만, 마이그레이션이 필요해 후속으로 미뤄 뒀다. ANN 인덱스를
+    # 두지 않는 이유는 성능이 아니라 결정성이다 — event_candidates 모듈 docstring.
     window_days: float = Field(default=14.0, gt=0.0)
     candidate_k: int = Field(default=25, ge=1)
 

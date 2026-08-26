@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from argos.brain import pipeline as brain_pipeline
+from argos.brain.nodes.save import save_node
 from argos.brain.pipeline import _assign_then_save
 from argos.config import settings
 from argos.models.document_entity import DocumentEntity
@@ -547,3 +548,94 @@ async def test_a_db_level_assignment_failure_still_saves_the_document(
     async with session_factory() as session:
         events = await _event_ids_for(session, [item_id])
         assert events == set()
+
+
+@pytest.mark.asyncio
+async def test_a_broken_event_link_does_not_fake_a_save(session_factory):
+    """ARG-241 회귀: 사건 링크 쓰기가 실패했는데 ``saved=True``가 찍히면 안 된다.
+
+    ``save_node``의 사건 블록은 첫 ``session.execute``에서 autoflush로 방금
+    ``add``한 item을 먼저 흘려보낸다. 그 다음 문장이 실패하면(여기서는 존재하지
+    않는 사건을 가리키는 FK 위반 — 실제로는 배정 직후 동시에 지워진 사건이 이
+    모양이 된다) 트랜잭션은 중단됐는데 세션에 남은 pending은 없다. 세이브포인트
+    없이 예외만 삼키면 뒤따르는 ``session.flush()``가 보낼 게 없어 조용히
+    통과하고 ``saved=True``가 그대로 찍힌다 — 한 줄도 안 들어갔는데.
+    ``run_full_pipeline``은 그 ``saved``를 믿고 crawl_queue에서 URL을 지우므로
+    문서가 영구히 사라진다(다시 크롤되지도 않는다).
+
+    그래서 요구는 "실패를 삼키되 거짓말은 하지 않는다"다: 링크는 없어도 문서는
+    실제로 저장돼 있어야 하고, 세션은 계속 쓸 수 있어야 한다.
+    """
+    state = _state(
+        "broken-event-link",
+        embedding=_embedding(1.0, 0.0),
+        published_at=NOW,
+    )
+    # 배정은 끝났고(=event_assigned) 고른 사건이 있다고 주장하지만, 그 사건은
+    # DB에 없다 — event_documents FK가 터진다.
+    state["event_assigned"] = True
+    state["event_id"] = uuid.uuid4()
+
+    async with session_factory() as session:
+        result = await save_node(state, session)
+        # 세션이 살아 있어야 한다 — 중단된 트랜잭션이면 여기서 터진다.
+        await session.execute(select(TechItem.id).limit(1))
+        await session.commit()
+
+    item_id = result["saved_item_id"]
+    assert result["saved"] is True
+
+    async with session_factory() as session:
+        persisted = await session.execute(
+            select(TechItem.id).where(TechItem.source_url == f"{_URL_PREFIX}broken-event-link")
+        )
+        # saved=True가 사실이어야 한다.
+        assert persisted.scalar_one_or_none() == item_id
+        # 링크만 없다 — 무소속으로 남아 나중 백필의 대상이 된다.
+        assert await _event_ids_for(session, [item_id]) == set()
+
+
+@pytest.mark.asyncio
+async def test_a_broken_event_link_does_not_poison_the_next_document(session_factory):
+    """ARG-241 회귀: 한 문서의 링크 실패가 **다음** 문서 저장을 죽이면 안 된다.
+
+    배치 경로(Stage 4)는 문서마다 ``begin_nested()`` 안에서 저장한다. 사건
+    블록이 세이브포인트 없이 예외를 삼키면 그 블록은 "정상" 종료돼 중단된
+    트랜잭션에 ``RELEASE SAVEPOINT``를 쏘고, 오염이 다음 문서까지 흘러
+    멀쩡한 문서가 ``InFailedSQLTransactionError``로 죽는다 — 그런데 최종
+    ``commit()``은 성공을 보고한다(아무것도 안 썼는데).
+
+    여기서는 pipeline.py Stage 4의 세이브포인트 모양을 그대로 흉내 낸다 —
+    검증 대상이 그 루프의 계약이기 때문이다.
+    """
+    broken = _state(
+        "poison-first", embedding=_embedding(1.0, 0.0), published_at=NOW
+    )
+    broken["event_assigned"] = True
+    broken["event_id"] = uuid.uuid4()  # 존재하지 않는 사건
+
+    healthy = _state(
+        "poison-second", embedding=_embedding(1.0, 0.0), published_at=NOW
+    )
+
+    async with session_factory() as session:
+        async with session.begin_nested():
+            first = await save_node(broken, session, flush=False)
+            await session.flush()
+            first["saved"] = True
+        async with session.begin_nested():
+            second = await _assign_then_save(healthy, session=session, flush=False)
+            await session.flush()
+            second["saved"] = True
+        await session.commit()
+
+    async with session_factory() as session:
+        for suffix, result in (("poison-first", first), ("poison-second", second)):
+            persisted = await session.execute(
+                select(TechItem.id).where(TechItem.source_url == f"{_URL_PREFIX}{suffix}")
+            )
+            assert persisted.scalar_one_or_none() == result["saved_item_id"], suffix
+        # 뒤 문서는 배정까지 정상적으로 끝나 사건 하나를 갖는다.
+        assert len(await _event_ids_for(session, [second["saved_item_id"]])) == 1
+        # 앞 문서는 링크만 없다.
+        assert await _event_ids_for(session, [first["saved_item_id"]]) == set()

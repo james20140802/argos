@@ -205,6 +205,10 @@ async def run_batch_brain_pipeline(
     The single-URL run_brain_pipeline is preserved for backwards compatibility
     and single-URL callers (e.g. tests, future Slack Deep-Dive paths).
 
+    The returned list is in **assignment order, not input order** — before Stage 4
+    the states are sorted by ``(published_at, source_url)`` so event assignment is
+    deterministic (ARG-266). Match results by ``source_url``, never by index.
+
     Parameters
     ----------
     items, session:

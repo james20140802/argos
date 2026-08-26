@@ -117,21 +117,33 @@ async def save_node(
     # (없으면 지금) — 아직 flush 전이라 created_at은 쓸 수 없다. 링크 쓰기
     # 자체의 실패는 삼킨다: 사건 배정은 품질 기능이지 필수 경로가 아니다 —
     # 문서 저장 자체를 막으면 안 된다.
+    #
+    # 다만 **삼키려면 세이브포인트가 반드시 있어야 한다**(assign_event_node와
+    # 같은 이유, 그 모듈 docstring 참고). 이 블록의 첫 execute가 autoflush로
+    # 위의 item INSERT를 먼저 흘려보내기 때문에, 그 뒤 문장이 실패하면
+    # (예: 동시에 지워진 사건을 가리켜 FK 위반) 트랜잭션은 중단됐는데 세션에
+    # 남은 pending은 없는 상태가 된다. 그러면 아래 ``session.flush()``는
+    # 아무것도 보내지 않아 예외도 안 나고 ``saved=True``가 그대로 찍힌다 —
+    # 실제로는 한 줄도 안 들어갔는데. ``run_full_pipeline``은 그 saved를 믿고
+    # crawl_queue에서 URL을 지우므로 문서가 영구히 사라진다. 배치 경로는 더
+    # 나쁘다: 블록이 "정상" 종료돼 중단된 트랜잭션에 RELEASE SAVEPOINT를 쏘고,
+    # 그 오염이 **다음** 문서 저장까지 끌고 내려간다.
     if state.get("event_assigned"):
         try:
-            event_id = state.get("event_id")
-            if event_id is None:
-                event = TechEvent(
-                    id=uuid.uuid4(),
-                    occurred_at=state.get("published_at") or datetime.now(timezone.utc),
+            async with session.begin_nested():
+                event_id = state.get("event_id")
+                if event_id is None:
+                    event = TechEvent(
+                        id=uuid.uuid4(),
+                        occurred_at=state.get("published_at") or datetime.now(timezone.utc),
+                    )
+                    session.add(event)
+                    event_id = event.id
+                await session.execute(
+                    pg_insert(EventDocument)
+                    .values(id=uuid.uuid4(), event_id=event_id, tech_item_id=item.id)
+                    .on_conflict_do_nothing(constraint="uq_event_documents_event_item"),
                 )
-                session.add(event)
-                event_id = event.id
-            await session.execute(
-                pg_insert(EventDocument)
-                .values(id=uuid.uuid4(), event_id=event_id, tech_item_id=item.id)
-                .on_conflict_do_nothing(constraint="uq_event_documents_event_item"),
-            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "save_node: linking %s to an event failed: %r", state["source_url"], exc
@@ -140,10 +152,14 @@ async def save_node(
     # ARG-263: 이 문서에서 뽑은 이름을 가제티어 + document_entities 링크로
     # 옮긴다. item.id는 생성자에서 미리 배정돼 flush 전에도 쓸 수 있다.
     # 실패해도 저장 자체는 막지 않는다 — 이름 매달기가 크롤을 멈추면 안 된다.
+    # 위 사건 블록과 같은 이유로 세이브포인트가 필요하다: 삼킨 예외가 중단된
+    # 트랜잭션을 남기면 뒤따르는 flush는 보낼 게 없어 조용히 통과하고
+    # ``saved=True``가 거짓말이 된다.
     extracted = state.get("entity_names_extracted") or []
     if extracted:
         try:
-            await attach_names(session, item.id, extracted)
+            async with session.begin_nested():
+                await attach_names(session, item.id, extracted)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "save_node: attaching names failed for %s: %r", state["source_url"], exc
