@@ -48,6 +48,27 @@ def test_out_of_range_values_rejected(payload):
         EventDetectionConfig(**payload)
 
 
+def test_edge_weights_default_to_the_confirmed_design():
+    config = EventDetectionConfig()
+    assert config.weight_cosine == 0.55
+    assert config.weight_entity == 0.25
+    assert config.weight_time == 0.15
+    assert config.weight_keyword == 0.05
+
+
+def test_join_threshold_has_a_default_and_a_range():
+    assert EventDetectionConfig().join_threshold == 0.55
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(join_threshold=1.5)
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(join_threshold=-0.1)
+
+
+def test_negative_weights_are_rejected():
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(weight_cosine=-0.1)
+
+
 def test_loads_from_toml_file(tmp_path: Path):
     path = tmp_path / "config.toml"
     path.write_text(

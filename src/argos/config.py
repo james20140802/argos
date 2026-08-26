@@ -284,6 +284,14 @@ class EventDetectionConfig(BaseModel):
     # 열어 둘 파이프라인 이름. 코드에 박아 두면 다른 호환 모델을 설치해
     # 벤치마크해도 보조 경로가 조용히 꺼진 채로 돈다.
     entity_spacy_model: str = "en_core_web_sm"
+    # ARG-264: 간선 가중치 네 항. 합이 1일 필요는 없다 — 판정 전에 합으로
+    # 정규화하므로 join_threshold의 뜻("네 항의 가중 평균")이 유지된다.
+    weight_cosine: float = Field(default=0.55, ge=0.0)
+    weight_entity: float = Field(default=0.25, ge=0.0)
+    weight_time: float = Field(default=0.15, ge=0.0)
+    weight_keyword: float = Field(default=0.05, ge=0.0)
+    # 이 값 이상이면 기존 사건에 붙고, 아니면 새 사건이 생긴다.
+    join_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
 
 
 class UserConfig(BaseModel):
