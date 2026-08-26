@@ -4,8 +4,9 @@
 가까운 문서들"이 먼저 필요하다. 이 모듈은 그 후보를 구하는 유일한 창구다.
 
 **시간 창이 무엇을 줄이고 무엇을 줄이지 않는가:** 창은 *점수를 매길 후보
-수*를 묶는다 — 7일 60건, 14일 140건, 30일 268건(2026-08-23, 코퍼스 1071건)
-이라 정렬과 뒤이은 가중치 계산이 작게 유지된다. 하지만 **스캔 자체는 줄이지
+수*를 묶는다 — 7일 60건, 14일 140건, 30일 268건(2026-08-23, 코퍼스 1071건,
+한쪽 창 기준 실측; 지금은 ``at`` 앞뒤 양쪽이라 상한은 그 두 배)이라 정렬과
+뒤이은 가중치 계산이 작게 유지된다. 하지만 **스캔 자체는 줄이지
 못한다.** 필터가 컬럼이 아니라 ``COALESCE(published_at, created_at)`` 위에
 걸려 있어 기존 ``ix_tech_items_published_at``을 탈 수 없고, 플래너는 문서
 하나를 배정할 때마다 tech_items를 통째로 순차 스캔한다 — 실측(2026-08-26,
@@ -56,7 +57,11 @@ _CANDIDATE_SQL = text(
     FROM tech_items
     WHERE embedding IS NOT NULL
       AND COALESCE(published_at, created_at) >= :window_start
-      AND COALESCE(published_at, created_at) <= :at
+      AND COALESCE(published_at, created_at) <= :window_end
+      AND EXISTS (
+          SELECT 1 FROM event_documents ed
+          WHERE ed.tech_item_id = tech_items.id
+      )
       AND (CAST(:exclude_id AS uuid) IS NULL OR id <> CAST(:exclude_id AS uuid))
     ORDER BY embedding <=> CAST(:emb AS vector), id
     LIMIT :limit
@@ -114,8 +119,16 @@ async def fetch_candidates(
     """*embedding*/*at* 기준 시간 창 안의 코사인 상위 K 이웃을 반환한다.
 
     ``window_days``/``limit``이 ``None``이면 ``event_detection`` config에서
-    읽는다. 창 밖이거나 임베딩이 없는 문서는 제외된다. 후보가 0건이면 빈
-    목록을 반환한다 — 예외를 던지지 않는다.
+    읽는다. 시간 창은 *at* **양쪽**으로 각각 ``window_days``만큼이다 — 늦게
+    크롤돼 ``published_at``이 과거인 기사도, 이미 저장된 더 최신 기사를
+    이웃으로 봐야 같은 사건에 붙는다 (간선의 시간감쇠도 절대 시간차라 창만
+    한쪽이면 서로 어긋난다). 창 밖이거나 임베딩이 없는 문서는 제외된다.
+
+    **사건에 속하지 않은 문서도 제외된다** — LIMIT 앞에서. 소비자는 이웃이
+    이미 속한 사건으로만 표를 모으므로, 링크 없는 문서(레거시 코퍼스,
+    배정 실패분)가 상위 K 슬롯을 차지하면 정작 같은 사건의 이웃이 밀려나
+    중복 사건이 생긴다. 후보가 0건이면 빈 목록을 반환한다 — 예외를 던지지
+    않는다.
 
     반환 순서는 코사인 거리 오름차순이고, 동점은 ``tech_items.id`` 오름차순
     으로 깨진다 (결정성 — 같은 입력은 항상 같은 순서).
@@ -128,13 +141,14 @@ async def fetch_candidates(
 
     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
     window_start = at - timedelta(days=window_days)
+    window_end = at + timedelta(days=window_days)
 
     rows = (
         await session.execute(
             _CANDIDATE_SQL,
             {
                 "window_start": window_start,
-                "at": at,
+                "window_end": window_end,
                 "exclude_id": exclude_id,
                 "emb": embedding_str,
                 "limit": limit,

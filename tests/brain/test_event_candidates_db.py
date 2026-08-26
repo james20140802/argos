@@ -119,6 +119,19 @@ async def _make_item(
 NOW = datetime.now(timezone.utc)
 
 
+async def _link_to_event(session, item_id: uuid.UUID) -> uuid.UUID:
+    """항목을 자기만의 새 사건에 매단다 — 후보 조회는 사건에 속한 문서만 돌려준다."""
+    event = TechEvent(
+        title=f"ARG-265 event candidates test — event {item_id}",
+        occurred_at=NOW,
+    )
+    session.add(event)
+    await session.flush()
+    session.add(EventDocument(event_id=event.id, tech_item_id=item_id))
+    await session.flush()
+    return event.id
+
+
 @pytest.mark.asyncio
 async def test_only_documents_inside_the_window_come_back(session_factory):
     async with session_factory() as session:
@@ -134,12 +147,30 @@ async def test_only_documents_inside_the_window_come_back(session_factory):
             embedding=_embedding(1.0),
             published_at=NOW - timedelta(days=15),
         )
+        # 창은 at 양쪽이다 — 늦게 크롤된 과거 발행 기사가 이미 저장된 더
+        # 최신 기사를 이웃으로 봐야 하기 때문 (PR #122 리뷰 P2).
+        future_inside_id = await _make_item(
+            session,
+            "future-inside",
+            embedding=_embedding(1.0),
+            published_at=NOW + timedelta(days=1),
+        )
+        future_outside_id = await _make_item(
+            session,
+            "future-outside",
+            embedding=_embedding(1.0),
+            published_at=NOW + timedelta(days=15),
+        )
+        for item_id in (inside_id, outside_id, future_inside_id, future_outside_id):
+            await _link_to_event(session, item_id)
         await session.commit()
 
         results = await fetch_candidates(session, embedding=_embedding(1.0), at=NOW, window_days=14)
         ids = {c.tech_item_id for c in results}
         assert inside_id in ids
+        assert future_inside_id in ids
         assert outside_id not in ids
+        assert future_outside_id not in ids
 
 
 @pytest.mark.asyncio
@@ -151,6 +182,7 @@ async def test_a_null_published_at_falls_back_to_created_at(session_factory):
             embedding=_embedding(1.0),
             published_at=None,
         )
+        await _link_to_event(session, item_id)
         await session.commit()
 
         # created_at은 서버 default(func.now())라 방금 커밋된 실제 시각이다.
@@ -170,6 +202,8 @@ async def test_documents_without_an_embedding_are_skipped(session_factory):
             embedding=None,
             published_at=NOW - timedelta(days=1),
         )
+        # 사건 링크는 있어야 제외 사유가 "임베딩 없음"으로 한정된다.
+        await _link_to_event(session, no_embedding_id)
         await session.commit()
 
         results = await fetch_candidates(session, embedding=_embedding(1.0), at=NOW, window_days=14)
@@ -186,6 +220,8 @@ async def test_results_are_ordered_by_cosine_then_id(session_factory):
         id_b = await _make_item(
             session, "tie-b", embedding=_embedding(1.0), published_at=NOW - timedelta(days=1)
         )
+        await _link_to_event(session, id_a)
+        await _link_to_event(session, id_b)
         await session.commit()
 
         first = await fetch_candidates(session, embedding=_embedding(1.0), at=NOW, window_days=14)
@@ -200,12 +236,13 @@ async def test_results_are_ordered_by_cosine_then_id(session_factory):
 async def test_the_limit_caps_the_result(session_factory):
     async with session_factory() as session:
         for suffix in ("limit-a", "limit-b", "limit-c"):
-            await _make_item(
+            item_id = await _make_item(
                 session,
                 suffix,
                 embedding=_embedding(1.0),
                 published_at=NOW - timedelta(days=1),
             )
+            await _link_to_event(session, item_id)
         await session.commit()
 
         results = await fetch_candidates(
@@ -243,6 +280,37 @@ async def test_neighbours_carry_their_event_links_and_names(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_eventless_neighbours_do_not_crowd_out_linked_ones(session_factory):
+    """사건 없는 문서는 더 가까워도 K 슬롯을 선점하지 못한다 (PR #122 리뷰 P1).
+
+    레거시 코퍼스나 배정 실패분처럼 링크 없는 문서가 LIMIT 앞에서 잘려
+    나가지 않으면, 정작 같은 사건의 이웃이 밀려나 중복 사건이 생긴다.
+    """
+    async with session_factory() as session:
+        eventless_id = await _make_item(
+            session,
+            "crowd-eventless",
+            embedding=_embedding(1.0),
+            published_at=NOW - timedelta(days=1),
+        )
+        linked_id = await _make_item(
+            session,
+            "crowd-linked",
+            embedding=_embedding(0.5),
+            published_at=NOW - timedelta(days=1),
+        )
+        await _link_to_event(session, linked_id)
+        await session.commit()
+
+        results = await fetch_candidates(
+            session, embedding=_embedding(1.0), at=NOW, window_days=14, limit=1
+        )
+        ids = {c.tech_item_id for c in results}
+        assert linked_id in ids
+        assert eventless_id not in ids
+
+
+@pytest.mark.asyncio
 async def test_an_empty_window_returns_an_empty_list(session_factory):
     async with session_factory() as session:
         results = await fetch_candidates(
@@ -263,6 +331,8 @@ async def test_the_document_itself_is_excluded(session_factory):
             embedding=_embedding(1.0),
             published_at=NOW - timedelta(days=1),
         )
+        # 사건 링크는 있어야 제외 사유가 exclude_id로 한정된다.
+        await _link_to_event(session, item_id)
         await session.commit()
 
         results = await fetch_candidates(
