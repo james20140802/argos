@@ -153,7 +153,9 @@ def choose_event(
             totals[event_id] = totals.get(event_id, 0.0) + edge.weight
 
     best_id: uuid.UUID | None = None
-    best_total = 0.0
+    # -inf로 시작해야 합계 0.0인 후보도 선택될 수 있다 — join_threshold는
+    # 0.0을 허용하므로(config ge=0.0) 0점 사건도 임계값 판정까지는 가야 한다.
+    best_total = float("-inf")
     for event_id in sorted(totals, key=str):
         total = totals[event_id]
         if total > best_total:

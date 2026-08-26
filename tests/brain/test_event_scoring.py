@@ -85,6 +85,20 @@ def test_choose_event_returns_none_below_the_threshold():
     assert choose_event(edges, join_threshold=0.55) is None
 
 
+def test_a_zero_threshold_joins_even_a_zero_score_event():
+    """join_threshold=0.0(config가 허용하는 최솟값)이면 0점 사건도 붙는다.
+
+    동점 0점이 여럿이면 사건 id 오름차순으로 결정적으로 고른다 (PR #122 리뷰).
+    """
+    a, b = uuid.UUID(int=1), uuid.UUID(int=2)
+    edges = [
+        NeighborEdge(event_ids=(b,), weight=0.0),
+        NeighborEdge(event_ids=(a,), weight=0.0),
+    ]
+    assert choose_event(edges, join_threshold=0.0) == a
+    assert choose_event(edges, join_threshold=0.1) is None
+
+
 def test_the_threshold_actually_changes_the_outcome():
     """임계값을 설정으로 바꾸면 묶이는 정도가 달라진다 (부모 AC)."""
     a = uuid.UUID(int=1)
