@@ -72,3 +72,9 @@ class BrainState(TypedDict):
     # 영구히 남기지 않고, "링크 없음"이 그대로 나중 백필의 대상 표시로
     # 남는다(부모 AC: 배정에 "성공한" 문서만 무소속 없음을 보장한다).
     event_assigned: NotRequired[bool]
+    # ARG-267: _attach_extracted_names(pipeline.py)가 이름 추출과 같은 자리에서
+    # 계산해 싣는다 — raw_text를 이미 손에 든 자리라 두 번째 패스를 만들지
+    # 않는다. save_node가 to_storage를 거쳐 tech_items.simhash에 저장하고,
+    # 그 저장값을 event_evidence.evidence_count가 근접중복 접기에 쓴다.
+    # 유효하지 않은 state는 채워지지 않는다(entity_names와 같은 계약).
+    simhash: NotRequired[int | None]

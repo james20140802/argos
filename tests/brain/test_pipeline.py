@@ -15,6 +15,7 @@ import pytest
 
 from argos.brain import pipeline as brain_pipeline
 from argos.brain.entity_extraction import ExtractedName
+from argos.brain.near_duplicate import simhash as compute_simhash
 from argos.models.tech_item import CategoryType
 
 
@@ -669,6 +670,34 @@ async def test_run_brain_pipeline_attaches_extracted_names_before_save(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_run_brain_pipeline_computes_simhash_before_save(monkeypatch):
+    """단일 경로: 이름 추출과 같은 자리에서 SimHash도 state에 실려야 한다.
+
+    ARG-267: 근거 수 집계(event_evidence.evidence_count)가 저장된 SimHash에
+    기대므로, 이 배선이 사라지면 save_node가 항상 simhash=None으로 저장하게
+    되고 재배포본도 접히지 않는다.
+    """
+    triaged = _triaged_state()
+    cold = _triaged_state(genealogy_skipped=True, genealogy_skip_reason="cold_start")
+
+    monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
+    monkeypatch.setattr(
+        brain_pipeline, "embed_and_search_node", AsyncMock(return_value=cold)
+    )
+    monkeypatch.setattr(brain_pipeline, "extract_names", MagicMock(return_value=[[]]))
+
+    async def _fake_save(state, *, session, flush=True):
+        return {**state, "saved": True}
+
+    monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
+
+    session = MagicMock()
+    result = await brain_pipeline.run_brain_pipeline("x", "https://e.com", session)
+
+    assert result["simhash"] == compute_simhash(cold["raw_text"])
+
+
+@pytest.mark.asyncio
 async def test_batch_pipeline_attaches_extracted_names_to_valid_states_only(
     monkeypatch,
 ):
@@ -742,6 +771,9 @@ async def test_batch_pipeline_attaches_extracted_names_to_valid_states_only(
     ]
     assert "entity_names" not in invalid_result
     assert "entity_names_extracted" not in invalid_result
+    # ARG-267: SimHash도 같은 자리에서 계산되므로 같은 유효성 구분을 따른다.
+    assert valid_result["simhash"] == compute_simhash(valid["raw_text"])
+    assert "simhash" not in invalid_result
 
 
 # ---------------------------------------------------------------------------

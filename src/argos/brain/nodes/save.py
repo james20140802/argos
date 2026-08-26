@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.entity_store import attach_names
 from argos.brain.graph_state import BrainState
+from argos.brain.simhash_storage import to_storage
 from argos.models.event_document import EventDocument
 from argos.models.tech_event import TechEvent
 from argos.models.tech_item import CategoryType, TechItem
@@ -91,6 +92,8 @@ async def save_node(
         trust_rubric=state.get("trust_rubric"),
         published_at=state.get("published_at"),
         image_url=state.get("image_url"),
+        # ARG-267: 근거 수 집계 때마다 본문을 다시 해싱하지 않으려고 저장한다.
+        simhash=to_storage(state["simhash"]) if state.get("simhash") is not None else None,
     )
 
     extracted_info = state.get("extracted_info") or {}

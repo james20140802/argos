@@ -13,6 +13,7 @@ from argos.brain.nodes.triage import triage_node, batch_triage_states
 from argos.brain.nodes.digest import digest_node, batch_digest_states
 from argos.brain.nodes.embed import embed_and_search_node, batch_embed_and_search_node
 from argos.brain.nodes.genealogist import genealogist_node
+from argos.brain.near_duplicate import simhash
 from argos.brain.nodes.assign_event import assign_event_node
 from argos.brain.nodes.save import save_node
 from argos.brain.llm_client import get_genealogist_llm_client
@@ -63,12 +64,21 @@ def _attach_extracted_names(states: list[BrainState]) -> list[BrainState]:
     테스트는 ``monkeypatch.setattr(brain_pipeline, "extract_names", mock)``로
     갈아 끼운다 (이 파일의 다른 노드 함수들과 같은 관례). 기본 인자로
     def-time에 바인딩해 버리면 그 관용구가 조용히 안 먹는다.
+
+    ARG-267: SimHash도 여기서 같이 계산해 싣는다 — raw_text를 이미 손에 든
+    자리라 근거 수 집계를 위한 별도 패스를 만들지 않는다. 이름 추출과 달리
+    실패할 일이 없는(예외를 던지지 않는 순수 함수) 계산이라 try/except 밖에
+    둔다 — 이름 추출이 실패해 빈 목록으로 대체되는 경로에서도 SimHash는
+    정상적으로 채워져야 한다.
     """
     valid_indices = [i for i, state in enumerate(states) if state.get("is_valid")]
     if not valid_indices:
         return states
 
     documents = [states[i]["raw_text"] for i in valid_indices]
+    for i in valid_indices:
+        states[i] = {**states[i], "simhash": simhash(states[i].get("raw_text") or "")}
+
     try:
         extracted_batch = extract_names(documents)
     except Exception as exc:  # noqa: BLE001
