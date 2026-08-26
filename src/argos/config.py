@@ -292,6 +292,11 @@ class EventDetectionConfig(BaseModel):
     weight_keyword: float = Field(default=0.05, ge=0.0)
     # 이 값 이상이면 기존 사건에 붙고, 아니면 새 사건이 생긴다.
     join_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+    # ARG-265: 후보 이웃을 찾는 시간 창(일)과 창 안에서 가져올 상위 K.
+    # 실측(2026-08-23, 코퍼스 1071건): 7일 60건 2.6ms / 14일 140건 3.5ms /
+    # 30일 268건 4.7ms. 창이 전수 비교를 막는 수단이라 ANN 인덱스는 두지 않는다.
+    window_days: float = Field(default=14.0, gt=0.0)
+    candidate_k: int = Field(default=25, ge=1)
 
 
 class UserConfig(BaseModel):

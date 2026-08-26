@@ -80,3 +80,16 @@ def test_loads_from_toml_file(tmp_path: Path):
     assert user.event_detection.entity_max_doc_ratio == pytest.approx(0.8)
     # 지정하지 않은 항목은 기본값 유지
     assert user.event_detection.entity_max_ngram == 4
+
+
+def test_candidate_window_and_k_have_defaults():
+    config = EventDetectionConfig()
+    assert config.window_days == 14
+    assert config.candidate_k == 25
+
+
+def test_window_and_k_reject_nonsense():
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(window_days=0)
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(candidate_k=0)
