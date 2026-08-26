@@ -6,6 +6,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from argos.brain.entity_store import attach_names
 from argos.brain.graph_state import BrainState
 from argos.models.tech_item import CategoryType, TechItem
 from argos.models.tech_succession import RelationType, TechSuccession
@@ -93,6 +94,19 @@ async def save_node(
         item.embedding = extracted_info["embedding"]
 
     session.add(item)
+
+    # ARG-263: 이 문서에서 뽑은 이름을 가제티어 + document_entities 링크로
+    # 옮긴다. item.id는 생성자에서 미리 배정돼 flush 전에도 쓸 수 있다.
+    # 실패해도 저장 자체는 막지 않는다 — 이름 매달기가 크롤을 멈추면 안 된다.
+    extracted = state.get("entity_names_extracted") or []
+    if extracted:
+        try:
+            await attach_names(session, item.id, extracted)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "save_node: attaching names failed for %s: %r", state["source_url"], exc
+            )
+
     if flush:
         await session.flush()
         state["saved"] = True

@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from argos.brain.entity_extraction import extract_names
+from argos.brain.entity_store import canonical_names
 from argos.brain.graph_state import BrainState
 from argos.brain.nodes.triage import triage_node, batch_triage_states
 from argos.brain.nodes.digest import digest_node, batch_digest_states
@@ -16,6 +18,38 @@ from argos.brain.llm_client import get_genealogist_llm_client
 from argos.models.tech_item import CategoryType
 
 logger = logging.getLogger(__name__)
+
+
+def _attach_extracted_names(
+    states: list[BrainState], *, extractor: Callable = extract_names
+) -> list[BrainState]:
+    """배치 단위로 이름을 뽑아 state에 싣는다.
+
+    문서빈도를 배치 안에서 세는 추출기 계약 때문에 배치로 한 번에 부른다 —
+    문서마다 따로 부르면 흔한 말을 걷어낼 근거가 사라진다. 유효하지 않은
+    state는 애초에 저장되지 않으므로 건드리지 않는다. 추출이 실패해도 크롤을
+    멈추면 안 되므로 예외를 삼키고 빈 목록으로 이어간다.
+    """
+    valid_indices = [i for i, state in enumerate(states) if state.get("is_valid")]
+    if not valid_indices:
+        return states
+
+    documents = [states[i]["raw_text"] for i in valid_indices]
+    try:
+        extracted_batch = extractor(documents)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_attach_extracted_names: extraction failed: %r", exc)
+        for i in valid_indices:
+            states[i] = {**states[i], "entity_names": [], "entity_names_extracted": []}
+        return states
+
+    for i, extracted in zip(valid_indices, extracted_batch):
+        states[i] = {
+            **states[i],
+            "entity_names": canonical_names(extracted),
+            "entity_names_extracted": list(extracted),
+        }
+    return states
 
 
 async def run_brain_pipeline(
@@ -62,6 +96,7 @@ async def run_brain_pipeline(
     # 32B prewarm. On cold start the genealogist branch is skipped and we never
     # need to load the large model.
     embedded = await embed_and_search_node(digested, session=session)
+    embedded = _attach_extracted_names([embedded])[0]
     if embedded.get("genealogy_skipped"):
         return await save_node(embedded, session=session)
 
@@ -166,6 +201,11 @@ async def run_batch_brain_pipeline(
     embedded_states = await batch_embed_and_search_node(
         digested_states, session, on_item_done=on_embed_item_done
     )
+
+    # ── Stage 2.5: batch name extraction (ARG-263) ────────────────────────
+    # 배정(ARG-266)이 새 문서 쪽 이름 항 입력으로 쓴다. raw_text가 이 시점
+    # 모든 유효한 state에 다 있으므로 배치 전체를 한 번에 넘긴다.
+    embedded_states = _attach_extracted_names(embedded_states)
 
     # ── Stage 3: trust-score gate + batch genealogy (32B loaded once) ─────
     threshold = _settings.user.genealogist.trust_skip_threshold

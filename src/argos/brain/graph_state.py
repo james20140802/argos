@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 from typing import NotRequired, TypedDict
 
+from argos.brain.entity_extraction import ExtractedName
 from argos.models.tech_item import CategoryType
 
 
@@ -50,3 +51,9 @@ class BrainState(TypedDict):
     # Feeds argos.brain.trust.score_rubric() for the deterministic trust
     # synthesis; None on parse failure / infra error / relevance-gate demotion.
     trust_rubric: NotRequired[dict | None]
+    # ARG-263: 이 문서에서 뽑은 고유명사. 배정 단계(ARG-266)가 새 문서 쪽
+    # 이름 항 입력으로 쓰고, save_node가 document_entities 링크로 옮긴다.
+    # 정규형 목록은 entity_names, 원문까지 실은 추출 결과는 별도로 둔다 —
+    # 링크를 쓸 때 표시용 원문(Entity.name)이 필요하기 때문이다.
+    entity_names: NotRequired[list[str] | None]
+    entity_names_extracted: NotRequired[list[ExtractedName] | None]
