@@ -138,3 +138,20 @@ def test_execute_mode_exits_zero_when_nothing_is_skipped():
         rc = main(["backfill-events"])
 
     assert rc == 0
+
+
+def test_rename_stale_flag_reaches_the_runner():
+    from unittest.mock import AsyncMock, patch
+
+    with patch("argos.cli._backfill_events", new=AsyncMock(return_value=0)) as run:
+        assert main(["backfill-events", "--rename-stale"]) == 0
+    assert run.await_args.kwargs["rename_stale"] is True
+
+
+def test_rename_dry_run_prints_only_the_target_count(capsys):
+    from argos.cli import _print_rename_dry_run
+
+    _print_rename_dry_run(7)
+    output = capsys.readouterr().out
+    assert "7" in output
+    assert "nothing was written" in output

@@ -40,7 +40,9 @@ from argos.brain.event_assignment import (
     link_document_to_event,
 )
 from argos.brain.event_candidates import CandidateNeighbor, as_vector, keywords_of
+from argos.brain.event_naming import EvidenceDoc, apply_event_naming
 from argos.brain.event_scoring import DocumentFeatures, cosine_similarity
+from argos.brain.llm_client import OllamaClient
 
 if TYPE_CHECKING:
     from argos.config import EventDetectionConfig
@@ -334,3 +336,116 @@ async def execute_backfill(
     return ExecuteResult(
         assigned=assigned, created_events=created_events, skipped=skipped
     )
+
+
+_STALE_EVENTS_SQL = text(
+    """
+    SELECT e.id AS event_id, i.title AS doc_title, i.summary AS doc_summary
+    FROM tech_events e
+    JOIN event_documents ed ON ed.event_id = e.id
+    JOIN tech_items i ON i.id = ed.tech_item_id
+    WHERE e.merged_into_id IS NULL
+      AND (e.naming_stale IS TRUE OR e.title IS NULL)
+      AND e.id IN (
+          SELECT id FROM tech_events
+          WHERE merged_into_id IS NULL
+            AND (naming_stale IS TRUE OR title IS NULL)
+          ORDER BY occurred_at ASC, id ASC
+          LIMIT :limit
+      )
+    ORDER BY e.occurred_at ASC, e.id ASC, i.id ASC
+    """
+)
+"""재명명 대상과 그 근거 문서를 한 번에 읽는다.
+
+툼스톤(``merged_into_id``가 채워진 사건)은 제외한다 — 흡수돼 더 이상
+표시되지 않는 사건에 LLM을 태울 이유가 없다. 대상 조건이 ``naming_stale``
+**또는** ``title IS NULL``인 이유는, 플래그를 세우는 코드(ARG-270)가 생기기
+전에 만들어진 무명 사건까지 이 경로로 줍기 위해서다.
+
+``LIMIT``이 서브쿼리에 걸린 것은 의도적이다 — 바깥에 걸면 조인으로 늘어난
+행 수를 자르게 되어 사건 하나의 근거가 잘려 나간다.
+"""
+
+_NO_LIMIT = 2_000_000_000
+"""``--limit`` 미지정 시 쓰는 사실상 무한대. SQL을 두 벌로 나누지 않으려는 것."""
+
+
+@dataclass(frozen=True)
+class StaleEvent:
+    """재명명 대상 사건 하나와 그 근거 문서들."""
+
+    event_id: uuid.UUID
+    docs: list[EvidenceDoc]
+
+
+@dataclass(frozen=True)
+class RenameResult:
+    """재명명 종료 요약."""
+
+    renamed: int
+    skipped: int
+
+
+async def fetch_stale_events(
+    session: AsyncSession, *, limit: int | None = None
+) -> list[StaleEvent]:
+    """``naming_stale``이 섰거나 아직 무명인 (툼스톤 아닌) 사건들을 읽는다."""
+    rows = (
+        await session.execute(
+            _STALE_EVENTS_SQL, {"limit": limit if limit is not None else _NO_LIMIT}
+        )
+    ).all()
+
+    grouped: dict[uuid.UUID, list[EvidenceDoc]] = {}
+    order: list[uuid.UUID] = []
+    for row in rows:
+        if row.event_id not in grouped:
+            grouped[row.event_id] = []
+            order.append(row.event_id)
+        grouped[row.event_id].append(
+            EvidenceDoc(title=row.doc_title, summary=row.doc_summary)
+        )
+    return [StaleEvent(event_id=event_id, docs=grouped[event_id]) for event_id in order]
+
+
+async def rename_stale_events(
+    session: AsyncSession,
+    events: Sequence[StaleEvent],
+    *,
+    batch_size: int = 50,
+    client: "OllamaClient | None" = None,
+) -> RenameResult:
+    """대상 사건들의 이름·요약을 다시 짓는다. ``batch_size``마다 커밋한다.
+
+    사건 구성 자체는 건드리지 않는다 — 쪼개기/합치기는 이 단계의 비목표다.
+    실패한 사건은 ``naming_stale``이 선 채로 남아 다음 실행이 다시 집는다.
+    """
+    renamed = 0
+    skipped = 0
+    pending = 0
+
+    for event in events:
+        try:
+            async with session.begin_nested():
+                applied = await apply_event_naming(
+                    session, event.event_id, event.docs, client=client
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("backfill: renaming %s failed: %r", event.event_id, exc)
+            applied = False
+
+        if applied:
+            renamed += 1
+            pending += 1
+        else:
+            skipped += 1
+
+        if pending >= batch_size:
+            await session.commit()
+            pending = 0
+
+    if pending:
+        await session.commit()
+
+    return RenameResult(renamed=renamed, skipped=skipped)

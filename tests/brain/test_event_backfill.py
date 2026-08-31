@@ -309,3 +309,57 @@ async def test_execute_flushes_so_the_next_document_sees_the_link(monkeypatch):
         session, docs, config=settings.user.event_detection, batch_size=10
     )
     session.flush.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rename_updates_each_event_and_commits_per_batch(monkeypatch):
+    from argos.brain import event_backfill
+    from argos.brain.event_naming import EvidenceDoc
+
+    applied = AsyncMock(return_value=True)
+    monkeypatch.setattr(event_backfill, "apply_event_naming", applied)
+    session = _session_without_db_neighbours()
+    session.commit = AsyncMock()
+    events = [
+        event_backfill.StaleEvent(
+            event_id=uuid.uuid4(), docs=[EvidenceDoc(title="t", summary="s")]
+        )
+        for _ in range(3)
+    ]
+
+    result = await event_backfill.rename_stale_events(session, events, batch_size=2)
+
+    assert result.renamed == 3
+    assert result.skipped == 0
+    assert applied.await_count == 3
+    assert session.commit.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_rename_counts_a_failed_generation_as_skipped(monkeypatch):
+    from argos.brain import event_backfill
+    from argos.brain.event_naming import EvidenceDoc
+
+    monkeypatch.setattr(event_backfill, "apply_event_naming", AsyncMock(return_value=False))
+    session = _session_without_db_neighbours()
+    session.commit = AsyncMock()
+    events = [
+        event_backfill.StaleEvent(
+            event_id=uuid.uuid4(), docs=[EvidenceDoc(title="t", summary="s")]
+        )
+    ]
+
+    result = await event_backfill.rename_stale_events(session, events, batch_size=10)
+
+    assert result.renamed == 0
+    assert result.skipped == 1
+
+
+def test_stale_event_query_excludes_tombstones_and_targets_stale_or_untitled():
+    """SQL 문자열 수준 회귀 — 조건 세 개가 모두 남아 있어야 한다."""
+    from argos.brain.event_backfill import _STALE_EVENTS_SQL
+
+    sql = str(_STALE_EVENTS_SQL).lower()
+    assert "naming_stale" in sql
+    assert "title is null" in sql
+    assert "merged_into_id is null" in sql

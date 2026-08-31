@@ -1648,6 +1648,14 @@ def _build_backfill_events_parser(
         metavar="N",
         help="Commit after every N assigned documents (default: 50)",
     )
+    bf_p.add_argument(
+        "--rename-stale",
+        action="store_true",
+        help=(
+            "Rename events whose boundary changed or that have no name yet, "
+            "instead of assigning documents"
+        ),
+    )
 
 
 def _cmd_backfill_events(args: argparse.Namespace) -> int:
@@ -1656,6 +1664,7 @@ def _cmd_backfill_events(args: argparse.Namespace) -> int:
             limit=getattr(args, "limit", None),
             dry_run=bool(getattr(args, "dry_run", False)),
             batch_size=getattr(args, "batch_size", 50),
+            rename_stale=bool(getattr(args, "rename_stale", False)),
         )
     )
 
@@ -1699,12 +1708,51 @@ def _print_execute_summary(result) -> None:
     )
 
 
+def _print_rename_dry_run(count: int) -> None:
+    print(f"backfill-events (dry-run, --rename-stale): {count} event(s) would be renamed")
+    print("  nothing was written to the database.")
+
+
 async def _backfill_events(
     limit: int | None = None,
     dry_run: bool = False,
     batch_size: int = 50,
+    rename_stale: bool = False,
 ) -> int:
-    """Group unlinked documents into events. ``--dry-run`` only previews it."""
+    """Group unlinked documents into events. ``--dry-run`` only previews it.
+
+    ``--rename-stale`` is a separate mode: it renames events whose boundary
+    changed (or that have no name yet) and does not touch document
+    assignment. The two modes never run in the same invocation.
+    """
+    if rename_stale:
+        from argos.brain.event_backfill import fetch_stale_events, rename_stale_events
+        from argos.brain.llm_client import get_llm_client
+
+        async with AsyncSessionLocal() as session:
+            events = await fetch_stale_events(session, limit=limit)
+            if not events:
+                print("backfill-events: no events need renaming.")
+                return 0
+            if dry_run:
+                _print_rename_dry_run(len(events))
+                return 0
+            print(f"backfill-events: renaming {len(events)} event(s)...")
+            client = get_llm_client()
+            try:
+                result = await rename_stale_events(
+                    session, events, batch_size=batch_size, client=client
+                )
+            finally:
+                try:
+                    await client.unload("small")
+                except Exception:  # noqa: BLE001
+                    pass
+        print(
+            f"backfill-events done: renamed={result.renamed}, skipped={result.skipped}"
+        )
+        return 0
+
     from argos.brain.event_backfill import (
         execute_backfill,
         fetch_unassigned_documents,
