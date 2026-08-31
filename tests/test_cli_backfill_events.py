@@ -265,3 +265,61 @@ def test_rename_stale_unloads_the_client_even_when_renaming_raises():
             main(["backfill-events", "--rename-stale"])
 
     fake_llm.unload.assert_awaited_once_with("small")
+
+
+def test_dry_run_cli_path_never_calls_a_write_api(monkeypatch, capsys):
+    """CLI 층까지 통틀어 --dry-run이 쓰기 API를 한 번도 부르지 않는다."""
+    import asyncio
+    import uuid
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock, MagicMock
+
+    from argos import cli
+    from argos.brain.event_backfill import BackfillDoc
+    from argos.brain.event_scoring import DocumentFeatures
+
+    session = MagicMock()
+
+    @asynccontextmanager
+    async def _cm():
+        yield None
+
+    session.begin_nested = MagicMock(side_effect=lambda: _cm())
+    session.add = MagicMock()
+    session.add_all = MagicMock()
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+    session.execute = AsyncMock()
+
+    @asynccontextmanager
+    async def _session_factory():
+        yield session
+
+    monkeypatch.setattr(cli, "AsyncSessionLocal", lambda: _session_factory())
+    monkeypatch.setattr(
+        "argos.brain.event_backfill.fetch_unassigned_documents",
+        AsyncMock(
+            return_value=[
+                BackfillDoc(
+                    tech_item_id=uuid.uuid4(),
+                    features=DocumentFeatures(
+                        embedding=(1.0, 0.0),
+                        names=frozenset(),
+                        at=None,
+                        keywords=frozenset(),
+                    ),
+                    title="only doc",
+                    summary=None,
+                )
+            ]
+        ),
+    )
+
+    assert asyncio.run(cli._backfill_events(dry_run=True)) == 0
+
+    session.add.assert_not_called()
+    session.add_all.assert_not_called()
+    session.flush.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    session.execute.assert_not_awaited()
+    assert "nothing was written" in capsys.readouterr().out
