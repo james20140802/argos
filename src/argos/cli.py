@@ -1737,7 +1737,15 @@ async def _backfill_events(
             on_progress=_progress,
         )
     _print_execute_summary(result)
-    return 1 if result.assigned == 0 and result.skipped > 0 else 0
+    # Unlike backfill-digests (where a skip is a normal outcome — "no digest
+    # warranted for this row" — so it always returns 0), every skip here is a
+    # swallowed exception (see execute_backfill's per-document try/except).
+    # That has to reach the operator's exit status even when most documents
+    # succeeded, or an unattended run has no signal that something is
+    # systemically wrong. The run is still idempotent — a re-run only picks
+    # up documents that still have no event link — so failing loudly costs
+    # nothing.
+    return 1 if result.skipped > 0 else 0
 
 
 def _build_add_parser(

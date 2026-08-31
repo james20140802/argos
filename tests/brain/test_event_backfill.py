@@ -236,6 +236,33 @@ async def test_execute_commits_every_batch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_commits_exactly_once_per_full_batch(monkeypatch):
+    """4건을 batch_size=2로 나누면 2+2 — 잔여가 없으니 마지막 커밋이 중복되지
+    않아야 한다. 이 경계 조건을 놓치면 이중 커밋이나 마지막 배치 누락이
+    조용히 통과할 수 있다."""
+    from argos.brain import event_backfill
+
+    monkeypatch.setattr(event_backfill, "db_candidate_source", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        event_backfill,
+        "link_document_to_event",
+        AsyncMock(side_effect=lambda *a, **kw: event_backfill.LinkResult(uuid.uuid4(), True)),
+    )
+    session = _session_without_db_neighbours()
+    session.commit = AsyncMock()
+    session.flush = AsyncMock()
+    docs = [_doc([1.0, 0.0], ["a"], AT + timedelta(days=i * 40)) for i in range(4)]
+
+    result = await event_backfill.execute_backfill(
+        session, docs, config=settings.user.event_detection, batch_size=2
+    )
+
+    assert result.assigned == 4
+    # 2 + 2, no trailing partial batch → exactly 2 commits.
+    assert session.commit.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_execute_skips_a_failing_document_without_aborting(monkeypatch):
     from argos.brain import event_backfill
 
