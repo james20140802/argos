@@ -1612,6 +1612,100 @@ async def _backfill_trust(limit: int | None = None, dry_run: bool = False) -> in
     return 0
 
 
+def _build_backfill_events_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos backfill-events`` subcommand (ARG-242)."""
+    bf_p = sub.add_parser(
+        "backfill-events",
+        help="Assign existing documents to events",
+        parents=[common],
+        description=(
+            "Group already-stored documents into events using the same verdict "
+            "the online pipeline uses. --dry-run previews the grouping without "
+            "writing a single byte. Re-runs are resumable: documents that "
+            "already have an event link are skipped automatically."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bf_p.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Process at most N rows this run (default: all)",
+    )
+    bf_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the grouping without writing",
+    )
+
+
+def _cmd_backfill_events(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _backfill_events(
+            limit=getattr(args, "limit", None),
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    )
+
+
+def _print_dry_run_report(plan, total_docs: int) -> None:
+    """미리보기 리포트. 임계값 현재값을 함께 찍는다.
+
+    어떤 설정으로 나온 결과인지 같이 보이지 않으면, 설정을 바꿔가며 비교하는
+    이 커맨드의 목적 자체가 성립하지 않는다.
+    """
+    config = settings.user.event_detection
+    print(f"backfill-events (dry-run): {total_docs} unassigned document(s)")
+    print(f"  → {plan.new_event_count} event(s) would be created")
+    print(
+        "  thresholds: "
+        f"join_threshold={config.join_threshold} window_days={config.window_days} "
+        f"candidate_k={config.candidate_k} weights="
+        f"(cosine={config.weight_cosine}, entity={config.weight_entity}, "
+        f"time={config.weight_time}, keyword={config.weight_keyword})"
+    )
+    distribution = plan.size_distribution
+    if distribution:
+        print("  size distribution (documents per event):")
+        for size, count in distribution.items():
+            print(f"    {size} doc(s): {count} event(s)")
+    samples = plan.samples()
+    if samples:
+        print("  samples:")
+        for size, titles in samples:
+            print(f"    [{size} doc(s)]")
+            for title in titles[:5]:
+                print(f"      - {title}")
+    print("  nothing was written to the database.")
+
+
+async def _backfill_events(
+    limit: int | None = None,
+    dry_run: bool = False,
+) -> int:
+    """Preview grouping unlinked documents into events (dry-run only for now)."""
+    from argos.brain.event_backfill import fetch_unassigned_documents, plan_backfill
+
+    config = settings.user.event_detection
+
+    async with AsyncSessionLocal() as session:
+        docs = await fetch_unassigned_documents(session, limit=limit)
+        if not docs:
+            print("backfill-events: no unassigned documents.")
+            return 0
+        if dry_run:
+            plan = await plan_backfill(session, docs, config=config)
+            _print_dry_run_report(plan, total_docs=len(docs))
+            return 0
+
+    print("backfill-events: execute mode is not wired yet.")
+    return 0
+
+
 def _build_add_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -1957,6 +2051,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_backfill_images_parser(sub, common)
     _build_backfill_digests_parser(sub, common)
     _build_backfill_trust_parser(sub, common)
+    _build_backfill_events_parser(sub, common)
     _build_backup_parser(sub)
     _build_restore_parser(sub)
     _build_config_parser(sub)
@@ -2076,6 +2171,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_backfill_trust(args)
+    if args.command == "backfill-events":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_backfill_events(args)
     if args.command == "backup":
         return _cmd_backup(args)
     if args.command == "restore":

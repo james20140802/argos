@@ -92,7 +92,7 @@ def keywords_of(text_value: str | None) -> frozenset[str]:
     return frozenset(match.group().casefold() for match in _WORD.finditer(text_value))
 
 
-def _as_vector(value: object) -> tuple[float, ...] | None:
+def as_vector(value: object) -> tuple[float, ...] | None:
     """pgvector 임베딩을 ``tuple[float, ...]``로 접는다.
 
     드라이버 경로에 따라 리스트로도, 문자열(``"[0.1,0.2,...]"``)로도 돌아올
@@ -191,7 +191,7 @@ async def fetch_candidates(
     for row in rows:
         keyword_source = row.summary or row.digest
         features = DocumentFeatures(
-            embedding=_as_vector(row.embedding),
+            embedding=as_vector(row.embedding),
             names=names_by_item.get(row.id, frozenset()),
             at=row.occurred_at,
             keywords=keywords_of(keyword_source),
