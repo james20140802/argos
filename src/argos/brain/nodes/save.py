@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from argos.brain.entity_store import attach_names
 from argos.brain.graph_state import BrainState
 from argos.brain.simhash_storage import to_storage
+from argos.brain.titles import derive_title
 from argos.models.event_document import EventDocument
 from argos.models.tech_event import TechEvent
 from argos.models.tech_item import CategoryType, TechItem
@@ -64,10 +65,8 @@ async def save_node(
         logger.warning("save_node: empty source_url, skipping")
         return state
 
-    title = next(
-        (line.strip() for line in state["raw_text"].splitlines() if line.strip()),
-        "Untitled",
-    )[:500]
+    # ARG-269: 제목 파생 규칙은 사건 명명의 폴백과 공유한다 (brain/titles.py).
+    title = derive_title(state["raw_text"])
 
     existing = await session.execute(
         select(TechItem.id).where(TechItem.source_url == state["source_url"])
