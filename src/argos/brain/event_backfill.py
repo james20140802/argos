@@ -26,14 +26,19 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Sequence
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Callable, Sequence
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.entity_store import names_for_documents
-from argos.brain.event_assignment import db_candidate_source, decide_event
+from argos.brain.event_assignment import (
+    LinkResult,
+    db_candidate_source,
+    decide_event,
+    link_document_to_event,
+)
 from argos.brain.event_candidates import CandidateNeighbor, as_vector, keywords_of
 from argos.brain.event_scoring import DocumentFeatures, cosine_similarity
 
@@ -245,3 +250,87 @@ async def plan_backfill(
         overlay.add(doc, event_id)
         plan.assignments.append(Assignment(doc=doc, event_id=event_id, created=created))
     return plan
+
+
+@dataclass(frozen=True)
+class ExecuteResult:
+    """실행 모드의 종료 요약."""
+
+    assigned: int
+    created_events: int
+    skipped: int
+
+
+async def execute_backfill(
+    session: AsyncSession,
+    docs: Sequence[BackfillDoc],
+    *,
+    config: "EventDetectionConfig",
+    batch_size: int = 50,
+    on_progress: "Callable[[int, int], None] | None" = None,
+) -> ExecuteResult:
+    """문서를 실제로 사건에 배정한다. ``batch_size``마다 커밋한다.
+
+    **왜 오버레이가 없는가:** 문서마다 링크를 flush하므로, 다음 문서의
+    ``db_candidate_source`` 조회가 같은 트랜잭션 안에서 그 링크를 본다. 즉
+    미리보기의 인메모리 오버레이가 하던 일을 여기서는 DB가 한다 — 그래서
+    두 모드가 같은 판정에 수렴한다.
+
+    **왜 배치마다 커밋하는가:** 전체를 한 트랜잭션으로 묶으면 556건째에서
+    실패했을 때 앞선 555건이 통째로 사라진다. 배치 하나가 커밋되면 그 배치의
+    배정은 확정이고, 재실행은 "링크가 없는 문서"만 다시 집으므로 이어서
+    진행된다.
+
+    **문서 한 건의 실패는 그 건만 건너뛴다.** 세이브포인트 안에서 쓰고 실패를
+    삼키므로, 실패가 중단시킨 트랜잭션이 뒤따르는 문서까지 오염시키지 않는다.
+    """
+    assigned = 0
+    created_events = 0
+    skipped = 0
+    pending_in_batch = 0
+
+    for index, doc in enumerate(docs, start=1):
+        at = doc.features.at
+        try:
+            candidates: list[CandidateNeighbor] = []
+            if doc.features.embedding and at is not None:
+                candidates = await db_candidate_source(
+                    session,
+                    embedding=doc.features.embedding,
+                    at=at,
+                    exclude_id=doc.tech_item_id,
+                )
+            event_id = decide_event(doc.features, candidates, config=config)
+            async with session.begin_nested():
+                link: LinkResult = await link_document_to_event(
+                    session,
+                    tech_item_id=doc.tech_item_id,
+                    event_id=event_id,
+                    occurred_at=at or datetime.now(timezone.utc),
+                )
+                # 다음 문서의 후보 조회가 이 링크를 보게 한다.
+                await session.flush()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "backfill: assigning %s failed: %r — skipping", doc.tech_item_id, exc
+            )
+            skipped += 1
+            continue
+
+        assigned += 1
+        if link.created:
+            created_events += 1
+        pending_in_batch += 1
+        if on_progress is not None:
+            on_progress(index, len(docs))
+
+        if pending_in_batch >= batch_size:
+            await session.commit()
+            pending_in_batch = 0
+
+    if pending_in_batch:
+        await session.commit()
+
+    return ExecuteResult(
+        assigned=assigned, created_events=created_events, skipped=skipped
+    )

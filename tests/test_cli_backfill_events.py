@@ -40,3 +40,28 @@ def test_dry_run_report_prints_counts_and_thresholds(capsys):
     assert "join_threshold" in output
     assert "window_days" in output
     assert "Claude 5 released" in output
+
+
+def test_parser_accepts_batch_size():
+    with patch("argos.cli._backfill_events", new=AsyncMock(return_value=0)) as run:
+        assert main(["backfill-events", "--batch-size", "25"]) == 0
+    kwargs = run.await_args.kwargs
+    assert kwargs["batch_size"] == 25
+
+
+def test_batch_size_defaults_to_50():
+    with patch("argos.cli._backfill_events", new=AsyncMock(return_value=0)) as run:
+        assert main(["backfill-events"]) == 0
+    kwargs = run.await_args.kwargs
+    assert kwargs["batch_size"] == 50
+
+
+def test_execute_summary_reports_counts(capsys):
+    from argos.brain.event_backfill import ExecuteResult
+    from argos.cli import _print_execute_summary
+
+    _print_execute_summary(ExecuteResult(assigned=12, created_events=5, skipped=1))
+    output = capsys.readouterr().out
+    assert "assigned=12" in output
+    assert "new events=5" in output
+    assert "skipped=1" in output

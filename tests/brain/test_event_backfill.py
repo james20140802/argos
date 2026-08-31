@@ -208,3 +208,77 @@ def test_cap_candidates_breaks_cosine_ties_by_id_ascending():
 
     expected_order = sorted(ids, key=str)[:2]
     assert [candidate.tech_item_id for candidate in capped] == expected_order
+
+
+@pytest.mark.asyncio
+async def test_execute_commits_every_batch(monkeypatch):
+    from argos.brain import event_backfill
+
+    monkeypatch.setattr(event_backfill, "db_candidate_source", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        event_backfill,
+        "link_document_to_event",
+        AsyncMock(side_effect=lambda *a, **kw: event_backfill.LinkResult(uuid.uuid4(), True)),
+    )
+    session = _session_without_db_neighbours()
+    session.commit = AsyncMock()
+    session.flush = AsyncMock()
+    docs = [_doc([1.0, 0.0], ["a"], AT + timedelta(days=i * 40)) for i in range(5)]
+
+    result = await event_backfill.execute_backfill(
+        session, docs, config=settings.user.event_detection, batch_size=2
+    )
+
+    assert result.assigned == 5
+    assert result.created_events == 5
+    # 2 + 2 + 1 → 배치 경계 2회 + 마지막 잔여 1회 = 3회
+    assert session.commit.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_execute_skips_a_failing_document_without_aborting(monkeypatch):
+    from argos.brain import event_backfill
+
+    monkeypatch.setattr(event_backfill, "db_candidate_source", AsyncMock(return_value=[]))
+    calls = {"n": 0}
+
+    async def _link(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("boom")
+        return event_backfill.LinkResult(uuid.uuid4(), True)
+
+    monkeypatch.setattr(event_backfill, "link_document_to_event", _link)
+    session = _session_without_db_neighbours()
+    session.commit = AsyncMock()
+    session.flush = AsyncMock()
+    docs = [_doc([1.0, 0.0], ["a"], AT + timedelta(days=i * 40)) for i in range(3)]
+
+    result = await event_backfill.execute_backfill(
+        session, docs, config=settings.user.event_detection, batch_size=10
+    )
+
+    assert result.assigned == 2
+    assert result.skipped == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_flushes_so_the_next_document_sees_the_link(monkeypatch):
+    """실행 모드는 오버레이를 쓰지 않는다 — flush한 링크를 DB 조회가 본다."""
+    from argos.brain import event_backfill
+
+    monkeypatch.setattr(event_backfill, "db_candidate_source", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        event_backfill,
+        "link_document_to_event",
+        AsyncMock(side_effect=lambda *a, **kw: event_backfill.LinkResult(uuid.uuid4(), True)),
+    )
+    session = _session_without_db_neighbours()
+    session.commit = AsyncMock()
+    session.flush = AsyncMock()
+    docs = [_doc([1.0, 0.0], ["a"], AT)]
+
+    await event_backfill.execute_backfill(
+        session, docs, config=settings.user.event_detection, batch_size=10
+    )
+    session.flush.assert_awaited()

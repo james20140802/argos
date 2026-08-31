@@ -1641,6 +1641,13 @@ def _build_backfill_events_parser(
         action="store_true",
         help="Preview the grouping without writing",
     )
+    bf_p.add_argument(
+        "--batch-size",
+        type=_positive_int,
+        default=50,
+        metavar="N",
+        help="Commit after every N assigned documents (default: 50)",
+    )
 
 
 def _cmd_backfill_events(args: argparse.Namespace) -> int:
@@ -1648,6 +1655,7 @@ def _cmd_backfill_events(args: argparse.Namespace) -> int:
         _backfill_events(
             limit=getattr(args, "limit", None),
             dry_run=bool(getattr(args, "dry_run", False)),
+            batch_size=getattr(args, "batch_size", 50),
         )
     )
 
@@ -1683,12 +1691,25 @@ def _print_dry_run_report(plan, total_docs: int) -> None:
     print("  nothing was written to the database.")
 
 
+def _print_execute_summary(result) -> None:
+    print(
+        "backfill-events done: "
+        f"assigned={result.assigned}, new events={result.created_events}, "
+        f"skipped={result.skipped}"
+    )
+
+
 async def _backfill_events(
     limit: int | None = None,
     dry_run: bool = False,
+    batch_size: int = 50,
 ) -> int:
-    """Preview grouping unlinked documents into events (dry-run only for now)."""
-    from argos.brain.event_backfill import fetch_unassigned_documents, plan_backfill
+    """Group unlinked documents into events. ``--dry-run`` only previews it."""
+    from argos.brain.event_backfill import (
+        execute_backfill,
+        fetch_unassigned_documents,
+        plan_backfill,
+    )
 
     config = settings.user.event_detection
 
@@ -1702,8 +1723,21 @@ async def _backfill_events(
             _print_dry_run_report(plan, total_docs=len(docs))
             return 0
 
-    print("backfill-events: execute mode is not wired yet.")
-    return 0
+        print(f"backfill-events: assigning {len(docs)} document(s)...")
+
+        def _progress(done: int, total: int) -> None:
+            if done % 25 == 0 or done == total:
+                print(f"  {done}/{total}")
+
+        result = await execute_backfill(
+            session,
+            docs,
+            config=config,
+            batch_size=batch_size,
+            on_progress=_progress,
+        )
+    _print_execute_summary(result)
+    return 1 if result.assigned == 0 and result.skipped > 0 else 0
 
 
 def _build_add_parser(
