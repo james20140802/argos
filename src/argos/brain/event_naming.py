@@ -18,13 +18,18 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Sequence
+
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain._language import language_directive
 from argos.brain.llm_client import OllamaClient, get_llm_client
 from argos.brain.titles import MAX_TITLE_CHARS
 from argos.config import settings
+from argos.models.tech_event import TechEvent
 
 logger = logging.getLogger(__name__)
 
@@ -138,3 +143,30 @@ async def generate_event_naming(
     summary_match = _SUMMARY_RE.search(cleaned)
     summary = _scrub(summary_match.group(1)) if summary_match else None
     return EventNaming(title=title, summary=summary or None)
+
+
+async def apply_event_naming(
+    session: AsyncSession,
+    event_id: uuid.UUID,
+    docs: Sequence[EvidenceDoc],
+    *,
+    client: OllamaClient | None = None,
+    keep_alive: str | int = "5m",
+) -> bool:
+    """사건에 이름·요약을 지어 붙이고 ``naming_stale``을 내린다.
+
+    생성이 실패하면 **아무것도 쓰지 않고** ``False``를 돌린다 — 사건은 무명 +
+    ``naming_stale=True``인 채로 남아 뒤의 ``--rename-stale`` 패스가 줍는다.
+    이 함수는 예외를 삼키지 않는다(생성 실패는 ``generate_event_naming``이
+    이미 ``None``으로 접어 준다). 세이브포인트는 부르는 쪽이 건다.
+    """
+    naming = await generate_event_naming(docs, client=client, keep_alive=keep_alive)
+    if naming is None:
+        return False
+
+    await session.execute(
+        update(TechEvent)
+        .where(TechEvent.id == event_id)
+        .values(title=naming.title, summary=naming.summary, naming_stale=False)
+    )
+    return True

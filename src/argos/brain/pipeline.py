@@ -8,6 +8,7 @@ from typing import Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 from argos.brain.entity_extraction import extract_names
 from argos.brain.entity_store import canonical_names
+from argos.brain.event_naming import EvidenceDoc, apply_event_naming
 from argos.brain.graph_state import BrainState
 from argos.brain.nodes.triage import triage_node, batch_triage_states
 from argos.brain.nodes.digest import digest_node, batch_digest_states
@@ -17,6 +18,7 @@ from argos.brain.near_duplicate import simhash
 from argos.brain.nodes.assign_event import assign_event_node
 from argos.brain.nodes.save import save_node
 from argos.brain.llm_client import get_genealogist_llm_client
+from argos.brain.titles import derive_title
 from argos.models.tech_item import CategoryType
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,9 @@ async def _assign_then_save(
     반드시 함께 ``False``로 둔다 — ``event_id=None``만으로는 "판정을 끝냈지만
     못 찾음"과 "판정 자체가 안 됨"을 구분할 수 없고, save_node는 후자일 때
     새 사건을 만들면 안 된다(assign_event.py 모듈 docstring 참고).
+
+    ARG-273: 저장이 새 사건을 만들었으면(``created_event_id``) 그 자리에서
+    이름·요약을 짓는다. 실패해도 저장을 되돌리지 않는다.
     """
     try:
         assigned = await assign_event_node(state, session=session)
@@ -49,7 +54,38 @@ async def _assign_then_save(
             exc,
         )
         assigned = {**state, "event_id": None, "event_assigned": False}
-    return await save_node(assigned, session=session, flush=flush)
+    saved = await save_node(assigned, session=session, flush=flush)
+
+    # ARG-273: 방금 새로 생긴 사건에만 이름을 붙인다. 안 하면 백필 직후엔
+    # 이름이 있어도 이후 유입되는 사건이 전부 무명이 된다. 기존 사건에 붙은
+    # 경우는 link_document_to_event가 naming_stale만 세우고, 재명명은
+    # ``backfill-events --rename-stale``이 배치로 처리한다 — 크롤 1건마다
+    # 사건 전체를 다시 짓게 하면 파이프라인이 LLM 호출로 늘어진다.
+    #
+    # 명명 실패는 삼킨다. 사건은 무명 + naming_stale=True로 남아 재명명
+    # 패스가 줍는다 — 배정과 같은 "품질 기능은 저장을 막지 않는다" 규약이다.
+    # 삼키려면 세이브포인트가 필요하다(save_node 모듈 docstring 참고).
+    created_event_id = saved.get("created_event_id")
+    if created_event_id is not None:
+        try:
+            async with session.begin_nested():
+                await apply_event_naming(
+                    session,
+                    created_event_id,
+                    [
+                        EvidenceDoc(
+                            title=derive_title(saved.get("raw_text")),
+                            summary=saved.get("summary") or saved.get("digest"),
+                        )
+                    ],
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "_assign_then_save: naming the new event for %s failed: %r",
+                saved.get("source_url"),
+                exc,
+            )
+    return saved
 
 
 def _attach_extracted_names(states: list[BrainState]) -> list[BrainState]:

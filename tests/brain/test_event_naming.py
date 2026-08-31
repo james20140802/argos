@@ -1,4 +1,5 @@
-from unittest.mock import AsyncMock
+import uuid
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -80,3 +81,40 @@ async def test_prompt_carries_evidence_and_language_directive():
     assert "Claude 5 released" in prompt
     assert "Anthropic shipped it" in prompt
     assert "IMPORTANT: Write every natural-language output field" in prompt
+
+
+@pytest.mark.asyncio
+async def test_apply_event_naming_updates_and_clears_the_flag():
+    from argos.brain.event_naming import apply_event_naming
+
+    session = MagicMock()
+    session.execute = AsyncMock()
+    client = _client("TITLE: 사건 제목\nSUMMARY: 사건 요약")
+    event_id = uuid.uuid4()
+
+    assert await apply_event_naming(
+        session, event_id, [EvidenceDoc(title="a", summary="b")], client=client
+    ) is True
+
+    statement = session.execute.await_args.args[0]
+    compiled = str(statement)
+    assert "UPDATE tech_events" in compiled
+    values = statement.compile().params
+    assert values["title"] == "사건 제목"
+    assert values["summary"] == "사건 요약"
+    assert values["naming_stale"] is False
+
+
+@pytest.mark.asyncio
+async def test_apply_event_naming_writes_nothing_when_generation_fails():
+    from argos.brain.event_naming import apply_event_naming
+
+    session = MagicMock()
+    session.execute = AsyncMock()
+    client = AsyncMock()
+    client.query = AsyncMock(side_effect=RuntimeError("down"))
+
+    assert await apply_event_naming(
+        session, uuid.uuid4(), [EvidenceDoc(title="a", summary="b")], client=client
+    ) is False
+    session.execute.assert_not_awaited()

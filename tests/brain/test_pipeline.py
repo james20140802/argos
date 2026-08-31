@@ -1018,3 +1018,44 @@ async def test_batch_pipeline_saves_in_published_at_then_url_order(monkeypatch):
     )
 
     assert save_order == ["https://example.com/a", "https://example.com/b"]
+
+
+@pytest.mark.asyncio
+async def test_assign_then_save_names_a_newly_created_event(monkeypatch):
+    """새 사건이 생기면 명명 훅이 그 사건 id로 한 번 불린다."""
+    event_id = uuid.uuid4()
+
+    async def _save(state, session, flush=True):
+        return {**state, "saved": True, "created_event_id": event_id}
+
+    monkeypatch.setattr(
+        brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
+    )
+    monkeypatch.setattr(brain_pipeline, "save_node", _save)
+    naming = AsyncMock(return_value=True)
+    monkeypatch.setattr(brain_pipeline, "apply_event_naming", naming)
+
+    session = _begin_nested_session()
+    await brain_pipeline._assign_then_save(
+        {"source_url": "u", "raw_text": "T\nbody", "summary": "s"}, session=session
+    )
+    assert naming.await_args.args[1] == event_id
+
+
+@pytest.mark.asyncio
+async def test_assign_then_save_skips_naming_when_no_event_was_created(monkeypatch):
+    async def _save(state, session, flush=True):
+        return {**state, "saved": True, "created_event_id": None}
+
+    monkeypatch.setattr(
+        brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
+    )
+    monkeypatch.setattr(brain_pipeline, "save_node", _save)
+    naming = AsyncMock(return_value=True)
+    monkeypatch.setattr(brain_pipeline, "apply_event_naming", naming)
+
+    session = _begin_nested_session()
+    await brain_pipeline._assign_then_save(
+        {"source_url": "u", "raw_text": "T\nbody", "summary": "s"}, session=session
+    )
+    naming.assert_not_awaited()
