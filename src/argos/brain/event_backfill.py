@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from argos.brain.entity_store import names_for_documents
 from argos.brain.event_assignment import db_candidate_source, decide_event
 from argos.brain.event_candidates import CandidateNeighbor, as_vector, keywords_of
-from argos.brain.event_scoring import DocumentFeatures
+from argos.brain.event_scoring import DocumentFeatures, cosine_similarity
 
 if TYPE_CHECKING:
     from argos.config import EventDetectionConfig
@@ -187,6 +187,33 @@ class _PendingOverlay:
         return sorted(neighbours, key=lambda neighbour: str(neighbour.tech_item_id))
 
 
+def _cap_candidates(
+    subject: DocumentFeatures,
+    candidates: list[CandidateNeighbor],
+    *,
+    k: int,
+) -> list[CandidateNeighbor]:
+    """합친 후보 목록을 ``k``개로 자른다 — DB 경로가 미리 자르는 것과 같은 자리.
+
+    ``fetch_candidates``는 ``LIMIT :limit``으로 상위 K만 반환한 뒤 판정에
+    넘긴다. 미리보기가 DB 후보와 pending 오버레이 후보를 합친 목록을 그대로
+    넘기면, 밀집한 시간 창에서 실제 실행보다 **더 많은** 이웃을 보게 되어
+    실행이라면 갈랐을 두 문서를 미리보기가 묶어 버릴 수 있다. 그래서 합친
+    뒤에도 DB 쿼리와 같은 규칙(코사인 상위 K, 동점은 id 오름차순)으로 다시
+    한 번 잘라야 두 경로의 판정이 수렴한다.
+    """
+    if len(candidates) <= k:
+        return candidates
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (
+            -cosine_similarity(subject.embedding, candidate.features.embedding),
+            str(candidate.tech_item_id),
+        ),
+    )
+    return ranked[:k]
+
+
 async def plan_backfill(
     session: AsyncSession,
     docs: Sequence[BackfillDoc],
@@ -208,7 +235,10 @@ async def plan_backfill(
                 session, embedding=doc.features.embedding, at=at
             )
         pending = overlay.candidates(at, window_days=config.window_days) if at else []
-        event_id = decide_event(doc.features, [*db_neighbours, *pending], config=config)
+        candidates = _cap_candidates(
+            doc.features, [*db_neighbours, *pending], k=config.candidate_k
+        )
+        event_id = decide_event(doc.features, candidates, config=config)
         created = event_id is None
         if event_id is None:
             event_id = uuid.uuid4()

@@ -80,7 +80,7 @@ class NeighborEdge:
     weight: float
 
 
-def _cosine(left: tuple[float, ...] | None, right: tuple[float, ...] | None) -> float:
+def cosine_similarity(left: tuple[float, ...] | None, right: tuple[float, ...] | None) -> float:
     if not left or not right or len(left) != len(right):
         return 0.0
     dot = sum(a * b for a, b in zip(left, right))
@@ -128,7 +128,7 @@ def edge_weight(
         return 0.0
 
     score = (
-        weights.cosine * _cosine(left.embedding, right.embedding)
+        weights.cosine * cosine_similarity(left.embedding, right.embedding)
         + weights.entity * _jaccard(left.names, right.names)
         + weights.time * _time_decay(left.at, right.at, window_days)
         + weights.keyword * _jaccard(left.keywords, right.keywords)
