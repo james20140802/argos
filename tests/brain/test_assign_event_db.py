@@ -506,8 +506,8 @@ async def test_a_db_level_assignment_failure_still_saves_the_document(
     않는다 — ``fetch_candidates`` 호출을 ``session.begin_nested()``
     세이브포인트로 감싸 롤백해야 세션이 다시 쓸 수 있는 상태로 돌아온다.)
     """
+    from argos.brain import event_assignment as event_assignment_module
     from argos.brain import event_candidates as event_candidates_module
-    from argos.brain.nodes import assign_event as assign_event_module
 
     async with session_factory() as session:
         companion = await _process(
@@ -528,7 +528,7 @@ async def test_a_db_level_assignment_failure_still_saves_the_document(
             session, embedding=[0.1, 0.2, 0.3], at=at, **kwargs
         )
 
-    monkeypatch.setattr(assign_event_module, "fetch_candidates", _bad_dimension_fetch)
+    monkeypatch.setattr(event_assignment_module, "fetch_candidates", _bad_dimension_fetch)
 
     async with session_factory() as session:
         result = await _process(
