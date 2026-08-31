@@ -1625,7 +1625,10 @@ def _build_backfill_events_parser(
             "Group already-stored documents into events using the same verdict "
             "the online pipeline uses. --dry-run previews the grouping without "
             "writing a single byte. Re-runs are resumable: documents that "
-            "already have an event link are skipped automatically."
+            "already have an event link are skipped automatically. Assignment "
+            "and renaming are separate invocations of this same subcommand: "
+            "the normal two-step operation is `argos backfill-events` followed "
+            "by `argos backfill-events --rename-stale`."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1646,7 +1649,10 @@ def _build_backfill_events_parser(
         type=_positive_int,
         default=50,
         metavar="N",
-        help="Commit after every N assigned documents (default: 50)",
+        help=(
+            "Commit after every N rows this run — assigned documents, or "
+            "renamed events with --rename-stale (default: 50)"
+        ),
     )
     bf_p.add_argument(
         "--rename-stale",

@@ -1,6 +1,8 @@
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from argos.cli import main
 
 
@@ -155,3 +157,111 @@ def test_rename_dry_run_prints_only_the_target_count(capsys):
     output = capsys.readouterr().out
     assert "7" in output
     assert "nothing was written" in output
+
+
+def test_rename_dry_run_makes_no_llm_call_and_prints_the_target_count(capsys):
+    """Pins the guarantee that ``--rename-stale --dry-run`` never loads the
+    8B model. A regression that reordered the dry-run check relative to
+    ``get_llm_client()`` would only be caught by a test that drives the real
+    async path — the standalone print-helper test above does not."""
+    from argos.brain.event_backfill import StaleEvent
+    from argos.brain.event_naming import EvidenceDoc
+
+    events = [
+        StaleEvent(event_id=uuid.uuid4(), docs=[EvidenceDoc(title="t", summary="s")])
+    ]
+    llm_spy = MagicMock()
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=_session_ctx()),
+        patch(
+            "argos.brain.event_backfill.fetch_stale_events",
+            AsyncMock(return_value=events),
+        ),
+        patch("argos.brain.llm_client.get_llm_client", llm_spy),
+    ):
+        rc = main(["backfill-events", "--rename-stale", "--dry-run"])
+
+    assert rc == 0
+    llm_spy.assert_not_called()
+    out = capsys.readouterr().out
+    assert "1" in out
+    assert "nothing was written" in out
+
+
+def test_rename_stale_with_no_targets_skips_the_llm_client(capsys):
+    llm_spy = MagicMock()
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=_session_ctx()),
+        patch(
+            "argos.brain.event_backfill.fetch_stale_events",
+            AsyncMock(return_value=[]),
+        ),
+        patch("argos.brain.llm_client.get_llm_client", llm_spy),
+    ):
+        rc = main(["backfill-events", "--rename-stale"])
+
+    assert rc == 0
+    llm_spy.assert_not_called()
+    assert "no events need renaming" in capsys.readouterr().out
+
+
+def test_rename_stale_unloads_the_client_after_a_normal_run():
+    from argos.brain.event_backfill import RenameResult, StaleEvent
+    from argos.brain.event_naming import EvidenceDoc
+
+    events = [
+        StaleEvent(event_id=uuid.uuid4(), docs=[EvidenceDoc(title="t", summary="s")])
+    ]
+    fake_llm = AsyncMock()
+    fake_llm.unload = AsyncMock()
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=_session_ctx()),
+        patch(
+            "argos.brain.event_backfill.fetch_stale_events",
+            AsyncMock(return_value=events),
+        ),
+        patch("argos.brain.llm_client.get_llm_client", return_value=fake_llm),
+        patch(
+            "argos.brain.event_backfill.rename_stale_events",
+            AsyncMock(return_value=RenameResult(renamed=1, skipped=0)),
+        ),
+    ):
+        rc = main(["backfill-events", "--rename-stale"])
+
+    assert rc == 0
+    fake_llm.unload.assert_awaited_once_with("small")
+
+
+def test_rename_stale_unloads_the_client_even_when_renaming_raises():
+    """A 32B/8B swap that never unloads is the VRAM failure this codebase's
+    whole model discipline exists to prevent — the ``finally`` must run even
+    when ``rename_stale_events`` itself blows up, not just on its normal
+    per-event failure path (which never raises out to the caller)."""
+    from argos.brain.event_backfill import StaleEvent
+    from argos.brain.event_naming import EvidenceDoc
+
+    events = [
+        StaleEvent(event_id=uuid.uuid4(), docs=[EvidenceDoc(title="t", summary="s")])
+    ]
+    fake_llm = AsyncMock()
+    fake_llm.unload = AsyncMock()
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=_session_ctx()),
+        patch(
+            "argos.brain.event_backfill.fetch_stale_events",
+            AsyncMock(return_value=events),
+        ),
+        patch("argos.brain.llm_client.get_llm_client", return_value=fake_llm),
+        patch(
+            "argos.brain.event_backfill.rename_stale_events",
+            AsyncMock(side_effect=RuntimeError("boom")),
+        ),
+    ):
+        with pytest.raises(RuntimeError):
+            main(["backfill-events", "--rename-stale"])
+
+    fake_llm.unload.assert_awaited_once_with("small")
