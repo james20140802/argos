@@ -267,6 +267,68 @@ def test_rename_stale_unloads_the_client_even_when_renaming_raises():
     fake_llm.unload.assert_awaited_once_with("small")
 
 
+def test_rename_mode_exits_nonzero_when_any_event_is_skipped():
+    """Mirrors ``test_execute_mode_exits_nonzero_when_any_document_is_skipped``:
+    a skip in rename mode is a swallowed generation failure (see
+    ``rename_stale_events``'s per-event try/except), not a benign outcome —
+    an unattended run with Ollama unreachable must not exit 0."""
+    from argos.brain.event_backfill import RenameResult, StaleEvent
+    from argos.brain.event_naming import EvidenceDoc
+
+    events = [
+        StaleEvent(event_id=uuid.uuid4(), docs=[EvidenceDoc(title="t", summary="s")])
+    ]
+    fake_llm = AsyncMock()
+    fake_llm.unload = AsyncMock()
+    # 9 succeeded, 1 skipped — still must exit 1: a majority success must
+    # not mask the one swallowed exception from the operator.
+    fake_result = RenameResult(renamed=9, skipped=1)
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=_session_ctx()),
+        patch(
+            "argos.brain.event_backfill.fetch_stale_events",
+            AsyncMock(return_value=events),
+        ),
+        patch("argos.brain.llm_client.get_llm_client", return_value=fake_llm),
+        patch(
+            "argos.brain.event_backfill.rename_stale_events",
+            AsyncMock(return_value=fake_result),
+        ),
+    ):
+        rc = main(["backfill-events", "--rename-stale"])
+
+    assert rc == 1
+
+
+def test_rename_mode_exits_zero_when_nothing_is_skipped():
+    from argos.brain.event_backfill import RenameResult, StaleEvent
+    from argos.brain.event_naming import EvidenceDoc
+
+    events = [
+        StaleEvent(event_id=uuid.uuid4(), docs=[EvidenceDoc(title="t", summary="s")])
+    ]
+    fake_llm = AsyncMock()
+    fake_llm.unload = AsyncMock()
+    fake_result = RenameResult(renamed=1, skipped=0)
+
+    with (
+        patch("argos.cli.AsyncSessionLocal", return_value=_session_ctx()),
+        patch(
+            "argos.brain.event_backfill.fetch_stale_events",
+            AsyncMock(return_value=events),
+        ),
+        patch("argos.brain.llm_client.get_llm_client", return_value=fake_llm),
+        patch(
+            "argos.brain.event_backfill.rename_stale_events",
+            AsyncMock(return_value=fake_result),
+        ),
+    ):
+        rc = main(["backfill-events", "--rename-stale"])
+
+    assert rc == 0
+
+
 def test_dry_run_cli_path_never_calls_a_write_api(monkeypatch, capsys):
     """CLI 층까지 통틀어 --dry-run이 쓰기 API를 한 번도 부르지 않는다."""
     import asyncio

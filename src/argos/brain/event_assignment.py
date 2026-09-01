@@ -89,6 +89,7 @@ async def db_candidate_source(
     *,
     embedding: Sequence[float],
     at: datetime,
+    config: "EventDetectionConfig",
     exclude_id: uuid.UUID | None = None,
 ) -> list[CandidateNeighbor]:
     """DB에서 후보 이웃을 읽는다. 세이브포인트 안에서 부른다.
@@ -96,10 +97,23 @@ async def db_candidate_source(
     DB 예외(예: 임베딩 차원 불일치로 인한 ``InFailedSQLTransactionError``)를
     부르는 쪽이 삼킬 수 있으려면, 그 예외가 중단시킨 트랜잭션을 되돌릴
     세이브포인트가 필요하다 (``nodes/assign_event.py`` 모듈 docstring).
+
+    ``window_days``/``limit``을 ``fetch_candidates``의 전역 기본값에 맡기지
+    않고 *config*에서 명시적으로 넘긴다 — 이 함수를 부르는 쪽은 이미
+    ``config``를 손에 들고 ``decide_event``의 시간감쇠와 ``_cap_candidates``의
+    자름 기준으로 쓰고 있다. 여기서 전역 설정으로 조용히 새 버리면,
+    자기만의 ``EventDetectionConfig``를 쓰는 호출자(예: 다른 창 크기의
+    미리보기)가 채점 기준과 다른 창에서 후보를 받아, 미리보기가 찍는
+    임계값 설명이 실제로 가져온 후보를 더 이상 설명하지 못하게 된다.
     """
     async with session.begin_nested():
         return await fetch_candidates(
-            session, embedding=embedding, at=at, exclude_id=exclude_id
+            session,
+            embedding=embedding,
+            at=at,
+            exclude_id=exclude_id,
+            window_days=config.window_days,
+            limit=config.candidate_k,
         )
 
 

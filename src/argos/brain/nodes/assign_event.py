@@ -71,7 +71,9 @@ async def assign_event_node(state: BrainState, session: AsyncSession) -> BrainSt
         # DB를 건드리는 부분만 세이브포인트로 감싼다 — 실패해도 세션을
         # 계속 쓸 수 있어야 한다(모듈 docstring 참고). 세이브포인트는
         # db_candidate_source 안에 있다.
-        candidates = await db_candidate_source(session, embedding=embedding, at=at)
+        candidates = await db_candidate_source(
+            session, embedding=embedding, at=at, config=config
+        )
 
         subject = DocumentFeatures(
             embedding=tuple(float(value) for value in embedding),

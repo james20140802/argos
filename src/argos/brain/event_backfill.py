@@ -239,7 +239,11 @@ async def plan_backfill(
         db_neighbours: list[CandidateNeighbor] = []
         if doc.features.embedding and at is not None:
             db_neighbours = await db_candidate_source(
-                session, embedding=doc.features.embedding, at=at
+                session,
+                embedding=doc.features.embedding,
+                at=at,
+                config=config,
+                exclude_id=doc.tech_item_id,
             )
         pending = overlay.candidates(at, window_days=config.window_days) if at else []
         candidates = _cap_candidates(
@@ -300,6 +304,7 @@ async def execute_backfill(
                     session,
                     embedding=doc.features.embedding,
                     at=at,
+                    config=config,
                     exclude_id=doc.tech_item_id,
                 )
             event_id = decide_event(doc.features, candidates, config=config)

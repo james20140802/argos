@@ -1757,7 +1757,13 @@ async def _backfill_events(
         print(
             f"backfill-events done: renamed={result.renamed}, skipped={result.skipped}"
         )
-        return 0
+        # Same rule as the assign-mode branch below: every skip here is a
+        # swallowed generation failure (see rename_stale_events's per-event
+        # try/except), not a benign "nothing to do". An unattended run with
+        # Ollama unreachable for the whole batch must not exit 0, or
+        # monitoring keyed on exit status sees a false success. Re-running is
+        # safe either way — a stale event stays stale until it is renamed.
+        return 1 if result.skipped > 0 else 0
 
     from argos.brain.event_backfill import (
         execute_backfill,
@@ -1798,7 +1804,8 @@ async def _backfill_events(
     # succeeded, or an unattended run has no signal that something is
     # systemically wrong. The run is still idempotent — a re-run only picks
     # up documents that still have no event link — so failing loudly costs
-    # nothing.
+    # nothing. The --rename-stale branch above follows this same rule for
+    # the same reason.
     return 1 if result.skipped > 0 else 0
 
 
