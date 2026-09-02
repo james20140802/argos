@@ -396,6 +396,19 @@ def test_stale_event_defaults_to_no_guard():
     assert StaleEvent(event_id=uuid.uuid4(), docs=[]).updated_at is None
 
 
+def test_stale_event_query_orders_evidence_newest_link_first():
+    """근거 정렬이 곧 프롬프트 표본이다 — 최근 링크가 앞에 와야 한다 (ARG-274).
+
+    DB 없는 CI에서도 도는 문자열 수준 회귀. 실제 순서는
+    ``tests/brain/test_stale_evidence_order_db.py``가 Postgres로 확인한다.
+    """
+    from argos.brain.event_backfill import _STALE_EVENTS_SQL
+
+    order_by = str(_STALE_EVENTS_SQL).lower().rsplit("order by", 1)[1]
+    assert "ed.created_at desc" in order_by
+    assert "i.published_at desc" in order_by
+
+
 def test_stale_event_query_excludes_tombstones_and_targets_stale_or_untitled():
     """SQL 문자열 수준 회귀 — 조건 세 개가 모두 남아 있어야 한다."""
     from argos.brain.event_backfill import _STALE_EVENTS_SQL

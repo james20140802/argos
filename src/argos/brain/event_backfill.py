@@ -359,7 +359,8 @@ _STALE_EVENTS_SQL = text(
           ORDER BY occurred_at ASC, id ASC
           LIMIT :limit
       )
-    ORDER BY e.occurred_at ASC, e.id ASC, i.id ASC
+    ORDER BY e.occurred_at ASC, e.id ASC,
+             ed.created_at DESC, i.published_at DESC NULLS LAST, i.id ASC
     """
 )
 """재명명 대상과 그 근거 문서를 한 번에 읽는다.
@@ -375,6 +376,18 @@ _STALE_EVENTS_SQL = text(
 ``updated_at``을 같이 읽는 것은 ARG-274의 낙관적 가드용이다 — 근거 스냅샷을
 뜬 시점의 행 버전을 들고 있어야, LLM이 도는 동안 사건이 바뀌었는지
 ``apply_event_naming``이 판정할 수 있다.
+
+사건 안의 근거는 **최근 링크 순**이다. ``generate_event_naming``이 앞에서부터
+``MAX_EVIDENCE_DOCS``개만 프롬프트에 넣기 때문에, 정렬이 곧 "무엇을 보고 이름을
+짓느냐"다. 문서 id 순(무작위 UUID)으로 두면 근거가 8건을 넘는 사건에서 방금
+붙어 ``naming_stale``을 세운 그 문서가 표본에서 빠질 수 있고, 그러면 옛 근거로
+지은 이름을 쓰면서 플래그만 내려 재명명이 의미를 잃는다. 링크 시각이 같을 때는
+(백필이 한 트랜잭션에서 여러 건을 매달면 ``created_at``이 같다) 최신 기사부터,
+그마저 같으면 문서 id로 확정해 결과를 결정적으로 만든다.
+
+정렬이 최신 우선이라 근거가 많은 사건은 초창기 기사가 표본에서 빠진다 — 캡이
+있는 한 무엇을 버리든 골라야 하고, ``naming_stale``의 의미가 "경계가 바뀌었으니
+다시 지어라"이므로 바뀐 쪽을 남긴다.
 """
 
 _NO_LIMIT = 2_000_000_000
