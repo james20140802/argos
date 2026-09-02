@@ -218,3 +218,36 @@ async def test_apply_event_naming_writes_nothing_when_generation_fails():
         session, uuid.uuid4(), [EvidenceDoc(title="a", summary="b")], client=client
     ) is False
     session.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "TITLE: 사건 제목",
+        "TITLE: 사건 제목\nSUMMARY:",
+        "TITLE: 사건 제목\nSUMMARY:    ",
+    ],
+    ids=["no-summary-line", "blank-summary", "whitespace-summary"],
+)
+@pytest.mark.asyncio
+async def test_returns_none_when_the_summary_is_missing_or_blank(reply):
+    client = _client(reply)
+    assert (
+        await generate_event_naming([EvidenceDoc(title="a", summary="b")], client=client)
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_writes_nothing_when_the_model_omits_the_summary():
+    """제목만 온 출력이 기존 요약을 NULL로 덮고 플래그까지 내리면 안 된다."""
+    from argos.brain.event_naming import apply_event_naming
+
+    session = MagicMock()
+    session.execute = AsyncMock()
+    client = _client("TITLE: 제목만 있다")
+
+    assert await apply_event_naming(
+        session, uuid.uuid4(), [EvidenceDoc(title="a", summary="b")], client=client
+    ) is False
+    session.execute.assert_not_awaited()

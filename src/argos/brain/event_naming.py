@@ -51,10 +51,14 @@ class EvidenceDoc:
 
 @dataclass(frozen=True)
 class EventNaming:
-    """LLM이 지어낸 사건 이름과 요약."""
+    """LLM이 지어낸 사건 이름과 요약.
+
+    둘 다 채워졌을 때만 만들어진다 — 반쪽짜리 산출물은
+    ``generate_event_naming``이 ``None``으로 접는다.
+    """
 
     title: str
-    summary: str | None
+    summary: str
 
 
 _PROMPT = """You are a news editor naming a real-world event. Below are one or more articles that all report the SAME event.
@@ -127,8 +131,8 @@ async def generate_event_naming(
     """근거 문서들로 사건 제목·요약을 짓는다. 실패하면 ``None``.
 
     ``None``이 되는 경우: 근거가 하나도 없음 / LLM 호출 실패 / 정제 후 제목이
-    비어 있음. 부르는 쪽은 ``None``을 받으면 ``derive_title`` 폴백을 쓰고
-    ``naming_stale``을 세워 둔 채 넘어간다.
+    비어 있음 / 정제 후 요약이 비어 있음. 부르는 쪽은 ``None``을 받으면
+    ``derive_title`` 폴백을 쓰고 ``naming_stale``을 세워 둔 채 넘어간다.
 
     ``client``를 넘기면 재사용한다 — 백필이 배치 전체에서 모델을 한 번만
     적재하기 위해서다. ``keep_alive``도 그 목적으로 열어 둔다.
@@ -161,8 +165,15 @@ async def generate_event_naming(
         return None
 
     summary_match = _SUMMARY_RE.search(cleaned)
-    summary = _scrub(summary_match.group(1)) if summary_match else None
-    return EventNaming(title=title, summary=summary or None)
+    summary = _scrub(summary_match.group(1)) if summary_match else ""
+    if not summary:
+        # 제목만 온 출력도 실패다. 통과시키면 apply_event_naming이
+        # summary=NULL을 쓰면서 naming_stale까지 내려, 이미 붙어 있던 요약을
+        # 지우고 다음 --rename-stale 패스가 주울 기회까지 없앤다. 제목이 빈
+        # 경우와 같은 처리로 접어야 재생성 여지가 남는다.
+        logger.warning("generate_event_naming: no SUMMARY line in the model output")
+        return None
+    return EventNaming(title=title, summary=summary)
 
 
 async def apply_event_naming(
