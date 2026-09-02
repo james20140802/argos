@@ -194,12 +194,28 @@ async def run_brain_pipeline(
     prewarm_task = asyncio.create_task(get_genealogist_llm_client().prewarm("large"))
     try:
         genealogized = await genealogist_node(embedded, prewarm_task=prewarm_task)
-        return await _assign_then_save(genealogized, session=session)
     finally:
         if not prewarm_task.done():
             prewarm_task.cancel()
         with contextlib.suppress(BaseException):
             await prewarm_task
+
+    # ARG-273: 32B를 내리고 나서 저장·명명으로 넘어간다. _assign_then_save는 새
+    # 사건이 생기면 그 자리에서 8B로 이름을 짓는데(event_naming 모듈 docstring),
+    # VRAM 예산이 한 번에 한 모델뿐이라 32B가 얹힌 채로 8B를 부르면 명명이 OOM으로
+    # 죽고 사건이 무명으로 남는다. genealogist_node는 keep_alive="5m"으로 질의하니
+    # 놔두면 실제로 얹혀 있다. 배치 경로가 계보 작업을 끝내고 unload하는 자리와
+    # 같고, 단건 경로의 triage_node/digest_node가 각자 finally에서 내리는 관례와도
+    # 같다 — 계보 분기만 예외였다.
+    #
+    # 내리기 실패는 삼킨다: 명명이 OOM으로 실패해도 저장은 진행돼야 하므로
+    # (품질 기능은 저장을 막지 않는다) 여기서 예외를 올릴 이유가 없다.
+    try:
+        await get_genealogist_llm_client().unload("large")
+    except Exception:  # noqa: BLE001
+        pass
+
+    return await _assign_then_save(genealogized, session=session)
 
 
 def _make_initial_state(item: dict) -> BrainState:

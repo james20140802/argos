@@ -97,6 +97,9 @@ async def test_run_brain_pipeline_runs_prewarm_and_genealogist_when_warm(
             await _asyncio.sleep(0)
             prewarm_completed["n"] += 1
 
+        async def unload(self, role):
+            pass
+
     genealogist_calls = {"n": 0, "received_prewarm_task": None}
 
     async def _fake_genealogist(state, *, prewarm_task=None):
@@ -866,6 +869,9 @@ async def test_run_brain_pipeline_normal_path_assigns_before_saving(monkeypatch)
         async def prewarm(self, role):
             return None
 
+        async def unload(self, role):
+            call_order.append(f"unload:{role}")
+
     monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
     monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock(return_value=warm))
 
@@ -889,7 +895,90 @@ async def test_run_brain_pipeline_normal_path_assigns_before_saving(monkeypatch)
 
     result = await brain_pipeline.run_brain_pipeline("x", "https://e.com", MagicMock())
 
-    assert call_order == ["assign", "save"]
+    assert call_order == ["unload:large", "assign", "save"]
+    assert result["saved"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_brain_pipeline_unloads_32b_before_naming_a_new_event(monkeypatch):
+    """계보 경로에서 32B를 내린 뒤에 명명(8B)이 일어나야 한다.
+
+    VRAM 예산이 한 번에 한 모델뿐인데 genealogist_node는 keep_alive="5m"으로
+    질의한다. 내리지 않으면 새 사건 명명이 Ollama OOM으로 죽고 사건이 무명으로
+    남는다 — 배치 경로가 계보 뒤에 unload("large")를 부르는 것과 같은 이유다.
+    """
+    triaged = _triaged_state()
+    warm = _triaged_state(trust_score=0.9, related_tech_ids=["abc"])
+    succession = {**warm, "succession_result": {"relation_type": "Enhance"}}
+    created_event_id = uuid.uuid4()
+    call_order: list[str] = []
+
+    class _FakeClient:
+        async def prewarm(self, role):
+            return None
+
+        async def unload(self, role):
+            call_order.append(f"unload:{role}")
+
+    async def _fake_genealogist(state, *, prewarm_task=None):
+        call_order.append("genealogist")
+        return succession
+
+    async def _fake_save(state, *, session, flush=True):
+        return {**state, "saved": True, "created_event_id": created_event_id}
+
+    async def _fake_naming(session, event_id, docs):
+        call_order.append("naming")
+        return True
+
+    monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
+    monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock(return_value=warm))
+    monkeypatch.setattr(brain_pipeline, "genealogist_node", _fake_genealogist)
+    monkeypatch.setattr(
+        brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
+    )
+    monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
+    monkeypatch.setattr(brain_pipeline, "apply_event_naming", _fake_naming)
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: _FakeClient())
+
+    await brain_pipeline.run_brain_pipeline(
+        "x", "https://e.com", _begin_nested_session()
+    )
+
+    assert call_order == ["genealogist", "unload:large", "naming"]
+
+
+@pytest.mark.asyncio
+async def test_run_brain_pipeline_saves_even_when_the_32b_unload_fails(monkeypatch):
+    """내리기가 실패해도 저장은 진행된다 — 품질 기능이 저장을 막지 않는다."""
+    triaged = _triaged_state()
+    warm = _triaged_state(trust_score=0.9, related_tech_ids=["abc"])
+
+    class _FakeClient:
+        async def prewarm(self, role):
+            return None
+
+        async def unload(self, role):
+            raise RuntimeError("ollama is down")
+
+    async def _fake_genealogist(state, *, prewarm_task=None):
+        return warm
+
+    monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
+    monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock(return_value=warm))
+    monkeypatch.setattr(brain_pipeline, "genealogist_node", _fake_genealogist)
+    monkeypatch.setattr(
+        brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
+    )
+    monkeypatch.setattr(
+        brain_pipeline,
+        "save_node",
+        AsyncMock(side_effect=lambda s, session, flush=True: {**s, "saved": True}),
+    )
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: _FakeClient())
+
+    result = await brain_pipeline.run_brain_pipeline("x", "https://e.com", MagicMock())
+
     assert result["saved"] is True
 
 
