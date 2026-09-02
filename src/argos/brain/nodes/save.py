@@ -5,14 +5,13 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.entity_store import attach_names
+from argos.brain.event_assignment import link_document_to_event
 from argos.brain.graph_state import BrainState
 from argos.brain.simhash_storage import to_storage
-from argos.models.event_document import EventDocument
-from argos.models.tech_event import TechEvent
+from argos.brain.titles import derive_title
 from argos.models.tech_item import CategoryType, TechItem
 from argos.models.tech_succession import RelationType, TechSuccession
 
@@ -64,10 +63,8 @@ async def save_node(
         logger.warning("save_node: empty source_url, skipping")
         return state
 
-    title = next(
-        (line.strip() for line in state["raw_text"].splitlines() if line.strip()),
-        "Untitled",
-    )[:500]
+    # ARG-269: 제목 파생 규칙은 사건 명명의 폴백과 공유한다 (brain/titles.py).
+    title = derive_title(state["raw_text"])
 
     existing = await session.execute(
         select(TechItem.id).where(TechItem.source_url == state["source_url"])
@@ -128,22 +125,23 @@ async def save_node(
     # crawl_queue에서 URL을 지우므로 문서가 영구히 사라진다. 배치 경로는 더
     # 나쁘다: 블록이 "정상" 종료돼 중단된 트랜잭션에 RELEASE SAVEPOINT를 쏘고,
     # 그 오염이 **다음** 문서 저장까지 끌고 내려간다.
+    #
+    # ARG-270: 실제 쓰기는 brain/event_assignment.link_document_to_event가
+    # 한다 — 소급 배정이 같은 함수를 부른다. 세이브포인트는 여전히 여기서
+    # 건다(삼키는 쪽이 거는 것이 규칙이다).
     if state.get("event_assigned"):
         try:
             async with session.begin_nested():
-                event_id = state.get("event_id")
-                if event_id is None:
-                    event = TechEvent(
-                        id=uuid.uuid4(),
-                        occurred_at=state.get("published_at") or datetime.now(timezone.utc),
-                    )
-                    session.add(event)
-                    event_id = event.id
-                await session.execute(
-                    pg_insert(EventDocument)
-                    .values(id=uuid.uuid4(), event_id=event_id, tech_item_id=item.id)
-                    .on_conflict_do_nothing(constraint="uq_event_documents_event_item"),
+                link = await link_document_to_event(
+                    session,
+                    tech_item_id=item.id,
+                    event_id=state.get("event_id"),
+                    occurred_at=state.get("published_at") or datetime.now(timezone.utc),
                 )
+            # ARG-273: 새로 생긴 사건만 명명 훅이 주워 가도록 노출한다.
+            # 기존 사건에 붙은 경우는 naming_stale만 서고 재명명은
+            # ``backfill-events --rename-stale``이 배치로 처리한다.
+            state["created_event_id"] = link.event_id if link.created else None
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "save_node: linking %s to an event failed: %r", state["source_url"], exc

@@ -1612,6 +1612,217 @@ async def _backfill_trust(limit: int | None = None, dry_run: bool = False) -> in
     return 0
 
 
+def _build_backfill_events_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos backfill-events`` subcommand (ARG-242)."""
+    bf_p = sub.add_parser(
+        "backfill-events",
+        help="Assign existing documents to events",
+        parents=[common],
+        description=(
+            "Group already-stored documents into events using the same verdict "
+            "the online pipeline uses. --dry-run previews the grouping without "
+            "writing a single byte. Re-runs are resumable: documents that "
+            "already have an event link are skipped automatically. Assignment "
+            "and renaming are separate invocations of this same subcommand: "
+            "the normal two-step operation is `argos backfill-events` followed "
+            "by `argos backfill-events --rename-stale`."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bf_p.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Process at most N rows this run (default: all)",
+    )
+    bf_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the grouping without writing",
+    )
+    bf_p.add_argument(
+        "--batch-size",
+        type=_positive_int,
+        default=50,
+        metavar="N",
+        help=(
+            "Commit after every N rows this run — assigned documents, or "
+            "renamed events with --rename-stale (default: 50)"
+        ),
+    )
+    bf_p.add_argument(
+        "--rename-stale",
+        action="store_true",
+        help=(
+            "Rename events whose boundary changed or that have no name yet, "
+            "instead of assigning documents"
+        ),
+    )
+
+
+def _cmd_backfill_events(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _backfill_events(
+            limit=getattr(args, "limit", None),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            batch_size=getattr(args, "batch_size", 50),
+            rename_stale=bool(getattr(args, "rename_stale", False)),
+        )
+    )
+
+
+def _print_dry_run_report(plan, total_docs: int) -> None:
+    """미리보기 리포트. 임계값 현재값을 함께 찍는다.
+
+    어떤 설정으로 나온 결과인지 같이 보이지 않으면, 설정을 바꿔가며 비교하는
+    이 커맨드의 목적 자체가 성립하지 않는다.
+    """
+    config = settings.user.event_detection
+    print(f"backfill-events (dry-run): {total_docs} unassigned document(s)")
+    print(f"  → {plan.new_event_count} event(s) would be created")
+    print(
+        "  thresholds: "
+        f"join_threshold={config.join_threshold} window_days={config.window_days} "
+        f"candidate_k={config.candidate_k} weights="
+        f"(cosine={config.weight_cosine}, entity={config.weight_entity}, "
+        f"time={config.weight_time}, keyword={config.weight_keyword})"
+    )
+    distribution = plan.size_distribution
+    if distribution:
+        print("  size distribution (documents per event):")
+        for size, count in distribution.items():
+            print(f"    {size} doc(s): {count} event(s)")
+    samples = plan.samples()
+    if samples:
+        print("  samples:")
+        for size, titles in samples:
+            print(f"    [{size} doc(s)]")
+            for title in titles[:5]:
+                print(f"      - {title}")
+    print("  nothing was written to the database.")
+
+
+def _print_execute_summary(result) -> None:
+    print(
+        "backfill-events done: "
+        f"assigned={result.assigned}, new events={result.created_events}, "
+        f"skipped={result.skipped}"
+    )
+
+
+def _print_rename_dry_run(count: int) -> None:
+    print(f"backfill-events (dry-run, --rename-stale): {count} event(s) would be renamed")
+    print("  nothing was written to the database.")
+
+
+async def _backfill_events(
+    limit: int | None = None,
+    dry_run: bool = False,
+    batch_size: int = 50,
+    rename_stale: bool = False,
+) -> int:
+    """Group unlinked documents into events. ``--dry-run`` only previews it.
+
+    ``--rename-stale`` is a separate mode: it renames events whose boundary
+    changed (or that have no name yet) and does not touch document
+    assignment. The two modes never run in the same invocation.
+    """
+    if rename_stale:
+        from argos.brain.event_backfill import fetch_stale_events, rename_stale_events
+        from argos.brain.llm_client import get_llm_client
+
+        async with AsyncSessionLocal() as session:
+            events = await fetch_stale_events(session, limit=limit)
+            if not events:
+                print("backfill-events: no events need renaming.")
+                return 0
+            if dry_run:
+                _print_rename_dry_run(len(events))
+                return 0
+            print(f"backfill-events: renaming {len(events)} event(s)...")
+            client = get_llm_client()
+            # Deep Dive는 32B를 keep_alive="5m"으로 올려 두고 내리지 않는다
+            # (slack/handlers/deep_dive.py의 unload_then_query). 그 5분 안에 이
+            # 배치가 시작되면 8B 명명 요청이 32B 위에 얹혀 VRAM 예산(한 번에 한
+            # 모델)을 깨고, 배치 전체가 OOM으로 skip될 수 있다. 이 클라이언트의
+            # "large"가 바로 그 ollama.model_deepdive라 여기서 내리면 정확히
+            # 그 모델이 내려간다. 실제로 안 떠 있으면 Ollama에는 값싼 no-op다.
+            #
+            # 다른 large 모델(genealogist·digest)은 여기서 안 건드린다 — 그쪽은
+            # 각자 배치 끝에 스스로 내리고(run_batch_brain_pipeline,
+            # batch_digest_states), 이 커맨드가 올리지도 않는 모델이다.
+            try:
+                await client.unload("large")
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                result = await rename_stale_events(
+                    session, events, batch_size=batch_size, client=client
+                )
+            finally:
+                try:
+                    await client.unload("small")
+                except Exception:  # noqa: BLE001
+                    pass
+        print(
+            f"backfill-events done: renamed={result.renamed}, skipped={result.skipped}"
+        )
+        # Same rule as the assign-mode branch below: every skip here is a
+        # swallowed generation failure (see rename_stale_events's per-event
+        # try/except), not a benign "nothing to do". An unattended run with
+        # Ollama unreachable for the whole batch must not exit 0, or
+        # monitoring keyed on exit status sees a false success. Re-running is
+        # safe either way — a stale event stays stale until it is renamed.
+        return 1 if result.skipped > 0 else 0
+
+    from argos.brain.event_backfill import (
+        execute_backfill,
+        fetch_unassigned_documents,
+        plan_backfill,
+    )
+
+    config = settings.user.event_detection
+
+    async with AsyncSessionLocal() as session:
+        docs = await fetch_unassigned_documents(session, limit=limit)
+        if not docs:
+            print("backfill-events: no unassigned documents.")
+            return 0
+        if dry_run:
+            plan = await plan_backfill(session, docs, config=config)
+            _print_dry_run_report(plan, total_docs=len(docs))
+            return 0
+
+        print(f"backfill-events: assigning {len(docs)} document(s)...")
+
+        def _progress(done: int, total: int) -> None:
+            if done % 25 == 0 or done == total:
+                print(f"  {done}/{total}")
+
+        result = await execute_backfill(
+            session,
+            docs,
+            config=config,
+            batch_size=batch_size,
+            on_progress=_progress,
+        )
+    _print_execute_summary(result)
+    # Unlike backfill-digests (where a skip is a normal outcome — "no digest
+    # warranted for this row" — so it always returns 0), every skip here is a
+    # swallowed exception (see execute_backfill's per-document try/except).
+    # That has to reach the operator's exit status even when most documents
+    # succeeded, or an unattended run has no signal that something is
+    # systemically wrong. The run is still idempotent — a re-run only picks
+    # up documents that still have no event link — so failing loudly costs
+    # nothing. The --rename-stale branch above follows this same rule for
+    # the same reason.
+    return 1 if result.skipped > 0 else 0
+
+
 def _build_add_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -1957,6 +2168,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_backfill_images_parser(sub, common)
     _build_backfill_digests_parser(sub, common)
     _build_backfill_trust_parser(sub, common)
+    _build_backfill_events_parser(sub, common)
     _build_backup_parser(sub)
     _build_restore_parser(sub)
     _build_config_parser(sub)
@@ -2076,6 +2288,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_backfill_trust(args)
+    if args.command == "backfill-events":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_backfill_events(args)
     if args.command == "backup":
         return _cmd_backup(args)
     if args.command == "restore":

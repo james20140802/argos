@@ -30,6 +30,10 @@
 그냥 잡기만 하면 세션의 트랜잭션은 이미 중단된(aborted) 상태로 남아, 뒤이어
 ``save_node``가 던지는 첫 쿼리부터 다시 실패해 문서 저장 자체가 무산된다.
 세이브포인트가 그 중단 상태를 롤백해 세션을 다시 쓸 수 있게 돌려놓는다.
+
+ARG-270: 판정과 후보 조회는 ``brain/event_assignment``의 공용 코어로 옮겼다.
+이 노드는 ``BrainState``에서 피처를 꺼내 코어에 넘기고 결과를 다시 state에
+싣는 얇은 껍데기다 — 소급 배정이 같은 코어를 부른다.
 """
 
 from __future__ import annotations
@@ -39,8 +43,9 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from argos.brain.event_candidates import fetch_candidates, keywords_of
-from argos.brain.event_scoring import DocumentFeatures, EdgeWeights, NeighborEdge, choose_event, edge_weight
+from argos.brain.event_assignment import db_candidate_source, decide_event
+from argos.brain.event_candidates import keywords_of
+from argos.brain.event_scoring import DocumentFeatures
 from argos.brain.graph_state import BrainState
 from argos.config import settings
 
@@ -64,9 +69,11 @@ async def assign_event_node(state: BrainState, session: AsyncSession) -> BrainSt
         config = settings.user.event_detection
 
         # DB를 건드리는 부분만 세이브포인트로 감싼다 — 실패해도 세션을
-        # 계속 쓸 수 있어야 한다(모듈 docstring 참고).
-        async with session.begin_nested():
-            candidates = await fetch_candidates(session, embedding=embedding, at=at)
+        # 계속 쓸 수 있어야 한다(모듈 docstring 참고). 세이브포인트는
+        # db_candidate_source 안에 있다.
+        candidates = await db_candidate_source(
+            session, embedding=embedding, at=at, config=config
+        )
 
         subject = DocumentFeatures(
             embedding=tuple(float(value) for value in embedding),
@@ -74,21 +81,7 @@ async def assign_event_node(state: BrainState, session: AsyncSession) -> BrainSt
             at=at,
             keywords=keywords_of(state.get("summary") or state.get("digest")),
         )
-        weights = EdgeWeights.from_config(config)
-        edges = [
-            NeighborEdge(
-                event_ids=candidate.event_ids,
-                weight=edge_weight(
-                    subject,
-                    candidate.features,
-                    weights=weights,
-                    window_days=config.window_days,
-                ),
-            )
-            for candidate in candidates
-            if candidate.event_ids
-        ]
-        event_id = choose_event(edges, join_threshold=config.join_threshold)
+        event_id = decide_event(subject, candidates, config=config)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "assign_event_node: assignment failed for %s: %r — saving without an event",

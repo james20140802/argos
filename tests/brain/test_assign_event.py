@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from argos.brain import event_assignment as event_assignment_module
 from argos.brain.event_candidates import CandidateNeighbor
 from argos.brain.event_scoring import DocumentFeatures
-from argos.brain.nodes import assign_event as assign_event_module
 from argos.brain.nodes.assign_event import assign_event_node
 
 
@@ -71,7 +71,7 @@ async def test_a_close_neighbour_hands_over_its_event(monkeypatch):
         event_ids=(event_id,),
     )
     monkeypatch.setattr(
-        assign_event_module, "fetch_candidates", AsyncMock(return_value=[candidate])
+        event_assignment_module, "fetch_candidates", AsyncMock(return_value=[candidate])
     )
 
     result = await assign_event_node(_state(), session=_session())
@@ -94,7 +94,7 @@ async def test_a_distant_neighbour_leaves_the_event_open(monkeypatch):
         event_ids=(event_id,),
     )
     monkeypatch.setattr(
-        assign_event_module, "fetch_candidates", AsyncMock(return_value=[candidate])
+        event_assignment_module, "fetch_candidates", AsyncMock(return_value=[candidate])
     )
 
     result = await assign_event_node(_state(), session=_session())
@@ -108,7 +108,7 @@ async def test_a_distant_neighbour_leaves_the_event_open(monkeypatch):
 @pytest.mark.asyncio
 async def test_no_neighbours_leaves_the_event_open(monkeypatch):
     monkeypatch.setattr(
-        assign_event_module, "fetch_candidates", AsyncMock(return_value=[])
+        event_assignment_module, "fetch_candidates", AsyncMock(return_value=[])
     )
 
     result = await assign_event_node(_state(), session=_session())
@@ -120,7 +120,7 @@ async def test_no_neighbours_leaves_the_event_open(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_failing_candidate_query_does_not_raise(monkeypatch):
     monkeypatch.setattr(
-        assign_event_module,
+        event_assignment_module,
         "fetch_candidates",
         AsyncMock(side_effect=RuntimeError("db exploded")),
     )
@@ -137,7 +137,7 @@ async def test_a_failing_candidate_query_does_not_raise(monkeypatch):
 @pytest.mark.asyncio
 async def test_an_invalid_state_is_passed_through(monkeypatch):
     fetch_mock = AsyncMock(return_value=[])
-    monkeypatch.setattr(assign_event_module, "fetch_candidates", fetch_mock)
+    monkeypatch.setattr(event_assignment_module, "fetch_candidates", fetch_mock)
 
     result = await assign_event_node(_state(is_valid=False), session=_session())
 
@@ -149,7 +149,7 @@ async def test_an_invalid_state_is_passed_through(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_document_without_an_embedding_is_passed_through(monkeypatch):
     fetch_mock = AsyncMock(return_value=[])
-    monkeypatch.setattr(assign_event_module, "fetch_candidates", fetch_mock)
+    monkeypatch.setattr(event_assignment_module, "fetch_candidates", fetch_mock)
 
     result = await assign_event_node(
         _state(extracted_info={}), session=_session()

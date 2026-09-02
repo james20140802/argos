@@ -78,3 +78,11 @@ class BrainState(TypedDict):
     # 그 저장값을 event_evidence.evidence_count가 근접중복 접기에 쓴다.
     # 유효하지 않은 state는 채워지지 않는다(entity_names와 같은 계약).
     simhash: NotRequired[int | None]
+    # ARG-273: save_node가 채운다. 이 저장이 새로 만든 사건의 id — 문서가
+    # 기존 사건에 붙었거나 사건이 아예 관여하지 않았으면 None. 다른 값과
+    # 달리 assign_event_node가 아니라 save_node가 채운다: 새 사건 row 자체를
+    # save_node가 문서 저장과 같은 자리에서 만들기 때문이다(event_id 주석
+    # 참고). ``_assign_then_save``가 이 값을 읽어 방금 생긴 사건에만 명명
+    # 훅(``apply_event_naming``)을 붙일지 정한다 — 기존 사건에 합류한
+    # 경우는 이미 naming_stale이 서 있으므로 여기서 LLM을 또 부르지 않는다.
+    created_event_id: NotRequired[uuid.UUID | None]
