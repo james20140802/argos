@@ -1745,6 +1745,20 @@ async def _backfill_events(
                 return 0
             print(f"backfill-events: renaming {len(events)} event(s)...")
             client = get_llm_client()
+            # Deep Dive는 32B를 keep_alive="5m"으로 올려 두고 내리지 않는다
+            # (slack/handlers/deep_dive.py의 unload_then_query). 그 5분 안에 이
+            # 배치가 시작되면 8B 명명 요청이 32B 위에 얹혀 VRAM 예산(한 번에 한
+            # 모델)을 깨고, 배치 전체가 OOM으로 skip될 수 있다. 이 클라이언트의
+            # "large"가 바로 그 ollama.model_deepdive라 여기서 내리면 정확히
+            # 그 모델이 내려간다. 실제로 안 떠 있으면 Ollama에는 값싼 no-op다.
+            #
+            # 다른 large 모델(genealogist·digest)은 여기서 안 건드린다 — 그쪽은
+            # 각자 배치 끝에 스스로 내리고(run_batch_brain_pipeline,
+            # batch_digest_states), 이 커맨드가 올리지도 않는 모델이다.
+            try:
+                await client.unload("large")
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 result = await rename_stale_events(
                     session, events, batch_size=batch_size, client=client
