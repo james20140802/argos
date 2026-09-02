@@ -345,7 +345,8 @@ async def execute_backfill(
 
 _STALE_EVENTS_SQL = text(
     """
-    SELECT e.id AS event_id, i.title AS doc_title, i.summary AS doc_summary
+    SELECT e.id AS event_id, e.updated_at AS event_updated_at,
+           i.title AS doc_title, i.summary AS doc_summary
     FROM tech_events e
     JOIN event_documents ed ON ed.event_id = e.id
     JOIN tech_items i ON i.id = ed.tech_item_id
@@ -370,6 +371,10 @@ _STALE_EVENTS_SQL = text(
 
 ``LIMIT``이 서브쿼리에 걸린 것은 의도적이다 — 바깥에 걸면 조인으로 늘어난
 행 수를 자르게 되어 사건 하나의 근거가 잘려 나간다.
+
+``updated_at``을 같이 읽는 것은 ARG-274의 낙관적 가드용이다 — 근거 스냅샷을
+뜬 시점의 행 버전을 들고 있어야, LLM이 도는 동안 사건이 바뀌었는지
+``apply_event_naming``이 판정할 수 있다.
 """
 
 _NO_LIMIT = 2_000_000_000
@@ -378,10 +383,16 @@ _NO_LIMIT = 2_000_000_000
 
 @dataclass(frozen=True)
 class StaleEvent:
-    """재명명 대상 사건 하나와 그 근거 문서들."""
+    """재명명 대상 사건 하나와 그 근거 문서들.
+
+    ``updated_at``은 근거를 읽은 시점의 행 버전이다 — ``apply_event_naming``이
+    "그 사이 사건이 안 바뀌었을 때만 쓴다"를 판정하는 데 쓴다(ARG-274).
+    스냅샷 없이 만든 ``StaleEvent``는 ``None``이라 가드가 걸리지 않는다.
+    """
 
     event_id: uuid.UUID
     docs: list[EvidenceDoc]
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -403,15 +414,24 @@ async def fetch_stale_events(
     ).all()
 
     grouped: dict[uuid.UUID, list[EvidenceDoc]] = {}
+    versions: dict[uuid.UUID, datetime | None] = {}
     order: list[uuid.UUID] = []
     for row in rows:
         if row.event_id not in grouped:
             grouped[row.event_id] = []
+            versions[row.event_id] = row.event_updated_at
             order.append(row.event_id)
         grouped[row.event_id].append(
             EvidenceDoc(title=row.doc_title, summary=row.doc_summary)
         )
-    return [StaleEvent(event_id=event_id, docs=grouped[event_id]) for event_id in order]
+    return [
+        StaleEvent(
+            event_id=event_id,
+            docs=grouped[event_id],
+            updated_at=versions[event_id],
+        )
+        for event_id in order
+    ]
 
 
 async def rename_stale_events(
@@ -425,6 +445,13 @@ async def rename_stale_events(
 
     사건 구성 자체는 건드리지 않는다 — 쪼개기/합치기는 이 단계의 비목표다.
     실패한 사건은 ``naming_stale``이 선 채로 남아 다음 실행이 다시 집는다.
+
+    ARG-274: 근거를 읽은 뒤 LLM이 도는 동안 그 사건이 바뀌었으면(온라인
+    파이프라인이 문서를 하나 더 매달았으면) ``apply_event_naming``이 아무것도
+    쓰지 않고 ``False``를 돌린다. 그 사건은 여기서 ``skipped``로 세고, 새 근거를
+    포함한 이름은 다음 실행이 짓는다 — 위 실패 처리와 같은 규약이다. 스냅샷은
+    ``fetch_stale_events``가 한 번만 뜨므로, 배치가 길수록 이 가드가 실제로
+    필요해진다.
     """
     renamed = 0
     skipped = 0
@@ -434,7 +461,11 @@ async def rename_stale_events(
         try:
             async with session.begin_nested():
                 applied = await apply_event_naming(
-                    session, event.event_id, event.docs, client=client
+                    session,
+                    event.event_id,
+                    event.docs,
+                    client=client,
+                    expected_updated_at=event.updated_at,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("backfill: renaming %s failed: %r", event.event_id, exc)

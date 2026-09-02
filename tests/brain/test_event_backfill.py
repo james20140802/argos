@@ -355,6 +355,47 @@ async def test_rename_counts_a_failed_generation_as_skipped(monkeypatch):
     assert result.skipped == 1
 
 
+@pytest.mark.asyncio
+async def test_rename_forwards_the_snapshot_version_as_the_write_guard(monkeypatch):
+    """스냅샷 시점의 행 버전이 apply_event_naming까지 그대로 간다 (ARG-274)."""
+    from argos.brain import event_backfill
+    from argos.brain.event_naming import EvidenceDoc
+
+    applied = AsyncMock(return_value=True)
+    monkeypatch.setattr(event_backfill, "apply_event_naming", applied)
+    session = _session_without_db_neighbours()
+    session.commit = AsyncMock()
+    snapshot = datetime(2026, 9, 2, 4, 0, tzinfo=timezone.utc)
+
+    await event_backfill.rename_stale_events(
+        session,
+        [
+            event_backfill.StaleEvent(
+                event_id=uuid.uuid4(),
+                docs=[EvidenceDoc(title="t", summary="s")],
+                updated_at=snapshot,
+            )
+        ],
+        batch_size=10,
+    )
+
+    assert applied.await_args.kwargs["expected_updated_at"] == snapshot
+
+
+def test_stale_event_query_reads_the_row_version_for_the_guard():
+    """근거와 같은 SELECT에서 updated_at을 들고 나와야 가드를 걸 수 있다."""
+    from argos.brain.event_backfill import _STALE_EVENTS_SQL
+
+    assert "updated_at" in str(_STALE_EVENTS_SQL).lower()
+
+
+def test_stale_event_defaults_to_no_guard():
+    """스냅샷 없이 만든 StaleEvent는 가드를 걸지 않는다 (온라인 경로와 같은 계약)."""
+    from argos.brain.event_backfill import StaleEvent
+
+    assert StaleEvent(event_id=uuid.uuid4(), docs=[]).updated_at is None
+
+
 def test_stale_event_query_excludes_tombstones_and_targets_stale_or_untitled():
     """SQL 문자열 수준 회귀 — 조건 세 개가 모두 남아 있어야 한다."""
     from argos.brain.event_backfill import _STALE_EVENTS_SQL

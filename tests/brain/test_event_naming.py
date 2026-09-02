@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -103,6 +104,71 @@ async def test_apply_event_naming_updates_and_clears_the_flag():
     assert values["title"] == "사건 제목"
     assert values["summary"] == "사건 요약"
     assert values["naming_stale"] is False
+
+
+@pytest.mark.asyncio
+async def test_apply_event_naming_guards_the_write_on_the_snapshot_version():
+    """스냅샷 버전을 주면 UPDATE가 그 버전에 걸린다 (ARG-274)."""
+    from argos.brain.event_naming import apply_event_naming
+
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=1))
+    client = _client("TITLE: 사건 제목\nSUMMARY: 사건 요약")
+    snapshot = datetime(2026, 9, 2, 4, 0, tzinfo=timezone.utc)
+
+    assert await apply_event_naming(
+        session,
+        uuid.uuid4(),
+        [EvidenceDoc(title="a", summary="b")],
+        client=client,
+        expected_updated_at=snapshot,
+    ) is True
+
+    where = str(session.execute.await_args.args[0]).split("WHERE", 1)[1]
+    assert "tech_events.updated_at" in where
+    assert snapshot in session.execute.await_args.args[0].compile().params.values()
+
+
+@pytest.mark.asyncio
+async def test_apply_event_naming_leaves_the_event_stale_when_it_changed_meanwhile():
+    """가드가 걸리면(행이 안 맞음) False를 돌려 사건을 stale로 남긴다.
+
+    LLM이 도는 동안 온라인 파이프라인이 문서를 하나 더 매달면
+    link_document_to_event가 naming_stale을 다시 세운다. 옛 근거로 지은 이름을
+    쓰면서 그 플래그까지 내리면 새 문서가 이름에도 --rename-stale에도 안 걸린다.
+    """
+    from argos.brain.event_naming import apply_event_naming
+
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=0))
+    client = _client("TITLE: 사건 제목\nSUMMARY: 사건 요약")
+
+    assert await apply_event_naming(
+        session,
+        uuid.uuid4(),
+        [EvidenceDoc(title="a", summary="b")],
+        client=client,
+        expected_updated_at=datetime(2026, 9, 2, 4, 0, tzinfo=timezone.utc),
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_apply_event_naming_without_a_snapshot_does_not_guard():
+    """온라인 경로는 스냅샷을 넘기지 않는다 — WHERE에 updated_at이 붙으면 안 된다."""
+    from argos.brain.event_naming import apply_event_naming
+
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=0))
+    client = _client("TITLE: 사건 제목\nSUMMARY: 사건 요약")
+
+    # rowcount=0이어도 가드를 안 걸었으므로 True다.
+    assert await apply_event_naming(
+        session, uuid.uuid4(), [EvidenceDoc(title="a", summary="b")], client=client
+    ) is True
+    # SET 절의 updated_at=now()(TimestampMixin의 onupdate)와 헷갈리면 안 되므로
+    # WHERE 절만 본다.
+    where = str(session.execute.await_args.args[0]).split("WHERE", 1)[1]
+    assert "tech_events.updated_at" not in where
 
 
 @pytest.mark.asyncio

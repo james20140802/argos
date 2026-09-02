@@ -20,6 +20,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Sequence
 
 from sqlalchemy import update
@@ -152,6 +153,7 @@ async def apply_event_naming(
     *,
     client: OllamaClient | None = None,
     keep_alive: str | int = "5m",
+    expected_updated_at: datetime | None = None,
 ) -> bool:
     """사건에 이름·요약을 지어 붙이고 ``naming_stale``을 내린다.
 
@@ -159,14 +161,34 @@ async def apply_event_naming(
     ``naming_stale=True``인 채로 남아 뒤의 ``--rename-stale`` 패스가 줍는다.
     이 함수는 예외를 삼키지 않는다(생성 실패는 ``generate_event_naming``이
     이미 ``None``으로 접어 준다). 세이브포인트는 부르는 쪽이 건다.
+
+    ARG-274: ``expected_updated_at``을 주면 그 값이 아직 그대로일 때만 쓴다.
+    근거를 스냅샷으로 뜬 뒤 LLM이 도는 동안(초 단위) 온라인 파이프라인이 같은
+    사건에 문서를 하나 더 매달 수 있는데, 그러면
+    ``link_document_to_event``가 ``naming_stale``을 다시 세운다. 가드가 없으면
+    옛 근거로 지은 이름을 쓰면서 그 플래그까지 내려 버려, 새로 붙은 문서가
+    이름에도 안 들어가고 다음 ``--rename-stale``에도 안 걸린다. 가드가 걸리면
+    아무것도 쓰지 않고 ``False``를 돌린다 — 위 "실패하면 stale로 남는다"와
+    같은 처리라 다음 패스가 새 근거까지 포함해 다시 짓는다.
+
+    ``updated_at``은 ``TimestampMixin``의 ``onupdate``라 Core ``update()``에도
+    붙는다. 온라인 경로는 방금 만든 사건을 자기 트랜잭션 안에서 명명하므로
+    끼어들 여지가 없어 가드를 넘기지 않는다(기본값 ``None``).
     """
     naming = await generate_event_naming(docs, client=client, keep_alive=keep_alive)
     if naming is None:
         return False
 
-    await session.execute(
-        update(TechEvent)
-        .where(TechEvent.id == event_id)
-        .values(title=naming.title, summary=naming.summary, naming_stale=False)
+    stmt = update(TechEvent).where(TechEvent.id == event_id)
+    if expected_updated_at is not None:
+        stmt = stmt.where(TechEvent.updated_at == expected_updated_at)
+    result = await session.execute(
+        stmt.values(title=naming.title, summary=naming.summary, naming_stale=False)
     )
+    if expected_updated_at is not None and result.rowcount == 0:
+        logger.info(
+            "apply_event_naming: %s changed while naming ran — leaving it stale",
+            event_id,
+        )
+        return False
     return True
