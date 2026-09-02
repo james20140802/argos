@@ -106,6 +106,40 @@ async def test_apply_event_naming_updates_and_clears_the_flag():
     assert values["naming_stale"] is False
 
 
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        # 기호를 문자 단위로 지우면 깨지던 것들 (ARG-274 리뷰).
+        ("C# 14 released", "C# 14 released"),
+        ("snake_case 도입", "snake_case 도입"),
+        ("Python __init__ 메서드 변경", "Python __init__ 메서드 변경"),
+        ("2 * 3 계산", "2 * 3 계산"),
+        # 짝이 맞는 마크다운 껍데기는 그대로 벗긴다.
+        ("**중요** 발표", "중요 발표"),
+        ("*강조* 텍스트", "강조 텍스트"),
+        ("`snake_case` 사용", "snake_case 사용"),
+        ("# 헤딩 제목", "헤딩 제목"),
+        ("A **B** and `c_d` and C#", "A B and c_d and C#"),
+    ],
+)
+def test_scrub_strips_markdown_wrappers_without_eating_literal_punctuation(raw, expected):
+    from argos.brain.event_naming import _scrub
+
+    assert _scrub(raw) == expected
+
+
+@pytest.mark.asyncio
+async def test_title_keeps_a_sharp_from_the_model_output():
+    """종단 확인 — 모델이 낸 ``C#``이 제목까지 살아 남는다."""
+    client = _client("TITLE: **C# 14** 출시\nSUMMARY: `snake_case` 지원 추가")
+
+    naming = await generate_event_naming(
+        [EvidenceDoc(title="a", summary="b")], client=client
+    )
+
+    assert naming == EventNaming(title="C# 14 출시", summary="snake_case 지원 추가")
+
+
 @pytest.mark.asyncio
 async def test_apply_event_naming_guards_the_write_on_the_snapshot_version():
     """스냅샷 버전을 주면 UPDATE가 그 버전에 걸린다 (ARG-274)."""

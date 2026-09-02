@@ -77,7 +77,16 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9_-]*\s*$", re.MULTILINE)
 _TITLE_RE = re.compile(r"^\s*TITLE\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE)
 _SUMMARY_RE = re.compile(r"^\s*SUMMARY\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE)
-_MARKUP_RE = re.compile(r"[*_`#]")
+_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.MULTILINE)
+"""줄 맨 앞의 헤딩 표시만 지운다. 문자 하나로 보면 ``C# 14``의 ``#``까지 먹는다."""
+
+# 짝이 맞는 강조/코드 스팬만 벗긴다. 여는·닫는 기호가 공백이 아닌 글자에
+# 붙어 있어야 해서, 짝 없이 떠 있는 기호(``2 * 3``, ``C#``)는 그대로 남는다.
+# ``_``는 아예 건드리지 않는다 — ``snake_case``·``__init__``을 깨뜨리는 값이
+# 잃는 것(밑줄 이탤릭 정리)보다 크다.
+_BOLD_RE = re.compile(r"\*\*(\S(?:.*?\S)?)\*\*")
+_ITALIC_RE = re.compile(r"\*(\S(?:[^*]*?\S)?)\*")
+_CODE_RE = re.compile(r"`(\S(?:[^`]*?\S)?)`")
 
 
 def _clean(raw: str) -> str:
@@ -86,8 +95,18 @@ def _clean(raw: str) -> str:
 
 
 def _scrub(value: str) -> str:
-    """남은 마크다운 강조 문자와 잔여 백틱을 지우고 공백을 접는다."""
-    return re.sub(r"\s+", " ", _MARKUP_RE.sub("", value)).strip()
+    """남은 마크다운 껍데기를 벗기고 공백을 접는다.
+
+    프롬프트가 이미 "no markdown"을 요구하므로 여기는 잔여물 정리다. 기호를
+    문자 단위로 지우면 안 된다 — ``C# 14 출시``가 ``C 14 출시``가 되고
+    ``snake_case``가 ``snakecase``가 된다(ARG-274 리뷰). 그래서 헤딩 표시는
+    줄 맨 앞에서만, 강조·코드는 **짝이 맞을 때만** 벗긴다.
+    """
+    value = _HEADING_RE.sub("", value)
+    value = _BOLD_RE.sub(r"\1", value)
+    value = _ITALIC_RE.sub(r"\1", value)
+    value = _CODE_RE.sub(r"\1", value)
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _format_evidence(docs: Sequence[EvidenceDoc]) -> str:
