@@ -346,7 +346,8 @@ async def execute_backfill(
 _STALE_EVENTS_SQL = text(
     """
     SELECT e.id AS event_id, e.updated_at AS event_updated_at,
-           i.title AS doc_title, i.summary AS doc_summary
+           i.title AS doc_title,
+           COALESCE(NULLIF(i.summary, ''), i.digest) AS doc_summary
     FROM tech_events e
     JOIN event_documents ed ON ed.event_id = e.id
     JOIN tech_items i ON i.id = ed.tech_item_id
@@ -372,6 +373,12 @@ _STALE_EVENTS_SQL = text(
 
 ``LIMIT``이 서브쿼리에 걸린 것은 의도적이다 — 바깥에 걸면 조인으로 늘어난
 행 수를 자르게 되어 사건 하나의 근거가 잘려 나간다.
+
+근거 본문은 ``summary``가 비면 ``digest``로 떨어진다 — triage 스키마도 DB도
+``summary`` NULL을 허용하고, 온라인 명명(``_assign_then_save``)과 백필 특징
+추출(``keyword_source``)이 이미 같은 폴백을 쓴다. 여기만 ``summary``를 고집하면
+digest만 있는 문서가 제목 한 줄로 프롬프트에 들어가, 있는 사실을 두고 헤드라인만
+보고 요약을 짓게 된다. 길이는 ``MAX_EVIDENCE_CHARS``가 자른다.
 
 ``updated_at``을 같이 읽는 것은 ARG-274의 낙관적 가드용이다 — 근거 스냅샷을
 뜬 시점의 행 버전을 들고 있어야, LLM이 도는 동안 사건이 바뀌었는지

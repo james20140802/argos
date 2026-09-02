@@ -33,6 +33,9 @@ _URL_PREFIX = "https://arg-274-stale-order-test.example.com/"
 
 NOW = datetime.now(timezone.utc)
 
+_DEFAULT = object()
+"""``_item``에서 "요약을 명시하지 않음"과 "요약이 NULL"을 가르는 센티널."""
+
 
 @pytest.fixture(scope="module", autouse=True)
 def _require_db():
@@ -86,13 +89,21 @@ async def session_factory():
         await engine.dispose()
 
 
-def _item(suffix: str, *, title: str, published_at: datetime) -> TechItem:
+def _item(
+    suffix: str,
+    *,
+    title: str,
+    published_at: datetime,
+    summary: str | None = _DEFAULT,
+    digest: str | None = None,
+) -> TechItem:
     return TechItem(
         id=uuid.uuid4(),
         title=title,
         source_url=f"{_URL_PREFIX}{suffix}",
         raw_content=f"body {suffix}",
-        summary=f"summary {suffix}",
+        summary=f"summary {suffix}" if summary is _DEFAULT else summary,
+        digest=digest,
         category=CategoryType.MAINSTREAM,
         published_at=published_at,
     )
@@ -211,3 +222,41 @@ async def test_snapshot_carries_the_event_row_version(session_factory):
     ours = [e for e in stale if e.event_id == event_id]
     assert len(ours) == 1
     assert ours[0].updated_at == row
+
+
+@pytest.mark.parametrize("summary", [None, ""], ids=["null-summary", "empty-summary"])
+@pytest.mark.asyncio
+async def test_evidence_falls_back_to_the_digest(session_factory, summary):
+    """summary가 없고 digest만 있는 문서도 본문을 근거로 싣는다.
+
+    triage 스키마도 DB도 summary NULL을 허용하고, 온라인 명명과 백필 특징
+    추출이 이미 ``summary or digest`` 폴백을 쓴다. 여기서만 제목 한 줄이
+    나가면 있는 사실을 두고 헤드라인으로 요약을 짓게 된다.
+    """
+    event_id = uuid.uuid4()
+
+    async with session_factory() as session:
+        session.add(
+            TechEvent(id=event_id, occurred_at=NOW, naming_stale=True, title=None)
+        )
+        await session.flush()
+        item = _item(
+            f"digest-{summary!r}",
+            title="기사 제목",
+            published_at=NOW,
+            summary=summary,
+            digest="본문 요약을 대신할 롱폼 다이제스트",
+        )
+        session.add(item)
+        await session.flush()
+        session.add(
+            EventDocument(id=uuid.uuid4(), event_id=event_id, tech_item_id=item.id)
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        stale = await fetch_stale_events(session)
+
+    ours = [e for e in stale if e.event_id == event_id]
+    assert len(ours) == 1
+    assert [d.summary for d in ours[0].docs] == ["본문 요약을 대신할 롱폼 다이제스트"]

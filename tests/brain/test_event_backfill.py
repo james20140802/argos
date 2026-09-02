@@ -389,6 +389,14 @@ def test_stale_event_query_reads_the_row_version_for_the_guard():
     assert "updated_at" in str(_STALE_EVENTS_SQL).lower()
 
 
+def test_stale_event_query_falls_back_to_the_digest():
+    """summary가 비면 digest를 근거로 쓴다 — 온라인 명명과 같은 폴백."""
+    from argos.brain.event_backfill import _STALE_EVENTS_SQL
+
+    compiled = " ".join(str(_STALE_EVENTS_SQL).split()).lower()
+    assert "coalesce(nullif(i.summary, ''), i.digest) as doc_summary" in compiled
+
+
 def test_stale_event_defaults_to_no_guard():
     """스냅샷 없이 만든 StaleEvent는 가드를 걸지 않는다 (온라인 경로와 같은 계약)."""
     from argos.brain.event_backfill import StaleEvent
