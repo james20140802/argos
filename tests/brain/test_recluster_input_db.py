@@ -234,6 +234,33 @@ async def test_tombstoned_event_links_resolve_to_the_survivor(session_factory, c
 
 
 @pytest.mark.asyncio
+async def test_fractional_window_days_is_not_truncated(session_factory, clean):
+    # window_days=0.5(=12시간)에서 11시간 떨어진 두 문서는 서로의 창 안에
+    # 들어야 한다. `make_interval(days => :window_days)`는 실수 바인드를
+    # 정수 파라미터로 캐스팅해 0.5를 0으로 잘라버리는 버그가 있었다 — 그
+    # 경우 창이 사실상 0이 되어 이 쌍이 사라진다. `:window_days * interval
+    # '1 day'`로 고치면 소수점이 그대로 살아 쌍이 나온다.
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        left = await _make_item(session, slug="frac-left", at=base, seed=0.01)
+        right = await _make_item(
+            session, slug="frac-right", at=base + timedelta(hours=11), seed=0.011
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_period_input(
+            session,
+            start=base - timedelta(days=1),
+            end=base + timedelta(days=1),
+            window_days=0.5,
+        )
+
+    pairs = {(pair.left_id, pair.right_id) for pair in result.neighbor_pairs}
+    assert (min(left, right), max(left, right)) in pairs
+
+
+@pytest.mark.asyncio
 async def test_query_writes_nothing(session_factory, clean):
     base = datetime(2026, 8, 10, tzinfo=timezone.utc)
     async with session_factory() as session:

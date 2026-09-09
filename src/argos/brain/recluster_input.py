@@ -65,9 +65,9 @@ _NEIGHBOR_PAIRS_SQL = text(
         WHERE t.embedding IS NOT NULL
           AND t.id <> p.id
           AND COALESCE(t.published_at, t.created_at)
-              >= p.occurred_at - make_interval(days => :window_days)
+              >= p.occurred_at - :window_days * INTERVAL '1 day'
           AND COALESCE(t.published_at, t.created_at)
-              <= p.occurred_at + make_interval(days => :window_days)
+              <= p.occurred_at + :window_days * INTERVAL '1 day'
         ORDER BY t.embedding <=> p.embedding, t.id
         LIMIT :limit
     ) n
