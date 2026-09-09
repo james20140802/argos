@@ -42,7 +42,14 @@ class MergeCandidate:
 
 @dataclass(frozen=True)
 class SplitCandidate:
-    """가를 후보 사건. `groups`는 그 사건 문서들이 흩어진 커뮤니티별 묶음."""
+    """가를 후보 사건. `groups`는 그 사건 문서들이 흩어진 커뮤니티별 묶음.
+
+    **판정에 쓰인 문서는 재군집을 돌린 기간 안 문서뿐이다.** 사건에 문서가
+    10건 걸려 있어도 그중 2건만 기간 안이면 그 2건만 보고 "2조각"이라고 말한다
+    — 나머지 8건은 아예 보지 않았다. 그래서 `groups`는 "이 사건을 이렇게 가르면
+    된다"는 완성된 분할이 아니라 "기간 안에서 이만큼 어긋나 보인다"는 신호다.
+    반영을 맡을 ARG-245는 사건의 전체 문서를 다시 봐야 한다.
+    """
 
     event_id: uuid.UUID
     groups: tuple[tuple[uuid.UUID, ...], ...]
@@ -65,8 +72,14 @@ def derive_candidates(
 ) -> ReclusterCandidates:
     """커뮤니티와 현재 사건 링크를 대조해 후보를 만든다.
 
+    **전제: `communities`는 진짜 파티션이어야 한다** — 한 문서가 두 커뮤니티에
+    동시에 들어 있으면 안 된다. `recluster_core.detect_communities`는 이를
+    보장하지만(Leiden 파티션), 이 함수를 직접 부르는 쪽(예: ARG-245)이 겹치는
+    묶음을 넘기면 그 문서가 여러 커뮤니티에서 중복 집계돼 가를 후보의 조각 수가
+    실제보다 부풀어 오른다.
+
     Args:
-        communities: 재군집이 그린 커뮤니티들.
+        communities: 재군집이 그린 커뮤니티들. 서로 겹치지 않아야 한다.
         event_links: 문서 id → 그 문서가 걸린 **생존** 사건 id들. 링크가 없는
             문서는 키가 없거나 빈 시퀀스다.
 
