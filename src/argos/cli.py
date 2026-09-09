@@ -1749,12 +1749,19 @@ def _print_recluster_report(candidates, *, start: datetime, end: datetime) -> No
         f"recluster-events (read-only): "
         f"{start.date().isoformat()} ~ {end.date().isoformat()}"
     )
+    # resolution은 **실효값**을 찍는다 — 비워 두면 join_threshold를 따라가므로
+    # 설정 원문(None)을 그대로 찍으면 어떤 γ로 돈 결과인지 알 수 없다.
     print(
         "  thresholds: "
         f"join_threshold={config.join_threshold} window_days={config.window_days} "
         f"candidate_k={config.candidate_k} leiden="
-        f"({config.leiden_objective}, resolution={config.leiden_resolution}, "
+        f"({config.leiden_objective}, "
+        f"resolution={config.effective_leiden_resolution}, "
         f"seed={config.leiden_seed})"
+    )
+    print(
+        "  주의: 판정은 이 기간 안 문서만 본다 — 사건의 문서가 기간 밖에도 "
+        "있으면 그 문서는 아예 세지 않았다."
     )
 
     if candidates.is_empty():
@@ -1792,8 +1799,6 @@ def _cmd_recluster_events(args: argparse.Namespace) -> int:
     from argos.brain.graph_backend import GraphLibsUnavailable
 
     async def _run_once() -> int:
-        from argos.database import AsyncSessionLocal
-
         async with AsyncSessionLocal() as session:
             candidates = await _recluster_period_for_cli(session, start=start, end=end)
         _print_recluster_report(candidates, start=start, end=end)

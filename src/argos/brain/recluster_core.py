@@ -11,6 +11,24 @@
 가중치도 `event_scoring.edge_weight`를 그대로 부른다. 이 모듈에는 점수 산식이
 한 줄도 없다.
 
+**다만 재사용되는 것은 값이지 기준이 아니다.** 두 경로는 같은 숫자를 서로 다른
+양과 견준다. 낮의 `event_scoring.choose_event`는 후보 이웃(최대 `candidate_k`개)
+가중치를 사건별로 **합산**해 `best_total >= join_threshold`를 보고, 그 경로에는
+간선 하나에 걸리는 최소 세기가 아예 없다. 밤의 `build_edges`는 **한 쌍의 가중치
+하나**를 같은 값과 견준다. 그래서 밤 기준이 구조적으로 더 엄격하다 — 실측:
+한 쌍당 0.3203짜리 이웃 셋(합 0.9609)은 낮에는 사건에 붙지만 밤에는 간선이 하나도
+그려지지 않고, 임베딩이 없고 시각이 같은 문서 넷(쌍당 0.15, 합 0.60)도 마찬가지다.
+임계값 재보정은 사용자 판단이 필요한 **열린 문제**라 이 브랜치에서 손대지 않았다.
+후보를 실제로 반영하는 ARG-245가 그 차이를 가장 먼저 체감할 소비자다.
+
+**CPM 해상도 γ는 `join_threshold`를 따라간다.** `leiden_resolution`을 비워
+두면(기본) `EventDetectionConfig.effective_leiden_resolution`이 `join_threshold`를
+돌려준다. 둘을 값만 같은 독립 필드로 두면 "임계값만 낮췄는데 오히려 더 잘게
+쪼개진다"가 조용히 벌어진다 — γ가 채택된 간선의 세기보다 높으면 뭉칠 이득이
+없기 때문이다(CPM 품질 = 내부 가중치합 - γ × 쌍의 수). 조율이 필요하면
+`leiden_resolution`을 명시해 끊을 수 있고, 그때만 둘이 따로 논다.
+`leiden_objective="modularity"`에서는 γ 자체가 쓰이지 않는다.
+
 **왜 Leiden인가.** 연결 요소는 체이닝에 무너지고(A~B, B~C면 A·C가 무관해도 한
 덩어리), Louvain은 내부적으로 연결되지도 않은 노드를 한 커뮤니티에 넣을 수
 있다. Leiden은 Louvain 저자들이 바로 그 결함을 고쳐 만든 후속이라 커뮤니티
@@ -60,6 +78,9 @@ def build_edges(
     config: "EventDetectionConfig",
 ) -> tuple[WeightedEdge, ...]:
     """`join_threshold` 이상인 쌍만 간선으로 만든다.
+
+    비교 대상은 **쌍 하나의 가중치**다 — 낮 배정이 같은 값을 이웃 표의 *합*과
+    견주는 것과 다르다(모듈 docstring의 비대칭 항목).
 
     반환 순서는 `(left_id, right_id)` 오름차순 — 같은 입력이면 항상 같다.
     양끝 중 하나라도 `documents`에 없는 쌍은 버린다(그래프의 노드는 넘겨받은
@@ -131,7 +152,9 @@ def detect_communities(
         "seed": config.leiden_seed,  # (2) 난수 고정
     }
     if config.leiden_objective == "cpm":
-        kwargs["resolution_parameter"] = config.leiden_resolution
+        # 실효 γ는 config 한 곳에서 해석한다 — 비워 두면 join_threshold를
+        # 따라가고, CLI 리포트도 같은 프로퍼티를 찍는다.
+        kwargs["resolution_parameter"] = config.effective_leiden_resolution
 
     partition = leidenalg.find_partition(graph, partition_type, **kwargs)
 

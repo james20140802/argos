@@ -310,26 +310,51 @@ class EventDetectionConfig(BaseModel):
     # ARG-279: 야간 재군집의 Leiden 노브. 간선 채택 컷은 여기 없다 — 낮 배정과
     # 같은 join_threshold를 그대로 쓰기 때문이다(밤 전용 기준을 만들면 매일 밤
     # 뒤집기만 반복된다).
+    # 다만 **값이 같을 뿐 기준이 같지는 않다.** 낮(event_scoring.choose_event)은
+    # 이웃 표의 **합**을 이 값과 견주고, 밤(recluster_core.build_edges)은 **한
+    # 쌍의 가중치**를 견준다. 같은 숫자라도 밤이 훨씬 엄격하다 — 재보정은 사용자
+    # 판단이 필요한 열린 문제라 이 브랜치에서 건드리지 않았다(ARG-245가 소비자).
     # CPM을 기본으로 두는 건 modularity의 resolution limit 때문이다: 작은
     # 사건들이 큰 덩어리에 삼켜지는 쪽으로 기울어, "약하게만 이어진 기사들이
     # 한 덩어리가 되지 않는다"는 기준과 정면으로 부딪친다. CPM은 해상도
     # 파라미터가 "이 밀도 이상이어야 한 덩어리"라는 절대 기준이라 그 편향이 없다.
     leiden_objective: Literal["cpm", "modularity"] = "cpm"
+    # CPM 해상도 γ. **None(기본)은 "join_threshold를 따라간다"는 뜻이다.**
     # 간선 가중치가 join_threshold 이상만 남으므로, 같은 값을 해상도로 두면
     # "임계값을 겨우 넘긴 간선들만으로 이어진 묶음"은 뭉치는 이득이 없고
     # (CPM 품질 = 내부 가중치합 - γ × 쌍의 수), 그보다 확실히 진한 묶음만
-    # 살아남는다. 사슬 저항과 정상 병합을 동시에 만족하는 자리라 기본값으로 뒀다.
+    # 살아남는다. 사슬 저항과 정상 병합을 동시에 만족하는 자리다.
+    # 예전에는 0.55를 **복사해** 박아 뒀는데, 그러면 프로즈로만 묶인 독립 필드
+    # 둘이라 한쪽만 내렸을 때 조용히 어긋난다. 실측: join_threshold=0.35 /
+    # γ=0.55면 채택된 간선(0.4498)이 전부 γ보다 낮아, "더 잘 묶이라고" 내린
+    # 임계값이 오히려 한 사건 문서 넷을 넷으로 흩어 놓는다. 그래서 기본값을
+    # None으로 바꿔 코드로 묶었다 — 조율용 명시 오버라이드는 그대로 남는다.
     # 실측(2026-09-10, A-B-C 사슬 간선 ≈0.60 / x-y-z 삼각형 간선 1.0, 0.05
-    # 간격으로 스윕): resolution <= 0.3에서는 사슬이 안 갈라지고(한 덩어리),
-    # 0.4~0.9 구간에서 사슬은 갈라지면서 삼각형은 뭉친 채 유지되고, 1.0부터는
-    # 삼각형마저 쪼개지기 시작한다. 즉 "둘 다 만족"하는 구간은 [0.4, 0.9]다.
-    # join_threshold와 같은 값(0.55)을 그대로 쓰면 "간선이 되는 최소 세기"와
-    # "한 덩어리가 되는 최소 밀도"가 숫자 하나로 통일돼 이해하기 쉽고, 실측
-    # 구간의 중앙에도 있어 향후 가중치 미세조정에도 마진이 있다.
-    leiden_resolution: float = Field(default=0.55, ge=0.0)
+    # 간격으로 스윕): γ <= 0.30에서는 사슬이 안 갈라지고(한 덩어리),
+    # 0.35~0.95 구간에서 사슬은 갈라지면서 삼각형은 뭉친 채 유지되고, 1.0부터는
+    # 삼각형마저 쪼개지기 시작한다. 즉 "둘 다 만족"하는 구간은 [0.35, 0.95]이고
+    # 그 중앙은 ≈0.65다. join_threshold 기본값 0.55는 중앙은 아니지만 구간
+    # 안쪽이라 양쪽으로 마진이 있다.
+    # `leiden_objective="modularity"`에서는 CPM 노브가 아니므로 무시된다.
+    leiden_resolution: float | None = Field(default=None, ge=0.0)
     # leidenalg는 내부적으로 난수를 쓴다. 시드를 고정하지 않으면 같은 입력에서
     # 실행마다 다른 파티션이 나와 "교정"이 아니라 소음이 된다.
     leiden_seed: int = Field(default=42, ge=0)
+
+    @property
+    def effective_leiden_resolution(self) -> float:
+        """실제로 CPM에 넘어가는 해상도 γ — 코어와 CLI 리포트의 **공용 한 자리**.
+
+        `leiden_resolution`이 None이면 `join_threshold`를 그대로 따라간다.
+        해석을 여기 한 곳에 두는 이유는 리포트 때문이다: CLI가 `None`을 그대로
+        찍으면 사용자는 실제로 어떤 γ로 돈 결과인지 알 수 없다.
+
+        `leiden_objective="modularity"`일 때는 CPM 파라미터가 아니라서 이 값이
+        쓰이지 않는다.
+        """
+        if self.leiden_resolution is None:
+            return self.join_threshold
+        return self.leiden_resolution
 
 
 class UserConfig(BaseModel):

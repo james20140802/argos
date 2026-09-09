@@ -99,6 +99,35 @@ def test_lowering_the_threshold_in_config_admits_more_edges():
 
 
 @requires_graph_libs
+def test_lowering_only_the_join_threshold_actually_changes_the_clustering():
+    # AC: config에서 임계값을 바꾸면 낮 배정과 밤 재군집이 **같이** 바뀐다.
+    # 예전에는 leiden_resolution이 0.55를 따로 복사해 갖고 있어서, "더 잘
+    # 묶이라고" join_threshold만 내리면 채택된 간선(≈0.447)이 전부 γ=0.55보다
+    # 낮아 묶이는 이득이 없었다 — 간선은 늘었는데 커뮤니티는 그대로 흩어진 채.
+    a = _doc(1, theta=0.0)
+    b = _doc(2, theta=1.0)  # 코사인 ≈0.540 → 가중치 ≈0.447
+    pairs = [_pair(a, b)]
+    apart = {frozenset({a.tech_item_id}), frozenset({b.tech_item_id})}
+
+    strict = EventDetectionConfig()
+    assert build_edges([a, b], pairs, config=strict) == ()
+    assert _members(detect_communities([a, b], pairs, config=strict)) == apart
+
+    loose = EventDetectionConfig(join_threshold=0.35)
+    assert loose.effective_leiden_resolution == pytest.approx(0.35)  # 따라온다
+    assert len(build_edges([a, b], pairs, config=loose)) == 1
+    assert _members(detect_communities([a, b], pairs, config=loose)) == {
+        frozenset({a.tech_item_id, b.tech_item_id})
+    }
+
+    # 명시 오버라이드로 끊으면 옛 동작이 그대로 재현된다 — "따라간다"가 우연이
+    # 아니라 이 기본값의 효과임을 반대쪽에서 확인한다.
+    pinned = EventDetectionConfig(join_threshold=0.35, leiden_resolution=0.55)
+    assert len(build_edges([a, b], pairs, config=pinned)) == 1
+    assert _members(detect_communities([a, b], pairs, config=pinned)) == apart
+
+
+@requires_graph_libs
 def test_a_weak_chain_does_not_collapse_into_one_blob():
     # AC: A–B–C처럼 약한 연결로만 이어진 사슬은 한 덩어리가 되지 않는다.
     # A–B와 B–C는 겨우 간선이 되는 세기(≈0.60)이고, A–C는 아예 간선이 못 된다.

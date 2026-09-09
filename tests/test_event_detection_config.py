@@ -98,7 +98,8 @@ def test_window_and_k_reject_nonsense():
 def test_leiden_knobs_have_defaults_and_ranges():
     config = EventDetectionConfig()
     assert config.leiden_objective == "cpm"
-    assert config.leiden_resolution == pytest.approx(0.55)
+    # 해상도는 값을 복사해 박아 두지 않는다 — 비어 있는 게 기본이다.
+    assert config.leiden_resolution is None
     assert config.leiden_seed == 42
 
     with pytest.raises(ValidationError):
@@ -107,3 +108,17 @@ def test_leiden_knobs_have_defaults_and_ranges():
         EventDetectionConfig(leiden_resolution=-0.1)
     with pytest.raises(ValidationError):
         EventDetectionConfig(leiden_seed=-1)
+
+
+def test_leiden_resolution_follows_join_threshold_unless_overridden():
+    # 두 값이 프로즈로만 묶여 있으면 join_threshold만 내렸을 때 조용히
+    # 어긋난다(γ가 채택된 간선보다 높아 오히려 더 잘게 쪼개진다). 실효값
+    # 해석은 config 한 곳에만 있어야 코어와 CLI 리포트가 같은 숫자를 본다.
+    assert EventDetectionConfig().effective_leiden_resolution == pytest.approx(0.55)
+    assert EventDetectionConfig(
+        join_threshold=0.35
+    ).effective_leiden_resolution == pytest.approx(0.35)
+    # 명시 오버라이드는 그대로 살아 있다 — 조율할 여지를 없애지는 않았다.
+    assert EventDetectionConfig(
+        join_threshold=0.35, leiden_resolution=0.9
+    ).effective_leiden_resolution == pytest.approx(0.9)
