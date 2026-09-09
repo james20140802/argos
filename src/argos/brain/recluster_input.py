@@ -7,10 +7,15 @@
 
 **1단계와 무엇이 같고 무엇이 다른가.** 시간 창(`±window_days`)도, 정확 정렬
 (`ORDER BY embedding <=> :emb, id LIMIT k`)도, 동점을 id 오름차순으로 깨는
-것도 그대로다 — 결정성 기준이 같아야 낮의 배정과 밤의 교정이 같은 판단을
-한다. 다른 건 하나뿐이다: **`EXISTS event_documents` 필터를 걸지 않는다.**
-성공 장면이 "기간의 문서 **전체**"라고 말하기 때문에, 아직 어떤 사건에도 붙지
-않은 문서도 재군집 대상이다.
+것도 그대로다 — 같은 정렬 규칙을 써야 "같은 입력이면 같은 결과"가 두 경로에서
+같은 뜻이 된다. 다른 건 둘이다.
+
+1. **`EXISTS event_documents` 필터를 걸지 않는다.** 성공 장면이 "기간의 문서
+   **전체**"라고 말하기 때문에, 아직 어떤 사건에도 붙지 않은 문서도 재군집
+   대상이다.
+2. **상위 K를 코퍼스 전체가 아니라 기간 안에서 고른다.** 1단계는 새 문서
+   하나를 기존 코퍼스에 붙이는 일이라 창 안 아무나 이웃이 될 수 있지만,
+   재군집의 그래프는 노드가 기간 안 문서뿐이다(`_NEIGHBOR_PAIRS_SQL` docstring).
 
 **ANN 인덱스는 쓰지 않는다** — `event_candidates` 모듈 docstring의 이유가 그대로
 적용된다. 근사 정렬은 "같은 입력이면 같은 결과"를 깬다.
@@ -61,13 +66,10 @@ _NEIGHBOR_PAIRS_SQL = text(
     FROM period p
     CROSS JOIN LATERAL (
         SELECT t.id
-        FROM tech_items t
-        WHERE t.embedding IS NOT NULL
-          AND t.id <> p.id
-          AND COALESCE(t.published_at, t.created_at)
-              >= p.occurred_at - :window_days * INTERVAL '1 day'
-          AND COALESCE(t.published_at, t.created_at)
-              <= p.occurred_at + :window_days * INTERVAL '1 day'
+        FROM period t
+        WHERE t.id <> p.id
+          AND t.occurred_at >= p.occurred_at - :window_days * INTERVAL '1 day'
+          AND t.occurred_at <= p.occurred_at + :window_days * INTERVAL '1 day'
         ORDER BY t.embedding <=> p.embedding, t.id
         LIMIT :limit
     ) n
@@ -75,7 +77,16 @@ _NEIGHBOR_PAIRS_SQL = text(
     """
 )
 """문서당 시간 창 안 상위 K 이웃. LATERAL이라 왕복은 한 번이고, 쌍의 수는
-문서 수 × K로 묶인다 — 문서 수의 제곱으로 자라지 않는다."""
+문서 수 × K로 묶인다 — 문서 수의 제곱으로 자라지 않는다.
+
+**순위는 기간 안에서 매긴다** — 안쪽 FROM이 `tech_items`가 아니라 `period`다.
+그래프의 노드는 어차피 기간 안 문서뿐이라 기간 밖 이웃은 뽑아 봐야 버려지는데,
+LIMIT 자리를 먼저 차지하면 정작 기간 안 이웃이 K등 밖으로 밀린다. 창이 빽빽한
+코퍼스에서는 그렇게 사라진 간선 때문에 멀쩡한 사건이 "가를 후보"로 잘못 잡히고,
+결과가 기간 경계를 어디에 그었느냐에 따라 달라진다.
+`period`가 이미 `embedding IS NOT NULL`과 `occurred_at`을 들고 있어서 안쪽에서
+다시 걸 조건도 없다. 정렬(`ORDER BY t.embedding <=> p.embedding, t.id`)은 그대로다
+— 그게 결정성 보장이다."""
 
 
 @dataclass(frozen=True)
@@ -179,14 +190,13 @@ async def fetch_period_input(
         )
     ).all()
 
-    # 방향을 정규화해 접는다: A→B와 B→A는 같은 간선이다. 기간 밖 이웃은
-    # 재군집 대상이 아니므로 버린다 — 창은 기간 경계를 넘어 보지만, 그래프의
-    # 노드는 기간 안 문서로 한정한다.
-    in_period = {row.id for row in doc_rows}
+    # 방향을 정규화해 접는다: A→B와 B→A는 같은 간선이다. 기간 밖 이웃을
+    # 파이썬에서 걸러 내던 코드는 없앴다 — 이제 SQL이 `period` 안에서만 이웃을
+    # 뽑으므로 여기 오는 쌍의 양끝은 전부 기간 안 문서다(그리고 걸러 내는 대신
+    # 애초에 뽑지 않으니 상위 K 자리를 기간 밖 문서에 뺏기지도 않는다).
     pairs = {
         (min(row.left_id, row.right_id), max(row.left_id, row.right_id))
         for row in pair_rows
-        if row.right_id in in_period
     }
     neighbor_pairs = tuple(
         NeighborPair(left_id=left, right_id=right) for left, right in sorted(pairs)

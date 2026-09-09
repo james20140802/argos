@@ -195,6 +195,44 @@ async def test_pairs_are_capped_per_document_not_quadratic(session_factory, clea
 
 
 @pytest.mark.asyncio
+async def test_top_k_slots_are_not_spent_on_out_of_period_neighbors(
+    session_factory, clean
+):
+    # 상위 K를 코퍼스 전체에서 뽑으면, 창(±window_days) 안이지만 기간 밖인
+    # 문서들이 LIMIT 자리를 먼저 차지하고 파이썬 단계에서 버려진다. 그러면
+    # 정작 기간 안 이웃이 K등 밖으로 밀려 간선이 통째로 사라지고, 멀쩡한 사건이
+    # "가를 후보"로 잘못 잡힌다. 순위를 기간 안에서 매기면 그 일이 없다.
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        near = await _make_item(session, slug="rank-near", at=base, seed=0.0)
+        # 기간 안이지만 아래 미끼들보다 near에서 멀다.
+        peer = await _make_item(
+            session, slug="rank-peer", at=base + timedelta(hours=1), seed=0.05
+        )
+        # 기간 밖(+5일) · 창 안(14일). near에는 peer보다 훨씬 가깝다.
+        for index in range(3):
+            await _make_item(
+                session,
+                slug=f"rank-decoy{index}",
+                at=base + timedelta(days=5),
+                seed=0.001 * (index + 1),
+            )
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_period_input(
+            session,
+            start=base - timedelta(days=1),
+            end=base + timedelta(days=1),
+            limit=2,
+        )
+
+    assert {doc.tech_item_id for doc in result.documents} == {near, peer}
+    pairs = {(pair.left_id, pair.right_id) for pair in result.neighbor_pairs}
+    assert (min(near, peer), max(near, peer)) in pairs
+
+
+@pytest.mark.asyncio
 async def test_pairs_are_normalized_and_deduplicated(session_factory, clean):
     base = datetime(2026, 8, 10, tzinfo=timezone.utc)
     async with session_factory() as session:
