@@ -57,6 +57,13 @@ Changelog = "https://github.com/james20140802/argos/blob/main/CHANGELOG.md"
 nlp = [
     "spacy>=3.7,<4",
 ]
+# 야간 재군집의 Leiden 커뮤니티 탐지(ARG-277). 없으면 재군집만 꺼지고
+# 크롤·배정·브리핑·피드는 그대로 돈다. nlp에 얹지 않는 건 목적이 달라서다 —
+# 고유명사 추출을 쓰려고 C 확장까지 끌고 오게 만들면 안 된다.
+graph = [
+    "python-igraph>=0.11",
+    "leidenalg>=0.10",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
