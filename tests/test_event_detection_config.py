@@ -93,3 +93,17 @@ def test_window_and_k_reject_nonsense():
         EventDetectionConfig(window_days=0)
     with pytest.raises(ValidationError):
         EventDetectionConfig(candidate_k=0)
+
+
+def test_leiden_knobs_have_defaults_and_ranges():
+    config = EventDetectionConfig()
+    assert config.leiden_objective == "cpm"
+    assert config.leiden_resolution == pytest.approx(0.55)
+    assert config.leiden_seed == 42
+
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(leiden_objective="louvain")
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(leiden_resolution=-0.1)
+    with pytest.raises(ValidationError):
+        EventDetectionConfig(leiden_seed=-1)

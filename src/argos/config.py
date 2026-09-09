@@ -307,6 +307,30 @@ class EventDetectionConfig(BaseModel):
     window_days: float = Field(default=14.0, gt=0.0)
     candidate_k: int = Field(default=25, ge=1)
 
+    # ARG-279: 야간 재군집의 Leiden 노브. 간선 채택 컷은 여기 없다 — 낮 배정과
+    # 같은 join_threshold를 그대로 쓰기 때문이다(밤 전용 기준을 만들면 매일 밤
+    # 뒤집기만 반복된다).
+    # CPM을 기본으로 두는 건 modularity의 resolution limit 때문이다: 작은
+    # 사건들이 큰 덩어리에 삼켜지는 쪽으로 기울어, "약하게만 이어진 기사들이
+    # 한 덩어리가 되지 않는다"는 기준과 정면으로 부딪친다. CPM은 해상도
+    # 파라미터가 "이 밀도 이상이어야 한 덩어리"라는 절대 기준이라 그 편향이 없다.
+    leiden_objective: Literal["cpm", "modularity"] = "cpm"
+    # 간선 가중치가 join_threshold 이상만 남으므로, 같은 값을 해상도로 두면
+    # "임계값을 겨우 넘긴 간선들만으로 이어진 묶음"은 뭉치는 이득이 없고
+    # (CPM 품질 = 내부 가중치합 - γ × 쌍의 수), 그보다 확실히 진한 묶음만
+    # 살아남는다. 사슬 저항과 정상 병합을 동시에 만족하는 자리라 기본값으로 뒀다.
+    # 실측(2026-09-10, A-B-C 사슬 간선 ≈0.60 / x-y-z 삼각형 간선 1.0, 0.05
+    # 간격으로 스윕): resolution <= 0.3에서는 사슬이 안 갈라지고(한 덩어리),
+    # 0.4~0.9 구간에서 사슬은 갈라지면서 삼각형은 뭉친 채 유지되고, 1.0부터는
+    # 삼각형마저 쪼개지기 시작한다. 즉 "둘 다 만족"하는 구간은 [0.4, 0.9]다.
+    # join_threshold와 같은 값(0.55)을 그대로 쓰면 "간선이 되는 최소 세기"와
+    # "한 덩어리가 되는 최소 밀도"가 숫자 하나로 통일돼 이해하기 쉽고, 실측
+    # 구간의 중앙에도 있어 향후 가중치 미세조정에도 마진이 있다.
+    leiden_resolution: float = Field(default=0.55, ge=0.0)
+    # leidenalg는 내부적으로 난수를 쓴다. 시드를 고정하지 않으면 같은 입력에서
+    # 실행마다 다른 파티션이 나와 "교정"이 아니라 소음이 된다.
+    leiden_seed: int = Field(default=42, ge=0)
+
 
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
