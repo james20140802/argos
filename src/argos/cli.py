@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1675,6 +1676,137 @@ def _cmd_backfill_events(args: argparse.Namespace) -> int:
     )
 
 
+def _period_date(value: str) -> datetime:
+    """`YYYY-MM-DD`를 UTC 자정 datetime으로. 형식이 틀리면 argparse 오류."""
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"'{value}'는 날짜가 아니다 — YYYY-MM-DD 형식으로 준다 (예: 2026-08-01)"
+        ) from None
+    return parsed.replace(tzinfo=timezone.utc)
+
+
+def _build_recluster_events_parser(sub, common) -> None:
+    rc_p = sub.add_parser(
+        "recluster-events",
+        help="Recompute event boundaries for a period (read-only)",
+        parents=[common],
+        description=(
+            "Re-group a period's documents from scratch and report which events "
+            "look like they should be merged and which look like they should be "
+            "split. Read-only: this command never writes to the database — "
+            "applying the corrections is a separate, later step. Requires the "
+            "'graph' optional extra (uv sync --all-extras)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    rc_p.add_argument(
+        "--from",
+        dest="period_from",
+        type=_period_date,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Period start (default: window_days before --to)",
+    )
+    rc_p.add_argument(
+        "--to",
+        dest="period_to",
+        type=_period_date,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Period end, inclusive (default: today)",
+    )
+
+
+# 테스트가 갈아 끼울 수 있도록 모듈 속성으로 둔다 — CLI 리포트만 따로 보려면
+# DB가 필요한 이 경로를 끊을 수 있어야 한다.
+async def _recluster_period_for_cli(session, *, start: datetime, end: datetime):
+    from argos.brain.recluster import recluster_period
+
+    return await recluster_period(session, start=start, end=end)
+
+
+def _resolve_period(args: argparse.Namespace) -> tuple[datetime, datetime]:
+    """`--from`/`--to`를 채운다. 기본 기간은 config의 window_days에서 온다."""
+    end = getattr(args, "period_to", None)
+    if end is None:
+        end = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    start = getattr(args, "period_from", None)
+    if start is None:
+        start = end - timedelta(days=settings.user.event_detection.window_days)
+    # 끝은 그 날 전체를 포함해야 한다 — 자정으로 자르면 --to 당일 기사가 빠진다.
+    return start, end + timedelta(days=1) - timedelta(microseconds=1)
+
+
+def _print_recluster_report(candidates, *, start: datetime, end: datetime) -> None:
+    """후보 리포트. 어떤 설정으로 나온 결과인지 함께 찍는다 —
+    backfill-events의 dry-run 리포트와 같은 이유다."""
+    config = settings.user.event_detection
+    print(
+        f"recluster-events (read-only): "
+        f"{start.date().isoformat()} ~ {end.date().isoformat()}"
+    )
+    print(
+        "  thresholds: "
+        f"join_threshold={config.join_threshold} window_days={config.window_days} "
+        f"candidate_k={config.candidate_k} leiden="
+        f"({config.leiden_objective}, resolution={config.leiden_resolution}, "
+        f"seed={config.leiden_seed})"
+    )
+
+    if candidates.is_empty():
+        print("  합칠 후보: 없음")
+        print("  가를 후보: 없음")
+        return
+
+    print(f"  합칠 후보: {len(candidates.merges)}건")
+    for merge in candidates.merges:
+        left, right = merge.event_ids
+        print(f"    {left} + {right}")
+        print(
+            "      근거 문서: "
+            + ", ".join(str(doc_id) for doc_id in merge.evidence_document_ids)
+        )
+
+    print(f"  가를 후보: {len(candidates.splits)}건")
+    for split in candidates.splits:
+        print(f"    {split.event_id} → {len(split.groups)}조각")
+        for index, group in enumerate(split.groups, start=1):
+            print(
+                f"      {index}. " + ", ".join(str(doc_id) for doc_id in group)
+            )
+
+
+def _cmd_recluster_events(args: argparse.Namespace) -> int:
+    start, end = _resolve_period(args)
+    if start > end:
+        print(
+            "ERROR: --to가 --from보다 앞선다 — 아무것도 계산하지 않았다.",
+            file=sys.stderr,
+        )
+        return 2
+
+    from argos.brain.graph_backend import GraphLibsUnavailable
+
+    async def _run_once() -> int:
+        from argos.database import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as session:
+            candidates = await _recluster_period_for_cli(session, start=start, end=end)
+        _print_recluster_report(candidates, start=start, end=end)
+        return 0
+
+    try:
+        return asyncio.run(_run_once())
+    except GraphLibsUnavailable as exc:
+        # 스택트레이스가 아니라 "무엇을 설치하면 되는지" 한 줄.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
 def _print_dry_run_report(plan, total_docs: int) -> None:
     """미리보기 리포트. 임계값 현재값을 함께 찍는다.
 
@@ -2169,6 +2301,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_backfill_digests_parser(sub, common)
     _build_backfill_trust_parser(sub, common)
     _build_backfill_events_parser(sub, common)
+    _build_recluster_events_parser(sub, common)
     _build_backup_parser(sub)
     _build_restore_parser(sub)
     _build_config_parser(sub)
@@ -2293,6 +2426,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_backfill_events(args)
+    if args.command == "recluster-events":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_recluster_events(args)
     if args.command == "backup":
         return _cmd_backup(args)
     if args.command == "restore":
