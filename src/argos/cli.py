@@ -1768,6 +1768,14 @@ def _print_recluster_report(candidates, *, start: datetime, end: datetime) -> No
         f"resolution={config.effective_leiden_resolution}, "
         f"seed={config.leiden_seed})"
     )
+    # 가중치도 함께 찍는다 — build_edges가 실제로 쓰는 값이라, 빠뜨리면
+    # 가중치만 바꿔 돌린 두 출력이 글자 단위로 같아져서 나중에 어느 설정이
+    # 만든 결과인지 귀속시킬 수 없다. backfill-events 리포트와 같은 형식이다.
+    print(
+        "  weights: "
+        f"(cosine={config.weight_cosine}, entity={config.weight_entity}, "
+        f"time={config.weight_time}, keyword={config.weight_keyword})"
+    )
     print(
         "  주의: 판정은 이 기간 안 문서만 본다 — 사건의 문서가 기간 밖에도 "
         "있으면 그 문서는 아예 세지 않았다."

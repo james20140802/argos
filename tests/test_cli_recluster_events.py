@@ -152,3 +152,19 @@ def test_the_default_period_spans_exactly_the_configured_window(
     span = recorded_period["end"] - recorded_period["start"]
     # 끝은 그날 23:59:59.999999라 딱 하루 모자란 1µs가 빠진다.
     assert span == timedelta(days=expected_days) - timedelta(microseconds=1)
+
+
+def test_the_report_header_records_the_scoring_weights(fake_recluster, capsys):
+    # 리포트 머리의 목적은 "어떤 설정으로 나온 결과인가"를 남기는 것이다.
+    # 그런데 네 가중치는 `build_edges`가 실제로 쓰는 값인데도 빠져 있어서,
+    # 가중치만 바꿔 돌린 두 출력이 글자 단위로 같았다 — 저장해 둔 실험 결과를
+    # 나중에 설정에 귀속시킬 수 없다. backfill-events 리포트는 이미 찍는다.
+    fake_recluster(ReclusterCandidates(merges=(), splits=()))
+    assert main(["recluster-events", "--to", "2026-08-31"]) == 0
+
+    out = capsys.readouterr().out
+    config = settings.user.event_detection
+    assert f"cosine={config.weight_cosine}" in out
+    assert f"entity={config.weight_entity}" in out
+    assert f"time={config.weight_time}" in out
+    assert f"keyword={config.weight_keyword}" in out
