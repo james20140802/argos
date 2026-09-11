@@ -38,7 +38,7 @@ from argos.brain.event_candidates import as_vector, keywords_of
 from argos.brain.event_scoring import DocumentFeatures
 from argos.config import settings
 from argos.models.event_document import EventDocument
-from argos.services.event_resolution import resolve_event
+from argos.services.event_resolution import resolve_events
 
 _PERIOD_DOCS_SQL = text(
     """
@@ -152,12 +152,19 @@ async def fetch_period_input(
     # 툼스톤 체인은 생존 사건까지 해석한다 — "모든 사건 조회"의 공용 불변식
     # (services/event_resolution docstring). 같은 생존자로 접히는 중복은 한
     # 번만 남긴다.
-    resolved_cache: dict[uuid.UUID, uuid.UUID] = {}
+    #
+    # 사건당 한 번씩 묻지 않고 배치로 가는 이유: 기간 전체 재군집은 사건이
+    # 수백 개일 수 있고(특히 1단계 배정이 문서당 사건 하나를 만들어 둔 기간),
+    # 그러면 그래프 계산 전에 직렬 왕복만 수백 번이다. 나머지 입력을 전부 한
+    # 방 조회로 읽어 온 보람이 사라진다. 배치 판은 왕복이 사건 수가 아니라
+    # 툼스톤 체인 깊이를 따르고, 답은 하나씩 부른 것과 같다.
+    links = event_rows.all()
+    resolved_by_event = await resolve_events(
+        session, {event_id for _, event_id in links}
+    )
     raw_events_by_item: dict[uuid.UUID, list[uuid.UUID]] = {}
-    for tech_item_id, event_id in event_rows.all():
-        if event_id not in resolved_cache:
-            resolved_cache[event_id] = await resolve_event(session, event_id)
-        resolved = resolved_cache[event_id]
+    for tech_item_id, event_id in links:
+        resolved = resolved_by_event[event_id]
         bucket = raw_events_by_item.setdefault(tech_item_id, [])
         if resolved not in bucket:
             bucket.append(resolved)

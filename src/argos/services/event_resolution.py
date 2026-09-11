@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterable, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +30,10 @@ MAX_MERGE_HOPS = 8
 """툼스톤 체인을 따라갈 최대 단계. 이걸 넘으면 멈추고 경고한다."""
 
 MergedIntoFetcher = Callable[[uuid.UUID], Awaitable[uuid.UUID | None]]
+
+MergedIntoBatchFetcher = Callable[
+    [frozenset], Awaitable[Mapping[uuid.UUID, "uuid.UUID | None"]]
+]
 
 
 async def resolve_event_chain(
@@ -85,3 +89,74 @@ async def resolve_event(session: AsyncSession, event_id: uuid.UUID) -> uuid.UUID
         )
 
     return await resolve_event_chain(event_id, _fetch)
+
+
+async def resolve_event_chains(
+    start_ids: Iterable[uuid.UUID],
+    fetch_merged_into_batch: MergedIntoBatchFetcher,
+    max_hops: int = MAX_MERGE_HOPS,
+) -> dict[uuid.UUID, uuid.UUID]:
+    """여러 사건 id를 한꺼번에 해석한다 — `resolve_event_chain`의 배치 판.
+
+    답은 하나씩 부른 것과 **같아야 한다**(순환·한도 초과에서 마지막 도달 id를
+    돌려주는 동작까지). 달라지는 건 왕복 횟수뿐이다: 사건 수가 아니라 **체인
+    깊이**를 따른다. 기간 전체 재군집처럼 사건이 수백 개인 자리에서 사건당 한
+    번씩 물으면 그래프 계산 전에 직렬 왕복만 수백 번이라, 나머지 입력을 다
+    배치로 읽어 온 보람이 없어진다.
+
+    깊이를 먼저 다 긁어 온 뒤 코어를 dict 조회로 돌리는 구조라, 한 번 본 id는
+    다시 묻지 않는다(순환도 여기서 저절로 멈춘다). 미리 긁는 라운드 수가
+    `max_hops`인 것은 하나씩 부르는 판이 정확히 그만큼 조회하기 때문이다 —
+    한 라운드라도 모자라면 지나치게 긴 체인에서 답이 갈린다.
+
+    Args:
+        start_ids: 해석할 사건 id들 (흡수된 쪽일 수 있다).
+        fetch_merged_into_batch: id 집합을 받아 `{id: merged_into_id | None}`를
+            돌려주는 async 함수. 세션은 이 함수 안에 갇힌다.
+        max_hops: 따라갈 최대 단계 수.
+
+    Returns:
+        `{물어본 id: 살아 있는 사건 id}`.
+    """
+    pending = set(start_ids)
+    if not pending:
+        return {}
+
+    merged_into: dict[uuid.UUID, uuid.UUID | None] = {}
+    frontier = set(pending)
+    for _ in range(max_hops):
+        unknown = frontier - merged_into.keys()
+        if not unknown:
+            break
+        found = await fetch_merged_into_batch(frozenset(unknown))
+        for event_id in unknown:
+            merged_into[event_id] = found.get(event_id)
+        frontier = {
+            merged_into[event_id]
+            for event_id in unknown
+            if merged_into[event_id] is not None
+        }
+
+    async def _fetch(current_id: uuid.UUID) -> uuid.UUID | None:
+        return merged_into.get(current_id)
+
+    return {
+        event_id: await resolve_event_chain(event_id, _fetch, max_hops)
+        for event_id in sorted(pending)
+    }
+
+
+async def resolve_events(
+    session: AsyncSession, event_ids: Iterable[uuid.UUID]
+) -> dict[uuid.UUID, uuid.UUID]:
+    """`resolve_event_chains`의 얇은 DB 래퍼. 자체 로직은 없다."""
+
+    async def _fetch_batch(ids: frozenset) -> Mapping[uuid.UUID, uuid.UUID | None]:
+        rows = await session.execute(
+            select(TechEvent.id, TechEvent.merged_into_id).where(
+                TechEvent.id.in_(sorted(ids))
+            )
+        )
+        return {row.id: row.merged_into_id for row in rows}
+
+    return await resolve_event_chains(event_ids, _fetch_batch)

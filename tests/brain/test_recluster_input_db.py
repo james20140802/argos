@@ -325,3 +325,48 @@ async def test_query_writes_nothing(session_factory, clean):
         ).scalar()
 
     assert (before_events, before_links) == (after_events, after_links)
+
+
+@pytest.mark.asyncio
+async def test_round_trips_do_not_scale_with_the_number_of_events(
+    session_factory, clean
+):
+    # 기간 전체 재군집은 사건이 수백 개일 수 있다 — 특히 1단계 배정이 문서당
+    # 사건 하나를 만들어 둔 기간이 그렇다. 툼스톤 해석을 사건당 한 번씩 물으면
+    # 그래프 계산 전에 직렬 왕복만 그만큼 쌓인다. 나머지 입력(문서·이웃 쌍)을
+    # 전부 한 방 조회로 읽어 온 보람이 사라지는 자리라, 왕복 수가 사건 수를
+    # 따라가지 않는다는 것을 못 박는다.
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    event_count = 12
+    async with session_factory() as session:
+        for n in range(event_count):
+            event = await _make_event(session, title=f"many-{n}", at=base)
+            item = await _make_item(
+                session, slug=f"many-{n}", at=base, seed=0.01 + n * 0.001
+            )
+            session.add(EventDocument(event_id=event, tech_item_id=item))
+        await session.commit()
+
+    async with session_factory() as session:
+        round_trips = 0
+
+        def _counted(original):
+            async def _wrapper(*args, **kwargs):
+                nonlocal round_trips
+                round_trips += 1
+                return await original(*args, **kwargs)
+
+            return _wrapper
+
+        # `execute`와 `scalar`를 **둘 다** 센다. 사건당 부르던 판은 `scalar`를
+        # 썼으므로 `execute`만 세면 이 테스트가 옛 코드에서도 통과해 버린다.
+        session.execute = _counted(session.execute)  # type: ignore[method-assign]
+        session.scalar = _counted(session.scalar)  # type: ignore[method-assign]
+        result = await fetch_period_input(
+            session, start=base - timedelta(days=1), end=base + timedelta(days=1)
+        )
+
+    assert len(result.documents) == event_count  # 전제: 사건이 실제로 12개 붙었다
+    # 문서 · 사건 링크 · 툼스톤 배치 · 이름 · 이웃 쌍 — 상수 개의 조회면 된다.
+    # 사건당 한 번씩 부르던 판에서는 여기에 12가 더 붙었다.
+    assert round_trips < event_count
