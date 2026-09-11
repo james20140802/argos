@@ -25,11 +25,22 @@ logger = logging.getLogger(__name__)
 
 INSTALL_HINT = (
     "그래프 재군집에는 python-igraph + leidenalg가 필요하다 (optional extra "
-    "'graph'). 설치: uv sync --all-extras"
+    "'graph'). 소스 체크아웃: uv sync --all-extras · pipx 설치: "
+    "pipx inject argos-scout python-igraph leidenalg"
 )
-"""미설치일 때 로그와 예외가 함께 쓰는 한 줄. `--extra graph`가 아니라
-`--all-extras`인 이유는 entity_spacy와 같다 — 앞엣것은 고른 extra만 남기고
-나머지(dev)를 지워서 pytest·ruff가 사라진다."""
+"""미설치일 때 로그와 예외가 함께 쓰는 한 줄.
+
+**설치 경로를 둘 다 적는 이유:** README가 `pipx install argos-scout`를 정식
+설치 경로로 안내한다. 그렇게 깐 운영자에게 `uv sync`만 주면 실행할 수 없는
+한 줄을 주는 셈이다 — 소스 체크아웃 밖에서는 명령 자체가 실패하고, 체크아웃
+안에서 돌려도 고치는 건 그 프로젝트의 `.venv`지 pipx의 격리 환경이 아니다.
+이 문자열은 `argos recluster-events`가 `ERROR:` 뒤에 그대로 찍는 마지막 한
+줄이라, 여기서 못 고치면 운영자는 고칠 방법을 끝내 못 본다.
+
+`--extra graph`가 아니라 `--all-extras`인 이유는 entity_spacy와 같다 —
+앞엣것은 고른 extra만 남기고 나머지(dev)를 지워서 pytest·ruff가 사라진다.
+pipx 쪽이 `inject`인 것도 같은 결이다: `pipx install --force
+"argos-scout[graph]"`는 멀쩡히 돌던 설치를 통째로 갈아엎는다."""
 
 
 class GraphLibsUnavailable(RuntimeError):

@@ -38,6 +38,13 @@ def test_install_hint_names_the_extra_and_the_command():
     assert "uv sync --all-extras" in graph_backend.INSTALL_HINT
 
 
+def test_install_hint_covers_the_pipx_install_path():
+    # README가 `pipx install argos-scout`를 정식 설치 경로로 안내한다. 그 경로로
+    # 깐 운영자에게 `uv sync`만 주면 실행할 수 없는 한 줄을 주는 셈이다 — pipx의
+    # 격리 환경은 건드리지 못하고, 소스 체크아웃 밖에서는 명령 자체가 실패한다.
+    assert "pipx inject argos-scout python-igraph leidenalg" in graph_backend.INSTALL_HINT
+
+
 def test_load_returns_none_when_igraph_is_missing(monkeypatch):
     _force_missing(monkeypatch, "igraph")
     assert graph_backend.load_graph_libs() is None
