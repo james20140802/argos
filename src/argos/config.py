@@ -345,16 +345,39 @@ class EventDetectionConfig(BaseModel):
     def effective_leiden_resolution(self) -> float:
         """실제로 CPM에 넘어가는 해상도 γ — 코어와 CLI 리포트의 **공용 한 자리**.
 
-        `leiden_resolution`이 None이면 `join_threshold`를 그대로 따라간다.
-        해석을 여기 한 곳에 두는 이유는 리포트 때문이다: CLI가 `None`을 그대로
-        찍으면 사용자는 실제로 어떤 γ로 돈 결과인지 알 수 없다.
+        `leiden_resolution`이 None이면 `join_threshold`를 따라가되,
+        `MAX_TRACKING_LEIDEN_RESOLUTION`에서 멈춘다. 해석을 여기 한 곳에 두는
+        이유는 리포트 때문이다: CLI가 `None`을 그대로 찍으면 사용자는 실제로
+        어떤 γ로 돈 결과인지 알 수 없다.
+
+        **왜 천장이 필요한가:** config가 `join_threshold=1.0`을 허용하는데
+        (`le=1.0`), γ까지 1.0이면 가중치 1.0짜리 간선의 CPM 이득이 정확히 0이
+        된다. 그리고 가중치 1.0은 이론값이 아니다 — `edge_weight`가 네 항의
+        가중평균이라 **완전히 동일한 문서**(같은 기사를 두 소스에서 받은 흔한
+        경우)에서 실제로 나온다. 이득이 0이면 Leiden은 붙일 이유가 없어 동일
+        문서를 싱글턴으로 남기고, 재군집은 그걸 거짓 "가를 후보"로 올린다.
+        실측(2026-09-11): 동일 문서 3개가 가중치 1.0 간선으로 전부 이어져
+        있어도 γ=1.0이면 크기 [1,1,1], γ가 조금이라도 낮으면 [3].
+
+        명시 오버라이드에는 천장을 걸지 않는다 — 그건 운영자가 직접 고른
+        값이라 조용히 깎으면 조율 자체가 불가능해진다.
 
         `leiden_objective="modularity"`일 때는 CPM 파라미터가 아니라서 이 값이
         쓰이지 않는다.
         """
         if self.leiden_resolution is None:
-            return self.join_threshold
+            return min(self.join_threshold, MAX_TRACKING_LEIDEN_RESOLUTION)
         return self.leiden_resolution
+
+
+MAX_TRACKING_LEIDEN_RESOLUTION = 0.99
+"""`leiden_resolution=None`이 `join_threshold`를 따라갈 때의 천장.
+
+간선 가중치의 상한이 1.0이므로 γ는 거기 못 미쳐야 최대 유사도 간선도 CPM
+이득이 양수다. 0.99인 이유는 두 가지다: (1) 이득 0.01은 leidenalg가 병합을
+포기하는 하한(실측 ~1e-7)보다 네 자릿수 여유가 있고, (2) 실측된 양호 구간
+[0.35, 0.95] **바깥**이라 현실적인 설정은 이 천장에 닿지 않는다 — 클램프가
+무는 구간은 join_threshold > 0.99뿐이다."""
 
 
 class UserConfig(BaseModel):

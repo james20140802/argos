@@ -262,3 +262,29 @@ def test_detect_raises_a_readable_error_without_the_libraries(monkeypatch):
             config=EventDetectionConfig(),
         )
     assert "uv sync --all-extras" in str(excinfo.value)
+
+
+@requires_graph_libs
+def test_identical_documents_stay_together_at_the_strictest_threshold():
+    # config가 허용하는 가장 엄격한 설정(join_threshold=1.0)에서는 가중치가
+    # 정확히 1.0인 간선만 살아남는다. 그런데 γ까지 1.0이면 그 간선의 CPM
+    # 이득이 0이라 Leiden이 붙이지 않는다 — **완전히 동일한 문서**가 싱글턴으로
+    # 흩어져 거짓 "가를 후보"가 된다. 가중치 1.0은 이론값이 아니다: 네 항이
+    # 모두 만점이면 나오고, 같은 기사를 두 소스에서 받으면 실제로 그렇다.
+    same = dict(names={"Sonnet 5"}, keywords={"release", "anthropic"})
+    docs = [_doc(1, **same), _doc(2, **same), _doc(3, **same)]
+    pairs = [
+        _pair(left, right)
+        for i, left in enumerate(docs)
+        for right in docs[i + 1 :]
+    ]
+
+    config = EventDetectionConfig(join_threshold=1.0)
+    edges = build_edges(docs, pairs, config=config)
+    # 전제부터 고정한다: 세 쌍 다 간선이고 가중치는 정확히 1.0이다.
+    assert len(edges) == 3
+    assert all(edge.weight == pytest.approx(1.0) for edge in edges)
+
+    assert _members(detect_communities(docs, pairs, config=config)) == {
+        frozenset(doc.tech_item_id for doc in docs)
+    }
