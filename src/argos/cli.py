@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
 import os
 import sys
 import time
@@ -1736,7 +1737,15 @@ def _resolve_period(args: argparse.Namespace) -> tuple[datetime, datetime]:
         )
     start = getattr(args, "period_from", None)
     if start is None:
-        start = end - timedelta(days=settings.user.event_detection.window_days)
+        # 기간은 `--to` 당일을 **포함해** window_days일이다. 아래에서 end를 그날
+        # 끝까지 늘리므로 여기서는 하루를 덜 뺀다 — 자정 기준 end에서 그대로
+        # window_days를 빼면 기간이 늘 하루씩 길어진다(14일 설정이 15일을 훑고,
+        # 0.5는 12시간이 아니라 36시간).
+        #
+        # 온전한 날 수로 올림하는 건 `--from`/`--to`가 날짜 단위라서다. 창이
+        # 0.5일이어도 기간은 하루가 최소 단위다.
+        span_days = max(1, math.ceil(settings.user.event_detection.window_days))
+        start = end - timedelta(days=span_days - 1)
     # 끝은 그 날 전체를 포함해야 한다 — 자정으로 자르면 --to 당일 기사가 빠진다.
     return start, end + timedelta(days=1) - timedelta(microseconds=1)
 
