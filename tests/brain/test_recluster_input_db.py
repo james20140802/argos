@@ -370,3 +370,48 @@ async def test_round_trips_do_not_scale_with_the_number_of_events(
     # 문서 · 사건 링크 · 툼스톤 배치 · 이름 · 이웃 쌍 — 상수 개의 조회면 된다.
     # 사건당 한 번씩 부르던 판에서는 여기에 12가 더 붙었다.
     assert round_trips < event_count
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_insert_cannot_steal_a_neighbor_slot(session_factory, clean):
+    # 기본 격리 수준(READ COMMITTED)에서 문서 조회와 이웃 쌍 조회는 서로 다른
+    # 스냅샷을 본다. 그 사이 `argos run`이 기간 안 문서를 커밋하면, 이웃 순위는
+    # 그 새 문서까지 놓고 매겨진다. 새 문서는 `documents`에 없으니 build_edges가
+    # 그 쌍을 버리고 — 결국 **원래 있던 간선만 사라진다.** 기간 밖 이웃이 상위
+    # K를 먹던 버그와 같은 실패 모드다(원인이 경계가 아니라 시간일 뿐).
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        left = await _make_item(session, slug="snap-left", at=base, seed=0.0)
+        right = await _make_item(session, slug="snap-right", at=base, seed=0.30)
+        await session.commit()
+
+    async def _insert_a_closer_neighbor():
+        async with session_factory() as other:
+            # left에 right보다 가까운 문서 — 상위 1칸을 뺏을 수 있는 위치.
+            await _make_item(other, slug="snap-intruder", at=base, seed=0.01)
+            await other.commit()
+
+    async with session_factory() as session:
+        calls = 0
+        original_execute = session.execute
+
+        async def _execute_then_let_a_writer_commit(*args, **kwargs):
+            nonlocal calls
+            result = await original_execute(*args, **kwargs)
+            calls += 1
+            if calls == 1:  # 문서 조회 직후 = 두 조회 사이
+                await _insert_a_closer_neighbor()
+            return result
+
+        session.execute = _execute_then_let_a_writer_commit  # type: ignore[method-assign]
+        result = await fetch_period_input(
+            session,
+            start=base - timedelta(days=1),
+            end=base + timedelta(days=1),
+            limit=1,  # 상위 1칸뿐이라 슬롯 다툼이 그대로 드러난다
+        )
+
+    captured = {doc.tech_item_id for doc in result.documents}
+    assert captured == {left, right}  # 전제: 끼어든 문서는 대상이 아니다
+    pairs = {(pair.left_id, pair.right_id) for pair in result.neighbor_pairs}
+    assert (min(left, right), max(left, right)) in pairs

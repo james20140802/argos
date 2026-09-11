@@ -30,7 +30,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select, text
+from sqlalchemy import bindparam, select, text
+from sqlalchemy.dialects.postgresql import ARRAY, UUID as PGUuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.entity_store import names_for_documents
@@ -59,8 +60,7 @@ _NEIGHBOR_PAIRS_SQL = text(
         SELECT id, embedding, COALESCE(published_at, created_at) AS occurred_at
         FROM tech_items
         WHERE embedding IS NOT NULL
-          AND COALESCE(published_at, created_at) >= :start
-          AND COALESCE(published_at, created_at) <= :end
+          AND id = ANY(:ids)
     )
     SELECT p.id AS left_id, n.id AS right_id
     FROM period p
@@ -75,9 +75,18 @@ _NEIGHBOR_PAIRS_SQL = text(
     ) n
     ORDER BY p.id, n.id
     """
-)
+).bindparams(bindparam("ids", type_=ARRAY(PGUuid(as_uuid=True))))
 """문서당 시간 창 안 상위 K 이웃. LATERAL이라 왕복은 한 번이고, 쌍의 수는
 문서 수 × K로 묶인다 — 문서 수의 제곱으로 자라지 않는다.
+
+**기간을 날짜로 다시 긋지 않고 앞서 읽은 문서 id로 묶는다.** 기본 격리
+수준(READ COMMITTED)에서 이 조회는 문서 조회와 다른 스냅샷을 본다. 날짜로
+다시 그으면 그 사이 `argos run`이 커밋한 문서까지 순위에 끼어들고, 그 문서는
+`documents`에 없으니 코어가 쌍을 버린다 — 결국 **원래 있던 간선만 사라져**
+멀쩡한 사건이 "가를 후보"로 잡힌다. 세션의 격리 수준을 올리지 않고 id로 묶는
+쪽을 고른 건, 이 함수가 호출자의 세션을 빌려 쓰는 처지라 트랜잭션 semantics를
+바꾸는 부작용을 남기면 안 되기 때문이다. 나머지 후속 조회(사건 링크·이름)는
+이미 같은 id 목록으로 묶여 있다.
 
 **순위는 기간 안에서 매긴다** — 안쪽 FROM이 `tech_items`가 아니라 `period`다.
 그래프의 노드는 어차피 기간 안 문서뿐이라 기간 밖 이웃은 뽑아 봐야 버려지는데,
@@ -189,8 +198,7 @@ async def fetch_period_input(
         await session.execute(
             _NEIGHBOR_PAIRS_SQL,
             {
-                "start": start,
-                "end": end,
+                "ids": ids,
                 "window_days": float(window_days),
                 "limit": limit,
             },
