@@ -23,10 +23,18 @@ from types import ModuleType
 
 logger = logging.getLogger(__name__)
 
+INSTALL_COMMANDS = (
+    "uv sync --all-extras (source checkout) / "
+    "pipx inject argos-scout python-igraph leidenalg (pipx install)"
+)
+"""설치 명령 두 갈래. **런타임 예외와 CLI `--help`가 같은 이 상수를 본다.**
+
+따로 들고 있으면 한쪽만 고치고 끝난다 — 실제로 그랬다: 예외 경로에 pipx를
+더한 커밋이 `--help` 설명은 `uv sync` 하나만 남긴 채로 지나갔다."""
+
 INSTALL_HINT = (
     "그래프 재군집에는 python-igraph + leidenalg가 필요하다 (optional extra "
-    "'graph'). 소스 체크아웃: uv sync --all-extras · pipx 설치: "
-    "pipx inject argos-scout python-igraph leidenalg"
+    f"'graph'). 설치: {INSTALL_COMMANDS}"
 )
 """미설치일 때 로그와 예외가 함께 쓰는 한 줄.
 

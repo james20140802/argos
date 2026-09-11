@@ -1688,6 +1688,15 @@ def _period_date(value: str) -> datetime:
     return parsed.replace(tzinfo=timezone.utc)
 
 
+def _graph_install_commands() -> str:
+    """`--help`와 런타임 예외가 같은 안내를 쓰게 한다 — 문구를 여기서 베끼면
+    한쪽만 고치는 드리프트가 또 생긴다. import를 함수 안에 두는 건 파서 구성이
+    brain 모듈을 끌고 오지 않게 하기 위해서다."""
+    from argos.brain.graph_backend import INSTALL_COMMANDS
+
+    return INSTALL_COMMANDS
+
+
 def _build_recluster_events_parser(sub, common) -> None:
     rc_p = sub.add_parser(
         "recluster-events",
@@ -1698,7 +1707,7 @@ def _build_recluster_events_parser(sub, common) -> None:
             "look like they should be merged and which look like they should be "
             "split. Read-only: this command never writes to the database — "
             "applying the corrections is a separate, later step. Requires the "
-            "'graph' optional extra (uv sync --all-extras)."
+            f"'graph' optional extra: {_graph_install_commands()}."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1708,7 +1717,7 @@ def _build_recluster_events_parser(sub, common) -> None:
         type=_period_date,
         default=None,
         metavar="YYYY-MM-DD",
-        help="Period start (default: window_days before --to)",
+        help="Period start (default: the period spans window_days ending at --to)",
     )
     rc_p.add_argument(
         "--to",

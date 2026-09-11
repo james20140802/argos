@@ -168,3 +168,14 @@ def test_the_report_header_records_the_scoring_weights(fake_recluster, capsys):
     assert f"entity={config.weight_entity}" in out
     assert f"time={config.weight_time}" in out
     assert f"keyword={config.weight_keyword}" in out
+
+
+def test_the_help_text_covers_both_install_paths(capsys):
+    # `argos recluster-events --help`가 pipx 사용자에게 실행할 수 없는 명령만
+    # 주면 안 된다 — 런타임 예외만 고쳐서는 --help가 그대로 남는다.
+    from argos.brain.graph_backend import INSTALL_COMMANDS
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["recluster-events", "--help"])
+    assert exit_info.value.code == 0
+    assert INSTALL_COMMANDS in capsys.readouterr().out
