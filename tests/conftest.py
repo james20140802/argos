@@ -318,3 +318,24 @@ def sample_uuid():
 def sample_datetime():
     """테스트용 고정 datetime."""
     return datetime(2026, 4, 3, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _graph_libs_available() -> bool:
+    """igraph/leidenalg 설치 여부. import 실패를 skip 사유로 바꾼다."""
+    from argos.brain.graph_backend import graph_libs_available
+
+    return graph_libs_available()
+
+
+requires_graph_libs = pytest.mark.skipif(
+    not _graph_libs_available(),
+    reason=(
+        "python-igraph/leidenalg가 없다 — 재군집 테스트를 건너뛴다 "
+        "(설치: uv sync --all-extras)"
+    ),
+)
+"""재군집 테스트용 공용 skip 마커.
+
+릴리스 CI는 `uv sync --extra dev`로 돌아 이 라이브러리가 없다. 마커가 없으면
+그 CI에서 pytest가 깨지고 다음 태그의 PyPI 배포가 막힌다.
+"""

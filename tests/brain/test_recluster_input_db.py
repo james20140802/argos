@@ -1,0 +1,417 @@
+"""recluster_input — 기간 단위 재군집 입력 조회의 DB 통합 테스트 (ARG-278).
+
+패턴은 `tests/brain/test_event_candidates_db.py`와 같다: 모듈 스코프
+session_factory(NullPool) + 이 모듈이 만든 행만 정리 + Postgres 없으면 skip.
+"""
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from argos.brain.recluster_input import fetch_period_input
+from argos.config import settings
+from argos.models.event_document import EventDocument
+from argos.models.tech_event import TechEvent
+from argos.models.tech_item import CategoryType, TechItem
+from tests.conftest import db_reachable as _db_reachable
+
+_DB_URL: str = settings.database_url
+_URL_PREFIX = "https://arg-278-recluster-input-test.example.com/"
+_DIM = 768
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _require_db():
+    if not _db_reachable(_DB_URL):
+        pytest.skip(
+            "pgvector DB not reachable — skipping ARG-278 recluster_input DB "
+            "integration test (start the Docker DB to run it)"
+        )
+
+
+@pytest.fixture(scope="module")
+def session_factory():
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    yield async_sessionmaker(engine, expire_on_commit=False)
+
+
+@pytest.fixture
+async def clean(session_factory):
+    async def _wipe():
+        async with session_factory() as session:
+            ids = (
+                await session.execute(
+                    select(TechItem.id).where(TechItem.source_url.like(f"{_URL_PREFIX}%"))
+                )
+            ).scalars().all()
+            if ids:
+                await session.execute(
+                    delete(EventDocument).where(EventDocument.tech_item_id.in_(ids))
+                )
+                await session.execute(delete(TechItem).where(TechItem.id.in_(ids)))
+            await session.execute(
+                delete(TechEvent).where(TechEvent.title.like("ARG-278 %"))
+            )
+            await session.commit()
+
+    await _wipe()
+    yield
+    await _wipe()
+
+
+def _embedding(seed: float) -> list[float]:
+    """첫 두 성분만 다른 단위 벡터 — 코사인 거리를 눈으로 통제하기 위해."""
+    vec = [0.0] * _DIM
+    vec[0] = 1.0
+    vec[1] = seed
+    return vec
+
+
+async def _make_item(session, *, slug: str, at: datetime, seed: float) -> uuid.UUID:
+    item = TechItem(
+        title=f"ARG-278 {slug}",
+        source_url=f"{_URL_PREFIX}{slug}",
+        raw_content="x",
+        summary=f"summary for {slug}",
+        category=CategoryType.MAINSTREAM,
+        published_at=at,
+        embedding=_embedding(seed),
+    )
+    session.add(item)
+    await session.flush()
+    return item.id
+
+
+async def _make_event(
+    session, *, title: str, at: datetime, merged_into=None
+) -> uuid.UUID:
+    # occurred_at은 NOT NULL이고 서버 기본값도 없다 — 반드시 채워 준다.
+    event = TechEvent(
+        title=f"ARG-278 {title}", occurred_at=at, merged_into_id=merged_into
+    )
+    session.add(event)
+    await session.flush()
+    return event.id
+
+
+@pytest.mark.asyncio
+async def test_period_includes_documents_with_no_event_link(session_factory, clean):
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        linked = await _make_item(session, slug="linked", at=base, seed=0.01)
+        orphan = await _make_item(session, slug="orphan", at=base, seed=0.02)
+        event_id = await _make_event(session, title="e1", at=base)
+        session.add(EventDocument(event_id=event_id, tech_item_id=linked))
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_period_input(
+            session, start=base - timedelta(days=1), end=base + timedelta(days=1)
+        )
+
+    ids = {doc.tech_item_id for doc in result.documents}
+    assert linked in ids
+    assert orphan in ids  # AC: 사건에 안 붙은 문서도 입력에 들어온다
+    by_id = {doc.tech_item_id: doc for doc in result.documents}
+    assert by_id[orphan].event_ids == ()
+    assert by_id[linked].event_ids == (event_id,)
+
+
+@pytest.mark.asyncio
+async def test_documents_outside_the_period_are_excluded(session_factory, clean):
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        inside = await _make_item(session, slug="inside", at=base, seed=0.01)
+        await _make_item(session, slug="outside", at=base + timedelta(days=30), seed=0.02)
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_period_input(
+            session, start=base - timedelta(days=1), end=base + timedelta(days=1)
+        )
+
+    assert [doc.tech_item_id for doc in result.documents] == [inside]
+
+
+@pytest.mark.asyncio
+async def test_two_identical_queries_agree_down_to_the_order(session_factory, clean):
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        for index in range(6):
+            await _make_item(
+                session,
+                slug=f"det{index}",
+                at=base + timedelta(hours=index),
+                seed=0.01 * index,
+            )
+        await session.commit()
+
+    async with session_factory() as session:
+        first = await fetch_period_input(
+            session, start=base - timedelta(days=1), end=base + timedelta(days=1)
+        )
+    async with session_factory() as session:
+        second = await fetch_period_input(
+            session, start=base - timedelta(days=1), end=base + timedelta(days=1)
+        )
+
+    assert [d.tech_item_id for d in first.documents] == [
+        d.tech_item_id for d in second.documents
+    ]
+    assert first.neighbor_pairs == second.neighbor_pairs
+
+
+@pytest.mark.asyncio
+async def test_pairs_are_capped_per_document_not_quadratic(session_factory, clean):
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    doc_count = 8
+    async with session_factory() as session:
+        for index in range(doc_count):
+            await _make_item(
+                session,
+                slug=f"cap{index}",
+                at=base + timedelta(hours=index),
+                seed=0.001 * index,
+            )
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_period_input(
+            session,
+            start=base - timedelta(days=1),
+            end=base + timedelta(days=1),
+            limit=2,
+        )
+
+    # 문서당 상위 2개 → 상한은 doc_count * 2 (중복 접기 전). 완전 그래프인
+    # doc_count*(doc_count-1)/2 = 28보다 확실히 작아야 한다.
+    assert len(result.neighbor_pairs) <= doc_count * 2
+    assert len(result.neighbor_pairs) < doc_count * (doc_count - 1) // 2
+
+
+@pytest.mark.asyncio
+async def test_top_k_slots_are_not_spent_on_out_of_period_neighbors(
+    session_factory, clean
+):
+    # 상위 K를 코퍼스 전체에서 뽑으면, 창(±window_days) 안이지만 기간 밖인
+    # 문서들이 LIMIT 자리를 먼저 차지하고 파이썬 단계에서 버려진다. 그러면
+    # 정작 기간 안 이웃이 K등 밖으로 밀려 간선이 통째로 사라지고, 멀쩡한 사건이
+    # "가를 후보"로 잘못 잡힌다. 순위를 기간 안에서 매기면 그 일이 없다.
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        near = await _make_item(session, slug="rank-near", at=base, seed=0.0)
+        # 기간 안이지만 아래 미끼들보다 near에서 멀다.
+        peer = await _make_item(
+            session, slug="rank-peer", at=base + timedelta(hours=1), seed=0.05
+        )
+        # 기간 밖(+5일) · 창 안(14일). near에는 peer보다 훨씬 가깝다.
+        for index in range(3):
+            await _make_item(
+                session,
+                slug=f"rank-decoy{index}",
+                at=base + timedelta(days=5),
+                seed=0.001 * (index + 1),
+            )
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_period_input(
+            session,
+            start=base - timedelta(days=1),
+            end=base + timedelta(days=1),
+            limit=2,
+        )
+
+    assert {doc.tech_item_id for doc in result.documents} == {near, peer}
+    pairs = {(pair.left_id, pair.right_id) for pair in result.neighbor_pairs}
+    assert (min(near, peer), max(near, peer)) in pairs
+
+
+@pytest.mark.asyncio
+async def test_pairs_are_normalized_and_deduplicated(session_factory, clean):
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        await _make_item(session, slug="p1", at=base, seed=0.01)
+        await _make_item(session, slug="p2", at=base + timedelta(hours=1), seed=0.011)
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_period_input(
+            session, start=base - timedelta(days=1), end=base + timedelta(days=1)
+        )
+
+    for pair in result.neighbor_pairs:
+        assert pair.left_id < pair.right_id  # 정규화된 방향
+    assert len(set(result.neighbor_pairs)) == len(result.neighbor_pairs)
+
+
+@pytest.mark.asyncio
+async def test_tombstoned_event_links_resolve_to_the_survivor(session_factory, clean):
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        survivor = await _make_event(session, title="survivor", at=base)
+        absorbed = await _make_event(
+            session, title="absorbed", at=base, merged_into=survivor
+        )
+        item = await _make_item(session, slug="tomb", at=base, seed=0.01)
+        session.add(EventDocument(event_id=absorbed, tech_item_id=item))
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_period_input(
+            session, start=base - timedelta(days=1), end=base + timedelta(days=1)
+        )
+
+    by_id = {doc.tech_item_id: doc for doc in result.documents}
+    assert by_id[item].event_ids == (survivor,)  # 툼스톤이 아니라 생존자
+
+
+@pytest.mark.asyncio
+async def test_fractional_window_days_is_not_truncated(session_factory, clean):
+    # window_days=0.5(=12시간)에서 11시간 떨어진 두 문서는 서로의 창 안에
+    # 들어야 한다. `make_interval(days => :window_days)`는 실수 바인드를
+    # 정수 파라미터로 캐스팅해 0.5를 0으로 잘라버리는 버그가 있었다 — 그
+    # 경우 창이 사실상 0이 되어 이 쌍이 사라진다. `:window_days * interval
+    # '1 day'`로 고치면 소수점이 그대로 살아 쌍이 나온다.
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        left = await _make_item(session, slug="frac-left", at=base, seed=0.01)
+        right = await _make_item(
+            session, slug="frac-right", at=base + timedelta(hours=11), seed=0.011
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_period_input(
+            session,
+            start=base - timedelta(days=1),
+            end=base + timedelta(days=1),
+            window_days=0.5,
+        )
+
+    pairs = {(pair.left_id, pair.right_id) for pair in result.neighbor_pairs}
+    assert (min(left, right), max(left, right)) in pairs
+
+
+@pytest.mark.asyncio
+async def test_query_writes_nothing(session_factory, clean):
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        item = await _make_item(session, slug="ro", at=base, seed=0.01)
+        event_id = await _make_event(session, title="ro-event", at=base)
+        session.add(EventDocument(event_id=event_id, tech_item_id=item))
+        await session.commit()
+
+    async with session_factory() as session:
+        before_events = (await session.execute(select(func.count(TechEvent.id)))).scalar()
+        before_links = (
+            await session.execute(select(func.count(EventDocument.event_id)))
+        ).scalar()
+
+    async with session_factory() as session:
+        await fetch_period_input(
+            session, start=base - timedelta(days=1), end=base + timedelta(days=1)
+        )
+
+    async with session_factory() as session:
+        after_events = (await session.execute(select(func.count(TechEvent.id)))).scalar()
+        after_links = (
+            await session.execute(select(func.count(EventDocument.event_id)))
+        ).scalar()
+
+    assert (before_events, before_links) == (after_events, after_links)
+
+
+@pytest.mark.asyncio
+async def test_round_trips_do_not_scale_with_the_number_of_events(
+    session_factory, clean
+):
+    # 기간 전체 재군집은 사건이 수백 개일 수 있다 — 특히 1단계 배정이 문서당
+    # 사건 하나를 만들어 둔 기간이 그렇다. 툼스톤 해석을 사건당 한 번씩 물으면
+    # 그래프 계산 전에 직렬 왕복만 그만큼 쌓인다. 나머지 입력(문서·이웃 쌍)을
+    # 전부 한 방 조회로 읽어 온 보람이 사라지는 자리라, 왕복 수가 사건 수를
+    # 따라가지 않는다는 것을 못 박는다.
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    event_count = 12
+    async with session_factory() as session:
+        for n in range(event_count):
+            event = await _make_event(session, title=f"many-{n}", at=base)
+            item = await _make_item(
+                session, slug=f"many-{n}", at=base, seed=0.01 + n * 0.001
+            )
+            session.add(EventDocument(event_id=event, tech_item_id=item))
+        await session.commit()
+
+    async with session_factory() as session:
+        round_trips = 0
+
+        def _counted(original):
+            async def _wrapper(*args, **kwargs):
+                nonlocal round_trips
+                round_trips += 1
+                return await original(*args, **kwargs)
+
+            return _wrapper
+
+        # `execute`와 `scalar`를 **둘 다** 센다. 사건당 부르던 판은 `scalar`를
+        # 썼으므로 `execute`만 세면 이 테스트가 옛 코드에서도 통과해 버린다.
+        session.execute = _counted(session.execute)  # type: ignore[method-assign]
+        session.scalar = _counted(session.scalar)  # type: ignore[method-assign]
+        result = await fetch_period_input(
+            session, start=base - timedelta(days=1), end=base + timedelta(days=1)
+        )
+
+    assert len(result.documents) == event_count  # 전제: 사건이 실제로 12개 붙었다
+    # 문서 · 사건 링크 · 툼스톤 배치 · 이름 · 이웃 쌍 — 상수 개의 조회면 된다.
+    # 사건당 한 번씩 부르던 판에서는 여기에 12가 더 붙었다.
+    assert round_trips < event_count
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_insert_cannot_steal_a_neighbor_slot(session_factory, clean):
+    # 기본 격리 수준(READ COMMITTED)에서 문서 조회와 이웃 쌍 조회는 서로 다른
+    # 스냅샷을 본다. 그 사이 `argos run`이 기간 안 문서를 커밋하면, 이웃 순위는
+    # 그 새 문서까지 놓고 매겨진다. 새 문서는 `documents`에 없으니 build_edges가
+    # 그 쌍을 버리고 — 결국 **원래 있던 간선만 사라진다.** 기간 밖 이웃이 상위
+    # K를 먹던 버그와 같은 실패 모드다(원인이 경계가 아니라 시간일 뿐).
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        left = await _make_item(session, slug="snap-left", at=base, seed=0.0)
+        right = await _make_item(session, slug="snap-right", at=base, seed=0.30)
+        await session.commit()
+
+    async def _insert_a_closer_neighbor():
+        async with session_factory() as other:
+            # left에 right보다 가까운 문서 — 상위 1칸을 뺏을 수 있는 위치.
+            await _make_item(other, slug="snap-intruder", at=base, seed=0.01)
+            await other.commit()
+
+    async with session_factory() as session:
+        calls = 0
+        original_execute = session.execute
+
+        async def _execute_then_let_a_writer_commit(*args, **kwargs):
+            nonlocal calls
+            result = await original_execute(*args, **kwargs)
+            calls += 1
+            if calls == 1:  # 문서 조회 직후 = 두 조회 사이
+                await _insert_a_closer_neighbor()
+            return result
+
+        session.execute = _execute_then_let_a_writer_commit  # type: ignore[method-assign]
+        result = await fetch_period_input(
+            session,
+            start=base - timedelta(days=1),
+            end=base + timedelta(days=1),
+            limit=1,  # 상위 1칸뿐이라 슬롯 다툼이 그대로 드러난다
+        )
+
+    captured = {doc.tech_item_id for doc in result.documents}
+    assert captured == {left, right}  # 전제: 끼어든 문서는 대상이 아니다
+    pairs = {(pair.left_id, pair.right_id) for pair in result.neighbor_pairs}
+    assert (min(left, right), max(left, right)) in pairs
