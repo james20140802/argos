@@ -84,3 +84,10 @@ def test_static_files_are_revalidated(monkeypatch):
 def test_sw_precache_bypasses_http_cache():
     sw = (PKG / "assets" / "sw.js").read_text(encoding="utf-8")
     assert "cache: 'reload'" in sw
+
+
+def test_sw_offline_falls_back_to_unversioned_precache():
+    """Pages ask for /static/...?v=<hash> but the precache holds the bare URLs;
+    offline, an exact-URL miss must still find the cached file."""
+    sw = (PKG / "assets" / "sw.js").read_text(encoding="utf-8")
+    assert "ignoreSearch: true" in sw

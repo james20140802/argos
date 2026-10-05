@@ -165,18 +165,28 @@ self.addEventListener('fetch', (event) => {
 
   // Static assets — cache-first by exact URL. Pages reference CSS/JS as
   // /static/...?v=<content hash>, so a changed file is a cache miss; it is
-  // fetched and kept for offline use.
+  // fetched and kept for offline use. Offline, a versioned URL that was never
+  // fetched falls back to any cached copy of the same file (the queryless
+  // precache) — the exact-URL miss would otherwise strip the offline shell of
+  // its CSS/JS. Online this fallback never runs, so invalidation holds.
   if (url.pathname.startsWith('/static/')) {
     event.respondWith(
       caches.match(req).then((cached) => {
         if (cached) return cached;
-        return fetch(req).then((res) => {
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE_VERSION).then((c) => c.put(req, copy));
-          }
-          return res;
-        });
+        return fetch(req)
+          .then((res) => {
+            if (res && res.ok) {
+              const copy = res.clone();
+              caches.open(CACHE_VERSION).then((c) => c.put(req, copy));
+            }
+            return res;
+          })
+          .catch((err) =>
+            caches.match(req, { ignoreSearch: true }).then((any) => {
+              if (any) return any;
+              throw err;
+            }),
+          );
       }),
     );
   }
