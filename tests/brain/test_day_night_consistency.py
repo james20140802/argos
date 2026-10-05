@@ -122,3 +122,65 @@ def test_the_cases_cover_both_verdicts():
     """등가성이 '항상 붙는다'나 '항상 안 붙는다'로 우연히 맞은 게 아님을 보인다."""
     config = EventDetectionConfig()
     assert {_day_joins(theta, config) for theta, _, _ in _CASES} == {True, False}
+
+
+# --- ARG-283: 큰 사건에서도 낮과 밤이 같다 ---------------------------------
+
+_BIG_EVENT_SIZE = 60
+
+
+def _big_event_verdicts(config: EventDetectionConfig) -> tuple[bool, bool]:
+    """구성원 60건과 새 문서가 전부 같은 내용일 때 (낮, 밤)이 붙이는가.
+
+    낮도 밤도 이웃을 SQL과 같은 규칙으로 고른다: 거리 동점이라 id 오름차순
+    상위 K. 낮은 새 문서가 꼽은 K건만 보고, 사건 크기 대가는 60건 전부에
+    매긴다 — PR #125 Codex 리뷰가 짚은 비대칭이 바로 이 모양이다.
+    """
+    member_ids = [uuid.UUID(int=index + 1) for index in range(_BIG_EVENT_SIZE)]
+    k = config.candidate_k
+
+    day_candidates = [
+        CandidateNeighbor(
+            tech_item_id=member_id, features=_features(0.0), event_ids=(_EVENT,)
+        )
+        for member_id in member_ids[:k]
+    ]
+    day = decide_event(
+        _features(0.0),
+        day_candidates,
+        event_sizes={_EVENT: _BIG_EVENT_SIZE},
+        config=config,
+    ) == _EVENT
+
+    all_ids = sorted([*member_ids, _SUBJECT_ID])
+    documents = [
+        ReclusterDocument(tech_item_id=doc_id, features=_features(0.0), event_ids=())
+        for doc_id in all_ids
+    ]
+    pairs = {
+        tuple(sorted((doc_id, other)))
+        for doc_id in all_ids
+        for other in [o for o in all_ids if o != doc_id][:k]
+    }
+    communities = detect_communities(
+        documents,
+        [NeighborPair(left_id=left, right_id=right) for left, right in sorted(pairs)],
+        config=config,
+    )
+    (home,) = [c for c in communities if _SUBJECT_ID in c.members]
+    night = set(member_ids) <= set(home.members)
+    return day, night
+
+
+@requires_graph_libs
+def test_a_large_event_takes_a_matching_document_day_and_night():
+    assert _big_event_verdicts(EventDetectionConfig()) == (True, True)
+
+
+@requires_graph_libs
+def test_a_cap_below_the_event_size_is_what_made_the_day_refuse():
+    # 옛 기본값 25: 낮은 새 문서가 꼽은 25건만 보고 60건 전체의 대가를 치러
+    # 새 사건을 만들고, 밤은 사건 자체를 쪼갠다. 상한을 올린 이유가 이것이다.
+    day, night = _big_event_verdicts(EventDetectionConfig(candidate_k=25))
+    assert day is False
+    assert night is False
