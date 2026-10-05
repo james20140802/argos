@@ -85,7 +85,7 @@ def test_loads_from_toml_file(tmp_path: Path):
 def test_candidate_window_and_k_have_defaults():
     config = EventDetectionConfig()
     assert config.window_days == 14
-    assert config.candidate_k == 25
+    assert config.candidate_k == 200
 
 
 def test_window_and_k_reject_nonsense():

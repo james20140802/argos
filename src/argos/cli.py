@@ -1806,7 +1806,10 @@ def _print_recluster_report(candidates, *, start: datetime, end: datetime) -> No
 
     print(f"  가를 후보: {len(candidates.splits)}건")
     for split in candidates.splits:
-        print(f"    {split.event_id} → {len(split.groups)}조각")
+        # 상한 표시는 숨기지 않고 붙인다 — 이웃이 candidate_k로 꽉 찬 문서가
+        # 끼었다면 갈라짐이 내용이 아니라 상한 탓일 수 있다(ARG-283).
+        note = " (이웃 상한에 닿음 — 상한 탓일 수 있음)" if split.capped else ""
+        print(f"    {split.event_id} → {len(split.groups)}조각{note}")
         for index, group in enumerate(split.groups, start=1):
             print(
                 f"      {index}. " + ", ".join(str(doc_id) for doc_id in group)

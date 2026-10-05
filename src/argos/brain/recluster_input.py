@@ -27,6 +27,7 @@ B도 A를 꼽으면 같은 간선이므로 두 번 실으면 그래프에서 무
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -129,10 +130,18 @@ class NeighborPair:
 
 @dataclass(frozen=True)
 class ReclusterInput:
-    """한 기간의 재군집 입력 전체. 순수 코어(T3/T4)는 이것만 받는다."""
+    """한 기간의 재군집 입력 전체. 순수 코어(T3/T4)는 이것만 받는다.
+
+    `capped_document_ids`는 이웃이 `candidate_k`개로 **꽉 찬** 문서다(ARG-283).
+    그 문서의 이웃 목록은 상한에서 잘렸을 수 있다 — K등 밖에 같은 사건 기사가
+    더 있었어도 그래프에는 없다. CPM은 안 보인 쌍에도 대가를 물리므로, 그런
+    문서가 낀 사건이 갈라졌다면 내용이 아니라 상한 탓일 수 있다. 창 안 문서가
+    딱 K건이어서 잘린 게 없는 경우도 포함하는 보수적인 표시다.
+    """
 
     documents: tuple[ReclusterDocument, ...]
     neighbor_pairs: tuple[NeighborPair, ...]
+    capped_document_ids: frozenset[uuid.UUID] = frozenset()
 
 
 async def fetch_period_input(
@@ -225,8 +234,16 @@ async def fetch_period_input(
         (min(row.left_id, row.right_id), max(row.left_id, row.right_id))
         for row in pair_rows
     }
+    # 접기 전, 문서가 직접 꼽은 이웃 수로 상한에 닿았는지 본다. 접은 뒤에 세면
+    # 남이 나를 꼽은 간선까지 섞여 상한과 무관한 수가 된다.
+    picked = Counter(row.left_id for row in pair_rows)
+    capped = frozenset(doc_id for doc_id, count in picked.items() if count >= limit)
     neighbor_pairs = tuple(
         NeighborPair(left_id=left, right_id=right) for left, right in sorted(pairs)
     )
 
-    return ReclusterInput(documents=documents, neighbor_pairs=neighbor_pairs)
+    return ReclusterInput(
+        documents=documents,
+        neighbor_pairs=neighbor_pairs,
+        capped_document_ids=capped,
+    )

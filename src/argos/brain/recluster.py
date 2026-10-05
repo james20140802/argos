@@ -42,4 +42,8 @@ async def recluster_period(
     event_links = {
         doc.tech_item_id: doc.event_ids for doc in period.documents if doc.event_ids
     }
-    return derive_candidates(communities, event_links)
+    return derive_candidates(
+        communities,
+        event_links,
+        capped_document_ids=period.capped_document_ids,
+    )

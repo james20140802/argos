@@ -195,6 +195,40 @@ async def test_pairs_are_capped_per_document_not_quadratic(session_factory, clea
 
 
 @pytest.mark.asyncio
+async def test_documents_whose_neighbors_hit_the_cap_are_reported(session_factory, clean):
+    # ARG-283: 이웃이 상한으로 꽉 찬 문서만 표시된다. 창 안에 다른 문서가
+    # 상한보다 적은 문서(아래의 외톨이)는 잘린 게 없으니 표시하지 않는다.
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    crowd = []
+    async with session_factory() as session:
+        for index in range(4):
+            crowd.append(
+                await _make_item(
+                    session,
+                    slug=f"crowd{index}",
+                    at=base + timedelta(hours=index),
+                    seed=0.001 * index,
+                )
+            )
+        loner = await _make_item(
+            session, slug="loner", at=base + timedelta(days=60), seed=0.0
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_period_input(
+            session,
+            start=base - timedelta(days=1),
+            end=base + timedelta(days=61),
+            window_days=14.0,
+            limit=2,
+        )
+
+    assert result.capped_document_ids == frozenset(crowd)
+    assert loner not in result.capped_document_ids
+
+
+@pytest.mark.asyncio
 async def test_top_k_slots_are_not_spent_on_out_of_period_neighbors(
     session_factory, clean
 ):

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from argos.brain.event_scoring import DocumentFeatures
+from argos.brain.event_scoring import DocumentFeatures, cosine_similarity
 from argos.brain.recluster_core import build_edges, detect_communities
 from argos.brain.recluster_input import NeighborPair, ReclusterDocument
 from argos.config import EventDetectionConfig
@@ -288,3 +288,100 @@ def test_identical_documents_stay_together_at_the_strictest_threshold():
     assert _members(detect_communities(docs, pairs, config=config)) == {
         frozenset(doc.tech_item_id for doc in docs)
     }
+
+
+# --- ARG-283: 큰 사건이 크기 때문에 갈라지지 않는다 -------------------------
+
+
+def _top_k_pairs(docs: list[ReclusterDocument], k: int) -> list[NeighborPair]:
+    """`recluster_input._NEIGHBOR_PAIRS_SQL`이 고르는 이웃을 그대로 흉내 낸다.
+
+    문서마다 코사인 거리 오름차순, 동점이면 id 오름차순으로 상위 k를 뽑고
+    방향을 접는다. 동일 문서는 거리가 전부 0으로 동점이라 **모두가 id 작은
+    k건을 꼽는다** — 실측에서 이론 상한보다 일찍 갈라지던 허브형 그래프가
+    이 타이브레이크에서 나온다. 완전 그래프를 직접 넘기면 그 모양을 놓친다.
+    """
+    pairs: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    for doc in docs:
+        others = sorted(
+            (other for other in docs if other is not doc),
+            key=lambda other: (
+                1.0 - cosine_similarity(doc.features.embedding, other.features.embedding),
+                other.tech_item_id,
+            ),
+        )
+        for other in others[:k]:
+            low, high = sorted([doc.tech_item_id, other.tech_item_id])
+            pairs.add((low, high))
+    return [NeighborPair(left_id=low, right_id=high) for low, high in sorted(pairs)]
+
+
+_SAME_STORY = dict(names={"Sonnet 5"}, keywords={"release", "anthropic"})
+
+
+@requires_graph_libs
+def test_fifty_identical_documents_stay_one_community_at_the_default_cap():
+    docs = [_doc(index, **_SAME_STORY) for index in range(1, 51)]
+    config = EventDetectionConfig()
+
+    communities = detect_communities(
+        docs, _top_k_pairs(docs, config.candidate_k), config=config
+    )
+
+    assert _members(communities) == {frozenset(doc.tech_item_id for doc in docs)}
+
+
+@requires_graph_libs
+@pytest.mark.parametrize("size", [50, 92, 150])
+def test_piece_count_does_not_follow_the_document_count(size):
+    # 고치기 전 기본값(K=25)에서는 50 → 5조각, 92 → 47조각, 150 → 105조각이었다.
+    docs = [_doc(index, **_SAME_STORY) for index in range(1, size + 1)]
+    config = EventDetectionConfig()
+
+    communities = detect_communities(
+        docs, _top_k_pairs(docs, config.candidate_k), config=config
+    )
+
+    assert len(communities) == 1
+
+
+@requires_graph_libs
+def test_a_cap_below_the_event_size_is_what_splits_it():
+    # 위 두 테스트가 "아무것도 안 하는 테스트"가 아님을 못 박는다: 같은 입력에
+    # 옛 기본값 25를 걸면 조각이 난다. 갈라짐의 원인이 내용이 아니라 상한이다.
+    docs = [_doc(index, **_SAME_STORY) for index in range(1, 151)]
+    config = EventDetectionConfig(candidate_k=25)
+
+    communities = detect_communities(
+        docs, _top_k_pairs(docs, config.candidate_k), config=config
+    )
+
+    assert len(communities) > 1
+
+
+@requires_graph_libs
+def test_a_weak_chain_still_splits_when_every_pair_is_visible():
+    # 상한을 올려 모든 쌍이 보여도, 이웃끼리만 이어진 사슬은 한 덩어리가 되지
+    # 않는다 — 안 이어진 쌍(코사인 ≈ 0.36 이하)은 여전히 간선이 아니고 대가만
+    # 낸다. 상한을 푸는 일이 ARG-244가 막아 둔 뭉침을 되살리면 안 된다.
+    docs = [_doc(index, theta=index * _THETA_APART) for index in range(1, 9)]
+    config = EventDetectionConfig()
+
+    communities = detect_communities(
+        docs, _top_k_pairs(docs, config.candidate_k), config=config
+    )
+
+    assert len(communities) > 1
+    assert max(len(community.members) for community in communities) <= 2
+
+
+@requires_graph_libs
+def test_large_identical_events_partition_the_same_way_every_time():
+    docs = [_doc(index, **_SAME_STORY) for index in range(1, 151)]
+    config = EventDetectionConfig()
+    pairs = _top_k_pairs(docs, config.candidate_k)
+
+    first = detect_communities(docs, pairs, config=config)
+    second = detect_communities(list(reversed(docs)), list(reversed(pairs)), config=config)
+
+    assert first == second
