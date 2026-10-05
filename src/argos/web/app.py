@@ -21,6 +21,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -258,6 +259,10 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         redoc_url=None,
         openapi_url=None,
     )
+    # Compress HTML/CSS/JS. Neither uvicorn nor ``tailscale serve`` does, and
+    # a feed page is ~55KB of repetitive markup (~9KB gzipped) — over a
+    # phone link that difference is most of a navigation's wait.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     app.mount(
         "/static",

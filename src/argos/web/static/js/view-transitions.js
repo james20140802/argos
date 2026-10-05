@@ -53,8 +53,8 @@
     var from = navigation.activation.from;
     var id = detailId(from && from.url);
     if (!id || detailId(location.href)) return;
-    // base.html render-blocks on #main, so the cards are parsed by now; the
-    // DOMContentLoaded branch only covers browsers that ignore that hint.
+    // This script sits at the end of <body>, so the cards are normally parsed
+    // already; the DOMContentLoaded branch is a safety net.
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", function () {
         nameCover(id, event.viewTransition);

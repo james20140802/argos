@@ -16,12 +16,6 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="ARGOS">
   <link rel="stylesheet" href="/static/css/argos.css">
-  {# In <head>, not deferred: the pagereveal listener must exist before the
-     first frame of a back-navigation renders. #}
-  <script src="/static/js/view-transitions.js"></script>
-  {# Hold the first frame until <main> is parsed so a back-navigation's
-     pagereveal can find the card it returns to (ignored where unsupported). #}
-  <link rel="expect" href="#main" blocking="render">
 </head>
 <body>
   {% set path = request.url.path %}
@@ -80,6 +74,12 @@
     <a class="tab" href="/settings"{% if on_settings %} aria-current="page"{% endif %}>{{ icon('settings') }}설정</a>
   </nav>
 
+  {# Not deferred: pagereveal must be listened for before the first frame.
+     At the end of <body> the cards already exist when it runs. No
+     render-blocking is used to guarantee that — holding the first frame until
+     the whole list arrived made every navigation wait on the network; if the
+     page paints first, the back-morph simply degrades to a crossfade. #}
+  <script src="/static/js/view-transitions.js"></script>
   <script src="/static/js/htmx.min.js" defer></script>
   <script src="/static/js/sw-register.js" defer></script>
   <script src="/static/js/img-fallback.js" defer></script>
@@ -90,5 +90,6 @@
      sw.js's APP_SHELL on purpose — a plain runtime network load is enough and
      avoids bumping CACHE_VERSION here (see sw.js comment). #}
   <script src="/static/js/feed-events.js" defer></script>
+  <script src="/static/js/instant-nav.js" defer></script>
 </body>
 </html>

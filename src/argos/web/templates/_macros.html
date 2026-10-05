@@ -25,7 +25,7 @@
   <span class="scrim" aria-hidden="true"></span>
   {# image_url is attacker-controllable (crawled): escaped <img src> only, never CSS url(). #}
   <span class="favicon-chip">
-    <img class="favicon-chip__img" src="{{ image_url }}" alt="" loading="lazy" width="32" height="32">
+    <img class="favicon-chip__img" src="{{ image_url }}" alt="" loading="lazy" decoding="async" width="32" height="32">
     <span class="favicon-chip__domain">{{ source_url | domain }}</span>
   </span>
 </a>
@@ -33,7 +33,7 @@
 <a class="cover" href="{{ href }}"{{ vt | safe }}>
   {# og:image is attacker-controllable (crawled): render via an HTML-escaped
      <img src> rather than inline CSS url() to avoid CSS-context injection. #}
-  <img class="cover__img" src="{{ image_url }}" alt="" loading="lazy">
+  <img class="cover__img" src="{{ image_url }}" alt="" loading="lazy" decoding="async">
   <span class="scrim" aria-hidden="true"></span>
 </a>
 {%- else -%}

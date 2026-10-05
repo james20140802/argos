@@ -16,7 +16,7 @@
 
   {% if event.image_url and not (event.image_url | is_favicon) %}
   <div class="detail-hero" style="view-transition-name: c{{ event.id.hex }}">
-    <img class="detail-hero__img" src="{{ event.image_url }}" alt="" loading="lazy">
+    <img class="detail-hero__img" src="{{ event.image_url }}" alt="" loading="lazy" decoding="async">
     <span class="detail-hero__scrim" aria-hidden="true"></span>
   </div>
   {% else %}

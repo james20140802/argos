@@ -6,7 +6,7 @@
 {% block content %}
 <header class="page-head">
   <h1 class="large-title">포트폴리오</h1>
-  <nav class="portfolio-sort segmented{% if sort == 'trust' %} segmented--second{% endif %}" aria-label="정렬">
+  <nav class="portfolio-sort segmented{% if sort == 'trust' %} segmented--second{% endif %}" aria-label="정렬" data-instant-nav hx-boost="true" hx-target="#main" hx-select="#main" hx-swap="outerHTML show:window:top">
     <span class="segmented__thumb" aria-hidden="true"></span>
     <a class="chip{% if sort == 'recency' %} is-active{% endif %}"
        href="/portfolio?sort=recency{% if category %}&category={{ category }}{% endif %}"
@@ -16,7 +16,7 @@
        {% if sort == 'trust' %}aria-current="true"{% endif %}>신뢰도</a>
   </nav>
 </header>
-<nav class="portfolio-filter" aria-label="카테고리 필터">
+<nav class="portfolio-filter" aria-label="카테고리 필터" data-instant-nav hx-boost="true" hx-target="#main" hx-select="#main" hx-swap="outerHTML show:window:top">
   <a class="chip{% if not category %} is-active{% endif %}"
      href="/portfolio{% if sort != 'recency' %}?sort={{ sort }}{% endif %}"
      {% if not category %}aria-current="true"{% endif %}>전체</a>

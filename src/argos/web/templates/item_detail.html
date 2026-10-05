@@ -16,7 +16,7 @@
     <span class="detail-hero__scrim" aria-hidden="true"></span>
     {# image_url is attacker-controllable (crawled): escaped <img src> only, never CSS url(). #}
     <span class="favicon-chip">
-      <img class="favicon-chip__img" src="{{ item.image_url }}" alt="" loading="lazy" width="40" height="40">
+      <img class="favicon-chip__img" src="{{ item.image_url }}" alt="" loading="lazy" decoding="async" width="40" height="40">
       <span class="favicon-chip__domain">{{ item.source_url | domain }}</span>
     </span>
   </div>
@@ -24,7 +24,7 @@
   <div class="detail-hero" style="view-transition-name: c{{ item.id.hex }}">
     {# og:image is attacker-controllable (crawled): render via an HTML-escaped
        <img src> rather than inline CSS url() to avoid CSS-context injection. #}
-    <img class="detail-hero__img" src="{{ item.image_url }}" alt="" loading="lazy">
+    <img class="detail-hero__img" src="{{ item.image_url }}" alt="" loading="lazy" decoding="async">
     <span class="detail-hero__scrim" aria-hidden="true"></span>
   </div>
   {% else %}

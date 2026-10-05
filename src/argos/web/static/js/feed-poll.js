@@ -17,8 +17,11 @@
   // Load-time bail: only start polling at all if this is a feed page.
   if (!document.querySelector("#feed-list[data-latest-cursor]")) return;
 
-  var pill = document.querySelector("[data-new-items-pill]");
-  var countEl = pill ? pill.querySelector("[data-new-items-count]") : null;
+  // Filter/sort changes swap the whole <main> in place (instant-nav.js), so
+  // the pill node is replaced too — look it up live rather than caching it.
+  function getPill() {
+    return document.querySelector("[data-new-items-pill]");
+  }
 
   var timerId = null;
 
@@ -39,12 +42,15 @@
   }
 
   function showPill(n) {
+    var pill = getPill();
     if (!pill) return;
+    var countEl = pill.querySelector("[data-new-items-count]");
     if (countEl) countEl.textContent = String(n);
     pill.hidden = false;
   }
 
   function hidePill() {
+    var pill = getPill();
     if (!pill) return;
     pill.hidden = true;
   }
@@ -102,8 +108,13 @@
     }
   });
 
-  if (pill) {
-    pill.addEventListener("click", function () {
+  // Delegated: the pill element is replaced whenever <main> is swapped.
+  document.addEventListener("click", function (event) {
+    var pill = event.target && event.target.closest
+      ? event.target.closest("[data-new-items-pill]")
+      : null;
+    if (!pill) return;
+    (function () {
       var refresh = window.ArgosRefresh && window.ArgosRefresh.refresh
         ? window.ArgosRefresh.refresh("feed")
         : null;
@@ -120,8 +131,8 @@
       } else {
         location.reload();
       }
-    });
-  }
+    })();
+  });
 
   if (document.visibilityState !== "hidden") {
     start();
