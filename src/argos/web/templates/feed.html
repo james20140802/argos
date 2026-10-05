@@ -14,9 +14,10 @@
       <h1 class="large-title">관측 피드</h1>
       {# ARG-213: 추천순(feed_score desc, 기본) / 최신순 정렬 토글 — a segmented
          control. Links preserve each other's query params like the category
-         chips; the active segment's view-transition name makes the thumb
-         slide across on navigation. #}
-      <nav class="feed-sort segmented" aria-label="정렬 방식">
+         chips. The thumb is its own element (not the active link) so on
+         navigation only the plain capsule slides — the labels stay put. #}
+      <nav class="feed-sort segmented{% if sort == 'latest' %} segmented--second{% endif %}" aria-label="정렬 방식">
+        <span class="segmented__thumb" aria-hidden="true"></span>
         <a class="chip{% if sort != 'latest' %} is-active{% endif %}"
            href="/feed{% if category %}?category={{ category }}{% endif %}"{% if sort != 'latest' %} aria-current="true"{% endif %}>추천순</a>
         <a class="chip{% if sort == 'latest' %} is-active{% endif %}"

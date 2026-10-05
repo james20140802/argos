@@ -40,6 +40,7 @@
   --pass: #c4301c;          /* systemRed, slightly deepened */
   --cover-bg: #e8e8ed;
   --sidebar: #ececf0;
+  --rail-w: 264px;
 
   --material: rgba(246, 246, 248, 0.72);
   --material-edge: rgba(255, 255, 255, 0.6);
@@ -215,6 +216,10 @@ code { font: 500 0.92em/1 var(--font-mono); }
 /* Desktop sidebar (≥768px) — macOS-style source list on a material. */
 .rail { display: none; }
 
+@media (min-width: 1200px) {
+  :root { --rail-w: 288px; }
+}
+
 @media (min-width: 768px) {
   /* ``body`` prefix lifts these above the base mobile-chrome rules. */
   body .masthead { display: none; }
@@ -223,33 +228,38 @@ code { font: 500 0.92em/1 var(--font-mono); }
      left-edge gutter would shove the sidebar inward. */
   html { scrollbar-gutter: stable; }
 
-  body { padding-left: 240px; }
+  body { padding-left: var(--rail-w); }
   .page { padding-top: 36px; padding-bottom: 72px; }
 
   .rail {
     display: flex; flex-direction: column; gap: 32px;
     position: fixed; left: 0; top: 0; bottom: 0; z-index: 20;
-    width: 240px; padding: 28px 14px;
+    width: var(--rail-w); padding: 30px 16px;
     /* Solid, not a material: nothing ever scrolls under the sidebar. */
     background: var(--sidebar);
     border-right: 0.5px solid var(--line);
     view-transition-name: rail;
   }
   .rail__brand {
-    display: flex; align-items: center; gap: 10px;
-    padding: 0 8px;
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 10px;
     text-decoration: none; color: var(--ink);
   }
   .rail__word { display: flex; flex-direction: column; }
   .rail__nav { display: flex; flex-direction: column; gap: 2px; }
+  .rail__brand .mark { width: 32px; height: 32px; }
+  .rail__brand .wordmark { font-size: 17px; }
+  .rail__brand .kicker { font-size: 11px; }
+  /* Rows sized like an iPadOS sidebar: 44pt touch targets, 17pt labels. */
   .rail__tab {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 10px; border-radius: 8px;
-    font: 500 14px/1.2 var(--font);
+    display: flex; align-items: center; gap: 12px;
+    min-height: 44px; padding: 10px 12px; border-radius: 10px;
+    font: 500 16px/1.2 var(--font);
     color: var(--ink); text-decoration: none;
     transition: background-color 0.15s ease;
   }
-  .rail__tab .ic { width: 19px; height: 19px; color: var(--accent); }
+  .rail__tab .ic { width: 22px; height: 22px; flex: none; color: var(--accent); }
+  .rail__tab:active { background: var(--fill-2); }
   .rail__tab:hover { background: var(--fill); }
   .rail__tab[aria-current="page"] { background: var(--fill-2); font-weight: 600; }
 }
@@ -272,30 +282,42 @@ code { font: 500 0.92em/1 var(--font-mono); }
 
 /* === 4. Controls === */
 
-/* Segmented control. The active segment carries a view-transition name, so
-   on navigation the thumb slides from the old segment to the new one. */
+/* Segmented control — two equal segments over a separate thumb. Only the
+   thumb carries a view-transition name, so on navigation the plain capsule
+   slides under labels that never move. The labels are named too, purely so
+   they paint above the sliding thumb during the transition. */
 .segmented {
-  display: inline-flex; gap: 2px; padding: 2px;
+  position: relative;
+  display: inline-grid; grid-template-columns: 1fr 1fr;
+  padding: 2px;
   border-radius: 10px;
   background: var(--fill);
 }
-.segmented .chip {
-  min-width: 72px; text-align: center;
-  padding: 7px 14px; border-radius: 8px;
-  border: none; background: none;
-  font: 500 13px/1.1 var(--font);
-  color: var(--ink);
-}
-.segmented .chip:hover { color: var(--ink); background: none; }
-.segmented .chip.is-active {
-  color: var(--ink);
+.segmented__thumb {
+  position: absolute; top: 2px; bottom: 2px; left: 2px;
+  width: calc(50% - 2px);
+  border-radius: 8px;
   background: var(--surface);
-  font-weight: 600;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 3px 8px rgba(0, 0, 0, 0.08);
   view-transition-name: segment-thumb;
 }
+.segmented--second .segmented__thumb { transform: translateX(100%); }
+.segmented .chip {
+  position: relative; /* above the thumb */
+  justify-content: center;
+  min-width: 76px;
+  padding: 7px 16px; border-radius: 8px;
+  background: none;
+  font: 500 13.5px/1.1 var(--font);
+  color: var(--ink);
+}
+.segmented .chip:first-of-type { view-transition-name: segment-label-1; }
+.segmented .chip:last-of-type { view-transition-name: segment-label-2; }
+.segmented .chip:hover,
+.segmented .chip.is-active { color: var(--ink); background: none; }
+.segmented .chip.is-active { font-weight: 600; }
 @media (prefers-color-scheme: dark) {
-  .segmented .chip.is-active { background: #636366; box-shadow: none; }
+  .segmented__thumb { background: #636366; box-shadow: none; }
 }
 
 /* Filter chips — capsules; the active one is solid ink. */
@@ -322,8 +344,6 @@ code { font: 500 0.92em/1 var(--font-mono); }
 @media (prefers-color-scheme: dark) {
   .chip--main.is-active, .chip--alpha.is-active { color: #000; }
 }
-.feed-filter .chip.is-active,
-.portfolio-filter .chip.is-active { view-transition-name: filter-thumb; }
 
 /* Desktop refresh button — floating material circle. */
 .refresh-btn { display: none; }
@@ -1244,20 +1264,23 @@ code { font: 500 0.92em/1 var(--font-mono); }
 .detail .trust-dial { animation: dial-fill 900ms var(--spring) both 120ms; }
 @keyframes dial-fill { from { --p: 0; } }
 
-/* Cross-document view transitions: the card cover morphs into the detail
-   hero (matching view-transition-name), segmented-control thumbs slide, the
-   chrome stays put, and everything else crossfades quickly. */
+/* Cross-document view transitions: a card cover morphs into its detail hero
+   (view-transitions.js names just that one cover), the segmented thumb
+   slides, the chrome stays put, and everything else crossfades quickly. */
 @view-transition { navigation: auto; }
 ::view-transition-group(*) {
   animation-duration: var(--dur-spring);
   animation-timing-function: var(--spring);
 }
-::view-transition-old(root),
-::view-transition-new(root) { animation-duration: 180ms; animation-timing-function: ease; }
-::view-transition-old(segment-thumb),
-::view-transition-new(segment-thumb),
-::view-transition-old(filter-thumb),
-::view-transition-new(filter-thumb) { animation: none; mix-blend-mode: normal; }
+/* Page content: the old page clears out quickly before the new one settles
+   in, so two different lists never sit on top of each other. */
+::view-transition-old(root) { animation: vt-out 100ms ease-out both; }
+::view-transition-new(root) { animation: vt-in 220ms var(--ease-out) 40ms both; }
+@keyframes vt-out { to { opacity: 0; } }
+@keyframes vt-in { from { opacity: 0; } }
+/* The thumb is the same capsule on both pages: slide it, don't crossfade. */
+::view-transition-old(segment-thumb) { display: none; }
+::view-transition-new(segment-thumb) { animation: none; }
 /* Rounded corners interpolate between card cover and hero. */
 ::view-transition-image-pair(*) { isolation: auto; }
 ::view-transition-old(*),

@@ -16,6 +16,12 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="ARGOS">
   <link rel="stylesheet" href="/static/css/argos.css">
+  {# In <head>, not deferred: the pagereveal listener must exist before the
+     first frame of a back-navigation renders. #}
+  <script src="/static/js/view-transitions.js"></script>
+  {# Hold the first frame until <main> is parsed so a back-navigation's
+     pagereveal can find the card it returns to (ignored where unsupported). #}
+  <link rel="expect" href="#main" blocking="render">
 </head>
 <body>
   {% set path = request.url.path %}
@@ -63,7 +69,7 @@
 
   <div class="refresh-spinner" aria-hidden="true"></div>
 
-  <main class="page {% block page_class %}{% endblock %}">
+  <main id="main" class="page {% block page_class %}{% endblock %}">
     {% block content %}{% endblock %}
   </main>
 

@@ -6,7 +6,8 @@
 {% block content %}
 <header class="page-head">
   <h1 class="large-title">포트폴리오</h1>
-  <nav class="portfolio-sort segmented" aria-label="정렬">
+  <nav class="portfolio-sort segmented{% if sort == 'trust' %} segmented--second{% endif %}" aria-label="정렬">
+    <span class="segmented__thumb" aria-hidden="true"></span>
     <a class="chip{% if sort == 'recency' %} is-active{% endif %}"
        href="/portfolio?sort=recency{% if category %}&category={{ category }}{% endif %}"
        {% if sort == 'recency' %}aria-current="true"{% endif %}>최근</a>

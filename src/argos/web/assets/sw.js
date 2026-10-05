@@ -53,7 +53,7 @@
  *     silently fail to fetch it and lose that session's events. Added to the
  *     precache; bumped so already-installed clients pick it up.
  */
-const CACHE_VERSION = 'argos-v19';
+const CACHE_VERSION = 'argos-v20';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
@@ -70,6 +70,7 @@ const APP_SHELL = [
   '/static/js/feed-poll.js',
   '/static/js/feed-events.js',
   '/static/js/portfolio-timeline.js',
+  '/static/js/view-transitions.js',
 ];
 
 self.addEventListener('install', (event) => {

@@ -10,13 +10,16 @@
      category      — CategoryType enum or None (tints the fallback gradient).
      href          — in-app reader URL for the card tap target.
      source_url    — used only to label the favicon chip with its domain.
-     transition_id — optional id; names the cover for a cross-document view
-                     transition so it morphs into the detail hero carrying the
-                     same name. Must be unique on the page.
+     transition_id — optional id. Exposed as ``data-vt`` so view-transitions.js
+                     can name *this one* cover when navigating to (or back
+                     from) its detail page, where the hero carries the same
+                     name. Never named statically: on feed→feed navigations
+                     (filter/sort) named covers would fly around on their own
+                     while the rest of each card merely crossfaded.
 #}
 {% macro cover(image_url, category, href, source_url, transition_id=None) %}
 {%- set cat = (category.value if category else 'none')|lower -%}
-{%- set vt = (' style="view-transition-name: c' ~ transition_id.hex ~ '"') if transition_id else '' -%}
+{%- set vt = (' data-vt="c' ~ transition_id.hex ~ '"') if transition_id else '' -%}
 {%- if image_url and image_url | is_favicon -%}
 <a class="cover cover--favicon cover--{{ cat }}" href="{{ href }}"{{ vt | safe }}>
   <span class="scrim" aria-hidden="true"></span>
