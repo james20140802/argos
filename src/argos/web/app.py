@@ -747,6 +747,23 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         _log.exception("unhandled error [%s] on %s", request_id, request.url.path)
         return _render_error(request, request_id)
 
+    def _detail_origin(request: Request) -> str:
+        """Which list a detail page was opened from: ``"portfolio"`` or ``"feed"``.
+
+        Read from the same-origin Referer so the item URL stays the one canonical
+        ``/item/<id>`` everywhere. A direct visit, a reload without a referrer,
+        or a hop from another detail page falls back to the feed.
+        """
+        ref = request.headers.get("referer")
+        if not ref:
+            return "feed"
+        parsed = urlsplit(ref)
+        if parsed.netloc and parsed.netloc != request.url.netloc:
+            return "feed"
+        if parsed.path == "/portfolio" or parsed.path.startswith("/portfolio/"):
+            return "portfolio"
+        return "feed"
+
     @app.get("/item/{item_id}", response_class=HTMLResponse)
     async def item_detail(
         request: Request,
@@ -776,9 +793,13 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         except Exception:
             _log.exception("failed to record Click feed_event for %s", parsed_id)
 
-        return request.app.state.templates.TemplateResponse(
-            request, "item_detail.html", {"item": item}
+        response = request.app.state.templates.TemplateResponse(
+            request, "item_detail.html", {"item": item, "back_to": _detail_origin(request)}
         )
+        # The back link and the highlighted tab depend on where the reader
+        # came from, so a cache must not hand one origin's page to the other.
+        response.headers["Vary"] = "Referer"
+        return response
 
     @app.get("/event/{event_id}", response_class=HTMLResponse)
     async def event_detail(

@@ -24,6 +24,8 @@
   {% set on_feed = path == '/feed' or path.startswith('/feed/') or path.startswith('/event/') or path.startswith('/item/') %}
   {% set on_portfolio = path == '/portfolio' or path.startswith('/portfolio/') %}
   {% set on_settings = path == '/settings' %}
+  {# A detail page opened from the portfolio belongs to the portfolio tab. #}
+  {% if back_to | default('') == 'portfolio' %}{% set on_feed = false %}{% set on_portfolio = true %}{% endif %}
   {# Symbol-style glyphs, drawn once and reused by both navs. #}
   {% macro icon(name) -%}
   <svg class="ic" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">

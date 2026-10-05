@@ -5,9 +5,12 @@
    reads this attribute on DOMContentLoaded to know which item to attribute
    the sendBeacon Dwell event to on visibilitychange/pagehide. #}
 <article class="detail" data-item-id="{{ item.id }}">
-  <a class="back-link" href="/feed">
+  {# Back goes to the list the reader came from (``back_to``, from the
+     Referer — see app._detail_origin). #}
+  {% set from_portfolio = back_to | default('feed') == 'portfolio' %}
+  <a class="back-link" href="{{ '/portfolio' if from_portfolio else '/feed' }}">
     <svg aria-hidden="true" viewBox="0 0 12 20" width="10" height="17"><path d="M10 2 2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    관측 피드
+    {{ '포트폴리오' if from_portfolio else '관측 피드' }}
   </a>
   {# The hero's view-transition name matches the feed card cover
      (_macros.cover) so the cover morphs into this hero on navigation. #}
