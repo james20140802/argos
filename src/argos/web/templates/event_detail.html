@@ -57,7 +57,8 @@
           <p class="evidence-item__meta">
             <span class="evidence-item__domain">{{ doc.domain }}</span>
             {% if doc.is_first %}<span class="first-report">최초 보도</span>{% endif %}
-            <time datetime="{{ doc.reported_at.isoformat() }}">{{ doc.reported_at.strftime('%Y-%m-%d %H:%M') }}</time>
+            {# Many sources publish a date only; don't print a fake midnight. #}
+            <time datetime="{{ doc.reported_at.isoformat() }}">{{ doc.reported_at.strftime('%Y-%m-%d' if (doc.reported_at.hour, doc.reported_at.minute) == (0, 0) else '%Y-%m-%d %H:%M') }}</time>
           </p>
           <a class="evidence-item__title" href="{{ doc.source_url }}" target="_blank" rel="noopener noreferrer">{{ doc.title }}<svg class="ext-icon" aria-hidden="true" viewBox="0 0 12 12" width="10" height="10"><path d="M3.5 2.5h6v6M9.5 2.5 2.5 9.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
           <a class="evidence-item__reader" href="/item/{{ doc.id }}">앱에서 읽기</a>
