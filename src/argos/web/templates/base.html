@@ -15,7 +15,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="ARGOS">
-  <link rel="stylesheet" href="/static/css/argos.css">
+  {# ?v= is a hash of the CSS/JS bundle: a changed file is a new URL, so no
+     HTTP or service-worker cache can keep serving the old copy. #}
+  <link rel="stylesheet" href="/static/css/argos.css?v={{ asset_v | default('dev') }}">
 </head>
 <body>
   {% set path = request.url.path %}
@@ -79,17 +81,17 @@
      render-blocking is used to guarantee that — holding the first frame until
      the whole list arrived made every navigation wait on the network; if the
      page paints first, the back-morph simply degrades to a crossfade. #}
-  <script src="/static/js/view-transitions.js"></script>
-  <script src="/static/js/htmx.min.js" defer></script>
-  <script src="/static/js/sw-register.js" defer></script>
-  <script src="/static/js/img-fallback.js" defer></script>
-  <script src="/static/js/refresh.js" defer></script>
-  <script src="/static/js/feed-poll.js" defer></script>
-  <script src="/static/js/portfolio-timeline.js" defer></script>
+  <script src="/static/js/view-transitions.js?v={{ asset_v | default('dev') }}"></script>
+  <script src="/static/js/htmx.min.js?v={{ asset_v | default('dev') }}" defer></script>
+  <script src="/static/js/sw-register.js?v={{ asset_v | default('dev') }}" defer></script>
+  <script src="/static/js/img-fallback.js?v={{ asset_v | default('dev') }}" defer></script>
+  <script src="/static/js/refresh.js?v={{ asset_v | default('dev') }}" defer></script>
+  <script src="/static/js/feed-poll.js?v={{ asset_v | default('dev') }}" defer></script>
+  <script src="/static/js/portfolio-timeline.js?v={{ asset_v | default('dev') }}" defer></script>
   {# ARG-207: Impression (feed) + Dwell (detail) collection. Not precached in
      sw.js's APP_SHELL on purpose — a plain runtime network load is enough and
      avoids bumping CACHE_VERSION here (see sw.js comment). #}
-  <script src="/static/js/feed-events.js" defer></script>
-  <script src="/static/js/instant-nav.js" defer></script>
+  <script src="/static/js/feed-events.js?v={{ asset_v | default('dev') }}" defer></script>
+  <script src="/static/js/instant-nav.js?v={{ asset_v | default('dev') }}" defer></script>
 </body>
 </html>

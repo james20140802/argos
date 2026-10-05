@@ -264,6 +264,17 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
     # phone link that difference is most of a navigation's wait.
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
+    @app.middleware("http")
+    async def _static_revalidate(request: Request, call_next):
+        # Static files carried no Cache-Control, so browsers cached them
+        # heuristically and a CSS change could stay invisible for a while
+        # (and get copied into the service worker's precache). Always
+        # revalidate; the ETag makes an unchanged file a cheap 304.
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     app.mount(
         "/static",
         StaticFiles(directory=_STATIC_DIR, check_dir=False),
@@ -299,6 +310,37 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
                 labels = labels[1:]
         return (labels[0][:1] if labels else "?").upper()
 
+    class _AssetVersion:
+        """Render-time ``asset_v``: a short hash over every CSS/JS file.
+
+        base.html appends it as ``?v=`` to each stylesheet/script URL, so any
+        change is a new URL that neither the HTTP cache nor the service
+        worker's cache-first static handler can answer with the old copy. The
+        hash is recomputed only when some file's mtime changes.
+        """
+
+        def __init__(self) -> None:
+            self._key: tuple = ()
+            self._value = "dev"
+
+        def __str__(self) -> str:
+            import hashlib
+
+            files = sorted(
+                f
+                for sub in ("css", "js")
+                for f in (_STATIC_DIR / sub).glob("*")
+                if f.is_file()
+            )
+            key = tuple((f.name, f.stat().st_mtime) for f in files)
+            if key != self._key:
+                digest = hashlib.sha256()
+                for f in files:
+                    digest.update(f.read_bytes())
+                self._key, self._value = key, digest.hexdigest()[:10]
+            return self._value
+
+    app.state.templates.env.globals["asset_v"] = _AssetVersion()
     app.state.templates.env.filters["domain_hue"] = _domain_hue
     app.state.templates.env.filters["monogram"] = _monogram
 

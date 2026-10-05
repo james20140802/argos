@@ -65,3 +65,22 @@ def test_instant_nav_is_loaded_and_precached():
     sw = (PKG / "assets" / "sw.js").read_text(encoding="utf-8")
     assert "/static/js/instant-nav.js" in sw
     assert "/static/js/view-transitions.js" in sw
+
+
+def test_css_and_js_urls_carry_a_content_version(monkeypatch):
+    """A changed stylesheet must be a new URL, or a cached old copy keeps
+    rendering (the iPad showed a fixed layout bug for this reason)."""
+    body = _feed_client(monkeypatch).get("/feed").text
+    m = re.search(r'href="/static/css/argos\.css\?v=([0-9a-f]{10})"', body)
+    assert m, "stylesheet URL has no content version"
+    assert f'/static/js/instant-nav.js?v={m.group(1)}"' in body
+
+
+def test_static_files_are_revalidated(monkeypatch):
+    resp = _feed_client(monkeypatch).get("/static/css/argos.css")
+    assert resp.headers.get("cache-control") == "no-cache"
+
+
+def test_sw_precache_bypasses_http_cache():
+    sw = (PKG / "assets" / "sw.js").read_text(encoding="utf-8")
+    assert "cache: 'reload'" in sw
