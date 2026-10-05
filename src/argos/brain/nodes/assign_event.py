@@ -1,8 +1,8 @@
 """문서를 사건에 배정하는 단계 — ARG-266.
 
 ``save_node`` **앞**에 선다. 저장 시점에 이미 사건이 정해져 있어야 하기
-때문이다. 후보 이웃(ARG-265)을 뽑아 간선 가중치를 사건별로 합산하고
-(ARG-264) 임계값을 넘는 사건이 있으면 그 id를 state에 싣는다.
+때문이다. 후보 이웃(ARG-265)과 그 사건들의 크기를 읽어, 밤의 재군집이
+받아들일 사건(CPM 이득이 양수, ARG-282)이 있으면 그 id를 state에 싣는다.
 
 넘는 사건이 없으면 ``event_id``를 ``None``으로 둔다 — 여기서 새 사건을
 만들지 않는다. 사건을 미리 만들어 두면 뒤이은 저장이 실패했을 때 문서
@@ -43,7 +43,11 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from argos.brain.event_assignment import db_candidate_source, decide_event
+from argos.brain.event_assignment import (
+    db_candidate_source,
+    db_event_sizes,
+    decide_event,
+)
 from argos.brain.event_candidates import keywords_of
 from argos.brain.event_scoring import DocumentFeatures
 from argos.brain.graph_state import BrainState
@@ -74,6 +78,9 @@ async def assign_event_node(state: BrainState, session: AsyncSession) -> BrainSt
         candidates = await db_candidate_source(
             session, embedding=embedding, at=at, config=config
         )
+        event_sizes = await db_event_sizes(
+            session, candidates=candidates, at=at, config=config
+        )
 
         subject = DocumentFeatures(
             embedding=tuple(float(value) for value in embedding),
@@ -81,7 +88,9 @@ async def assign_event_node(state: BrainState, session: AsyncSession) -> BrainSt
             at=at,
             keywords=keywords_of(state.get("summary") or state.get("digest")),
         )
-        event_id = decide_event(subject, candidates, config=config)
+        event_id = decide_event(
+            subject, candidates, event_sizes=event_sizes, config=config
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "assign_event_node: assignment failed for %s: %r — saving without an event",

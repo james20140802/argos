@@ -290,7 +290,9 @@ class EventDetectionConfig(BaseModel):
     weight_entity: float = Field(default=0.25, ge=0.0)
     weight_time: float = Field(default=0.15, ge=0.0)
     weight_keyword: float = Field(default=0.05, ge=0.0)
-    # 이 값 이상이면 기존 사건에 붙고, 아니면 새 사건이 생긴다.
+    # 같은 사건의 근거로 치는 쌍 점수의 하한이자, 밤의 CPM 해상도 γ의 기본값.
+    # 낮은 "이 값 이상인 이웃 점수의 합 > γ × 사건 크기"일 때만 기존 사건에
+    # 붙인다 — 밤의 재군집과 같은 목적함수다(ARG-282, event_scoring docstring).
     join_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     # ARG-265: 후보 이웃을 찾는 시간 창(일)과 창 안에서 가져올 상위 K.
     # 창은 문서 발행 시각 앞뒤로 각각 window_days — 늦게 크롤된 과거 발행
@@ -310,10 +312,9 @@ class EventDetectionConfig(BaseModel):
     # ARG-279: 야간 재군집의 Leiden 노브. 간선 채택 컷은 여기 없다 — 낮 배정과
     # 같은 join_threshold를 그대로 쓰기 때문이다(밤 전용 기준을 만들면 매일 밤
     # 뒤집기만 반복된다).
-    # 다만 **값이 같을 뿐 기준이 같지는 않다.** 낮(event_scoring.choose_event)은
-    # 이웃 표의 **합**을 이 값과 견주고, 밤(recluster_core.build_edges)은 **한
-    # 쌍의 가중치**를 견준다. 같은 숫자라도 밤이 훨씬 엄격하다 — 재보정은 사용자
-    # 판단이 필요한 열린 문제라 이 브랜치에서 건드리지 않았다(ARG-245가 소비자).
+    # ARG-282: 값만 같고 재는 것이 달랐던 비대칭(낮은 이웃 점수의 합, 밤은 쌍
+    # 하나)은 낮을 밤의 CPM 이득으로 바꿔 없앴다. 이제 둘은 같은 τ 이상 간선과
+    # 같은 γ로 같은 품질을 잰다.
     # CPM을 기본으로 두는 건 modularity의 resolution limit 때문이다: 작은
     # 사건들이 큰 덩어리에 삼켜지는 쪽으로 기울어, "약하게만 이어진 기사들이
     # 한 덩어리가 되지 않는다"는 기준과 정면으로 부딪친다. CPM은 해상도
@@ -368,6 +369,21 @@ class EventDetectionConfig(BaseModel):
         if self.leiden_resolution is None:
             return min(self.join_threshold, MAX_TRACKING_LEIDEN_RESOLUTION)
         return self.leiden_resolution
+
+    @property
+    def assignment_resolution(self) -> float:
+        """낮 배정의 CPM 이득에 쓰는 γ (ARG-282).
+
+        CPM이면 밤과 같은 `effective_leiden_resolution`이다. modularity면 밤이
+        `leiden_resolution`을 무시하므로 낮도 무시하고 `join_threshold`를
+        따라간다 — 그러지 않으면 "무시된다"고 적힌 노브가 낮 배정만 바꾼다.
+        modularity 이득 자체는 그래프 전체 차수 합이 있어야 계산되는데, 문서
+        하나를 붙일지 정하는 낮에는 그게 없다. 그래서 이 모드의 낮은 기본 γ의
+        CPM 이득으로 근사한다.
+        """
+        if self.leiden_objective == "cpm":
+            return self.effective_leiden_resolution
+        return min(self.join_threshold, MAX_TRACKING_LEIDEN_RESOLUTION)
 
 
 MAX_TRACKING_LEIDEN_RESOLUTION = 0.99

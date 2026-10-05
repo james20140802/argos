@@ -140,7 +140,7 @@ async def test_pending_candidates_are_capped_at_candidate_k_by_cosine(monkeypatc
 
     calls: list[tuple[DocumentFeatures, list[CandidateNeighbor]]] = []
 
-    def _recording_decide_event(features, candidates, *, config):
+    def _recording_decide_event(features, candidates, *, event_sizes, config):
         calls.append((features, list(candidates)))
         # 항상 새 사건을 만든다 — 그래야 앞선 문서 하나하나가 뒤 문서의
         # pending 후보로 오버레이에 쌓인다.
@@ -425,3 +425,81 @@ def test_stale_event_query_excludes_tombstones_and_targets_stale_or_untitled():
     assert "naming_stale" in sql
     assert "title is null" in sql
     assert "merged_into_id is null" in sql
+
+
+@pytest.mark.asyncio
+async def test_weak_neighbours_do_not_snowball_into_one_event(monkeypatch):
+    """ARG-282: 약한 이웃이 여럿 모여도 사건이 불어나지 않는다.
+
+    첫 두 문서는 똑같아 한 사건이 된다. 뒤의 문서들은 모두와 코사인 0.5
+    (쌍 점수 ≈ 0.43 — 실제 코퍼스의 이웃 점수 중앙값과 같다)라 누구와도 같은
+    사건이 아니다. 예전 낮 규칙은 그 사건의 두 이웃 표를 더해(0.86) 붙였고,
+    그러면 다음 문서는 더 많은 표를 받아 또 붙었다 — 실제 코퍼스에서 1,669건 중
+    1,603건을 사건 하나로 만든 눈덩이다.
+    """
+    from argos.brain import event_backfill
+
+    monkeypatch.setattr(
+        event_backfill, "db_candidate_source", AsyncMock(return_value=[])
+    )
+    dims = 12
+    common = [1.0] + [0.0] * (dims - 1)
+
+    def _half_shared(index: int) -> list[float]:
+        # 공통 축 √½ + 자기 축 √½ → 서로 다른 둘의 코사인은 정확히 0.5.
+        vector = [value * math.sqrt(0.5) for value in common]
+        vector[index] += math.sqrt(0.5)
+        return vector
+
+    docs = [
+        _doc(_half_shared(1), [], AT, summary="seed"),
+        _doc(_half_shared(1), [], AT + timedelta(minutes=5), summary="seed"),
+    ] + [
+        _doc(_half_shared(index), [], AT + timedelta(hours=index), summary=f"other {index}")
+        for index in range(2, dims)
+    ]
+    plan = await plan_backfill(
+        _session_without_db_neighbours(), docs, config=settings.user.event_detection
+    )
+
+    assert plan.size_distribution == {2: 1, 1: dims - 2}
+
+
+@pytest.mark.asyncio
+async def test_preview_counts_pending_documents_as_event_size(monkeypatch):
+    """미리보기의 사건 크기는 오버레이에 쌓인 창 안 문서 수다.
+
+    실행 모드는 링크를 flush해 DB가 세므로, 미리보기도 같은 수를 넘겨야 두
+    모드의 판정이 같다. 창 밖 문서는 세지 않는다 — 밤의 재군집도 기간 밖
+    문서는 보지 않는다.
+    """
+    from argos.brain import event_backfill
+
+    monkeypatch.setattr(
+        event_backfill, "db_candidate_source", AsyncMock(return_value=[])
+    )
+    window = settings.user.event_detection.window_days
+    seen_sizes: list[dict] = []
+    real_decide = event_backfill.decide_event
+
+    def _recording(features, candidates, *, event_sizes, config):
+        seen_sizes.append(dict(event_sizes))
+        return real_decide(features, candidates, event_sizes=event_sizes, config=config)
+
+    monkeypatch.setattr(event_backfill, "decide_event", _recording)
+
+    docs = [
+        _doc([1.0, 0.0], ["anthropic"], AT - timedelta(days=window + 1), summary="claude"),
+        _doc([1.0, 0.0], ["anthropic"], AT, summary="claude"),
+        _doc([1.0, 0.0], ["anthropic"], AT + timedelta(hours=1), summary="claude"),
+        _doc([1.0, 0.0], ["anthropic"], AT + timedelta(hours=2), summary="claude"),
+    ]
+    plan = await plan_backfill(
+        _session_without_db_neighbours(), docs, config=settings.user.event_detection
+    )
+
+    # 첫 문서는 창 밖이라 둘째와 따로 간다. 둘째·셋째가 한 사건이 된 뒤,
+    # 넷째가 보는 그 사건의 크기는 2다 (창 밖 첫 문서의 사건은 빠진다).
+    joined = plan.assignments[1].event_id
+    assert plan.assignments[2].event_id == joined
+    assert seen_sizes[3] == {joined: 2}

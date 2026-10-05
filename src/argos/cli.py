@@ -1842,14 +1842,18 @@ def _print_dry_run_report(plan, total_docs: int) -> None:
     """미리보기 리포트. 임계값 현재값을 함께 찍는다.
 
     어떤 설정으로 나온 결과인지 같이 보이지 않으면, 설정을 바꿔가며 비교하는
-    이 커맨드의 목적 자체가 성립하지 않는다.
+    이 커맨드의 목적 자체가 성립하지 않는다. 낮 판정의 CPM 이득은
+    ``join_threshold``와 실효 γ(``assignment_resolution``) 둘로 정해지므로 둘 다
+    찍는다 — γ를 따로 오버라이드한 실행끼리 머리말이 같아지면 안 된다.
     """
     config = settings.user.event_detection
     print(f"backfill-events (dry-run): {total_docs} unassigned document(s)")
     print(f"  → {plan.new_event_count} event(s) would be created")
     print(
         "  thresholds: "
-        f"join_threshold={config.join_threshold} window_days={config.window_days} "
+        f"join_threshold={config.join_threshold} "
+        f"resolution={config.assignment_resolution} "
+        f"window_days={config.window_days} "
         f"candidate_k={config.candidate_k} weights="
         f"(cosine={config.weight_cosine}, entity={config.weight_entity}, "
         f"time={config.weight_time}, keyword={config.weight_keyword})"

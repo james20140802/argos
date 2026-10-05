@@ -144,3 +144,18 @@ def test_an_explicit_resolution_override_is_never_clamped():
     assert EventDetectionConfig(
         join_threshold=1.0, leiden_resolution=1.0
     ).effective_leiden_resolution == pytest.approx(1.0)
+
+
+def test_assignment_resolution_matches_the_nightly_objective():
+    # CPM이면 낮과 밤이 같은 γ를 쓴다 — 오버라이드도 함께 따라간다.
+    assert EventDetectionConfig(
+        join_threshold=0.35, leiden_resolution=0.9
+    ).assignment_resolution == pytest.approx(0.9)
+    # modularity면 밤이 leiden_resolution을 무시한다. 낮도 무시해야 그
+    # 노브가 낮 배정만 몰래 바꾸지 않는다 (PR #125 리뷰).
+    for override in (None, 0.1, 0.9):
+        assert EventDetectionConfig(
+            leiden_objective="modularity",
+            join_threshold=0.55,
+            leiden_resolution=override,
+        ).assignment_resolution == pytest.approx(0.55)

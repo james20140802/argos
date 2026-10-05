@@ -16,7 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from argos.brain.entity_extraction import ExtractedName
 from argos.brain.entity_store import attach_names
-from argos.brain.event_candidates import fetch_candidates, keywords_of
+from argos.brain.event_candidates import fetch_candidates, fetch_event_sizes, keywords_of
 from argos.config import settings
 from argos.models.document_entity import DocumentEntity
 from argos.models.entity import Entity
@@ -396,3 +396,47 @@ def test_keywords_of_lowercases_and_splits_words():
     assert keywords_of("Claude Sonnet 5!") == frozenset({"claude", "sonnet", "5"})
     assert keywords_of(None) == frozenset()
     assert keywords_of("") == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_event_sizes_count_window_documents_through_tombstones(session_factory):
+    """ARG-282: 사건 크기는 창 안 문서 수이고, 흡수된 사건의 문서도 생존 사건 몫이다."""
+    async with session_factory() as session:
+        survivor = TechEvent(title="ARG-265 event candidates test — size survivor", occurred_at=NOW)
+        absorbed = TechEvent(title="ARG-265 event candidates test — size absorbed", occurred_at=NOW)
+        other = TechEvent(title="ARG-265 event candidates test — size other", occurred_at=NOW)
+        session.add_all([survivor, absorbed, other])
+        await session.flush()
+        absorbed.merged_into_id = survivor.id
+        await session.flush()
+
+        async def _member(suffix, days, *events):
+            item_id = await _make_item(
+                session, f"size-{suffix}", embedding=_embedding(1.0),
+                published_at=NOW + timedelta(days=days),
+            )
+            for event in events:
+                session.add(EventDocument(event_id=event.id, tech_item_id=item_id))
+            await session.flush()
+            return item_id
+
+        await _member("in-a", -1, survivor)
+        excluded = await _member("in-b", 2, survivor)
+        await _member("outside", -20, survivor)
+        await _member("via-tombstone", 0, absorbed)
+        await _member("both", 1, survivor, absorbed)
+        await _member("other", 0, other)
+        await session.commit()
+
+        sizes = await fetch_event_sizes(
+            session, event_ids=[survivor.id], at=NOW, window_days=14
+        )
+        # in-a, in-b, via-tombstone, both(한 번만) — outside는 창 밖, other는 묻지 않음.
+        assert sizes == {survivor.id: 4}
+
+        sizes = await fetch_event_sizes(
+            session, event_ids=[survivor.id], at=NOW, window_days=14, exclude_id=excluded
+        )
+        assert sizes == {survivor.id: 3}
+
+        assert await fetch_event_sizes(session, event_ids=[], at=NOW, window_days=14) == {}
