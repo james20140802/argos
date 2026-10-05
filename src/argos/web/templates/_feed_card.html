@@ -14,9 +14,9 @@
    the FeedItem helpers, hence the ``default`` fallbacks below.
 
    ``card_delay`` is supplied by the list loop for the staggered entrance
-   animation. A bare action response has none: that card is marked
-   ``card--swapped`` instead, so it settles in place (and its newly pressed
-   button pops) rather than replaying the entrance.
+   animation. A bare action response has none and is marked ``card--swapped``
+   instead of ``rise``; the page only lifts its button row and eyebrow out of
+   it (see .card-actions below), so it never replays the entrance.
 
    ``is_featured`` is supplied only by the first-page list loop (ARG-175); it
    is undefined — and thus falsy — on the bare Keep/Pass action re-render, so
@@ -36,7 +36,7 @@
      hero on navigation. #}
   {{ cover(item.image_url, item.category, href, item.source_url, transition_id=item.id) }}
   <div class="body">
-    <p class="eyebrow eyebrow--{{ cat }}">
+    <p class="eyebrow eyebrow--{{ cat }}" id="eyebrow-{{ item.id }}">
       {% if item.category %}
       <span class="eyebrow__cat">{{ item.category.value }}</span>
       {% endif %}
@@ -74,17 +74,22 @@
     {% set pass_params = common + (['active=1'] if is_passed else []) %}
     <div class="card-foot">
       {{ source_stack(domains if domains else [item.source_url | domain], item.doc_count | default(1)) }}
-      <div class="card-actions">
+      {# The route still answers with this whole card, but only the button row
+         (and, out of band, the eyebrow's status badge) is swapped in. Replacing
+         the whole <article> re-created the cover <img> — it re-fetched and
+         flashed blank, so every press looked like the card reloading. The
+         pressed state itself is applied on tap by instant-nav.js. #}
+      <div class="card-actions" id="actions-{{ item.id }}"
+           hx-target="#actions-{{ item.id }}"
+           hx-select="#actions-{{ item.id }}"
+           hx-select-oob="#eyebrow-{{ item.id }}"
+           hx-swap="outerHTML">
         <button class="card-action card-action--keep{% if is_kept %} is-active{% endif %}"
                 aria-pressed="{{ 'true' if is_kept else 'false' }}"
-                hx-post="/items/{{ action_id }}/keep{% if keep_params %}?{{ keep_params | join('&') }}{% endif %}"
-                hx-target="#feed-card-{{ item.id }}"
-                hx-swap="outerHTML">{% if is_kept %}✓ Keep{% else %}Keep{% endif %}</button>
+                hx-post="/items/{{ action_id }}/keep{% if keep_params %}?{{ keep_params | join('&') }}{% endif %}">{% if is_kept %}✓ Keep{% else %}Keep{% endif %}</button>
         <button class="card-action card-action--pass{% if is_passed %} is-active{% endif %}"
                 aria-pressed="{{ 'true' if is_passed else 'false' }}"
-                hx-post="/items/{{ action_id }}/pass{% if pass_params %}?{{ pass_params | join('&') }}{% endif %}"
-                hx-target="#feed-card-{{ item.id }}"
-                hx-swap="outerHTML">{% if is_passed %}✓ Pass{% else %}Pass{% endif %}</button>
+                hx-post="/items/{{ action_id }}/pass{% if pass_params %}?{{ pass_params | join('&') }}{% endif %}">{% if is_passed %}✓ Pass{% else %}Pass{% endif %}</button>
       </div>
     </div>
   </div>

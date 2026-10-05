@@ -127,7 +127,11 @@ def test_event_card_shows_source_count_and_links_to_event_page(monkeypatch):
     # Keep/Pass act on the representative document and re-render this card.
     assert f'hx-post="/items/{ev.rep_id}/keep?' in card
     assert f"entry={ev.id}" in card
-    assert f'hx-target="#feed-card-{ev.id}"' in card
+    # Only the button row (+ the eyebrow, out of band) is swapped — never the
+    # whole card, whose cover image would re-load and flash.
+    assert f'hx-target="#actions-{ev.id}"' in card
+    assert f'hx-select-oob="#eyebrow-{ev.id}"' in card
+    assert f'hx-target="#feed-card-{ev.id}"' not in card
 
 
 def test_lone_document_card_is_the_same_component_on_its_old_url(monkeypatch):

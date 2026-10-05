@@ -102,7 +102,7 @@ def test_sw_precaches_refresh_js_and_bumps_version():
     # Dwell events; bumped to v18 so installed clients pick it up (v19:
     # ARG-243 redesign of the precached argos.css).
     assert "/static/js/feed-events.js" in body
-    assert "argos-v21" in body
+    assert "argos-v22" in body
     assert "argos-shell-refresh" in body     # message 리스너
 
 
