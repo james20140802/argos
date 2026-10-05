@@ -280,3 +280,25 @@ async def test_select_hero_returns_entry_id() -> None:
             await s.commit()
         async with Session() as s:
             assert await select_hero(s) == ev.id
+
+
+async def test_event_detail_lists_evidence_in_report_order() -> None:
+    from argos.web.services.event_detail import fetch_event_detail
+
+    async with _seeded() as (Session, seed):
+        async with Session() as s:
+            late = await seed.item(s, domain="late.example", hours=9)
+            first = await seed.item(s, domain="www.first.example", hours=1, image="https://img/x.png")
+            mid = await seed.item(s, domain="mid.example", hours=5)
+            ev = await seed.event(s, [late, first, mid], title="사건 A")
+            await s.commit()
+        async with Session() as s:
+            view = await fetch_event_detail(s, ev.id)
+            missing = await fetch_event_detail(s, uuid.uuid4())
+    assert missing is None
+    assert [d.id for d in view.documents] == [first.id, mid.id, late.id]
+    assert [d.is_first for d in view.documents] == [True, False, False]
+    assert view.documents[0].domain == "first.example"
+    assert view.rep_id == first.id
+    assert view.image_url == "https://img/x.png"
+    assert view.source_count == 3

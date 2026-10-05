@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ event.title }} · ARGOS{% endblock %}
+{% block content %}
+{# 사건 상세 (ARG-243). Reached only through resolve_event(), so a link to an
+   event that was later merged lands here on the survivor.
+
+   data-item-id drives feed-events.js's Dwell timer. It carries the
+   representative document until feed_events can record an event id (needs a
+   migration, tracked separately). #}
+{% set cat = (event.category.value if event.category else 'none')|lower %}
+<article class="detail detail--event"{% if event.rep_id %} data-item-id="{{ event.rep_id }}"{% endif %} data-event-id="{{ event.id }}">
+  <a class="back-link" href="/feed">
+    <svg aria-hidden="true" viewBox="0 0 12 20" width="10" height="17"><path d="M10 2 2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    관측 피드
+  </a>
+
+  {% if event.image_url and not (event.image_url | is_favicon) %}
+  <div class="detail-hero" style="view-transition-name: c{{ event.id.hex }}">
+    <img class="detail-hero__img" src="{{ event.image_url }}" alt="" loading="lazy">
+    <span class="detail-hero__scrim" aria-hidden="true"></span>
+  </div>
+  {% else %}
+  <div class="detail-hero detail-hero--fallback detail-hero--{{ cat }}" style="view-transition-name: c{{ event.id.hex }}">
+    <span class="detail-hero__scrim" aria-hidden="true"></span>
+    <span class="detail-hero__glyph" aria-hidden="true">◎</span>
+  </div>
+  {% endif %}
+
+  <header class="detail-head">
+    <div class="detail-meta">
+      {% if event.category %}
+      <span class="tag {{ 'main' if event.category.value == 'Mainstream' else 'alpha' }}">{{ event.category.value }}</span>
+      {% endif %}
+      <span class="detail-meta__count">출처 {{ event.source_count }}곳</span>
+    </div>
+    <h1 class="detail-title">{{ event.title }}</h1>
+  </header>
+
+  {% if item %}
+  {% include "_detail_actions.html" %}
+  {% endif %}
+
+  {% if event.summary %}
+  <section class="detail-summary">
+    <p>{{ event.summary }}</p>
+  </section>
+  {% endif %}
+
+  <section class="evidence" aria-labelledby="evidence-title">
+    <h2 class="detail-section__title" id="evidence-title">보도 {{ event.documents | length }}건 <span class="detail-section__hint">먼저 보도된 순</span></h2>
+    {% if event.documents %}
+    <ol class="evidence-list">
+      {% for doc in event.documents %}
+      <li class="evidence-item rise{% if doc.is_first %} evidence-item--first{% endif %}" style="--d: {{ '%.2f'|format(loop.index0 * 0.05) }}s">
+        <span class="source-disc source-disc--lg" style="--h: {{ doc.domain | domain_hue }}" aria-hidden="true">{{ doc.domain | monogram }}</span>
+        <div class="evidence-item__body">
+          <p class="evidence-item__meta">
+            <span class="evidence-item__domain">{{ doc.domain }}</span>
+            {% if doc.is_first %}<span class="first-report">최초 보도</span>{% endif %}
+            <time datetime="{{ doc.reported_at.isoformat() }}">{{ doc.reported_at.strftime('%Y-%m-%d %H:%M') }}</time>
+          </p>
+          <a class="evidence-item__title" href="{{ doc.source_url }}" target="_blank" rel="noopener noreferrer">{{ doc.title }}<svg class="ext-icon" aria-hidden="true" viewBox="0 0 12 12" width="10" height="10"><path d="M3.5 2.5h6v6M9.5 2.5 2.5 9.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+          <a class="evidence-item__reader" href="/item/{{ doc.id }}">앱에서 읽기</a>
+        </div>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="timeline-empty">이 사건에 연결된 기사가 아직 없습니다.</p>
+    {% endif %}
+  </section>
+</article>
+{% endblock %}

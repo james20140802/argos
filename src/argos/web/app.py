@@ -27,9 +27,11 @@ from fastapi.templating import Jinja2Templates
 
 from argos.web.services.activity import fetch_activity
 from argos.web.services.detail import fetch_item_detail
+from argos.web.services.event_detail import fetch_event_detail
 from argos.web.services.feed import (
     count_new_since,
     fetch_feed,
+    fetch_feed_entry,
     latest_feed_cursor,
     pick_onpage_hero_within_window,
     pin_hero,
@@ -60,6 +62,18 @@ async def transition_asset(session, tech_id: uuid.UUID, target_status):
     return await _real_transition_asset(session, tech_id, target_status)
 
 
+async def resolve_event(session, event_id: uuid.UUID) -> uuid.UUID:
+    """Lazy shim — delegates to ``argos.services.event_resolution.resolve_event``.
+
+    Module-level so tests can monkeypatch ``argos.web.app.resolve_event``; the
+    lazy import keeps ``argos.services`` (which pulls search → database) out of
+    the app-construction import graph.
+    """
+    from argos.services.event_resolution import resolve_event as _real_resolve_event
+
+    return await _real_resolve_event(session, event_id)
+
+
 async def toggle_asset(
     session, tech_id: uuid.UUID, target_status, *, currently_active: bool = False
 ):
@@ -79,6 +93,9 @@ _ASSETS_DIR = _PACKAGE_DIR / "assets"
 
 _VALID_CATEGORIES = ("Mainstream", "Alpha")
 _VALID_SORTS = ("recency", "trust")
+# Action contexts that re-render the standalone detail action bar: the item
+# page (``detail``, ARG-184) and the event page (``event``, ARG-243).
+_DETAIL_CONTEXTS = ("detail", "event")
 
 
 async def _get_session():
@@ -259,6 +276,26 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             return ""
 
     app.state.templates.env.filters["domain"] = _domain_of
+
+    def _domain_hue(domain: str | None) -> int:
+        """Render-time helper: a stable 0–359 hue per domain for the source
+        stack's monogram discs (ARG-243). Deterministic across processes —
+        ``hash()`` is salted per run, so a disc would change colour on restart."""
+        import zlib
+
+        return zlib.crc32((domain or "").encode("utf-8")) % 360
+
+    def _monogram(domain: str | None) -> str:
+        """Render-time helper: the publisher's initial — ``www.theverge.com``
+        → ``T``. Skips a leading ``www.``/``blog.``-style label."""
+        labels = [p for p in (domain or "").lower().split(".") if p]
+        for prefix in ("www", "blog", "news", "m"):
+            if len(labels) > 2 and labels[0] == prefix:
+                labels = labels[1:]
+        return (labels[0][:1] if labels else "?").upper()
+
+    app.state.templates.env.filters["domain_hue"] = _domain_hue
+    app.state.templates.env.filters["monogram"] = _monogram
 
     def _is_favicon(url: str | None) -> bool:
         """Render-time helper: True when a cover URL is a bare favicon.
@@ -696,6 +733,64 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             request, "item_detail.html", {"item": item}
         )
 
+    @app.get("/event/{event_id}", response_class=HTMLResponse)
+    async def event_detail(
+        request: Request,
+        event_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        """사건 상세 (ARG-243) — the event card's destination.
+
+        Every lookup goes through ``resolve_event()`` first: an event that was
+        later merged away keeps its row as a tombstone pointing at the
+        survivor, so yesterday's link redirects to where its content lives now
+        instead of 404ing. This is the only path that keeps old links alive.
+        """
+        try:
+            parsed_id = uuid.UUID(event_id)
+        except ValueError:
+            return _render_not_found(request)
+
+        resolved_id = await resolve_event(session, parsed_id)
+        if resolved_id != parsed_id:
+            return RedirectResponse(url=f"/event/{resolved_id}", status_code=307)
+
+        event = await fetch_event_detail(session, parsed_id)
+        if event is None:
+            return _render_not_found(request)
+
+        # Keep/Pass act on the representative document (decision 1), so the
+        # action bar renders from its feed-card context like the item page.
+        rep_item = None
+        if event.rep_id is not None:
+            rep_item = await _load_feed_card_context(session, event.rep_id)
+            if rep_item is not None and getattr(rep_item["status"], "value", None) == "Keep":
+                rep_item["successors"] = await _load_item_successors(session, event.rep_id)
+
+            # Click → the representative document until feed_events gains an
+            # event column (needs a migration — a separate, human-owned task).
+            try:
+                from argos.models.feed_event import FeedEvent, FeedEventType
+
+                session.add(
+                    FeedEvent(event_type=FeedEventType.CLICK, tech_item_id=event.rep_id)
+                )
+                await session.commit()
+            except Exception:
+                _log.exception("failed to record Click feed_event for event %s", parsed_id)
+
+        from types import SimpleNamespace
+
+        return request.app.state.templates.TemplateResponse(
+            request,
+            "event_detail.html",
+            {
+                "event": event,
+                "item": SimpleNamespace(**rep_item) if rep_item else None,
+                "action_context": "event",
+            },
+        )
+
     @app.post("/events/batch")
     async def events_batch(
         request: Request,
@@ -807,6 +902,8 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         session,
         item: dict,
         tech_id: uuid.UUID,
+        *,
+        action_context: str = "detail",
     ) -> HTMLResponse:
         """Detail-page action response: the standalone action bar PLUS an
         out-of-band refresh of the 관련 신호 section.
@@ -837,11 +934,20 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         ):
             item["successors"] = await _load_item_successors(session, tech_id)
 
-        signals_item = await fetch_item_detail(session, tech_id)
+        # The event page (ARG-243) has no 관련 신호 section to refresh.
+        signals_item = (
+            await fetch_item_detail(session, tech_id)
+            if action_context == "detail"
+            else None
+        )
         return request.app.state.templates.TemplateResponse(
             request,
             "_detail_actions_oob.html",
-            {"item": SimpleNamespace(**item), "signals_item": signals_item},
+            {
+                "item": SimpleNamespace(**item),
+                "signals_item": signals_item,
+                "action_context": action_context,
+            },
         )
 
     async def _toggle_item(
@@ -853,11 +959,19 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         is_featured: bool,
         currently_active: bool = False,
         partial_name: str = "_feed_card.html",
+        context: str = "feed",
+        entry: Optional[str] = None,
     ) -> HTMLResponse:
         try:
             parsed_id = uuid.UUID(item_id)
         except ValueError:
             return _error_fragment(request, 404, "not found")
+        parsed_entry: Optional[uuid.UUID] = None
+        if entry is not None:
+            try:
+                parsed_entry = uuid.UUID(entry)
+            except ValueError:
+                return _error_fragment(request, 404, "not found")
 
         item = await _load_feed_card_context(session, parsed_id)
         if item is None:
@@ -889,7 +1003,19 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         # successors itself when the item is Keep, so every detail-context caller
         # gets a correct bar without each pre-loading them.
         if partial_name == "_detail_actions.html":
-            return await _detail_action_response(request, session, item, parsed_id)
+            return await _detail_action_response(
+                request, session, item, parsed_id, action_context=context
+            )
+        # An event card (ARG-243) acted on its representative document; it
+        # re-renders as the same event card, not as that document's own card.
+        if parsed_entry is not None:
+            entry_item = await fetch_feed_entry(session, parsed_entry)
+            if entry_item is not None:
+                return request.app.state.templates.TemplateResponse(
+                    request,
+                    "_feed_card.html",
+                    {"item": entry_item, "is_featured": is_featured},
+                )
         return _action_response(
             request, item, partial_name, is_featured=is_featured
         )
@@ -900,7 +1026,11 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
     # feed's existing hx-post calls (which never send it) are byte-for-byte
     # unaffected — the default keeps returning ``_feed_card.html``.
     def _partial_for(context: str) -> str:
-        return "_detail_actions.html" if context == "detail" else "_feed_card.html"
+        return (
+            "_detail_actions.html"
+            if context in _DETAIL_CONTEXTS
+            else "_feed_card.html"
+        )
 
     @app.post("/items/{item_id}/keep", response_class=HTMLResponse)
     async def keep_item(
@@ -909,6 +1039,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         featured: bool = False,
         active: bool = False,
         context: str = "feed",
+        entry: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
@@ -921,6 +1052,8 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             is_featured=featured,
             currently_active=active,
             partial_name=_partial_for(context),
+            context=context,
+            entry=entry,
         )
 
     @app.post("/items/{item_id}/pass", response_class=HTMLResponse)
@@ -930,6 +1063,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         featured: bool = False,
         active: bool = False,
         context: str = "feed",
+        entry: Optional[str] = None,
         session=Depends(_get_session),
     ) -> HTMLResponse:
         from argos.models.user_asset import AssetStatus
@@ -942,6 +1076,8 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             is_featured=featured,
             currently_active=active,
             partial_name=_partial_for(context),
+            context=context,
+            entry=entry,
         )
 
     @app.post("/assets/{user_asset_id}/untrack", response_class=HTMLResponse)
@@ -974,7 +1110,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
                 # nothing, so it needs no commit.
                 await session.commit()
 
-        if context == "detail":
+        if context in _DETAIL_CONTEXTS:
             # The detail page has exactly one card on screen, so untracking
             # can't just delete it like the portfolio does — it re-renders the
             # action bar in place instead (ARG-184). ``tech_id`` is threaded
@@ -992,7 +1128,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             if item is None:
                 return _error_fragment(request, 404, "not found")
             return await _detail_action_response(
-                request, session, item, detail_tech_id
+                request, session, item, detail_tech_id, action_context=context
             )
 
         # Untracking archives the asset, dropping it out of the Keep-only
@@ -1121,7 +1257,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             return _error_fragment(request, 409, "asset not kept")
         await session.commit()
 
-        if context == "detail":
+        if context in _DETAIL_CONTEXTS:
             # Re-render the predecessor's detail action area, now Archived: the
             # handoff banner is gone and the bar shows Keep/Pass instead of a
             # stale Untrack for a state that no longer exists.
@@ -1129,7 +1265,7 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
             if item is None:
                 return _error_fragment(request, 404, "not found")
             return await _detail_action_response(
-                request, session, item, predecessor_tech_id
+                request, session, item, predecessor_tech_id, action_context=context
             )
 
         return HTMLResponse("", status_code=200)

@@ -99,9 +99,10 @@ def test_sw_precaches_refresh_js_and_bumps_version():
     assert "/static/js/refresh.js" in body
     # ARG-201/207: feed-events.js is loaded on every page and must be precached
     # so an offline/first shell load doesn't lose that session's Impression/
-    # Dwell events; bumped to v18 so installed clients pick it up.
+    # Dwell events; bumped to v18 so installed clients pick it up (v19:
+    # ARG-243 redesign of the precached argos.css).
     assert "/static/js/feed-events.js" in body
-    assert "argos-v18" in body
+    assert "argos-v19" in body
     assert "argos-shell-refresh" in body     # message 리스너
 
 

@@ -3,11 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  {# Follow the OS appearance: dark Midnight Observatory by default, a light
-     paper theme under prefers-color-scheme: light. The matching theme-color
-     keeps the iOS status bar / Android chrome in step with the rendered bg. #}
-  <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
-  <meta name="theme-color" content="#fbfbfd" media="(prefers-color-scheme: light)">
+  {# Follow the OS appearance. The matching theme-color keeps the iOS status
+     bar / Android chrome in step with the rendered background. #}
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
   <title>{% block title %}ARGOS{% endblock %}</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="192x192" href="/static/img/icons/icon-192.png">
@@ -17,20 +16,27 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="ARGOS">
   <link rel="stylesheet" href="/static/css/argos.css">
-  <link rel="preload" as="font" type="font/woff2"
-        href="/static/fonts/Fraunces-SemiBold.woff2" crossorigin>
-  <link rel="preload" as="font" type="font/woff2"
-        href="/static/fonts/IBMPlexSansKR-Regular.woff2" crossorigin>
-  <link rel="preload" as="font" type="font/woff2"
-        href="/static/fonts/IBMPlexMono-Regular.woff2" crossorigin>
 </head>
 <body>
-  <div class="sky" aria-hidden="true"></div>
-  <div class="grain" aria-hidden="true"></div>
+  {% set path = request.url.path %}
+  {% set on_feed = path == '/feed' or path.startswith('/feed/') or path.startswith('/event/') or path.startswith('/item/') %}
+  {% set on_portfolio = path == '/portfolio' or path.startswith('/portfolio/') %}
+  {% set on_settings = path == '/settings' %}
+  {# Symbol-style glyphs, drawn once and reused by both navs. #}
+  {% macro icon(name) -%}
+  <svg class="ic" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    {%- if name == 'feed' -%}
+    <circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="0.6" fill="currentColor"/>
+    {%- elif name == 'portfolio' -%}
+    <path d="M12 3.6l2.5 5.2 5.6.7-4.1 3.9 1 5.6L12 16.3 7 19l1-5.6-4.1-3.9 5.6-.7z"/>
+    {%- else -%}
+    <path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>
+    {%- endif -%}
+  </svg>
+  {%- endmacro %}
 
-  {# Desktop navigation — a fixed left rail (≥768px). On mobile it is hidden in
-     favour of the top masthead + bottom tabbar below, so the two breakpoints
-     get genuinely different chrome instead of the same bar at every width. #}
+  {# Desktop navigation — a translucent sidebar (≥768px). On mobile it is
+     hidden in favour of the top bar + bottom tab bar below. #}
   <aside class="rail">
     <a class="rail__brand" href="/feed">
       <img class="mark" src="/static/img/logo.svg" alt="" width="28" height="28">
@@ -40,24 +46,15 @@
       </span>
     </a>
     <nav class="rail__nav" aria-label="기본 내비게이션">
-      <a class="rail__tab" href="/feed"
-         {% if request.url.path == '/feed' or request.url.path.startswith('/feed/') %}aria-current="page"{% endif %}>
-        <span class="ic" aria-hidden="true">◎</span>관측 피드
-      </a>
-      <a class="rail__tab" href="/portfolio"
-         {% if request.url.path == '/portfolio' or request.url.path.startswith('/portfolio/') %}aria-current="page"{% endif %}>
-        <span class="ic" aria-hidden="true">✦</span>포트폴리오
-      </a>
-      <a class="rail__tab" href="/settings"
-         {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>
-        <span class="ic" aria-hidden="true">⚙</span>설정
-      </a>
+      <a class="rail__tab" href="/feed"{% if on_feed %} aria-current="page"{% endif %}>{{ icon('feed') }}관측 피드</a>
+      <a class="rail__tab" href="/portfolio"{% if on_portfolio %} aria-current="page"{% endif %}>{{ icon('portfolio') }}포트폴리오</a>
+      <a class="rail__tab" href="/settings"{% if on_settings %} aria-current="page"{% endif %}>{{ icon('settings') }}설정</a>
     </nav>
   </aside>
 
-  {# Mobile top branding (<768px). #}
+  {# Mobile top bar (<768px) — a translucent material content scrolls under. #}
   <header class="masthead">
-    <img class="mark" src="/static/img/logo.svg" alt="" width="30" height="30">
+    <img class="mark" src="/static/img/logo.svg" alt="" width="26" height="26">
     <div>
       <div class="wordmark">ARGOS</div>
       <div class="kicker">Observatory</div>
@@ -72,18 +69,9 @@
 
   {# Mobile bottom tab bar (<768px). #}
   <nav class="tabbar" aria-label="기본 내비게이션">
-    <a class="tab" href="/feed"
-       {% if request.url.path == '/feed' or request.url.path.startswith('/feed/') %}aria-current="page"{% endif %}>
-      <span class="ic" aria-hidden="true">◎</span>관측 피드
-    </a>
-    <a class="tab" href="/portfolio"
-       {% if request.url.path == '/portfolio' or request.url.path.startswith('/portfolio/') %}aria-current="page"{% endif %}>
-      <span class="ic" aria-hidden="true">✦</span>포트폴리오
-    </a>
-    <a class="tab" href="/settings"
-       {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>
-      <span class="ic" aria-hidden="true">⚙</span>설정
-    </a>
+    <a class="tab" href="/feed"{% if on_feed %} aria-current="page"{% endif %}>{{ icon('feed') }}관측 피드</a>
+    <a class="tab" href="/portfolio"{% if on_portfolio %} aria-current="page"{% endif %}>{{ icon('portfolio') }}포트폴리오</a>
+    <a class="tab" href="/settings"{% if on_settings %} aria-current="page"{% endif %}>{{ icon('settings') }}설정</a>
   </nav>
 
   <script src="/static/js/htmx.min.js" defer></script>

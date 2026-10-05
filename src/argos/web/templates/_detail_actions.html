@@ -18,11 +18,15 @@
    Once an item is Kept, the Keep button is replaced by Untrack (mirrors the
    portfolio's one-way "release from Keep" action) rather than staying a
    togglable ✓ Keep — Pass stays a toggle in both states, same as the feed. #}
+{# ``action_context`` is ``detail`` on the item page and ``event`` on the event
+   page (ARG-243); it rides along on every POST so the response re-renders
+   this bar for the right page (the event page has no 관련 신호 to refresh). #}
+{% set ctx = action_context | default('detail') %}
 {% set is_kept = item.status and item.status.value == 'Keep' %}
 {% set is_passed = item.status and item.status.value == 'Archived' %}
 {% set actions_target = '#detail-actions-' ~ item.id %}
-{% set untrack_params = ['context=detail', 'tech_id=' ~ item.id] %}
-{% set pass_params = ['context=detail'] + (['active=1'] if is_passed else []) %}
+{% set untrack_params = ['context=' ~ ctx, 'tech_id=' ~ item.id] %}
+{% set pass_params = ['context=' ~ ctx] + (['active=1'] if is_passed else []) %}
 {# ARG-209 AC1/AC3: a Keep asset with a Replace successor gets a handoff
    banner. `item.successors` already carries relation_type for every
    successor (existing 🧬 genealogy query) — reused here as-is, no new
@@ -34,7 +38,7 @@
   <p class="handoff-banner__text">🔁 <a href="/item/{{ replace_successor.tech_id }}">{{ replace_successor.title }}</a>이(가) 이 기술을 대체합니다</p>
   <button type="button"
           class="handoff-banner__btn"
-          hx-post="/assets/{{ item.asset_id }}/handoff?successor_tech_id={{ replace_successor.tech_id }}&context=detail"
+          hx-post="/assets/{{ item.asset_id }}/handoff?successor_tech_id={{ replace_successor.tech_id }}&context={{ ctx }}"
           hx-target="{{ actions_target }}"
           hx-swap="outerHTML">이어받기</button>
 </div>
@@ -48,7 +52,7 @@
   {% else %}
   <button class="card-action card-action--keep"
           aria-pressed="false"
-          hx-post="/items/{{ item.id }}/keep?context=detail"
+          hx-post="/items/{{ item.id }}/keep?context={{ ctx }}"
           hx-target="{{ actions_target }}"
           hx-swap="outerHTML">Keep</button>
   {% endif %}

@@ -1,24 +1,41 @@
-{% from "_macros.html" import cover %}
+{% from "_macros.html" import cover, source_stack %}
 {# Single feed card — the source of truth for both the initial feed list
    (_feed_items.html loops + includes this) and the HTMX Keep/Pass action
    swaps returned by POST /items/{id}/keep|pass (ARG-136 / ARG-139).
 
+   ARG-243: one card = one event. An event and a lone document render through
+   this same markup — no branch in the layout, only in where the card links
+   (``/event/<id>`` vs the unchanged ``/item/<id>``) and how many outlets the
+   source stack shows. Keep/Pass act on the representative document
+   (``action_id``); ``entry=<id>`` asks the route to re-render this same event
+   card rather than the document's own.
+
+   The bare Keep/Pass re-render of a lone card passes a plain namespace without
+   the FeedItem helpers, hence the ``default`` fallbacks below.
+
    ``card_delay`` is supplied by the list loop for the staggered entrance
-   animation and defaults to 0 when rendered bare as an action response.
+   animation. A bare action response has none: that card is marked
+   ``card--swapped`` instead, so it settles in place (and its newly pressed
+   button pops) rather than replaying the entrance.
 
    ``is_featured`` is supplied only by the first-page list loop (ARG-175); it
    is undefined — and thus falsy — on the bare Keep/Pass action re-render, so
    the magazine hero degrades to a standard card there. #}
+{% set kind = item.kind | default('item') %}
+{% set is_event = kind == 'event' %}
+{% set action_id = item.action_id | default(item.id) %}
+{% set href = item.href | default('/item/' ~ item.id) %}
+{% set domains = item.source_domains | default(()) %}
 {% set cat = (item.category.value if item.category else 'none')|lower %}
-<article class="card rise{% if is_featured %} card--featured{% endif %}" id="feed-card-{{ item.id }}"
-         data-item-id="{{ item.id }}"
+<article class="card{% if card_delay is defined %} rise{% else %} card--swapped{% endif %}{% if is_featured %} card--featured{% endif %}{% if is_event %} card--event{% endif %}" id="feed-card-{{ item.id }}"
+         data-item-id="{{ action_id }}"
+         {% if is_event %}data-event-id="{{ item.id }}"{% endif %}
          style="--d: {{ card_delay | default('0.00') }}s">
-  {# Card taps open the in-app reader (ARG-138); "원문 보기" on the detail
-     page handles the external source_url redirect. #}
-  {{ cover(item.image_url, item.category, "/item/" ~ item.id, item.source_url) }}
+  {# Card taps open the in-app reader (ARG-138) or the event page (ARG-243);
+     the cover carries a view-transition name so it morphs into the detail
+     hero on navigation. #}
+  {{ cover(item.image_url, item.category, href, item.source_url, transition_id=item.id) }}
   <div class="body">
-    {# Editorial eyebrow: category (tinted) · source domain · optional status.
-       The mono "instrument readout" line that anchors the headline. #}
     <p class="eyebrow eyebrow--{{ cat }}">
       {% if item.category %}
       <span class="eyebrow__cat">{{ item.category.value }}</span>
@@ -28,9 +45,7 @@
       <span class="status-badge status-badge--{{ item.status.value|lower }}">{{ item.status.value }}</span>
       {% endif %}
       {# Ring-only trust gauge (ARG-189): the conic sweep alone reads at eyebrow
-         scale — the exact % lives on the detail page's labeled dial, so no
-         number is crammed inside this tiny ring (100 overlapped the stroke).
-         aria-label + title keep the value reachable for AT and hover. #}
+         scale — the exact % lives on the detail page's labeled dial. #}
       {% if item.trust_score is not none %}
       {% set trust_pct = ((item.trust_score|float) * 100)|round(0)|int %}
       <span class="trust-dial trust-dial--sm eyebrow__trust"
@@ -41,39 +56,36 @@
       {% endif %}
     </p>
     <h2 class="headline">
-      <a href="/item/{{ item.id }}">{{ item.title }}</a>
+      <a href="{{ href }}">{{ item.title }}</a>
     </h2>
-    {# Triage-generated one-liner; auto-escaped. CSS line-clamps it (3 lines on
-       the featured hero, 2 on standard cards). Omitted entirely when the
-       column is null so no empty element reserves space. #}
     {% if item.summary %}
     <p class="summary">{{ item.summary }}</p>
     {% endif %}
-    {# Current triage state drives an active (pressed) button so a Keep/Pass is
-       obviously reflected — a small eyebrow badge alone read as "nothing
-       happened". Both buttons stay live so the choice can be changed.
-       ``?featured=1`` tells the action route to re-render the swapped-in card
-       as the hero again, so an action on the featured card does not collapse it
-       to a standard grid cell mid-list. #}
     {% set is_kept = item.status and item.status.value == 'Keep' %}
     {% set is_passed = item.status and item.status.value == 'Archived' %}
     {# ``active=1`` tells the toggle route the button was rendered pressed, so a
        click clears the decision *based on what the user saw* — a stale
        service-worker-cached ✓ card can't invert the action (see toggle_asset).
-       Params are appended only when set so untriaged cards keep their bare URLs. #}
-    {% set keep_params = (['featured=1'] if is_featured else []) + (['active=1'] if is_kept else []) %}
-    {% set pass_params = (['featured=1'] if is_featured else []) + (['active=1'] if is_passed else []) %}
-    <div class="card-actions">
-      <button class="card-action card-action--keep{% if is_kept %} is-active{% endif %}"
-              aria-pressed="{{ 'true' if is_kept else 'false' }}"
-              hx-post="/items/{{ item.id }}/keep{% if keep_params %}?{{ keep_params | join('&') }}{% endif %}"
-              hx-target="#feed-card-{{ item.id }}"
-              hx-swap="outerHTML">{% if is_kept %}✓ Keep{% else %}Keep{% endif %}</button>
-      <button class="card-action card-action--pass{% if is_passed %} is-active{% endif %}"
-              aria-pressed="{{ 'true' if is_passed else 'false' }}"
-              hx-post="/items/{{ item.id }}/pass{% if pass_params %}?{{ pass_params | join('&') }}{% endif %}"
-              hx-target="#feed-card-{{ item.id }}"
-              hx-swap="outerHTML">{% if is_passed %}✓ Pass{% else %}Pass{% endif %}</button>
+       ``featured=1`` keeps the hero a hero after the swap; ``entry=<id>``
+       keeps an event card an event card. Params are appended only when set so
+       untriaged lone cards keep their bare URLs. #}
+    {% set common = (['featured=1'] if is_featured else []) + (['entry=' ~ item.id] if is_event else []) %}
+    {% set keep_params = common + (['active=1'] if is_kept else []) %}
+    {% set pass_params = common + (['active=1'] if is_passed else []) %}
+    <div class="card-foot">
+      {{ source_stack(domains if domains else [item.source_url | domain], item.doc_count | default(1)) }}
+      <div class="card-actions">
+        <button class="card-action card-action--keep{% if is_kept %} is-active{% endif %}"
+                aria-pressed="{{ 'true' if is_kept else 'false' }}"
+                hx-post="/items/{{ action_id }}/keep{% if keep_params %}?{{ keep_params | join('&') }}{% endif %}"
+                hx-target="#feed-card-{{ item.id }}"
+                hx-swap="outerHTML">{% if is_kept %}✓ Keep{% else %}Keep{% endif %}</button>
+        <button class="card-action card-action--pass{% if is_passed %} is-active{% endif %}"
+                aria-pressed="{{ 'true' if is_passed else 'false' }}"
+                hx-post="/items/{{ action_id }}/pass{% if pass_params %}?{{ pass_params | join('&') }}{% endif %}"
+                hx-target="#feed-card-{{ item.id }}"
+                hx-swap="outerHTML">{% if is_passed %}✓ Pass{% else %}Pass{% endif %}</button>
+      </div>
     </div>
   </div>
 </article>

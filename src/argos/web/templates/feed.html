@@ -10,6 +10,20 @@
    signals yet. #}
 <div class="feed-shell{% if activity %} feed-shell--with-ticker{% endif %}">
   <div class="feed-main">
+    <header class="page-head">
+      <h1 class="large-title">관측 피드</h1>
+      {# ARG-213: 추천순(feed_score desc, 기본) / 최신순 정렬 토글 — a segmented
+         control. Links preserve each other's query params like the category
+         chips; the active segment's view-transition name makes the thumb
+         slide across on navigation. #}
+      <nav class="feed-sort segmented" aria-label="정렬 방식">
+        <a class="chip{% if sort != 'latest' %} is-active{% endif %}"
+           href="/feed{% if category %}?category={{ category }}{% endif %}"{% if sort != 'latest' %} aria-current="true"{% endif %}>추천순</a>
+        <a class="chip{% if sort == 'latest' %} is-active{% endif %}"
+           href="/feed?sort=latest{% if category %}&category={{ category }}{% endif %}"{% if sort == 'latest' %} aria-current="true"{% endif %}>최신순</a>
+      </nav>
+    </header>
+
     <nav class="feed-filter" aria-label="카테고리 필터">
       <a class="chip{% if not category %} is-active{% endif %}"
          href="/feed{% if sort == 'latest' %}?sort=latest{% endif %}"{% if not category %} aria-current="true"{% endif %}>전체</a>
@@ -17,15 +31,6 @@
          href="/feed?category=Mainstream{% if sort == 'latest' %}&sort=latest{% endif %}"{% if category == 'Mainstream' %} aria-current="true"{% endif %}>Mainstream</a>
       <a class="chip chip--alpha{% if category == 'Alpha' %} is-active{% endif %}"
          href="/feed?category=Alpha{% if sort == 'latest' %}&sort=latest{% endif %}"{% if category == 'Alpha' %} aria-current="true"{% endif %}>Alpha</a>
-    </nav>
-
-    {# ARG-213: 추천순(feed_score desc, 기본) / 최신순(발행 시각) 정렬 토글.
-       카테고리 필터와 마찬가지로 상대 링크가 서로의 쿼리 파라미터를 보존한다. #}
-    <nav class="feed-sort" aria-label="정렬 방식">
-      <a class="chip{% if sort != 'latest' %} is-active{% endif %}"
-         href="/feed{% if category %}?category={{ category }}{% endif %}"{% if sort != 'latest' %} aria-current="true"{% endif %}>추천순</a>
-      <a class="chip{% if sort == 'latest' %} is-active{% endif %}"
-         href="/feed?sort=latest{% if category %}&category={{ category }}{% endif %}"{% if sort == 'latest' %} aria-current="true"{% endif %}>최신순</a>
     </nav>
 
     {# Floating refresh action — desktop(≥768px) only; mobile relies on the
@@ -40,7 +45,8 @@
        (ArgosRefresh.refresh('feed')) + scroll-to-top; polling itself never
        mutates the DOM, it only toggles this pill's visibility. #}
     <button type="button" class="new-items-pill" hidden data-new-items-pill>
-      <span aria-hidden="true">↑</span> 새 항목 <span data-new-items-count>0</span>개
+      <svg aria-hidden="true" viewBox="0 0 12 12" width="11" height="11"><path d="M6 10V2M2.5 5.5 6 2l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      새 항목 <span data-new-items-count>0</span>개
     </button>
 
     <div id="feed-list" class="feed-list" data-latest-cursor="{{ latest_cursor|default('') }}">
