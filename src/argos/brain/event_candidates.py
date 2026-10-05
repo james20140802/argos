@@ -42,14 +42,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Sequence
 
-from sqlalchemy import select, text
+from sqlalchemy import bindparam, select, text
+from sqlalchemy.dialects.postgresql import ARRAY, UUID as PGUuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.entity_store import names_for_documents
 from argos.brain.event_scoring import DocumentFeatures
 from argos.config import settings
 from argos.models.event_document import EventDocument
-from argos.services.event_resolution import resolve_event
+from argos.services.event_resolution import resolve_event, resolve_events
 
 _CANDIDATE_SQL = text(
     """
@@ -68,6 +69,22 @@ _CANDIDATE_SQL = text(
     LIMIT :limit
     """
 )
+
+_EVENT_SIZE_SQL = text(
+    """
+    SELECT ed.tech_item_id, ed.event_id
+    FROM event_documents ed
+    JOIN tech_items t ON t.id = ed.tech_item_id
+    JOIN tech_events e ON e.id = ed.event_id
+    WHERE COALESCE(t.published_at, t.created_at) >= :window_start
+      AND COALESCE(t.published_at, t.created_at) <= :window_end
+      AND (ed.event_id = ANY(:event_ids) OR e.merged_into_id IS NOT NULL)
+      AND (CAST(:exclude_id AS uuid) IS NULL OR t.id <> CAST(:exclude_id AS uuid))
+    """
+).bindparams(bindparam("event_ids", type_=ARRAY(PGUuid(as_uuid=True))))
+"""창 안에서 후보 사건(또는 흡수된 사건)에 걸린 문서 링크. 흡수된 사건까지
+읽는 건 그 링크가 생존 사건의 크기에 들어가야 하기 때문이다 — 해석은
+파이썬에서 ``resolve_events``로 한다."""
 
 _WORD = re.compile(r"[\w']+", re.UNICODE)
 
@@ -204,3 +221,45 @@ async def fetch_candidates(
             )
         )
     return candidates
+
+
+async def fetch_event_sizes(
+    session: AsyncSession,
+    *,
+    event_ids: Sequence[uuid.UUID],
+    at: datetime,
+    window_days: float,
+    exclude_id: uuid.UUID | None = None,
+) -> dict[uuid.UUID, int]:
+    """*at* 앞뒤 ``window_days`` 안에서 각 사건에 속한 문서 수 (ARG-282).
+
+    ``choose_event``가 사건 크기에 매기는 대가의 근거다. 밤의 재군집이 보는
+    것도 기간 안 문서뿐이라, 창 밖 문서까지 세면 낮이 밤보다 엄격해진다.
+    시간 창은 ``fetch_candidates``와 같은 식으로 긋는다.
+
+    흡수된(tombstoned) 사건에 걸린 링크는 생존 사건 몫으로 센다. 같은 문서가
+    한 생존 사건에 두 번 걸려도 한 번만 센다. ``event_ids``가 비면 DB를
+    건드리지 않고 빈 dict를 돌려준다.
+    """
+    if not event_ids:
+        return {}
+    window = timedelta(days=window_days)
+    rows = (
+        await session.execute(
+            _EVENT_SIZE_SQL,
+            {
+                "window_start": at - window,
+                "window_end": at + window,
+                "event_ids": sorted(set(event_ids)),
+                "exclude_id": exclude_id,
+            },
+        )
+    ).all()
+    wanted = set(event_ids)
+    resolved = await resolve_events(session, {row.event_id for row in rows})
+    members: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for row in rows:
+        survivor = resolved[row.event_id]
+        if survivor in wanted:
+            members.setdefault(survivor, set()).add(row.tech_item_id)
+    return {event_id: len(items) for event_id, items in members.items()}
