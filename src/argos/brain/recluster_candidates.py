@@ -26,7 +26,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from itertools import combinations
-from typing import TYPE_CHECKING, Mapping, Sequence
+from typing import TYPE_CHECKING, AbstractSet, Mapping, Sequence
 
 if TYPE_CHECKING:
     from argos.brain.recluster_core import Community
@@ -53,6 +53,15 @@ class SplitCandidate:
 
     event_id: uuid.UUID
     groups: tuple[tuple[uuid.UUID, ...], ...]
+    capped: bool = False
+    """그 사건 문서 중 하나라도 이웃이 `candidate_k`개로 꽉 찼다(ARG-283).
+
+    참이면 이 갈라짐은 내용이 아니라 이웃 상한 탓일 수 있다 — CPM은 안 보인
+    쌍에도 대가를 물린다. 그래도 후보에서 빼지는 않는다: 이 모듈은 최소 겹침
+    게이트를 두지 않는 것과 같은 이유로, 사람이 볼 기회를 조용히 없애지 않는다.
+    합칠 후보에는 이 표시가 없다 — 상한은 간선을 지우기만 하므로 거짓 합침을
+    만들 수 없다.
+    """
 
 
 @dataclass(frozen=True)
@@ -69,6 +78,8 @@ class ReclusterCandidates:
 def derive_candidates(
     communities: Sequence["Community"],
     event_links: Mapping[uuid.UUID, Sequence[uuid.UUID]],
+    *,
+    capped_document_ids: AbstractSet[uuid.UUID] = frozenset(),
 ) -> ReclusterCandidates:
     """커뮤니티와 현재 사건 링크를 대조해 후보를 만든다.
 
@@ -82,6 +93,8 @@ def derive_candidates(
         communities: 재군집이 그린 커뮤니티들. 서로 겹치지 않아야 한다.
         event_links: 문서 id → 그 문서가 걸린 **생존** 사건 id들. 링크가 없는
             문서는 키가 없거나 빈 시퀀스다.
+        capped_document_ids: 이웃이 상한으로 꽉 찬 문서 id
+            (`ReclusterInput.capped_document_ids`). 가를 후보의 `capped`를 정한다.
 
     Returns:
         내용과 순서가 입력 순서에 무관한 후보 목록. 정렬 키는 사건 id다.
@@ -122,6 +135,11 @@ def derive_candidates(
                 for _, documents in sorted(
                     groups.items(), key=lambda item: sorted(item[1])
                 )
+            ),
+            capped=any(
+                document_id in capped_document_ids
+                for documents in groups.values()
+                for document_id in documents
             ),
         )
         for event_id, groups in sorted(split_groups.items())

@@ -103,3 +103,31 @@ def test_is_empty_is_false_when_anything_was_found():
     communities = [Community(members=(D1, D2))]
     result = derive_candidates(communities, {D1: [E1], D2: [E2]})
     assert result.is_empty() is False
+
+
+def test_a_split_touching_a_capped_document_is_marked_but_kept():
+    # ARG-283: 이웃이 상한으로 꽉 찬 문서가 낀 갈라짐은 상한 탓일 수 있다.
+    # 표시만 하고 후보에서 빼지는 않는다.
+    communities = [Community(members=(D1,)), Community(members=(D2,))]
+    links = {D1: [E1], D2: [E1]}
+
+    result = derive_candidates(communities, links, capped_document_ids={D2})
+
+    assert [split.event_id for split in result.splits] == [E1]
+    assert result.splits[0].capped is True
+
+
+def test_a_split_with_no_capped_document_is_not_marked():
+    communities = [
+        Community(members=(D1,)),
+        Community(members=(D2,)),
+        Community(members=(D3, D4)),
+    ]
+    links = {D1: [E1], D2: [E1], D3: [E2], D4: [E2]}
+
+    # D3은 꽉 찼지만 E2는 한 커뮤니티에 다 있다 — 가를 후보가 아니고, E1의
+    # 표시에도 번지지 않는다.
+    result = derive_candidates(communities, links, capped_document_ids={D3})
+
+    assert [split.event_id for split in result.splits] == [E1]
+    assert result.splits[0].capped is False

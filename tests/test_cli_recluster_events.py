@@ -97,6 +97,26 @@ def test_candidates_are_printed_in_a_readable_report(fake_recluster, capsys):
     assert "1" in captured.out
 
 
+def test_a_capped_split_is_flagged_in_the_report(fake_recluster, capsys):
+    # ARG-283: 이웃 상한에 닿은 갈라짐은 사람이 구분할 수 있어야 한다.
+    fake_recluster(
+        ReclusterCandidates(
+            merges=(),
+            splits=(
+                SplitCandidate(event_id=E1, groups=((D1,), (D2,)), capped=True),
+                SplitCandidate(event_id=E2, groups=((D3,), (D1,))),
+            ),
+        )
+    )
+    main(["recluster-events", "--from", "2026-08-01", "--to", "2026-08-31"])
+    lines = capsys.readouterr().out.splitlines()
+
+    capped_line = next(line for line in lines if str(E1) in line and "조각" in line)
+    plain_line = next(line for line in lines if str(E2) in line and "조각" in line)
+    assert "이웃 상한에 닿음" in capped_line
+    assert "이웃 상한에 닿음" not in plain_line
+
+
 def test_the_report_repeats_byte_for_byte(fake_recluster, capsys):
     fake_recluster(
         ReclusterCandidates(
