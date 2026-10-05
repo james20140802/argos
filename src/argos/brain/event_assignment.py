@@ -73,8 +73,9 @@ def decide_event(
     ``event_assigned``로 따로 표현한다 (``nodes/assign_event.py`` docstring).
 
     ``event_sizes``는 후보 사건마다 시간 창 안 문서 수다(``db_event_sizes``).
-    판정 기준은 밤의 재군집과 같은 CPM 이득이고, γ는 밤과 같은
-    ``effective_leiden_resolution``이다 — 설정은 ``join_threshold`` 하나다
+    판정 기준은 밤의 재군집과 같은 CPM 이득이고, γ는
+    ``assignment_resolution``이다 — CPM이면 밤과 같은 γ, modularity면 밤이
+    무시하는 오버라이드를 낮도 무시한다. 설정은 ``join_threshold`` 하나다
     (``event_scoring`` 모듈 docstring).
     """
     weights = EdgeWeights.from_config(config)
@@ -95,7 +96,7 @@ def decide_event(
         edges,
         event_sizes=event_sizes,
         join_threshold=config.join_threshold,
-        resolution=config.effective_leiden_resolution,
+        resolution=config.assignment_resolution,
     )
 
 

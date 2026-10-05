@@ -370,6 +370,21 @@ class EventDetectionConfig(BaseModel):
             return min(self.join_threshold, MAX_TRACKING_LEIDEN_RESOLUTION)
         return self.leiden_resolution
 
+    @property
+    def assignment_resolution(self) -> float:
+        """낮 배정의 CPM 이득에 쓰는 γ (ARG-282).
+
+        CPM이면 밤과 같은 `effective_leiden_resolution`이다. modularity면 밤이
+        `leiden_resolution`을 무시하므로 낮도 무시하고 `join_threshold`를
+        따라간다 — 그러지 않으면 "무시된다"고 적힌 노브가 낮 배정만 바꾼다.
+        modularity 이득 자체는 그래프 전체 차수 합이 있어야 계산되는데, 문서
+        하나를 붙일지 정하는 낮에는 그게 없다. 그래서 이 모드의 낮은 기본 γ의
+        CPM 이득으로 근사한다.
+        """
+        if self.leiden_objective == "cpm":
+            return self.effective_leiden_resolution
+        return min(self.join_threshold, MAX_TRACKING_LEIDEN_RESOLUTION)
+
 
 MAX_TRACKING_LEIDEN_RESOLUTION = 0.99
 """`leiden_resolution=None`이 `join_threshold`를 따라갈 때의 천장.
