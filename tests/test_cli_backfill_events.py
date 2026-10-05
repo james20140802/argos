@@ -45,6 +45,22 @@ def test_dry_run_report_prints_counts_and_thresholds(capsys):
     assert "Claude 5 released" in output
 
 
+def test_dry_run_report_prints_the_resolution_the_day_rule_used(capsys, monkeypatch):
+    # γ를 따로 오버라이드하면 join_threshold가 같아도 결과가 달라진다. 머리말에
+    # 실효 γ가 없으면 저장해 둔 dry-run 결과끼리 구분할 수 없다 (PR #125 리뷰).
+    from argos.brain.event_backfill import BackfillPlan
+    from argos.cli import _print_dry_run_report
+    from argos.config import EventDetectionConfig, settings
+
+    monkeypatch.setattr(
+        settings.user,
+        "event_detection",
+        EventDetectionConfig(join_threshold=0.55, leiden_resolution=0.7),
+    )
+    _print_dry_run_report(BackfillPlan(assignments=[]), total_docs=0)
+    assert "resolution=0.7" in capsys.readouterr().out
+
+
 def test_parser_accepts_batch_size():
     with patch("argos.cli._backfill_events", new=AsyncMock(return_value=0)) as run:
         assert main(["backfill-events", "--batch-size", "25"]) == 0
