@@ -7,11 +7,11 @@
 
 세 조각으로 나뉜다:
 
-- ``decide_event`` — **순수 동기 함수.** 이미 손에 든 후보로 점수를 합산해
-  사건을 고른다. DB도 세션도 모른다. 그래서 미리보기가 DB를 한 번도 건드리지
+- ``decide_event`` — **순수 동기 함수.** 이미 손에 든 후보와 사건 크기로
+  밤의 CPM이 받아들일 사건을 고른다 (ARG-282). DB도 세션도 모른다. 그래서 미리보기가 DB를 한 번도 건드리지
   않고 실행과 같은 판정을 낼 수 있다.
-- ``db_candidate_source`` — 후보를 DB에서 읽는 기본 소스. 미리보기는 이걸
-  감싸 인메모리 오버레이를 얹는다.
+- ``db_candidate_source`` / ``db_event_sizes`` — 후보와 사건 크기를 DB에서
+  읽는 기본 소스. 미리보기는 이걸 감싸 인메모리 오버레이를 얹는다.
 - ``link_document_to_event`` — 판정 결과를 링크로 쓴다. 여기서만
   ``naming_stale``을 세운다.
 
@@ -26,13 +26,17 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from argos.brain.event_candidates import CandidateNeighbor, fetch_candidates
+from argos.brain.event_candidates import (
+    CandidateNeighbor,
+    fetch_candidates,
+    fetch_event_sizes,
+)
 from argos.brain.event_scoring import (
     DocumentFeatures,
     EdgeWeights,
@@ -59,6 +63,7 @@ def decide_event(
     features: DocumentFeatures,
     candidates: Sequence[CandidateNeighbor],
     *,
+    event_sizes: Mapping[uuid.UUID, int],
     config: "EventDetectionConfig",
 ) -> uuid.UUID | None:
     """*features*가 붙을 기존 사건을 고른다. 없으면 ``None``.
@@ -66,6 +71,11 @@ def decide_event(
     ``None``은 "임계값을 넘는 기존 사건이 없다" = **새 사건이 필요하다**는
     뜻이다. "판정에 실패했다"는 뜻이 아니다 — 그 구분은 부르는 쪽이
     ``event_assigned``로 따로 표현한다 (``nodes/assign_event.py`` docstring).
+
+    ``event_sizes``는 후보 사건마다 시간 창 안 문서 수다(``db_event_sizes``).
+    판정 기준은 밤의 재군집과 같은 CPM 이득이고, γ는 밤과 같은
+    ``effective_leiden_resolution``이다 — 설정은 ``join_threshold`` 하나다
+    (``event_scoring`` 모듈 docstring).
     """
     weights = EdgeWeights.from_config(config)
     edges = [
@@ -81,7 +91,12 @@ def decide_event(
         for candidate in candidates
         if candidate.event_ids
     ]
-    return choose_event(edges, join_threshold=config.join_threshold)
+    return choose_event(
+        edges,
+        event_sizes=event_sizes,
+        join_threshold=config.join_threshold,
+        resolution=config.effective_leiden_resolution,
+    )
 
 
 async def db_candidate_source(
@@ -114,6 +129,33 @@ async def db_candidate_source(
             exclude_id=exclude_id,
             window_days=config.window_days,
             limit=config.candidate_k,
+        )
+
+
+async def db_event_sizes(
+    session: AsyncSession,
+    *,
+    candidates: Sequence[CandidateNeighbor],
+    at: datetime,
+    config: "EventDetectionConfig",
+    exclude_id: uuid.UUID | None = None,
+) -> dict[uuid.UUID, int]:
+    """후보들이 속한 사건마다 시간 창 안 문서 수. 세이브포인트 안에서 부른다.
+
+    세이브포인트를 거는 이유는 ``db_candidate_source``와 같다 — 부르는 쪽이
+    DB 예외를 삼킬 수 있어야 한다. 후보에 사건이 하나도 없으면 DB를 건드리지
+    않는다.
+    """
+    event_ids = sorted({e for candidate in candidates for e in candidate.event_ids})
+    if not event_ids:
+        return {}
+    async with session.begin_nested():
+        return await fetch_event_sizes(
+            session,
+            event_ids=event_ids,
+            at=at,
+            window_days=config.window_days,
+            exclude_id=exclude_id,
         )
 
 

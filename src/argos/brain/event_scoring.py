@@ -1,4 +1,4 @@
-"""간선 가중치와 사건별 합산·임계값 판정 — ARG-264. DB도 LLM도 쓰지 않는다.
+"""간선 가중치와 사건 선택 판정 — ARG-264 / ARG-282. DB도 LLM도 쓰지 않는다.
 
 두 문서가 "같은 사건"에 속할 근거를 네 항으로 잰다:
 
@@ -19,11 +19,22 @@
 사건 후보가 아니다"라는 설정값의 의미와 모순이 없다. 지수감쇠는 점근적이라
 경계에서도 잔값이 남아 "밖"이라는 말이 근사적으로만 맞게 된다.
 
-**야간 재군집(2단계)도 이 함수를 그대로 부른다.** 그래서 이 모듈은 사건이라는
-개념 자체를 모른다 — `NeighborEdge`가 실어 나르는 `event_ids` 튜플 이상으로
-사건 전용 자료구조(DB 모델, ORM row 등)에 결합하지 않는다. 온라인 배정이든
-야간 전체 재계산이든 "두 문서가 얼마나 가까운가"와 "이웃들의 표를 사건별로
-합산해 임계값과 비교한다"는 동일한 산식이어야 결과가 일관된다.
+**야간 재군집(2단계)도 `edge_weight`를 그대로 부른다.** 그래서 이 모듈은 사건이라는
+개념 자체를 모른다 — `NeighborEdge`가 실어 나르는 `event_ids` 튜플과 사건 크기
+이상으로 사건 전용 자료구조(DB 모델, ORM row 등)에 결합하지 않는다.
+
+**낮의 판정은 밤의 목적함수에서 나온다 (ARG-282).** 밤은 기간 전체를 CPM으로
+묶는다 — 품질 = (`join_threshold` 이상 간선의 내부 가중치 합) − γ × (쌍의 수).
+문서 d를 크기 n인 사건 E에 넣을 때 그 품질이 변하는 양은
+``Σ_{e∈E, w≥τ} w(d,e) − γ·n``이다. `choose_event`는 정확히 이 값을 이득으로 보고,
+이득이 0보다 큰 사건 중 최댓값에 붙인다. 그래서 같은 설정값이 낮과 밤에서 **같은
+것을** 재고, 값을 바꾸면 둘이 같은 방향으로 움직인다.
+
+예전 규칙("이웃 점수를 사건별로 합해 τ 이상이면 붙인다")은 간선 하나에 걸리는
+하한도, 사건 크기에 대한 대가도 없었다. 이 코퍼스에서 상위 이웃의 쌍 점수는
+중앙값이 0.43이라 무관한 이웃 둘이면 합이 τ를 넘는다. 사건이 커질수록 이웃
+자리를 더 차지해 표가 더 모이고, 실측(2026-10-05, 1,669건)에서 1,603건이 사건
+하나로 뭉쳤다. τ를 0.65로 올려도 결과가 같았다 — 값이 아니라 규칙의 모양 문제다.
 """
 
 from __future__ import annotations
@@ -31,7 +42,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 if TYPE_CHECKING:
     from argos.config import EventDetectionConfig
@@ -72,8 +83,7 @@ class NeighborEdge:
 
     `event_ids`가 튜플인 건 한 이웃이 이미 여러 사건에 걸쳐 있을 수 있어서다
     (예: 병합 전 상태, 혹은 야간 재군집 중간 산출물). 그 경우 이 이웃의
-    weight는 각 사건에 그대로 더해진다 — 쪼개지 않는다. LP(Label Propagation)
-    1스텝의 표준 형태다.
+    weight는 각 사건에 그대로 더해진다 — 쪼개지 않는다.
     """
 
     event_ids: tuple[uuid.UUID, ...]
@@ -139,26 +149,44 @@ def edge_weight(
 def choose_event(
     edges: Sequence[NeighborEdge],
     *,
+    event_sizes: Mapping[uuid.UUID, int],
     join_threshold: float,
+    resolution: float,
 ) -> uuid.UUID | None:
-    """이웃들의 표를 사건별로 합산해 임계값을 넘는 최댓값 사건을 고른다.
+    """밤의 CPM이 받아들일 사건을 고른다. 없으면 ``None``(= 새 사건).
+
+    사건 E의 이득 = (``join_threshold`` 이상인 이웃 점수의 합) − ``resolution`` ×
+    E의 크기. 이득이 **0보다 큰** 사건 중 최댓값을 고른다.
+
+    - **τ 미만 간선을 빼는 이유:** 밤의 그래프에는 그 간선이 없다. 낮만 세면
+      약한 표가 쌓여 밤이 곧바로 되돌릴 배정을 만든다.
+    - **크기에 대가를 매기는 이유:** CPM은 사건 안의 *모든* 쌍에 γ를 물린다.
+      큰 사건에 붙으려면 그 사건 전체와 평균적으로 가까워야 하고, 이게 눈덩이를
+      막는다.
+    - **이득 0은 붙이지 않는다:** CPM에서 이득 0은 묶을 이유가 없다는 뜻이고,
+      밤의 Leiden도 그 쌍을 하나로 두지 않는다.
+
+    ``event_sizes``는 사건마다 부르는 쪽이 아는 크기(시간 창 안 문서 수)다. 표를
+    던진 이웃 수보다 작을 수는 없으므로, 모르거나 작게 적힌 사건은 그 이웃
+    수로 올려 잡는다 — 0으로 치면 대가가 사라져 무엇이든 붙는다.
 
     동점이면 사건 id의 문자열 오름차순으로 고른다 — 같은 입력이 항상 같은
     사건에 배정되게 하는, 함수 수준의 결정성 보장이다. 집합 순회 순서에
     기대면 파이썬 버전/실행마다 달라질 수 있어 명시적으로 정렬한다.
     """
-    totals: dict[uuid.UUID, float] = {}
+    strong: dict[uuid.UUID, float] = {}
+    voters: dict[uuid.UUID, int] = {}
     for edge in edges:
         for event_id in edge.event_ids:
-            totals[event_id] = totals.get(event_id, 0.0) + edge.weight
+            voters[event_id] = voters.get(event_id, 0) + 1
+            if edge.weight >= join_threshold:
+                strong[event_id] = strong.get(event_id, 0.0) + edge.weight
 
     best_id: uuid.UUID | None = None
-    # -inf로 시작해야 합계 0.0인 후보도 선택될 수 있다 — join_threshold는
-    # 0.0을 허용하므로(config ge=0.0) 0점 사건도 임계값 판정까지는 가야 한다.
-    best_total = float("-inf")
-    for event_id in sorted(totals, key=str):
-        total = totals[event_id]
-        if total > best_total:
-            best_id, best_total = event_id, total
-
-    return best_id if best_id is not None and best_total >= join_threshold else None
+    best_gain = 0.0
+    for event_id in sorted(strong, key=str):
+        size = max(event_sizes.get(event_id, 0), voters[event_id])
+        gain = strong[event_id] - resolution * size
+        if gain > best_gain:
+            best_id, best_gain = event_id, gain
+    return best_id

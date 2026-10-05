@@ -73,6 +73,9 @@ async def test_a_close_neighbour_hands_over_its_event(monkeypatch):
     monkeypatch.setattr(
         event_assignment_module, "fetch_candidates", AsyncMock(return_value=[candidate])
     )
+    monkeypatch.setattr(
+        event_assignment_module, "fetch_event_sizes", AsyncMock(return_value={event_id: 1})
+    )
 
     result = await assign_event_node(_state(), session=_session())
 
@@ -96,6 +99,9 @@ async def test_a_distant_neighbour_leaves_the_event_open(monkeypatch):
     monkeypatch.setattr(
         event_assignment_module, "fetch_candidates", AsyncMock(return_value=[candidate])
     )
+    monkeypatch.setattr(
+        event_assignment_module, "fetch_event_sizes", AsyncMock(return_value={event_id: 1})
+    )
 
     result = await assign_event_node(_state(), session=_session())
 
@@ -103,6 +109,30 @@ async def test_a_distant_neighbour_leaves_the_event_open(monkeypatch):
     # 판정은 끝까지 돌았다 — event_id=None은 "새 사건이 필요하다"는 뜻이지
     # 실패가 아니다. save_node가 새 사건을 만들어도 되는 경우.
     assert result["event_assigned"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_close_neighbour_in_a_large_event_does_not_pull_the_document_in(monkeypatch):
+    """ARG-282: 사건 크기가 판정에 실제로 들어간다.
+
+    이웃 하나와 똑같아도, 그 이웃이 창 안에 10건짜리 사건에 있으면 나머지
+    9건과의 근거가 없다 — 밤의 재군집도 이 문서를 그 사건에 두지 않는다.
+    """
+    event_id = uuid.uuid4()
+    candidate = CandidateNeighbor(
+        tech_item_id=uuid.uuid4(), features=_features(), event_ids=(event_id,)
+    )
+    monkeypatch.setattr(
+        event_assignment_module, "fetch_candidates", AsyncMock(return_value=[candidate])
+    )
+    sizes = AsyncMock(return_value={event_id: 10})
+    monkeypatch.setattr(event_assignment_module, "fetch_event_sizes", sizes)
+
+    result = await assign_event_node(_state(), session=_session())
+
+    assert result["event_id"] is None
+    assert result["event_assigned"] is True
+    assert sizes.await_args.kwargs["event_ids"] == [event_id]
 
 
 @pytest.mark.asyncio

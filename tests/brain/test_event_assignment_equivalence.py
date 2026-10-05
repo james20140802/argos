@@ -92,7 +92,10 @@ def _online_verdict(first: DocumentFeatures, second: DocumentFeatures) -> bool:
     neighbour = CandidateNeighbor(
         tech_item_id=uuid.uuid4(), features=first, event_ids=(event_id,)
     )
-    return decide_event(second, [neighbour], config=config) == event_id
+    return (
+        decide_event(second, [neighbour], event_sizes={event_id: 1}, config=config)
+        == event_id
+    )
 
 
 async def _backfill_verdict(

@@ -36,7 +36,7 @@ def test_decide_event_returns_the_event_above_threshold():
         features=_features([1.0, 0.0], names=["anthropic"], keywords=["claude"]),
         event_ids=(event_id,),
     )
-    assert decide_event(subject, [neighbour], config=config) == event_id
+    assert decide_event(subject, [neighbour], event_sizes={event_id: 1}, config=config) == event_id
 
 
 def test_decide_event_returns_none_below_threshold():
@@ -49,7 +49,7 @@ def test_decide_event_returns_none_below_threshold():
         ),
         event_ids=(uuid.uuid4(),),
     )
-    assert decide_event(subject, [neighbour], config=config) is None
+    assert decide_event(subject, [neighbour], event_sizes={}, config=config) is None
 
 
 def test_decide_event_ignores_neighbours_without_an_event():
@@ -58,7 +58,7 @@ def test_decide_event_ignores_neighbours_without_an_event():
     neighbour = CandidateNeighbor(
         tech_item_id=uuid.uuid4(), features=_features([1.0, 0.0]), event_ids=()
     )
-    assert decide_event(subject, [neighbour], config=config) is None
+    assert decide_event(subject, [neighbour], event_sizes={}, config=config) is None
 
 
 @pytest.mark.asyncio

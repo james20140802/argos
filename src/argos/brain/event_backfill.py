@@ -36,6 +36,7 @@ from argos.brain.entity_store import names_for_documents
 from argos.brain.event_assignment import (
     LinkResult,
     db_candidate_source,
+    db_event_sizes,
     decide_event,
     link_document_to_event,
 )
@@ -165,9 +166,36 @@ class _PendingOverlay:
 
     def __init__(self) -> None:
         self._by_event: dict[uuid.UUID, list[BackfillDoc]] = {}
+        self._created: set[uuid.UUID] = set()
 
-    def add(self, doc: BackfillDoc, event_id: uuid.UUID) -> None:
+    def add(self, doc: BackfillDoc, event_id: uuid.UUID, *, created: bool) -> None:
         self._by_event.setdefault(event_id, []).append(doc)
+        if created:
+            self._created.add(event_id)
+
+    def is_pending_event(self, event_id: uuid.UUID) -> bool:
+        """미리보기가 만든(DB에는 아직 없는) 사건인가."""
+        return event_id in self._created
+
+    def sizes(self, at: datetime, *, window_days: float) -> dict[uuid.UUID, int]:
+        """*at* 기준 시간 창 안 pending 문서 수를 사건별로.
+
+        DB 쪽 크기(``db_event_sizes``)에 **더해서** 쓴다 — 기존 사건에 미리보기가
+        붙인 문서도 그 사건의 크기에 들어가야 실행 모드(flush 후 DB가 셈)와
+        같은 판정이 난다.
+        """
+        window = timedelta(days=window_days)
+        return {
+            event_id: count
+            for event_id, docs in self._by_event.items()
+            if (
+                count := sum(
+                    1
+                    for doc in docs
+                    if doc.features.at is not None and abs(doc.features.at - at) <= window
+                )
+            )
+        }
 
     def candidates(self, at: datetime, *, window_days: float) -> list[CandidateNeighbor]:
         """*at* 기준 시간 창 안의 pending 이웃들.
@@ -249,11 +277,30 @@ async def plan_backfill(
         candidates = _cap_candidates(
             doc.features, [*db_neighbours, *pending], k=config.candidate_k
         )
-        event_id = decide_event(doc.features, candidates, config=config)
+        event_sizes: dict[uuid.UUID, int] = {}
+        if at is not None:
+            # DB에 있는 사건만 DB에 묻는다 — 미리보기가 만든 사건은 아직 없다.
+            db_candidates = [
+                candidate
+                for candidate in candidates
+                if any(not overlay.is_pending_event(e) for e in candidate.event_ids)
+            ]
+            event_sizes = await db_event_sizes(
+                session,
+                candidates=db_candidates,
+                at=at,
+                config=config,
+                exclude_id=doc.tech_item_id,
+            )
+            for event_id, count in overlay.sizes(at, window_days=config.window_days).items():
+                event_sizes[event_id] = event_sizes.get(event_id, 0) + count
+        event_id = decide_event(
+            doc.features, candidates, event_sizes=event_sizes, config=config
+        )
         created = event_id is None
         if event_id is None:
             event_id = uuid.uuid4()
-        overlay.add(doc, event_id)
+        overlay.add(doc, event_id, created=created)
         plan.assignments.append(Assignment(doc=doc, event_id=event_id, created=created))
     return plan
 
@@ -307,7 +354,18 @@ async def execute_backfill(
                     config=config,
                     exclude_id=doc.tech_item_id,
                 )
-            event_id = decide_event(doc.features, candidates, config=config)
+            event_sizes: dict[uuid.UUID, int] = {}
+            if at is not None:
+                event_sizes = await db_event_sizes(
+                    session,
+                    candidates=candidates,
+                    at=at,
+                    config=config,
+                    exclude_id=doc.tech_item_id,
+                )
+            event_id = decide_event(
+                doc.features, candidates, event_sizes=event_sizes, config=config
+            )
             async with session.begin_nested():
                 link: LinkResult = await link_document_to_event(
                     session,
