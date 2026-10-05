@@ -11,6 +11,20 @@ page-local same-domain-not-consecutive reorder for the recommended page, and
 ``latest_feed_cursor`` (the ARG-203 poll baseline must stay sort-independent)
 and ``pin_hero`` (the hero must actually lead the rendered page, and
 diversity reordering must not displace it).
+
+ARG-243 moves the feed's unit from the document to the **event**. Every feed
+entry is one card: a live ``tech_events`` row (its evidence documents
+aggregated), or — for a document no live event claims — a one-document entry
+drawn the same way. The existing sort / keyset / diversity / hero machinery is
+unchanged; it now runs over entries (``_entries_subquery``) instead of raw
+``tech_items`` rows:
+
+* an entry's **representative document** is its earliest-reported evidence
+  (``coalesce(published_at, created_at)`` ASC, then id) — Keep/Pass, the
+  card's domain (diversity bucket) and category all come from it;
+* ``sort_at`` (latest sort, poll pill) is the **newest** evidence time, so an
+  event that gains a document floats up and counts as new;
+* ``feed_score`` (recommended sort) is the **max** over its evidence.
 """
 from __future__ import annotations
 
@@ -23,9 +37,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 from urllib.parse import urlsplit
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, String, exists, func, literal, select, union_all
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from argos.models.event_document import EventDocument
+from argos.models.tech_event import TechEvent
 from argos.models.tech_item import CategoryType, TechItem
 from argos.models.user_asset import AssetStatus, UserAsset
 
@@ -39,6 +56,7 @@ HERO_WINDOW: timedelta = timedelta(hours=48)
 
 Category = Literal["Mainstream", "Alpha"]
 FeedSort = Literal["recommended", "latest"]
+EntryKind = Literal["event", "item"]
 
 
 @dataclass(frozen=True)
@@ -55,6 +73,33 @@ class FeedItem:
     # ARG-213: carried so the "recommended" sort's keyset cursor can be
     # re-derived from the last item on a page without a second query.
     feed_score: Optional[float] = None
+    # ARG-243: ``id`` is the *entry* id — the event id for ``kind="event"``,
+    # the document id for a lone ``kind="item"``. Every document-level field
+    # above (title fallback, source_url, category, status, trust_score) comes
+    # from the representative document ``rep_id``; Keep/Pass act on it.
+    kind: EntryKind = "item"
+    rep_id: Optional[uuid.UUID] = None
+    doc_count: int = 1
+    # Distinct publisher domains across the evidence, earliest report first.
+    # Empty means "just the representative's domain" (a lone document).
+    source_domains: tuple[str, ...] = ()
+
+    @property
+    def action_id(self) -> uuid.UUID:
+        """The document Keep/Pass/Untrack act on (ARG-243 decision 1)."""
+        return self.rep_id or self.id
+
+    @property
+    def href(self) -> str:
+        """Where tapping the card goes — the event page, or the old item URL."""
+        if self.kind == "event":
+            return f"/event/{self.id}"
+        return f"/item/{self.id}"
+
+    @property
+    def source_count(self) -> int:
+        """How many distinct outlets reported this (``출처 N곳``)."""
+        return max(len(self.source_domains), 1)
 
 
 @dataclass(frozen=True)
@@ -349,6 +394,171 @@ def pick_onpage_hero_within_window(
 # Query
 # ------------------------------------------------------------------ #
 
+def _doc_sort_expr():
+    return func.coalesce(TechItem.published_at, TechItem.created_at)
+
+
+def _entries_subquery():
+    """One row per feed entry (ARG-243): ``entry_id, kind, sort_at,
+    feed_score, rep_id, doc_count``.
+
+    Two arms, ``UNION ALL``-ed:
+
+    * **events** — every *live* event (``merged_into_id IS NULL``) with at
+      least one evidence document. ``sort_at`` = newest evidence time,
+      ``feed_score`` = max evidence score (NULL only when none is scored),
+      ``rep_id`` = earliest-reported evidence (time ASC, id ASC).
+    * **lone documents** — every document no *live* event claims, as a
+      one-document entry whose ``rep_id`` is itself. A document linked only to
+      a tombstoned event lands here too: moving links to the survivor is the
+      merge-writer's job, and until it does, the document must not vanish from
+      the feed.
+
+    A document that belongs to two live events appears in both (decision 5).
+    Event ids and document ids are both UUIDv4, so they share one keyset
+    ``(…, entry_id)`` tiebreak without colliding in practice.
+    """
+    doc_sort = _doc_sort_expr()
+    events = (
+        select(
+            EventDocument.event_id.label("entry_id"),
+            literal("event", String).label("kind"),
+            func.max(doc_sort).label("sort_at"),
+            func.max(TechItem.feed_score).label("feed_score"),
+            func.array_agg(
+                aggregate_order_by(TechItem.id, doc_sort.asc(), TechItem.id.asc())
+            )[1].label("rep_id"),
+            func.count(TechItem.id).label("doc_count"),
+        )
+        .join(TechItem, TechItem.id == EventDocument.tech_item_id)
+        .join(TechEvent, TechEvent.id == EventDocument.event_id)
+        .where(TechEvent.merged_into_id.is_(None))
+        .group_by(EventDocument.event_id)
+    )
+    claimed = (
+        select(literal(1))
+        .select_from(EventDocument)
+        .join(TechEvent, TechEvent.id == EventDocument.event_id)
+        .where(
+            EventDocument.tech_item_id == TechItem.id,
+            TechEvent.merged_into_id.is_(None),
+        )
+    )
+    lone = select(
+        TechItem.id.label("entry_id"),
+        literal("item", String).label("kind"),
+        doc_sort.label("sort_at"),
+        TechItem.feed_score.label("feed_score"),
+        TechItem.id.label("rep_id"),
+        literal(1, Integer).label("doc_count"),
+    ).where(~exists(claimed))
+    return union_all(events, lone).subquery("feed_entries")
+
+
+def _validate_category(category: Optional[str]) -> None:
+    if category is not None and category not in ("Mainstream", "Alpha"):
+        raise ValueError(f"invalid category: {category!r}")
+
+
+def _entry_select(entries, *columns):
+    """``SELECT columns FROM entries JOIN rep`` — the representative document
+    is what category filtering (and every document-level field) keys off."""
+    rep = TechItem
+    return select(*columns).select_from(entries).join(
+        rep, rep.id == entries.c.rep_id
+    )
+
+
+async def _fetch_source_domains(
+    session: AsyncSession, event_ids: list[uuid.UUID]
+) -> tuple[dict[uuid.UUID, tuple[str, ...]], dict[uuid.UUID, str]]:
+    """Per event: distinct evidence domains (earliest report first), plus the
+    first evidence cover image — used when the representative has none."""
+    if not event_ids:
+        return {}, {}
+    doc_sort = _doc_sort_expr()
+    rows = (
+        await session.execute(
+            select(
+                EventDocument.event_id,
+                TechItem.source_url,
+                TechItem.image_url,
+            )
+            .join(TechItem, TechItem.id == EventDocument.tech_item_id)
+            .where(EventDocument.event_id.in_(event_ids))
+            .order_by(EventDocument.event_id, doc_sort.asc(), TechItem.id.asc())
+        )
+    ).all()
+    domains: dict[uuid.UUID, list[str]] = defaultdict(list)
+    images: dict[uuid.UUID, str] = {}
+    for row in rows:
+        domain = _domain_of(row.source_url)
+        if domain and domain not in domains[row.event_id]:
+            domains[row.event_id].append(domain)
+        if row.image_url and row.event_id not in images:
+            images[row.event_id] = row.image_url
+    return {k: tuple(v) for k, v in domains.items()}, images
+
+
+async def _hydrate(session: AsyncSession, rows) -> list[FeedItem]:
+    event_ids = [row.entry_id for row in rows if row.kind == "event"]
+    domains, images = await _fetch_source_domains(session, event_ids)
+    items = []
+    for row in rows:
+        is_event = row.kind == "event"
+        items.append(
+            FeedItem(
+                id=row.entry_id,
+                # An unnamed event (naming not run yet / failed) borrows its
+                # representative's headline so the card is never blank.
+                title=(row.event_title if is_event and row.event_title else row.title),
+                source_url=row.source_url,
+                category=row.category,
+                image_url=row.image_url or (images.get(row.entry_id) if is_event else None),
+                summary=(
+                    row.event_summary if is_event and row.event_summary else row.summary
+                ),
+                status=row.status,
+                trust_score=row.trust_score,
+                sort_at=row.sort_at,
+                feed_score=row.feed_score,
+                kind=row.kind,
+                rep_id=row.rep_id,
+                doc_count=row.doc_count,
+                source_domains=domains.get(row.entry_id, ()) if is_event else (),
+            )
+        )
+    return items
+
+
+def _entry_columns(entries):
+    return (
+        entries.c.entry_id,
+        entries.c.kind,
+        entries.c.sort_at,
+        entries.c.feed_score,
+        entries.c.rep_id,
+        entries.c.doc_count,
+        TechItem.title,
+        TechItem.source_url,
+        TechItem.category,
+        TechItem.image_url,
+        TechItem.summary,
+        TechItem.trust_score,
+        TechEvent.title.label("event_title"),
+        TechEvent.summary.label("event_summary"),
+        UserAsset.status,
+    )
+
+
+def _entry_page_select(entries):
+    return (
+        _entry_select(entries, *_entry_columns(entries))
+        .join(TechEvent, TechEvent.id == entries.c.entry_id, isouter=True)
+        .join(UserAsset, UserAsset.tech_id == entries.c.rep_id, isouter=True)
+    )
+
+
 async def fetch_feed(
     session: AsyncSession,
     *,
@@ -357,59 +567,36 @@ async def fetch_feed(
     limit: int = PAGE_SIZE,
     sort: FeedSort = "recommended",
 ) -> FeedPage:
-    """Return one paginated page of feed items.
+    """Return one paginated page of feed entries (ARG-243: events).
 
-    ``sort="recommended"`` (default, ARG-213) orders by ``feed_score``
-    descending with NULLs last, breaking ties by recency then id — so the
-    NULL tail (all rows right after the feed_score migration, and items added
-    between scheduled rescores) reads newest-first instead of in arbitrary
+    ``sort="recommended"`` (default, ARG-213) orders by the entry's
+    ``feed_score`` descending with NULLs last, breaking ties by recency then
+    entry id — so the NULL tail reads newest-first instead of in arbitrary
     UUID order — then applies a page-local same-domain-not-consecutive reorder
-    before returning. ``sort="latest"`` preserves the
-    original ``coalesce(published_at, created_at)`` time order exactly as
-    before, unreordered — the ARG-203 polling contract depends on this path
-    staying strictly time-ordered.
+    before returning. ``sort="latest"`` orders strictly by the entry's newest
+    evidence time, unreordered — the ARG-203 polling contract depends on this
+    path staying strictly time-ordered.
 
     The Slack briefing column is intentionally not referenced here —
     that column is exclusively owned by the briefing pipeline.
     """
     if sort not in ("recommended", "latest"):
         raise ValueError(f"invalid feed sort: {sort!r}")
+    _validate_category(category)
 
-    sort_expr = func.coalesce(TechItem.published_at, TechItem.created_at)
+    entries = _entries_subquery()
+    score = entries.c.feed_score
+    sort_at = entries.c.sort_at
+    entry_id = entries.c.entry_id
 
-    stmt = (
-        select(
-            TechItem.id,
-            TechItem.title,
-            TechItem.source_url,
-            TechItem.category,
-            TechItem.image_url,
-            TechItem.summary,
-            TechItem.trust_score,
-            TechItem.feed_score,
-            UserAsset.status,
-            sort_expr.label("sort_at"),
-        )
-        .join(UserAsset, UserAsset.tech_id == TechItem.id, isouter=True)
-        .limit(limit + 1)
-    )
+    stmt = _entry_page_select(entries).limit(limit + 1)
 
     if sort == "recommended":
-        # feed_score DESC (NULLs last), then recency, then id. The recency
-        # tiebreak is what gives the NULL tail — all rows right after the
-        # migration, and items added between scheduled rescores — a sane
-        # newest-first order instead of arbitrary UUID order.
-        stmt = stmt.order_by(
-            TechItem.feed_score.desc().nullslast(),
-            sort_expr.desc(),
-            TechItem.id.desc(),
-        )
+        stmt = stmt.order_by(score.desc().nullslast(), sort_at.desc(), entry_id.desc())
     else:
-        stmt = stmt.order_by(sort_expr.desc(), TechItem.id.desc())
+        stmt = stmt.order_by(sort_at.desc(), entry_id.desc())
 
     if category is not None:
-        if category not in ("Mainstream", "Alpha"):
-            raise ValueError(f"invalid category: {category!r}")
         stmt = stmt.where(TechItem.category == CategoryType(category))
 
     if cursor is not None:
@@ -417,51 +604,26 @@ async def fetch_feed(
             cur_score, cur_sort, cur_id = decode_score_cursor(cursor)
             if cur_score is None:
                 # Cursor is already in the NULLS-LAST tail: only other
-                # null-score rows can sort after it, keyed by recency
-                # (sort_at desc) then id desc.
+                # null-score entries can sort after it.
                 stmt = stmt.where(
-                    TechItem.feed_score.is_(None)
-                    & (
-                        (sort_expr < cur_sort)
-                        | ((sort_expr == cur_sort) & (TechItem.id < cur_id))
-                    )
+                    score.is_(None)
+                    & ((sort_at < cur_sort) | ((sort_at == cur_sort) & (entry_id < cur_id)))
                 )
             else:
                 stmt = stmt.where(
-                    TechItem.feed_score.is_(None)
-                    | (TechItem.feed_score < cur_score)
-                    | ((TechItem.feed_score == cur_score) & (sort_expr < cur_sort))
-                    | (
-                        (TechItem.feed_score == cur_score)
-                        & (sort_expr == cur_sort)
-                        & (TechItem.id < cur_id)
-                    )
+                    score.is_(None)
+                    | (score < cur_score)
+                    | ((score == cur_score) & (sort_at < cur_sort))
+                    | ((score == cur_score) & (sort_at == cur_sort) & (entry_id < cur_id))
                 )
         else:
             cur_sort, cur_id = decode_cursor(cursor)
             stmt = stmt.where(
-                (sort_expr < cur_sort)
-                | ((sort_expr == cur_sort) & (TechItem.id < cur_id))
+                (sort_at < cur_sort) | ((sort_at == cur_sort) & (entry_id < cur_id))
             )
 
-    result = await session.execute(stmt)
-    rows = result.all()
-
-    items = [
-        FeedItem(
-            id=row.id,
-            title=row.title,
-            source_url=row.source_url,
-            category=row.category,
-            image_url=row.image_url,
-            summary=row.summary,
-            status=row.status,
-            trust_score=row.trust_score,
-            sort_at=row.sort_at,
-            feed_score=row.feed_score,
-        )
-        for row in rows[:limit]
-    ]
+    rows = (await session.execute(stmt)).all()
+    items = await _hydrate(session, rows[:limit])
 
     # Cursor for the *next* page must key off the true DB-order last row on
     # THIS page — computed before the display-only diversity reorder below —
@@ -481,83 +643,71 @@ async def fetch_feed(
     return FeedPage(items=items, next_cursor=next_cursor)
 
 
+async def fetch_feed_entry(
+    session: AsyncSession, entry_id: uuid.UUID
+) -> Optional[FeedItem]:
+    """One feed entry by id, for re-rendering a single card after Keep/Pass
+    (ARG-243). ``None`` when no live entry carries that id anymore."""
+    entries = _entries_subquery()
+    stmt = _entry_page_select(entries).where(entries.c.entry_id == entry_id).limit(1)
+    rows = (await session.execute(stmt)).all()
+    if not rows:
+        return None
+    return (await _hydrate(session, rows))[0]
+
+
 async def select_hero(
     session: AsyncSession, *, category: Optional[Category] = None
 ) -> Optional[uuid.UUID]:
-    """The recommendation feed's magazine hero (ARG-213).
+    """The recommendation feed's magazine hero (ARG-213; entries since ARG-243).
 
-    The highest-``feed_score`` item whose recency —
-    ``coalesce(published_at, created_at)`` — falls within the last
-    ``HERO_WINDOW`` (48h); falls back to the highest-``feed_score`` item
-    overall when nothing qualifies within that window; ``None`` when no item
-    has a ``feed_score`` at all.
-
-    The window uses the same ``coalesce(published_at, created_at)`` expression
-    the feed sorts by, not bare ``created_at``: otherwise a months-old article
-    (old ``published_at``) that was just crawled/added (recent ``created_at``)
-    would be featured as the "recent" hero even though ``/feed`` orders it as
-    old (Codex review).
+    The highest-``feed_score`` entry whose recency (newest evidence time — the
+    same ``sort_at`` the feed sorts by) falls within the last ``HERO_WINDOW``
+    (48h); falls back to the highest-``feed_score`` entry overall when nothing
+    qualifies within that window; ``None`` when no entry has a score at all.
     """
-    if category is not None and category not in ("Mainstream", "Alpha"):
-        raise ValueError(f"invalid category: {category!r}")
+    _validate_category(category)
 
+    entries = _entries_subquery()
     cutoff = datetime.now(timezone.utc) - HERO_WINDOW
-    recency_expr = func.coalesce(TechItem.published_at, TechItem.created_at)
 
-    stmt = (
-        select(TechItem.id)
-        .where(TechItem.feed_score.is_not(None))
-        .where(recency_expr >= cutoff)
-        .order_by(TechItem.feed_score.desc(), TechItem.id.desc())
-        .limit(1)
-    )
-    if category is not None:
-        stmt = stmt.where(TechItem.category == CategoryType(category))
+    def _best(*conds):
+        stmt = (
+            _entry_select(entries, entries.c.entry_id)
+            .where(entries.c.feed_score.is_not(None), *conds)
+            .order_by(entries.c.feed_score.desc(), entries.c.entry_id.desc())
+            .limit(1)
+        )
+        if category is not None:
+            stmt = stmt.where(TechItem.category == CategoryType(category))
+        return stmt
 
-    row = (await session.execute(stmt)).first()
+    row = (await session.execute(_best(entries.c.sort_at >= cutoff))).first()
     if row is not None:
         return row[0]
-
-    fallback_stmt = (
-        select(TechItem.id)
-        .where(TechItem.feed_score.is_not(None))
-        .order_by(TechItem.feed_score.desc(), TechItem.id.desc())
-        .limit(1)
-    )
-    if category is not None:
-        fallback_stmt = fallback_stmt.where(TechItem.category == CategoryType(category))
-
-    row = (await session.execute(fallback_stmt)).first()
+    row = (await session.execute(_best())).first()
     return row[0] if row is not None else None
 
 
 async def latest_feed_cursor(
     session: AsyncSession, *, category: Optional[Category] = None
 ) -> Optional[str]:
-    """The true global-latest item's time-based cursor (review fix, ARG-213).
+    """The true global-latest entry's time-based cursor (review fix, ARG-213).
 
-    Independent of whatever sort actually rendered the current page. Before
-    this helper existed, ``argos.web.app._render_feed`` derived the ARG-203
-    poll baseline from ``max(sort_at, id)`` across the *rendered* page —
-    under the "recommended" default sort, page 1 is ordered by
-    ``feed_score``, so its max-``sort_at`` item can be older than the
-    genuinely newest item in the table (which may have a low ``feed_score``
-    and simply not appear on page 1 at all). That made ``count_new_since``
-    treat a pre-existing, never-arrived item as "new" — a false "새 항목
-    N개" pill. This runs one dedicated ``ORDER BY sort_at DESC, id DESC
-    LIMIT 1`` query so the poll baseline is always the true newest item by
-    wall-clock time, regardless of the active sort.
+    Independent of whatever sort actually rendered the current page: under the
+    "recommended" sort, page 1's newest card can be older than the genuinely
+    newest entry, which would make ``count_new_since`` report a pre-existing
+    entry as "new". One dedicated ``ORDER BY sort_at DESC, entry_id DESC
+    LIMIT 1`` keeps the poll baseline honest.
 
-    Returns ``None`` when the table (after the optional category filter) is
-    empty.
+    Returns ``None`` when there are no entries (after the category filter).
     """
-    if category is not None and category not in ("Mainstream", "Alpha"):
-        raise ValueError(f"invalid category: {category!r}")
+    _validate_category(category)
 
-    sort_expr = func.coalesce(TechItem.published_at, TechItem.created_at)
+    entries = _entries_subquery()
     stmt = (
-        select(TechItem.id, sort_expr.label("sort_at"))
-        .order_by(sort_expr.desc(), TechItem.id.desc())
+        _entry_select(entries, entries.c.entry_id, entries.c.sort_at)
+        .order_by(entries.c.sort_at.desc(), entries.c.entry_id.desc())
         .limit(1)
     )
     if category is not None:
@@ -566,7 +716,7 @@ async def latest_feed_cursor(
     row = (await session.execute(stmt)).first()
     if row is None:
         return None
-    return encode_cursor(row.sort_at, row.id)
+    return encode_cursor(row.sort_at, row.entry_id)
 
 
 async def count_new_since(
@@ -575,30 +725,25 @@ async def count_new_since(
     category: Optional[Category] = None,
     cursor: str,
 ) -> int:
-    """Count feed items newer than ``cursor`` (ARG-203 polling endpoint).
+    """Count feed entries newer than ``cursor`` (ARG-203 polling endpoint).
 
-    Mirrors the ``latest`` sort's ordering rule (``sort_expr`` desc, ``id``
-    desc) but inverted: an item is "new" when it sorts *after* the cursor
-    position, i.e. ``sort_expr > cur_sort`` or a tie broken by a greater id.
-    ``decode_cursor`` raises ``ValueError`` on a malformed token — that
-    propagates so the route can translate it into a 400.
+    Mirrors the ``latest`` sort's ordering rule, inverted: an entry is "new"
+    when it sorts *before* the cursor position. Because an event's ``sort_at``
+    is its newest evidence time, an existing event that just gained a document
+    counts too (ARG-243 decision 2). ``decode_cursor`` raises ``ValueError`` on
+    a malformed token — that propagates so the route can answer 400.
 
-    Deliberately unchanged by ARG-213: this stays latest-based regardless of
-    which sort the feed itself is currently rendering in — see
-    ``argos.web.app._render_feed``'s ``latest_cursor`` computation, which
-    keeps feeding this a genuine time-based cursor even on the recommended
-    page.
+    Stays latest-based regardless of which sort the feed is rendering.
     """
     cur_sort, cur_id = decode_cursor(cursor)
-    sort_expr = func.coalesce(TechItem.published_at, TechItem.created_at)
+    _validate_category(category)
 
-    stmt = select(func.count()).select_from(TechItem).where(
-        (sort_expr > cur_sort) | ((sort_expr == cur_sort) & (TechItem.id > cur_id))
+    entries = _entries_subquery()
+    sort_at = entries.c.sort_at
+    stmt = _entry_select(entries, func.count()).where(
+        (sort_at > cur_sort) | ((sort_at == cur_sort) & (entries.c.entry_id > cur_id))
     )
-
     if category is not None:
-        if category not in ("Mainstream", "Alpha"):
-            raise ValueError(f"invalid category: {category!r}")
         stmt = stmt.where(TechItem.category == CategoryType(category))
 
     return (await session.execute(stmt)).scalar_one()
