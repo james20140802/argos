@@ -6,6 +6,6 @@
   <h1 class="not-found__title">관측소에 문제가 발생했습니다</h1>
   <p class="not-found__body">예기치 못한 오류로 이 화면을 표시하지 못했습니다. 잠시 후 다시 시도해 주세요.</p>
   {% if request_id %}<p class="not-found__body">오류 코드: <code>{{ request_id }}</code></p>{% endif %}
-  <p class="not-found__cta"><a class="not-found__link" href="/feed">관측 피드로 →</a></p>
+  <p class="not-found__cta"><a class="not-found__link" href="/feed">관측 피드로 돌아가기</a></p>
 </section>
 {% endblock %}

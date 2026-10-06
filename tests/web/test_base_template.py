@@ -120,7 +120,7 @@ def test_base_emits_viewport_and_theme_color(app_with_child_template: TestClient
     html = app_with_child_template.get("/__test_child__").text
     assert 'name="viewport"' in html
     assert 'name="theme-color"' in html
-    assert "#0b0d12" in html
+    assert "#000000" in html  # dark theme-color (ARG-243)
 
 
 def test_child_block_content_is_rendered(app_with_child_template: TestClient) -> None:
@@ -129,12 +129,15 @@ def test_child_block_content_is_rendered(app_with_child_template: TestClient) ->
     assert "CHILD CONTENT" in html
 
 
-def test_base_includes_sky_and_grain_atmosphere(
+def test_base_has_no_atmosphere_layers_or_font_preloads(
     app_with_child_template: TestClient,
 ) -> None:
+    """ARG-243: the starfield/grain layers and vendored-font preloads are gone —
+    the system font needs no preload."""
     html = app_with_child_template.get("/__test_child__").text
-    assert 'class="sky"' in html
-    assert 'class="grain"' in html
+    assert 'class="sky"' not in html
+    assert 'class="grain"' not in html
+    assert ".woff2" not in html
 
 
 @pytest.mark.parametrize(

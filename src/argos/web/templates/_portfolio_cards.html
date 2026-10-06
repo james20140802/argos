@@ -25,7 +25,9 @@
   {% endif %}
   {# Card taps open the in-app reader (ARG-138) keyed on the tech_item id;
      "원문 보기" on the detail page handles the external source_url redirect. #}
-  {{ cover(asset.image_url, asset.category, "/item/" ~ asset.tech_id, asset.source_url) }}
+  {# transition_id = the tech item, so this cover morphs into the item page's
+     hero exactly like a feed card's does. #}
+  {{ cover(asset.image_url, asset.category, "/item/" ~ asset.tech_id, asset.source_url, transition_id=asset.tech_id) }}
   <div class="body">
     <p class="eyebrow eyebrow--{{ cat }}">
       {% if asset.category %}

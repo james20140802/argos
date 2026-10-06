@@ -53,7 +53,7 @@
  *     silently fail to fetch it and lose that session's events. Added to the
  *     precache; bumped so already-installed clients pick it up.
  */
-const CACHE_VERSION = 'argos-v18';
+const CACHE_VERSION = 'argos-v24';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
@@ -70,11 +70,17 @@ const APP_SHELL = [
   '/static/js/feed-poll.js',
   '/static/js/feed-events.js',
   '/static/js/portfolio-timeline.js',
+  '/static/js/view-transitions.js',
+  '/static/js/instant-nav.js',
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_VERSION).then((cache) => cache.addAll(APP_SHELL)),
+    // cache: 'reload' — bypass the HTTP cache, or a heuristically cached old
+    // argos.css would be copied straight into the new version's precache.
+    caches.open(CACHE_VERSION).then((cache) =>
+      cache.addAll(APP_SHELL.map((u) => new Request(u, { cache: 'reload' }))),
+    ),
   );
   self.skipWaiting();
 });
@@ -157,10 +163,31 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Static assets — cache-first.
+  // Static assets — cache-first by exact URL. Pages reference CSS/JS as
+  // /static/...?v=<content hash>, so a changed file is a cache miss; it is
+  // fetched and kept for offline use. Offline, a versioned URL that was never
+  // fetched falls back to any cached copy of the same file (the queryless
+  // precache) — the exact-URL miss would otherwise strip the offline shell of
+  // its CSS/JS. Online this fallback never runs, so invalidation holds.
   if (url.pathname.startsWith('/static/')) {
     event.respondWith(
-      caches.match(req).then((cached) => cached || fetch(req)),
+      caches.match(req).then((cached) => {
+        if (cached) return cached;
+        return fetch(req)
+          .then((res) => {
+            if (res && res.ok) {
+              const copy = res.clone();
+              caches.open(CACHE_VERSION).then((c) => c.put(req, copy));
+            }
+            return res;
+          })
+          .catch((err) =>
+            caches.match(req, { ignoreSearch: true }).then((any) => {
+              if (any) return any;
+              throw err;
+            }),
+          );
+      }),
     );
   }
 });

@@ -4,23 +4,14 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-# Routes that must respond 200 once T1 lands. Keep in sync with the files
-# vendored under src/argos/web/static/.
+# Routes that must respond 200. Keep in sync with the files vendored under
+# src/argos/web/static/. ARG-243 dropped the vendored web fonts in favour of
+# the platform system font (SF on Apple devices), so no .woff2 remain.
 STATIC_ROUTES = [
     "/static/css/argos.css",
     "/static/img/logo.svg",
-    "/static/fonts/Fraunces-Regular.woff2",
-    "/static/fonts/Fraunces-SemiBold.woff2",
-    "/static/fonts/GowunBatang-Regular.woff2",
-    "/static/fonts/GowunBatang-Bold.woff2",
-    "/static/fonts/IBMPlexSansKR-Regular.woff2",
-    "/static/fonts/IBMPlexSansKR-SemiBold.woff2",
-    "/static/fonts/IBMPlexMono-Regular.woff2",
-    "/static/fonts/IBMPlexMono-Medium.woff2",
     "/static/js/htmx.min.js",
 ]
-
-FONT_ROUTES = [r for r in STATIC_ROUTES if r.endswith(".woff2")]
 
 
 @pytest.mark.parametrize("route", STATIC_ROUTES)
@@ -42,27 +33,16 @@ def test_logo_svg_is_radar_mark(web_client: TestClient) -> None:
     assert 'fill="#C9A86A"' in body
 
 
-@pytest.mark.parametrize("route", FONT_ROUTES)
-def test_woff2_file_is_nonempty(web_client: TestClient, route: str) -> None:
-    """Guard against zero-byte placeholders sneaking into the vendored set."""
-    response = web_client.get(route)
-    assert len(response.content) > 1024, (
-        f"{route} is suspiciously small ({len(response.content)} bytes); "
-        "verify the font was actually downloaded, not stubbed."
-    )
-
-
 def test_argos_css_contains_required_tokens(web_client: TestClient) -> None:
-    """argos.css must declare the Midnight Observatory token set."""
+    """argos.css must declare the design token set (ARG-243 Apple redesign)."""
     body = web_client.get("/static/css/argos.css").text
-    for token in ("--bg", "--ink", "--brass", "--main", "--alpha"):
+    for token in ("--bg", "--ink", "--accent", "--main", "--alpha", "--spring"):
         assert token in body, f"missing token {token}"
-    assert "#C9A86A" in body
-    assert "@font-face" in body
-    assert "Fraunces" in body
-    assert "Gowun Batang" in body
-    assert "IBM Plex Sans KR" in body
-    assert "IBM Plex Mono" in body
+    # System font stack — no vendored @font-face any more.
+    assert "-apple-system" in body
+    assert "@font-face" not in body
+    assert "prefers-color-scheme: dark" in body
+    assert "@view-transition" in body
     assert ".card" in body or ".ncard" in body
     assert "conic-gradient" in body
     assert "backdrop-filter" in body

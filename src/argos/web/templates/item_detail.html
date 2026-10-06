@@ -5,24 +5,33 @@
    reads this attribute on DOMContentLoaded to know which item to attribute
    the sendBeacon Dwell event to on visibilitychange/pagehide. #}
 <article class="detail" data-item-id="{{ item.id }}">
+  {# Back goes to the list the reader came from (``back_to``, from the
+     Referer — see app._detail_origin). #}
+  {% set from_portfolio = back_to | default('feed') == 'portfolio' %}
+  <a class="back-link" href="{{ '/portfolio' if from_portfolio else '/feed' }}">
+    <svg aria-hidden="true" viewBox="0 0 12 20" width="10" height="17"><path d="M10 2 2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    {{ '포트폴리오' if from_portfolio else '관측 피드' }}
+  </a>
+  {# The hero's view-transition name matches the feed card cover
+     (_macros.cover) so the cover morphs into this hero on navigation. #}
   {% if item.image_url and item.image_url | is_favicon %}
-  <div class="detail-hero detail-hero--favicon detail-hero--{{ (item.category.value if item.category else 'none')|lower }}">
+  <div class="detail-hero detail-hero--favicon detail-hero--{{ (item.category.value if item.category else 'none')|lower }}" style="view-transition-name: c{{ item.id.hex }}">
     <span class="detail-hero__scrim" aria-hidden="true"></span>
     {# image_url is attacker-controllable (crawled): escaped <img src> only, never CSS url(). #}
     <span class="favicon-chip">
-      <img class="favicon-chip__img" src="{{ item.image_url }}" alt="" loading="lazy" width="40" height="40">
+      <img class="favicon-chip__img" src="{{ item.image_url }}" alt="" loading="lazy" decoding="async" width="40" height="40">
       <span class="favicon-chip__domain">{{ item.source_url | domain }}</span>
     </span>
   </div>
   {% elif item.image_url %}
-  <div class="detail-hero">
+  <div class="detail-hero" style="view-transition-name: c{{ item.id.hex }}">
     {# og:image is attacker-controllable (crawled): render via an HTML-escaped
        <img src> rather than inline CSS url() to avoid CSS-context injection. #}
-    <img class="detail-hero__img" src="{{ item.image_url }}" alt="" loading="lazy">
+    <img class="detail-hero__img" src="{{ item.image_url }}" alt="" loading="lazy" decoding="async">
     <span class="detail-hero__scrim" aria-hidden="true"></span>
   </div>
   {% else %}
-  <div class="detail-hero detail-hero--fallback detail-hero--{{ (item.category.value if item.category else 'none')|lower }}">
+  <div class="detail-hero detail-hero--fallback detail-hero--{{ (item.category.value if item.category else 'none')|lower }}" style="view-transition-name: c{{ item.id.hex }}">
     <span class="detail-hero__scrim" aria-hidden="true"></span>
     <span class="detail-hero__glyph" aria-hidden="true">◎</span>
   </div>
@@ -69,7 +78,7 @@
     <a class="detail-source__link"
        href="{{ item.source_url }}"
        target="_blank"
-       rel="noopener noreferrer">원문 보기 →</a>
+       rel="noopener noreferrer">원문 보기<svg class="ext-icon" aria-hidden="true" viewBox="0 0 12 12" width="10" height="10"><path d="M3.5 2.5h6v6M9.5 2.5 2.5 9.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
   </p>
 
   {% include "_detail_genealogy.html" %}

@@ -6,33 +6,59 @@
    a 32px /favicon.ico across the full cover, rendering it blurry.
 
    Args:
-     image_url  — tech_items.image_url (attacker-controllable; crawled).
-     category   — CategoryType enum or None (tints the fallback gradient).
-     href       — in-app reader URL for the card tap target.
-     source_url — used only to label the favicon chip with its domain.
+     image_url     — tech_items.image_url (attacker-controllable; crawled).
+     category      — CategoryType enum or None (tints the fallback gradient).
+     href          — in-app reader URL for the card tap target.
+     source_url    — used only to label the favicon chip with its domain.
+     transition_id — optional id. Exposed as ``data-vt`` so view-transitions.js
+                     can name *this one* cover when navigating to (or back
+                     from) its detail page, where the hero carries the same
+                     name. Never named statically: on feed→feed navigations
+                     (filter/sort) named covers would fly around on their own
+                     while the rest of each card merely crossfaded.
 #}
-{% macro cover(image_url, category, href, source_url) %}
+{% macro cover(image_url, category, href, source_url, transition_id=None) %}
 {%- set cat = (category.value if category else 'none')|lower -%}
+{%- set vt = (' data-vt="c' ~ transition_id.hex ~ '"') if transition_id else '' -%}
 {%- if image_url and image_url | is_favicon -%}
-<a class="cover cover--favicon cover--{{ cat }}" href="{{ href }}">
+<a class="cover cover--favicon cover--{{ cat }}" href="{{ href }}"{{ vt | safe }}>
   <span class="scrim" aria-hidden="true"></span>
   {# image_url is attacker-controllable (crawled): escaped <img src> only, never CSS url(). #}
   <span class="favicon-chip">
-    <img class="favicon-chip__img" src="{{ image_url }}" alt="" loading="lazy" width="32" height="32">
+    <img class="favicon-chip__img" src="{{ image_url }}" alt="" loading="lazy" decoding="async" width="32" height="32">
     <span class="favicon-chip__domain">{{ source_url | domain }}</span>
   </span>
 </a>
 {%- elif image_url -%}
-<a class="cover" href="{{ href }}">
+<a class="cover" href="{{ href }}"{{ vt | safe }}>
   {# og:image is attacker-controllable (crawled): render via an HTML-escaped
      <img src> rather than inline CSS url() to avoid CSS-context injection. #}
-  <img class="cover__img" src="{{ image_url }}" alt="" loading="lazy">
+  <img class="cover__img" src="{{ image_url }}" alt="" loading="lazy" decoding="async">
   <span class="scrim" aria-hidden="true"></span>
 </a>
 {%- else -%}
-<a class="cover cover--fallback cover--{{ cat }}" href="{{ href }}">
+<a class="cover cover--fallback cover--{{ cat }}" href="{{ href }}"{{ vt | safe }}>
   <span class="scrim" aria-hidden="true"></span>
   <span class="cover__glyph" aria-hidden="true">◎</span>
 </a>
 {%- endif -%}
 {% endmacro %}
+
+{# Source stack (ARG-243) — how many outlets reported this, at a glance.
+   Overlapping monogram discs, one per distinct domain (first four, earliest
+   report first), then the count. A lone document shows one disc and
+   "출처 1곳" — the same component, so single and multi-source cards never
+   look like two different things. Monograms instead of fetched favicons: no
+   third-party request per card. #}
+{% macro source_stack(domains, doc_count=1) %}
+{%- set n = domains | length -%}
+<p class="source-stack" aria-label="출처 {{ n }}곳{% if n %}: {{ domains | join(', ') }}{% endif %}">
+  <span class="source-stack__discs" aria-hidden="true">
+    {%- for d in domains[:4] %}
+    <span class="source-disc" style="--h: {{ d | domain_hue }}" title="{{ d }}">{{ d | monogram }}</span>
+    {%- endfor %}
+    {%- if n > 4 %}<span class="source-disc source-disc--more">+{{ n - 4 }}</span>{% endif %}
+  </span>
+  <span class="source-stack__label">출처 {{ n }}곳{% if doc_count > n %}<span class="source-stack__docs"> 기사 {{ doc_count }}건</span>{% endif %}</span>
+</p>
+{%- endmacro %}
