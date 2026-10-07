@@ -11,12 +11,14 @@ from sqlalchemy.pool import NullPool
 
 from argos.brain import event_correction
 from argos.brain.event_correction import (
+    SKIP_CAPPED,
+    SKIP_CONFLICT,
     SKIP_DOCUMENTS_CHANGED,
     SKIP_TOMBSTONED,
     SKIP_UNRESOLVABLE,
     apply_corrections,
 )
-from argos.brain.recluster_candidates import MergeCandidate, ReclusterCandidates
+from argos.brain.recluster_candidates import MergeCandidate, ReclusterCandidates, SplitCandidate
 from argos.config import settings
 from argos.models.entity import Entity, EventEntity
 from argos.models.event_document import EventDocument
@@ -358,3 +360,90 @@ async def test_merge_failure_rolls_back_everything(session_factory, clean, monke
         assert (await session.get(TechEvent, b.id)).merged_into_id is None
         assert await _links(session, a.id) == {da.id}
         assert await _links(session, b.id) == {db.id}
+
+
+@pytest.mark.asyncio
+async def test_split_keeps_id_on_largest_fragment_and_creates_new_events(session_factory, clean):
+    async with session_factory() as session:
+        ev = await _event(session, "split", at=_BASE)
+        other = await _event(session, "other")
+        big = [await _doc(session, f"big{i}", at=_BASE + timedelta(hours=i)) for i in range(3)]
+        small = [await _doc(session, f"small{i}", at=_BASE + timedelta(days=2, hours=i)) for i in range(2)]
+        outside = await _doc(session, "outside", at=_BASE - timedelta(days=30))
+        ent = await _entity(session, "sent")
+        for d in big + small + [outside]:
+            session.add(EventDocument(event_id=ev.id, tech_item_id=d.id))
+        session.add(EventDocument(event_id=other.id, tech_item_id=small[0].id))  # N:N 링크
+        session.add(EventEntity(event_id=ev.id, entity_id=ent.id))
+        await session.commit()
+
+    candidates = ReclusterCandidates(
+        merges=(),
+        splits=(
+            SplitCandidate(
+                event_id=ev.id,
+                groups=(tuple(sorted(d.id for d in small)), tuple(sorted(d.id for d in big))),
+            ),
+        ),
+    )
+    result = await apply_corrections(session_factory, candidates)
+
+    assert len(result.splits) == 1
+    applied = result.splits[0]
+    assert applied.event_id == ev.id
+    assert len(applied.new_event_ids) == 1
+    new_id = applied.new_event_ids[0]
+    async with session_factory() as session:
+        assert await _links(session, ev.id) == {d.id for d in big} | {outside.id}
+        assert await _links(session, new_id) == {d.id for d in small}
+        assert await _links(session, other.id) == {small[0].id}  # 다른 사건 링크는 그대로
+        new_event = await session.get(TechEvent, new_id)
+        assert new_event.title is None and new_event.summary is None
+        assert new_event.naming_stale is True
+        assert new_event.occurred_at == _BASE + timedelta(days=2)
+        assert (await session.get(TechEvent, ev.id)).naming_stale is True
+        assert await _entity_links(session, ev.id) == {ent.id}
+        assert await _entity_links(session, new_id) == set()
+
+
+@pytest.mark.asyncio
+async def test_capped_conflicting_and_stale_splits_are_skipped(session_factory, clean):
+    async with session_factory() as session:
+        capped = await _event(session, "capped")
+        conflict = await _event(session, "conflict")
+        partner = await _event(session, "partner")
+        stale = await _event(session, "stale")
+        docs = {n: await _doc(session, n) for n in ("c1", "c2", "k1", "k2", "pk", "s1", "s2")}
+        for n in ("c1", "c2"):
+            session.add(EventDocument(event_id=capped.id, tech_item_id=docs[n].id))
+        for n in ("k1", "k2"):
+            session.add(EventDocument(event_id=conflict.id, tech_item_id=docs[n].id))
+        session.add(EventDocument(event_id=partner.id, tech_item_id=docs["pk"].id))
+        session.add(EventDocument(event_id=stale.id, tech_item_id=docs["s1"].id))  # s2는 안 붙음
+        await session.commit()
+
+    candidates = ReclusterCandidates(
+        merges=(
+            MergeCandidate(
+                event_ids=tuple(sorted((conflict.id, partner.id))),
+                evidence_document_ids=tuple(sorted((docs["k1"].id, docs["pk"].id))),
+            ),
+        ),
+        splits=(
+            SplitCandidate(event_id=capped.id, groups=((docs["c1"].id,), (docs["c2"].id,)), capped=True),
+            SplitCandidate(event_id=conflict.id, groups=((docs["k1"].id,), (docs["k2"].id,))),
+            SplitCandidate(event_id=stale.id, groups=((docs["s1"].id,), (docs["s2"].id,))),
+        ),
+    )
+    result = await apply_corrections(session_factory, candidates)
+
+    assert result.splits == [] and result.merges == []
+    reasons = {(s.kind, s.reason, s.event_ids) for s in result.skipped}
+    assert ("split", SKIP_CAPPED, (capped.id,)) in reasons
+    assert ("split", SKIP_CONFLICT, (conflict.id,)) in reasons
+    assert ("merge", SKIP_CONFLICT, tuple(sorted((conflict.id, partner.id)))) in reasons
+    assert ("split", SKIP_DOCUMENTS_CHANGED, (stale.id,)) in reasons
+    async with session_factory() as session:
+        assert await _links(session, capped.id) == {docs["c1"].id, docs["c2"].id}
+        assert await _links(session, conflict.id) == {docs["k1"].id, docs["k2"].id}
+        assert (await session.get(TechEvent, partner.id)).merged_into_id is None

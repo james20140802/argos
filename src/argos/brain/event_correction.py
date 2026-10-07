@@ -12,6 +12,9 @@
   최종 생존자로 옮긴다. 후보 재확인 직후 낮 배정이 막 툼스톤이 된 사건에 문서를
   붙여도 다음 실행에서 저절로 복구된다.
 
+분할 후보이면서 병합 그룹에도 있는 사건은 그 사건과 병합 그룹 전체를 그날 건너뛴다.
+이웃 상한(capped)에 걸린 분할 후보는 반영하지 않고 보고만 한다.
+
 툼스톤 해석은 `services.event_resolution`의 규약(8단계·순환 감지)을 그대로 쓴다.
 """
 
@@ -27,10 +30,15 @@ from typing import Literal, Union
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from argos.brain.recluster_candidates import MergeCandidate, ReclusterCandidates
+from argos.brain.recluster_candidates import (
+    MergeCandidate,
+    ReclusterCandidates,
+    SplitCandidate,
+)
 from argos.models.entity import EventEntity
 from argos.models.event_document import EventDocument
 from argos.models.tech_event import TechEvent
+from argos.models.tech_item import TechItem
 from argos.services.event_resolution import resolve_events
 
 logger = logging.getLogger(__name__)
@@ -43,6 +51,12 @@ SKIP_TOMBSTONED = "stale_tombstoned"
 """후보 계산 뒤 사건이 이미 툼스톤이 됐다."""
 SKIP_DOCUMENTS_CHANGED = "stale_documents_changed"
 """후보의 근거 문서가 더 이상 그 사건에 붙어 있지 않다."""
+
+SKIP_CAPPED = "capped"
+"""이웃 상한에 걸린 분할 후보(ARG-283) — 내용이 아니라 상한 탓일 수 있어 보고만 한다."""
+SKIP_CONFLICT = "split_merge_conflict"
+"""같은 밤 분할 후보이면서 병합 그룹에도 있다 — 병합 쌍은 분할 전 사건 기준이라
+먼저 가르면 어느 조각을 합칠지 정해지지 않는다. 다음 밤에 새로 판단한다."""
 
 LinkModel = Union[type[EventDocument], type[EventEntity]]
 
@@ -88,6 +102,13 @@ class AppliedMerge:
     """병합 후 생존자에 붙은 서로 다른 근거 문서 수(= 출처 개수)."""
 
 
+@dataclass(frozen=True)
+class AppliedSplit:
+    event_id: uuid.UUID
+    """원래 사건 id — 가장 큰 조각이 그대로 갖는다."""
+    new_event_ids: tuple[uuid.UUID, ...]
+
+
 @dataclass
 class CorrectionResult:
     """한 번의 교정 실행이 바꾼 것과 건너뛴 것."""
@@ -95,6 +116,7 @@ class CorrectionResult:
     relocations: list[LinkRelocation] = field(default_factory=list)
     skipped: list[SkippedCandidate] = field(default_factory=list)
     merges: list[AppliedMerge] = field(default_factory=list)
+    splits: list[AppliedSplit] = field(default_factory=list)
 
 
 def _target_column(model: LinkModel):
@@ -351,6 +373,104 @@ async def _apply_merge_group(
     )
 
 
+def choose_largest_fragment(
+    fragments: Sequence[Sequence[uuid.UUID]], document_times: Mapping[uuid.UUID, datetime]
+) -> int:
+    """기간 안 문서 수 많은 조각 → 이른 시각 → 작은 문서 id."""
+    return min(
+        range(len(fragments)),
+        key=lambda i: (
+            -len(fragments[i]),
+            min(document_times[d] for d in fragments[i]),
+            min(fragments[i]),
+        ),
+    )
+
+
+def find_conflicts(
+    groups: Sequence[MergeGroup], splits: Sequence[SplitCandidate]
+) -> tuple[list[MergeGroup], list[MergeGroup], frozenset[uuid.UUID]]:
+    split_ids = {split.event_id for split in splits}
+    clean: list[MergeGroup] = []
+    conflicted: list[MergeGroup] = []
+    blocked: set[uuid.UUID] = set()
+    for group in groups:
+        overlap = split_ids.intersection(group.event_ids)
+        if overlap:
+            conflicted.append(group)
+            blocked |= overlap
+        else:
+            clean.append(group)
+    return clean, conflicted, frozenset(blocked)
+
+
+async def _apply_split(
+    session: AsyncSession, split: SplitCandidate, result: CorrectionResult
+) -> None:
+    key = (split.event_id,)
+    row = (
+        await session.execute(
+            select(TechEvent.id, TechEvent.merged_into_id).where(TechEvent.id == split.event_id)
+        )
+    ).first()
+    if row is None:
+        result.skipped.append(SkippedCandidate("split", key, SKIP_MISSING))
+        return
+    if row.merged_into_id is not None:
+        result.skipped.append(SkippedCandidate("split", key, SKIP_TOMBSTONED))
+        return
+    fragments = [tuple(group) for group in split.groups if group]
+    all_documents = {d for fragment in fragments for d in fragment}
+    linked = set(
+        (
+            await session.execute(
+                select(EventDocument.tech_item_id).where(
+                    EventDocument.event_id == split.event_id,
+                    EventDocument.tech_item_id.in_(all_documents),
+                )
+            )
+        ).scalars()
+    )
+    if len(fragments) < 2 or linked != all_documents:
+        result.skipped.append(SkippedCandidate("split", key, SKIP_DOCUMENTS_CHANGED))
+        return
+
+    document_times = dict(
+        (
+            await session.execute(
+                select(TechItem.id, func.coalesce(TechItem.published_at, TechItem.created_at)).where(
+                    TechItem.id.in_(all_documents)
+                )
+            )
+        ).all()
+    )
+    keep = choose_largest_fragment(fragments, document_times)
+    new_ids: list[uuid.UUID] = []
+    for index, fragment in enumerate(fragments):
+        if index == keep:
+            continue
+        new_event = TechEvent(
+            title=None,
+            summary=None,
+            occurred_at=min(document_times[d] for d in fragment),
+            naming_stale=True,
+        )
+        session.add(new_event)
+        await session.flush()
+        await session.execute(
+            update(EventDocument)
+            .where(
+                EventDocument.event_id == split.event_id,
+                EventDocument.tech_item_id.in_(fragment),
+            )
+            .values(event_id=new_event.id)
+            .execution_options(synchronize_session=False)
+        )
+        new_ids.append(new_event.id)
+    await _mark_naming_stale(session, split.event_id)
+    result.splits.append(AppliedSplit(event_id=split.event_id, new_event_ids=tuple(new_ids)))
+
+
 async def apply_corrections(
     session_factory: async_sessionmaker[AsyncSession],
     candidates: ReclusterCandidates | None = None,
@@ -366,6 +486,17 @@ async def apply_corrections(
     async with session_factory() as session:
         async with session.begin():
             await _cleanup_tombstone_links(session, result)
-            for group in group_merge_candidates(candidates.merges):
+            groups = group_merge_candidates(candidates.merges)
+            clean_groups, conflicted_groups, blocked = find_conflicts(groups, candidates.splits)
+            for group in conflicted_groups:
+                result.skipped.append(SkippedCandidate("merge", group.event_ids, SKIP_CONFLICT))
+            for group in clean_groups:
                 await _apply_merge_group(session, group, result)
+            for split in sorted(candidates.splits, key=lambda s: s.event_id):
+                if split.capped:
+                    result.skipped.append(SkippedCandidate("split", (split.event_id,), SKIP_CAPPED))
+                elif split.event_id in blocked:
+                    result.skipped.append(SkippedCandidate("split", (split.event_id,), SKIP_CONFLICT))
+                else:
+                    await _apply_split(session, split, result)
     return result
