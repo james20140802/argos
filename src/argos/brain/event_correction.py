@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal, Union
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from argos.brain.recluster_candidates import ReclusterCandidates
+from argos.brain.recluster_candidates import MergeCandidate, ReclusterCandidates
 from argos.models.entity import EventEntity
 from argos.models.event_document import EventDocument
 from argos.models.tech_event import TechEvent
@@ -66,12 +68,33 @@ class SkippedCandidate:
     reason: str
 
 
+@dataclass(frozen=True)
+class MergeGroup:
+    """이어진 병합 쌍을 묶은 한 그룹. A–B, B–C → (A, B, C)."""
+
+    event_ids: tuple[uuid.UUID, ...]
+    """오름차순 정렬된 그룹 구성 사건."""
+    candidates: tuple[MergeCandidate, ...]
+    """그룹을 이룬 후보 쌍들, 입력 순서."""
+
+
+@dataclass(frozen=True)
+class AppliedMerge:
+    """반영된 병합 한 건."""
+
+    survivor_id: uuid.UUID
+    absorbed_ids: tuple[uuid.UUID, ...]
+    document_count: int
+    """병합 후 생존자에 붙은 서로 다른 근거 문서 수(= 출처 개수)."""
+
+
 @dataclass
 class CorrectionResult:
     """한 번의 교정 실행이 바꾼 것과 건너뛴 것."""
 
     relocations: list[LinkRelocation] = field(default_factory=list)
     skipped: list[SkippedCandidate] = field(default_factory=list)
+    merges: list[AppliedMerge] = field(default_factory=list)
 
 
 def _target_column(model: LinkModel):
@@ -203,6 +226,131 @@ async def _cleanup_tombstone_links(session: AsyncSession, result: CorrectionResu
             await _mark_naming_stale(session, final_id)
 
 
+def group_merge_candidates(merges: Sequence[MergeCandidate]) -> list[MergeGroup]:
+    """병합 쌍을 연결 성분으로 묶는다. 결과는 그룹의 가장 작은 사건 id 순."""
+    parent: dict[uuid.UUID, uuid.UUID] = {}
+
+    def find(x: uuid.UUID) -> uuid.UUID:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for candidate in merges:
+        left, right = candidate.event_ids
+        root_l, root_r = find(left), find(right)
+        if root_l != root_r:
+            parent[max(root_l, root_r)] = min(root_l, root_r)
+
+    members: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for event_id in list(parent):
+        members.setdefault(find(event_id), set()).add(event_id)
+    grouped: dict[uuid.UUID, list[MergeCandidate]] = {}
+    for candidate in merges:
+        grouped.setdefault(find(candidate.event_ids[0]), []).append(candidate)
+
+    return sorted(
+        (
+            MergeGroup(event_ids=tuple(sorted(ids)), candidates=tuple(grouped[root]))
+            for root, ids in members.items()
+        ),
+        key=lambda group: group.event_ids[0],
+    )
+
+
+def choose_survivor(stats: Mapping[uuid.UUID, tuple[int, datetime]]) -> uuid.UUID:
+    """생존자 선택: 문서 수 많은 쪽 → 이른 occurred_at → 작은 id."""
+    return min(stats, key=lambda event_id: (-stats[event_id][0], stats[event_id][1], event_id))
+
+
+async def _apply_merge_group(
+    session: AsyncSession, group: MergeGroup, result: CorrectionResult
+) -> None:
+    """한 병합 그룹을 재확인한 뒤 반영한다. 낡았으면 사유와 함께 건너뛴다."""
+    rows = (
+        await session.execute(
+            select(TechEvent.id, TechEvent.merged_into_id, TechEvent.occurred_at).where(
+                TechEvent.id.in_(group.event_ids)
+            )
+        )
+    ).all()
+    if len(rows) != len(group.event_ids):
+        result.skipped.append(SkippedCandidate("merge", group.event_ids, SKIP_MISSING))
+        return
+    if any(row.merged_into_id is not None for row in rows):
+        result.skipped.append(SkippedCandidate("merge", group.event_ids, SKIP_TOMBSTONED))
+        return
+    for candidate in group.candidates:
+        evidence = set(candidate.evidence_document_ids)
+        if not evidence:
+            continue
+        linked = set(
+            (
+                await session.execute(
+                    select(EventDocument.tech_item_id).where(
+                        EventDocument.event_id.in_(candidate.event_ids),
+                        EventDocument.tech_item_id.in_(evidence),
+                    )
+                )
+            ).scalars()
+        )
+        if linked != evidence:
+            result.skipped.append(
+                SkippedCandidate("merge", group.event_ids, SKIP_DOCUMENTS_CHANGED)
+            )
+            return
+
+    counts = dict(
+        (
+            await session.execute(
+                select(EventDocument.event_id, func.count())
+                .where(EventDocument.event_id.in_(group.event_ids))
+                .group_by(EventDocument.event_id)
+            )
+        ).all()
+    )
+    stats = {row.id: (counts.get(row.id, 0), row.occurred_at) for row in rows}
+    survivor_id = choose_survivor(stats)
+    absorbed = tuple(event_id for event_id in group.event_ids if event_id != survivor_id)
+
+    for absorbed_id in absorbed:
+        await _relocate(session, result, absorbed_id, survivor_id)
+        # 사슬 압축: 흡수 사건을 가리키던 기존 툼스톤도 생존자를 직접 가리킨다.
+        await session.execute(
+            update(TechEvent)
+            .where(TechEvent.merged_into_id == absorbed_id)
+            .values(merged_into_id=survivor_id)
+            .execution_options(synchronize_session=False)
+        )
+        await session.execute(
+            update(TechEvent)
+            .where(TechEvent.id == absorbed_id)
+            .values(merged_into_id=survivor_id)
+            .execution_options(synchronize_session=False)
+        )
+
+    await session.execute(
+        update(TechEvent)
+        .where(TechEvent.id == survivor_id)
+        .values(occurred_at=min(row.occurred_at for row in rows))
+        .execution_options(synchronize_session=False)
+    )
+    await _mark_naming_stale(session, survivor_id)
+    document_count = await session.scalar(
+        select(func.count(func.distinct(EventDocument.tech_item_id))).where(
+            EventDocument.event_id == survivor_id
+        )
+    )
+    result.merges.append(
+        AppliedMerge(
+            survivor_id=survivor_id,
+            absorbed_ids=absorbed,
+            document_count=document_count or 0,
+        )
+    )
+
+
 async def apply_corrections(
     session_factory: async_sessionmaker[AsyncSession],
     candidates: ReclusterCandidates | None = None,
@@ -218,4 +366,6 @@ async def apply_corrections(
     async with session_factory() as session:
         async with session.begin():
             await _cleanup_tombstone_links(session, result)
+            for group in group_merge_candidates(candidates.merges):
+                await _apply_merge_group(session, group, result)
     return result
