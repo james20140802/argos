@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Union
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from argos.brain.recluster_candidates import (
@@ -51,6 +51,8 @@ SKIP_TOMBSTONED = "stale_tombstoned"
 """후보 계산 뒤 사건이 이미 툼스톤이 됐다."""
 SKIP_DOCUMENTS_CHANGED = "stale_documents_changed"
 """후보의 근거 문서가 더 이상 그 사건에 붙어 있지 않다."""
+SKIP_INVALID_FRAGMENTS = "invalid_fragments"
+"""분할 조각이 둘 미만이거나 한 문서가 두 조각에 겹친다 — 파티션이 아니라 가를 수 없다."""
 
 SKIP_CAPPED = "capped"
 """이웃 상한에 걸린 분할 후보(ARG-283) — 내용이 아니라 상한 탓일 수 있어 보고만 한다."""
@@ -174,7 +176,11 @@ async def _relocate(
     from_event_id: uuid.UUID,
     to_event_id: uuid.UUID,
 ) -> bool:
-    """문서·엔티티 링크를 옮기고 기록한다. 문서가 하나라도 옮겨졌으면 참."""
+    """문서·엔티티 링크를 옮기고 기록한다.
+
+    도착 사건이 새 문서를 하나라도 얻었으면 참 — 중복이라 출발 쪽 행만 지운
+    경우는 도착 사건의 문서 구성이 그대로이므로 거짓이다.
+    """
     moved_documents = False
     for model in (EventDocument, EventEntity):
         for target_id, deduplicated in await _move_links(
@@ -189,7 +195,7 @@ async def _relocate(
                     deduplicated=deduplicated,
                 )
             )
-            if model is EventDocument:
+            if model is EventDocument and not deduplicated:
                 moved_documents = True
     return moved_documents
 
@@ -338,16 +344,13 @@ async def _apply_merge_group(
 
     for absorbed_id in absorbed:
         await _relocate(session, result, absorbed_id, survivor_id)
-        # 사슬 압축: 흡수 사건을 가리키던 기존 툼스톤도 생존자를 직접 가리킨다.
+        # 흡수 사건을 툼스톤으로 만들고, 사슬 압축: 흡수 사건을 가리키던 기존
+        # 툼스톤도 같은 UPDATE에서 생존자를 직접 가리키게 한다.
         await session.execute(
             update(TechEvent)
-            .where(TechEvent.merged_into_id == absorbed_id)
-            .values(merged_into_id=survivor_id)
-            .execution_options(synchronize_session=False)
-        )
-        await session.execute(
-            update(TechEvent)
-            .where(TechEvent.id == absorbed_id)
+            .where(
+                or_(TechEvent.id == absorbed_id, TechEvent.merged_into_id == absorbed_id)
+            )
             .values(merged_into_id=survivor_id)
             .execution_options(synchronize_session=False)
         )
@@ -368,7 +371,7 @@ async def _apply_merge_group(
         AppliedMerge(
             survivor_id=survivor_id,
             absorbed_ids=absorbed,
-            document_count=document_count or 0,
+            document_count=document_count,
         )
     )
 
@@ -421,6 +424,9 @@ async def _apply_split(
         return
     fragments = [tuple(group) for group in split.groups if group]
     all_documents = {d for fragment in fragments for d in fragment}
+    if len(fragments) < 2 or sum(map(len, fragments)) != len(all_documents):
+        result.skipped.append(SkippedCandidate("split", key, SKIP_INVALID_FRAGMENTS))
+        return
     linked = set(
         (
             await session.execute(
@@ -431,7 +437,7 @@ async def _apply_split(
             )
         ).scalars()
     )
-    if len(fragments) < 2 or linked != all_documents:
+    if linked != all_documents:
         result.skipped.append(SkippedCandidate("split", key, SKIP_DOCUMENTS_CHANGED))
         return
 

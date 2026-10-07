@@ -14,6 +14,7 @@ from argos.brain.event_correction import (
     SKIP_CAPPED,
     SKIP_CONFLICT,
     SKIP_DOCUMENTS_CHANGED,
+    SKIP_INVALID_FRAGMENTS,
     SKIP_TOMBSTONED,
     SKIP_UNRESOLVABLE,
     apply_corrections,
@@ -204,7 +205,11 @@ async def test_cleanup_skips_chain_that_never_reaches_a_live_event(session_facto
 
 @pytest.mark.asyncio
 async def test_failure_rolls_back_every_cleanup_write(session_factory, clean, monkeypatch):
-    """두 번째 이동에서 터지면 첫 번째 이동도 남지 않는다."""
+    """두 번째 툼스톤의 문서 이동에서 터지면 첫 번째 툼스톤의 이동도 남지 않는다.
+
+    `_move_links` 호출 순서: 첫 툼스톤 문서(1) → 첫 툼스톤 엔티티(2) → 둘째
+    툼스톤 문서(3). 세 번째 호출에서 터뜨려야 툼스톤을 넘는 롤백을 본다.
+    """
     async with session_factory() as session:
         survivor = await _event(session, "survivor")
         t1 = await _event(session, "t1", merged_into=survivor.id)
@@ -221,7 +226,7 @@ async def test_failure_rolls_back_every_cleanup_write(session_factory, clean, mo
 
     async def flaky_move(*args, **kwargs):
         calls["n"] += 1
-        if calls["n"] >= 2:
+        if calls["n"] >= 3:
             raise RuntimeError("boom")
         return await real_move(*args, **kwargs)
 
@@ -447,3 +452,92 @@ async def test_capped_conflicting_and_stale_splits_are_skipped(session_factory, 
         assert await _links(session, capped.id) == {docs["c1"].id, docs["c2"].id}
         assert await _links(session, conflict.id) == {docs["k1"].id, docs["k2"].id}
         assert (await session.get(TechEvent, partner.id)).merged_into_id is None
+
+
+@pytest.mark.asyncio
+async def test_second_run_with_same_candidates_changes_nothing(session_factory, clean):
+    """같은 후보로 다시 돌면 이미 반영된 병합·분할은 낡은 후보로 건너뛰고 DB는 그대로다.
+
+    야간 재시도는 저장 상태 없이 같은 진입점을 다시 부르는 것이므로, 두 번째
+    실행이 링크를 또 옮기거나 사건을 또 만들면 안 된다.
+    """
+    async with session_factory() as session:
+        a = await _event(session, "ia")
+        b = await _event(session, "ib")
+        sp = await _event(session, "isp")
+        da, db = await _doc(session, "ida"), await _doc(session, "idb")
+        s1, s2, s3 = [await _doc(session, n) for n in ("is1", "is2", "is3")]
+        session.add_all([
+            EventDocument(event_id=a.id, tech_item_id=da.id),
+            EventDocument(event_id=b.id, tech_item_id=db.id),
+            *[EventDocument(event_id=sp.id, tech_item_id=d.id) for d in (s1, s2, s3)],
+        ])
+        await session.commit()
+
+    candidates = ReclusterCandidates(
+        merges=_merges(((a.id, b.id), (da.id, db.id))).merges,
+        splits=(SplitCandidate(event_id=sp.id, groups=((s1.id, s2.id), (s3.id,))),),
+    )
+    first = await apply_corrections(session_factory, candidates)
+    assert len(first.merges) == 1 and len(first.splits) == 1
+
+    async def _snapshot():
+        async with session_factory() as session:
+            events = (
+                await session.execute(
+                    select(TechEvent.id, TechEvent.merged_into_id).where(
+                        TechEvent.id.in_([a.id, b.id, sp.id, *first.splits[0].new_event_ids])
+                    )
+                )
+            ).all()
+            links = (
+                await session.execute(
+                    select(EventDocument.event_id, EventDocument.tech_item_id).where(
+                        EventDocument.tech_item_id.in_([da.id, db.id, s1.id, s2.id, s3.id])
+                    )
+                )
+            ).all()
+            return sorted(events), sorted(links)
+
+    before = await _snapshot()
+    second = await apply_corrections(session_factory, candidates)
+    assert second.merges == [] and second.splits == []
+    assert [r for r in second.relocations if r.target_id in {da.id, db.id}] == []
+    assert any(s.kind == "merge" and s.reason == SKIP_TOMBSTONED for s in second.skipped)
+    assert any(
+        s.kind == "split" and s.reason == SKIP_DOCUMENTS_CHANGED and s.event_ids == (sp.id,)
+        for s in second.skipped
+    )
+    assert await _snapshot() == before
+
+
+@pytest.mark.asyncio
+async def test_split_with_overlapping_or_single_fragment_is_rejected(session_factory, clean):
+    """조각이 파티션이 아니면(겹침·한 조각) 가르지 않고 사유를 남긴다."""
+    async with session_factory() as session:
+        ov = await _event(session, "overlap")
+        one = await _event(session, "single")
+        o1, o2, o3, x1 = [await _doc(session, n) for n in ("o1", "o2", "o3", "x1")]
+        session.add_all([
+            *[EventDocument(event_id=ov.id, tech_item_id=d.id) for d in (o1, o2, o3)],
+            EventDocument(event_id=one.id, tech_item_id=x1.id),
+        ])
+        await session.commit()
+
+    result = await apply_corrections(
+        session_factory,
+        ReclusterCandidates(
+            merges=(),
+            splits=(
+                SplitCandidate(event_id=ov.id, groups=((o1.id, o2.id), (o2.id, o3.id))),
+                SplitCandidate(event_id=one.id, groups=((x1.id,), ())),
+            ),
+        ),
+    )
+
+    assert result.splits == []
+    reasons = {(s.reason, s.event_ids) for s in result.skipped if s.kind == "split"}
+    assert (SKIP_INVALID_FRAGMENTS, (ov.id,)) in reasons
+    assert (SKIP_INVALID_FRAGMENTS, (one.id,)) in reasons
+    async with session_factory() as session:
+        assert await _links(session, ov.id) == {o1.id, o2.id, o3.id}
