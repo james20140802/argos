@@ -422,6 +422,9 @@ async def _apply_split(
     if row.merged_into_id is not None:
         result.skipped.append(SkippedCandidate("split", key, SKIP_TOMBSTONED))
         return
+    # 조각은 기간 안 문서뿐이다(`SplitCandidate` docstring). 기간 밖 문서와 어느
+    # 조각에도 없는 문서는 일부러 재분류하지 않고 원래 사건에 남긴다 — 어느 조각에
+    # 속하는지 판단할 신호가 없다(ARG-245 명확화 답변 1, 사용자 확정).
     fragments = [tuple(group) for group in split.groups if group]
     all_documents = {d for fragment in fragments for d in fragment}
     if len(fragments) < 2 or sum(map(len, fragments)) != len(all_documents):
