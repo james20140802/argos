@@ -409,6 +409,36 @@ async def test_split_keeps_id_on_largest_fragment_and_creates_new_events(session
         assert (await session.get(TechEvent, ev.id)).naming_stale is True
         assert await _entity_links(session, ev.id) == {ent.id}
         assert await _entity_links(session, new_id) == set()
+        # 원래 사건 시각 = 남은 문서 중 가장 이른 시각(기간 밖 문서 포함)
+        assert (await session.get(TechEvent, ev.id)).occurred_at == _BASE - timedelta(days=30)
+
+
+@pytest.mark.asyncio
+async def test_split_recomputes_original_time_when_earliest_document_leaves(session_factory, clean):
+    async with session_factory() as session:
+        ev = await _event(session, "split-early", at=_BASE)
+        early = [await _doc(session, f"early{i}", at=_BASE + timedelta(hours=i)) for i in range(2)]
+        late = [await _doc(session, f"late{i}", at=_BASE + timedelta(days=3, hours=i)) for i in range(3)]
+        for d in early + late:
+            session.add(EventDocument(event_id=ev.id, tech_item_id=d.id))
+        await session.commit()
+
+    candidates = ReclusterCandidates(
+        merges=(),
+        splits=(
+            SplitCandidate(
+                event_id=ev.id,
+                groups=(tuple(sorted(d.id for d in early)), tuple(sorted(d.id for d in late))),
+            ),
+        ),
+    )
+    result = await apply_corrections(session_factory, candidates)
+
+    new_id = result.splits[0].new_event_ids[0]
+    async with session_factory() as session:
+        assert await _links(session, ev.id) == {d.id for d in late}  # 큰 조각이 원래 id
+        assert (await session.get(TechEvent, ev.id)).occurred_at == _BASE + timedelta(days=3)
+        assert (await session.get(TechEvent, new_id)).occurred_at == _BASE
 
 
 @pytest.mark.asyncio

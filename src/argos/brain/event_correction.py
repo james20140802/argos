@@ -476,6 +476,21 @@ async def _apply_split(
             .execution_options(synchronize_session=False)
         )
         new_ids.append(new_event.id)
+    # 원래 사건은 남은 문서(기간 밖 문서 포함) 중 가장 이른 시각으로 맞춘다 —
+    # 가장 이른 문서가 작은 조각으로 떠났으면 더는 갖지 않은 근거의 시각을
+    # 내걸게 된다. 새 조각 사건과 같은 규칙. 가장 큰 조각이 남으므로 비지 않는다.
+    remaining_earliest = (
+        select(func.min(func.coalesce(TechItem.published_at, TechItem.created_at)))
+        .join(EventDocument, EventDocument.tech_item_id == TechItem.id)
+        .where(EventDocument.event_id == split.event_id)
+        .scalar_subquery()
+    )
+    await session.execute(
+        update(TechEvent)
+        .where(TechEvent.id == split.event_id)
+        .values(occurred_at=remaining_earliest)
+        .execution_options(synchronize_session=False)
+    )
     await _mark_naming_stale(session, split.event_id)
     result.splits.append(AppliedSplit(event_id=split.event_id, new_event_ids=tuple(new_ids)))
 
