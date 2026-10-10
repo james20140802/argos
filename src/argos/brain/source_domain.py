@@ -7,8 +7,8 @@ huggingface.co 같은 플랫폼 도메인에서는 서로 다른 작성자의 �
 친다. 접미사 표에 없는 호스팅 플랫폼(*.github.io, *.substack.com,
 *.medium.com, *.blogspot.com 등)도 마찬가지로 서로 다른 작성자를 한 출처로
 뭉친다. 그러므로 same_source_penalty 노브를 켜기 전에 이 표(또는
-event_eval.PLATFORM_DOMAINS의 플랫폼 지표)를 다시 살펴야 한다. 그 영향은
-Task 3(ARG-296)이 따로 잰다.
+event_eval.PLATFORM_DOMAINS의 플랫폼 지표)를 다시 살펴야 한다. 플랫폼 도메인
+쌍의 전후는 scripts/eval_event_judgments.py가 따로 잰다(ARG-296).
 """
 
 from __future__ import annotations

@@ -167,3 +167,20 @@ def test_load_judgments_rejects_a_cluster_with_fewer_than_two_docs(tmp_path):
     ids = [str(value) for value in _ids(1)]
     with pytest.raises(ValueError, match="최소 2개"):
         load_judgments(_write_judgments(tmp_path, "ok", ids))
+
+
+def test_load_judgments_rejects_must_keep_naming_a_missing_cluster(tmp_path):
+    path = tmp_path / "judgments.json"
+    path.write_text(
+        json.dumps(
+            {
+                "must_keep": [1, 9],
+                "clusters": [
+                    {"n": 1, "label": "ok", "doc_ids": [str(v) for v in _ids(2)]}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"must_keep \[9\]"):
+        load_judgments(path)

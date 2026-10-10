@@ -32,10 +32,14 @@ from argos.database import AsyncSessionLocal
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_JUDGMENTS = REPO_ROOT / "evals" / "event_judgments_arg283.json"
 
-SWEEP_HEADER = (
-    "penalty| 모드  | 틀린 비율(애매 제외) | 애매 남음 | 엄격 유지 | 느슨 유지 "
-    "| #21 | #25 | 2건+ 그룹 | 플랫폼 쌍  (Claude 판정 기준(미검증))"
-)
+def _sweep_header(must_keep: tuple[int, ...]) -> str:
+    # 반드시 유지 열은 판정 파일의 must_keep에서 만든다 — 재매핑한 파일의 번호가
+    # 바뀌어도 표가 엉뚱한 묶음을 가리키지 않게.
+    keep_columns = "".join(f"| #{n} " for n in must_keep)
+    return (
+        "penalty| 모드  | 틀린 비율(애매 제외) | 애매 남음 | 엄격 유지 | 느슨 유지 "
+        f"{keep_columns}| 2건+ 그룹 | 플랫폼 쌍  ({UNVERIFIED})"
+    )
 
 _SPAN_SQL = text(
     """
@@ -101,8 +105,9 @@ async def _day_partition(session, docs, cfg) -> dict:
 
 
 def _sweep_row(penalty: float, mode: str, report, platform_pairs: int) -> str:
-    keep = dict(report.must_keep)
-    mark = lambda n: "유지" if keep.get(n) else "깨짐"  # noqa: E731
+    keep_cells = "".join(
+        f"{'유지' if kept else '깨짐'} | " for _, kept in report.must_keep
+    )
     ratio = report.wrong_ratio
     return (
         f"{penalty:<7g}| {mode:<5}| "
@@ -110,7 +115,7 @@ def _sweep_row(penalty: float, mode: str, report, platform_pairs: int) -> str:
         f"({'—' if ratio is None else f'{ratio:.1%}'}) | "
         f"{report.maybe_merged}/{report.maybe_total} | "
         f"{report.ok_strict}/{report.ok_total} | {report.ok_merged}/{report.ok_total} | "
-        f"{mark(21)} | {mark(25)} | {report.multi_doc_groups} | {platform_pairs}"
+        f"{keep_cells}{report.multi_doc_groups} | {platform_pairs}"
     )
 
 
@@ -138,6 +143,11 @@ async def main() -> None:
             f"same_source_penalty={cfg.same_source_penalty}"
         )
         print(f"코퍼스 문서 수: {span.total}")
+        if not span.total:
+            # 빈 코퍼스면 기간이 None이라 재군집 조회가 알 수 없는 오류로 죽는다.
+            print("평가할 문서가 없다 — tech_items가 비어 있다.")
+            await session.rollback()
+            return
 
         docs = None
         day_sources: dict = {}
@@ -146,11 +156,16 @@ async def main() -> None:
                 await session.execute(text("SELECT count(*) FROM event_documents"))
             ).scalar_one()
             if assigned:
+                # 낮 분할은 "아직 배정 안 된 문서"의 backfill 미리보기다. 실제 backfill
+                # 뒤에는 판정 문서 대부분이 빠져 홀로 있는 것으로 세이므로, 틀린 비율이
+                # 거짓으로 좋아 보인다. 경고만 하고 숫자를 내면 그 숫자가 인용된다.
                 print(
-                    f"경고: event_documents {assigned}건 — 이미 배정된 문서는 낮 분할에서 빠진다"
+                    f"낮 모드 건너뜀: event_documents {assigned}건 — 이미 배정된 문서가 "
+                    "낮 분할에서 빠져 숫자가 왜곡된다. 사건이 없는 코퍼스에서만 잰다."
                 )
-            docs = await event_backfill.fetch_unassigned_documents(session)
-            day_sources = {d.tech_item_id: d.features.source for d in docs}
+            else:
+                docs = await event_backfill.fetch_unassigned_documents(session)
+                day_sources = {d.tech_item_id: d.features.source for d in docs}
 
         period = None
         night_sources: dict = {}
@@ -168,7 +183,7 @@ async def main() -> None:
 
         if sweep is not None:
             print()
-            print(SWEEP_HEADER)
+            print(_sweep_header(judgments.must_keep))
             for penalty in sweep:
                 run_cfg = cfg.model_copy(update={"same_source_penalty": penalty})
                 if docs is not None:
