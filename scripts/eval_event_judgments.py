@@ -45,6 +45,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=("day", "night", "both"), default="both")
     parser.add_argument("--judgments", type=Path, default=DEFAULT_JUDGMENTS)
     parser.add_argument("--join-threshold", type=float, default=None)
+    parser.add_argument("--same-source-penalty", type=float, default=None)
     return parser.parse_args()
 
 
@@ -53,6 +54,8 @@ def _overrides(args: argparse.Namespace) -> dict[str, float]:
     overrides: dict[str, float] = {}
     if args.join_threshold is not None:
         overrides["join_threshold"] = args.join_threshold
+    if args.same_source_penalty is not None:
+        overrides["same_source_penalty"] = args.same_source_penalty
     return overrides
 
 
@@ -68,7 +71,8 @@ async def main() -> None:
             f"설정: join_threshold={cfg.join_threshold} γ={cfg.effective_leiden_resolution} "
             f"window_days={cfg.window_days} candidate_k={cfg.candidate_k} "
             f"weights(cos/entity/time/kw)={cfg.weight_cosine}/{cfg.weight_entity}/"
-            f"{cfg.weight_time}/{cfg.weight_keyword}"
+            f"{cfg.weight_time}/{cfg.weight_keyword} "
+            f"same_source_penalty={cfg.same_source_penalty}"
         )
         print(f"코퍼스 문서 수: {span.total}")
 

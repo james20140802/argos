@@ -51,6 +51,7 @@ from argos.brain.event_assignment import (
 from argos.brain.event_candidates import keywords_of
 from argos.brain.event_scoring import DocumentFeatures
 from argos.brain.graph_state import BrainState
+from argos.brain.source_domain import registered_domain
 from argos.config import settings
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,7 @@ async def assign_event_node(state: BrainState, session: AsyncSession) -> BrainSt
             names=frozenset(state.get("entity_names") or ()),
             at=at,
             keywords=keywords_of(state.get("summary") or state.get("digest")),
+            source=registered_domain(state.get("source_url")),
         )
         event_id = decide_event(
             subject, candidates, event_sizes=event_sizes, config=config

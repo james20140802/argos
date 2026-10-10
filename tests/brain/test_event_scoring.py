@@ -8,6 +8,7 @@ import pytest
 
 from argos.brain.event_scoring import (
     DocumentFeatures,
+    NEAR_DUPLICATE_COSINE,
     EdgeWeights,
     NeighborEdge,
     choose_event,
@@ -18,12 +19,13 @@ _NOW = datetime(2026, 8, 26, tzinfo=timezone.utc)
 _WEIGHTS = EdgeWeights(cosine=0.55, entity=0.25, time=0.15, keyword=0.05)
 
 
-def _doc(*, embedding, names=(), at=_NOW, keywords=()):
+def _doc(*, embedding, names=(), at=_NOW, keywords=(), source=None):
     return DocumentFeatures(
         embedding=tuple(embedding) if embedding is not None else None,
         names=frozenset(names),
         at=at,
         keywords=frozenset(keywords),
+        source=source,
     )
 
 
@@ -172,3 +174,68 @@ def test_zero_scores_never_join_even_at_a_zero_threshold():
 
 def test_no_neighbours_means_a_new_event():
     assert _choose([], {}) is None
+
+
+# --- ARG-295: 같은 출처 보정 ---------------------------------------------------
+
+
+def _penalty_weights(penalty):
+    return EdgeWeights(
+        cosine=0.55, entity=0.25, time=0.15, keyword=0.05, same_source_penalty=penalty
+    )
+
+
+def _pair(*, left_source, right_source, right_embedding=(0.8, 0.6)):
+    left = _doc(embedding=[1.0, 0.0], names=["openai"], source=left_source)
+    right = _doc(embedding=right_embedding, names=["openai"], source=right_source)
+    return left, right
+
+
+def _score(left, right, penalty):
+    return edge_weight(left, right, weights=_penalty_weights(penalty), window_days=14)
+
+
+def test_same_source_pair_loses_exactly_the_penalty():
+    left, right = _pair(left_source="openai.com", right_source="openai.com")
+    base = _score(left, right, 0.0)
+    assert _score(left, right, 0.2) == pytest.approx(base - 0.2)
+
+
+def test_zero_penalty_returns_the_uncorrected_score_exactly():
+    left, right = _pair(left_source="openai.com", right_source="openai.com")
+    plain = edge_weight(left, right, weights=_WEIGHTS, window_days=14)
+    assert _score(left, right, 0.0) == plain
+
+
+def test_different_or_unknown_source_is_not_corrected():
+    base = _score(*_pair(left_source="a.com", right_source="a.com"), 0.0)
+    for left_source, right_source in [("a.com", "b.com"), ("a.com", None), (None, None)]:
+        pair = _pair(left_source=left_source, right_source=right_source)
+        assert _score(*pair, 0.3) == base
+
+
+def test_near_duplicate_same_source_pair_is_exempt():
+    left, right = _pair(
+        left_source="openai.com", right_source="openai.com", right_embedding=(1.0, 0.0)
+    )
+    base = _score(left, right, 0.0)
+    assert _score(left, right, 0.3) == base
+    assert NEAR_DUPLICATE_COSINE == 0.95
+
+
+def test_corrected_score_never_goes_negative():
+    weak = edge_weight(
+        _doc(embedding=[1.0, 0.0], source="x.com", at=_NOW - timedelta(days=30)),
+        _doc(embedding=[0.0, 1.0], source="x.com"),
+        weights=_penalty_weights(1.0),
+        window_days=14,
+    )
+    assert weak == 0.0
+
+
+def test_from_config_carries_penalty():
+    from argos.config import EventDetectionConfig
+
+    config = EventDetectionConfig(same_source_penalty=0.07)
+    assert EdgeWeights.from_config(config).same_source_penalty == 0.07
+    assert EventDetectionConfig().same_source_penalty == 0.0

@@ -43,6 +43,7 @@ from argos.brain.event_assignment import (
 from argos.brain.event_candidates import CandidateNeighbor, as_vector, keywords_of
 from argos.brain.event_naming import EvidenceDoc, apply_event_naming
 from argos.brain.event_scoring import DocumentFeatures, cosine_similarity
+from argos.brain.source_domain import registered_domain
 from argos.brain.llm_client import OllamaClient
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 _UNASSIGNED_SQL = text(
     """
-    SELECT id, embedding, summary, digest, title,
+    SELECT id, embedding, summary, digest, title, source_url,
            COALESCE(published_at, created_at) AS occurred_at
     FROM tech_items
     WHERE embedding IS NOT NULL
@@ -149,6 +150,7 @@ async def fetch_unassigned_documents(
                     names=names_by_item.get(row.id, frozenset()),
                     at=row.occurred_at,
                     keywords=keywords_of(keyword_source),
+                    source=registered_domain(row.source_url),
                 ),
                 title=row.title,
                 summary=row.summary,

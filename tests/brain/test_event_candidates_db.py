@@ -440,3 +440,34 @@ async def test_event_sizes_count_window_documents_through_tombstones(session_fac
         assert sizes == {survivor.id: 3}
 
         assert await fetch_event_sizes(session, event_ids=[], at=NOW, window_days=14) == {}
+
+
+@pytest.mark.asyncio
+async def test_candidates_carry_the_registered_domain_of_the_source_url(session_factory):
+    """ARG-295: 후보 피처의 source는 source_url의 등록 도메인이다."""
+    async with session_factory() as session:
+        item_id = await _make_item(
+            session, "source-candidate", embedding=_embedding(1.0), published_at=NOW
+        )
+        await _link_to_event(session, item_id)
+        await session.commit()
+
+        results = await fetch_candidates(session, embedding=_embedding(1.0), at=NOW, window_days=14)
+        (candidate,) = [c for c in results if c.tech_item_id == item_id]
+        assert candidate.features.source == "example.com"
+
+
+@pytest.mark.asyncio
+async def test_unassigned_backfill_documents_carry_the_registered_domain(session_factory):
+    """ARG-295: backfill 대상 문서의 피처에도 출처가 실린다."""
+    from argos.brain.event_backfill import fetch_unassigned_documents
+
+    async with session_factory() as session:
+        item_id = await _make_item(
+            session, "source-backfill", embedding=_embedding(1.0), published_at=NOW
+        )
+        await session.commit()
+
+        docs = await fetch_unassigned_documents(session)
+        (doc,) = [d for d in docs if d.tech_item_id == item_id]
+        assert doc.features.source == "example.com"

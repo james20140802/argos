@@ -184,3 +184,112 @@ def test_a_cap_below_the_event_size_is_what_made_the_day_refuse():
     day, night = _big_event_verdicts(EventDetectionConfig(candidate_k=25))
     assert day is False
     assert night is False
+
+
+# --- ARG-295: 같은 출처 보정도 낮과 밤이 함께 움직인다 --------------------------
+
+_SAME = "openai.com"
+
+
+def _src_features(theta: float, source: str | None) -> DocumentFeatures:
+    return DocumentFeatures(
+        embedding=(math.cos(theta), math.sin(theta)),
+        names=frozenset({"openai"}),
+        at=_AT,
+        keywords=frozenset(),
+        source=source,
+    )
+
+
+def _pair_verdicts(
+    existing_source: str, new_source: str, config: EventDetectionConfig
+) -> tuple[bool, bool]:
+    """기존 문서 하나(코사인 ≈0.8)에 새 문서가 (낮, 밤)에서 붙는가."""
+    theta = math.acos(0.8)
+    old = _src_features(0.0, existing_source)
+    new = _src_features(theta, new_source)
+    old_id, new_id = uuid.UUID(int=1), uuid.UUID(int=2)
+    day = (
+        decide_event(
+            new,
+            [CandidateNeighbor(tech_item_id=old_id, features=old, event_ids=(_EVENT,))],
+            event_sizes={_EVENT: 1},
+            config=config,
+        )
+        == _EVENT
+    )
+    documents = [
+        ReclusterDocument(tech_item_id=old_id, features=old, event_ids=()),
+        ReclusterDocument(tech_item_id=new_id, features=new, event_ids=()),
+    ]
+    communities = detect_communities(
+        documents, [NeighborPair(left_id=old_id, right_id=new_id)], config=config
+    )
+    night = any({old_id, new_id} <= set(c.members) for c in communities)
+    return day, night
+
+
+@requires_graph_libs
+def test_same_source_penalty_moves_day_and_night_together():
+    assert _pair_verdicts(_SAME, _SAME, EventDetectionConfig()) == (True, True)
+    corrected = EventDetectionConfig(same_source_penalty=0.3)
+    assert _pair_verdicts(_SAME, _SAME, corrected) == (False, False)
+
+
+@requires_graph_libs
+def test_different_source_pair_unaffected_by_penalty():
+    corrected = EventDetectionConfig(same_source_penalty=0.3)
+    assert _pair_verdicts(_SAME, "techcrunch.com", corrected) == (True, True)
+
+
+def _identical_same_source_documents(count: int) -> list[ReclusterDocument]:
+    return [
+        ReclusterDocument(
+            tech_item_id=uuid.UUID(int=1000 + index),
+            features=_src_features(0.3, _SAME),
+            event_ids=(),
+        )
+        for index in range(count)
+    ]
+
+
+def _all_pairs(documents: list[ReclusterDocument]) -> list[NeighborPair]:
+    ids = sorted(doc.tech_item_id for doc in documents)
+    return [
+        NeighborPair(left_id=left, right_id=right)
+        for i, left in enumerate(ids)
+        for right in ids[i + 1 :]
+    ]
+
+
+@requires_graph_libs
+def test_large_identical_same_source_event_does_not_split():
+    """근사 중복 면제 덕에 보정 세기와 무관하게 큰 사건이 갈라지지 않는다 (ARG-283)."""
+    documents = _identical_same_source_documents(60)
+    config = EventDetectionConfig(same_source_penalty=0.3)
+    communities = detect_communities(documents, _all_pairs(documents), config=config)
+    assert len(communities) == 1
+
+
+@requires_graph_libs
+def test_same_input_same_result_with_penalty():
+    documents = _identical_same_source_documents(60)
+    config = EventDetectionConfig(same_source_penalty=0.3)
+    forward = detect_communities(documents, _all_pairs(documents), config=config)
+    backward = detect_communities(
+        list(reversed(documents)), list(reversed(_all_pairs(documents))), config=config
+    )
+    assert [sorted(c.members) for c in forward] == [sorted(c.members) for c in backward]
+
+    candidates = [
+        CandidateNeighbor(
+            tech_item_id=doc.tech_item_id, features=doc.features, event_ids=(_EVENT,)
+        )
+        for doc in documents
+    ]
+    subject = _src_features(0.3, _SAME)
+    verdicts = {
+        decide_event(subject, candidates, event_sizes={_EVENT: 60}, config=config)
+        for _ in range(2)
+    }
+    assert verdicts == {_EVENT}

@@ -290,6 +290,12 @@ class EventDetectionConfig(BaseModel):
     weight_entity: float = Field(default=0.25, ge=0.0)
     weight_time: float = Field(default=0.15, ge=0.0)
     weight_keyword: float = Field(default=0.05, ge=0.0)
+    # ARG-284/295: 같은 등록 도메인 글 쌍의 점수에서 빼는 값. 같은 출처 글은
+    # 주제가 달라도 엔티티·시간·문체가 겹쳐 원래 점수가 높아 다른 사건이 한
+    # 사건으로 묶인다. 낮 배정과 밤 재군집이 같은 edge_weight를 부르므로 칸은
+    # 이 하나뿐이다(ARG-282: 낮/밤 별도 노브 금지). 근사 중복(코사인 >= 0.95)은
+    # 면제된다. 기본값 0.0은 보정 없음 — 값은 ARG-296 실측으로 정한다.
+    same_source_penalty: float = Field(default=0.0, ge=0.0, le=1.0)
     # 같은 사건의 근거로 치는 쌍 점수의 하한이자, 밤의 CPM 해상도 γ의 기본값.
     # 낮은 "이 값 이상인 이웃 점수의 합 > γ × 사건 크기"일 때만 기존 사건에
     # 붙인다 — 밤의 재군집과 같은 목적함수다(ARG-282, event_scoring docstring).

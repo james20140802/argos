@@ -50,11 +50,12 @@ from argos.brain.entity_store import names_for_documents
 from argos.brain.event_scoring import DocumentFeatures
 from argos.config import settings
 from argos.models.event_document import EventDocument
+from argos.brain.source_domain import registered_domain
 from argos.services.event_resolution import resolve_event, resolve_events
 
 _CANDIDATE_SQL = text(
     """
-    SELECT id, embedding, summary, digest,
+    SELECT id, embedding, summary, digest, source_url,
            COALESCE(published_at, created_at) AS occurred_at
     FROM tech_items
     WHERE embedding IS NOT NULL
@@ -212,6 +213,7 @@ async def fetch_candidates(
             names=names_by_item.get(row.id, frozenset()),
             at=row.occurred_at,
             keywords=keywords_of(keyword_source),
+            source=registered_domain(row.source_url),
         )
         candidates.append(
             CandidateNeighbor(
