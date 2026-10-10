@@ -38,13 +38,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from argos.brain.entity_store import names_for_documents
 from argos.brain.event_candidates import as_vector, keywords_of
 from argos.brain.event_scoring import DocumentFeatures
+from argos.brain.source_domain import registered_domain
 from argos.config import settings
 from argos.models.event_document import EventDocument
 from argos.services.event_resolution import resolve_events
 
 _PERIOD_DOCS_SQL = text(
     """
-    SELECT id, embedding, summary, digest,
+    SELECT id, embedding, summary, digest, source_url,
            COALESCE(published_at, created_at) AS occurred_at
     FROM tech_items
     WHERE COALESCE(published_at, created_at) >= :start
@@ -209,6 +210,7 @@ async def fetch_period_input(
                 names=names_by_item.get(row.id, frozenset()),
                 at=row.occurred_at,
                 keywords=keywords_of(row.summary or row.digest),
+                source=registered_domain(row.source_url),
             ),
             event_ids=tuple(sorted(raw_events_by_item.get(row.id, []))),
         )

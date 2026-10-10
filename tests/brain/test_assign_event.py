@@ -191,3 +191,29 @@ async def test_a_document_without_an_embedding_is_passed_through(monkeypatch):
     # 사건을 만들지 않게 한다. (임베딩 없는 문서는 애초에 후보 비교가
     # 불가능하므로, 이 경로는 "판정 완료, 못 찾음"이 아니다.)
     assert result["event_assigned"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_subject_carries_the_registered_domain_of_the_source_url(monkeypatch):
+    """ARG-295: 낮 배정 대상 문서의 피처에 source_url의 등록 도메인이 실린다."""
+    from argos.brain.nodes import assign_event as node_module
+
+    seen: dict[str, DocumentFeatures] = {}
+
+    def _capture(subject, candidates, *, event_sizes, config):
+        seen["subject"] = subject
+        return None
+
+    monkeypatch.setattr(
+        event_assignment_module, "fetch_candidates", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        event_assignment_module, "fetch_event_sizes", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr(node_module, "decide_event", _capture)
+
+    await assign_event_node(
+        _state(source_url="https://blog.OpenAI.com/index/x"), session=_session()
+    )
+
+    assert seen["subject"].source == "openai.com"
