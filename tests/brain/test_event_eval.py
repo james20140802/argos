@@ -14,6 +14,8 @@ from argos.brain.event_eval import (
     evaluate,
     format_report,
     load_judgments,
+    PLATFORM_DOMAINS,
+    platform_pairs_together,
 )
 
 DATA = Path(__file__).resolve().parents[2] / "evals" / "event_judgments_arg283.json"
@@ -121,3 +123,26 @@ def test_evaluate_is_deterministic():
         doc_id: cluster.n for cluster in judgments.clusters for doc_id in cluster.doc_ids
     }
     assert evaluate(judgments, partition) == evaluate(judgments, dict(reversed(partition.items())))
+
+
+def test_platform_pairs_counts_co_assigned_same_platform_pairs():
+    a, b, c, d = _ids(4)
+    partition = {a: 1, b: 1, c: 1, d: 2}
+    sources = {a: "github.com", b: "github.com", c: "github.com", d: "github.com"}
+    # 그룹 1 안 github 쌍: (a,b),(a,c),(b,c) = 3. d는 따로.
+    assert platform_pairs_together(partition, sources) == 3
+
+
+def test_platform_pairs_ignore_non_platform_and_mixed_domains():
+    a, b, c = _ids(3)
+    partition = {a: 1, b: 1, c: 1}
+    sources = {a: "openai.com", b: "openai.com", c: "github.com"}
+    assert platform_pairs_together(partition, sources) == 0
+    assert PLATFORM_DOMAINS == frozenset({"arxiv.org", "github.com"})
+
+
+def test_platform_pairs_do_not_mix_platforms_or_count_unknown_sources():
+    a, b, c, d = _ids(4)
+    partition = {a: 1, b: 1, c: 1, d: 1}
+    sources = {a: "github.com", b: "arxiv.org", c: None}  # d는 sources에 없음
+    assert platform_pairs_together(partition, sources) == 0

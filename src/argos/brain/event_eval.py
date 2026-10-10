@@ -29,6 +29,11 @@ from typing import Hashable, Literal, Mapping
 Label = Literal["ok", "maybe", "bad"]
 UNVERIFIED = "Claude 판정 기준(미검증)"
 
+# 같은 출처 보정(ARG-284)이 일부러 손대지 않는 플랫폼 도메인. 여기서는 같은
+# 도메인이 곧 같은 소식원이 아니라서(깃허브의 수많은 저장소, arXiv의 수많은
+# 논문) 같은 그룹에 든 쌍을 따로 세어 보정 부작용을 눈으로 확인한다.
+PLATFORM_DOMAINS = frozenset({"arxiv.org", "github.com"})
+
 
 @dataclass(frozen=True)
 class JudgedCluster:
@@ -119,6 +124,25 @@ def evaluate(judgments: JudgmentSet, partition: Mapping[uuid.UUID, Hashable]) ->
         multi_doc_groups=sum(1 for size in sizes.values() if size >= 2),
         must_keep=tuple((n, strict_by_n.get(n, False)) for n in judgments.must_keep),
     )
+
+
+def platform_pairs_together(
+    partition: Mapping[uuid.UUID, Hashable],
+    sources: Mapping[uuid.UUID, str | None],
+    *,
+    platforms: frozenset[str] = PLATFORM_DOMAINS,
+) -> int:
+    """같은 그룹에 든 같은 플랫폼 도메인 문서 쌍의 수.
+
+    그룹별·플랫폼 도메인별 개수 m마다 m*(m-1)/2를 더한다. 출처를 모르는
+    문서(None·sources에 없음)는 세지 않는다.
+    """
+    per_group: Counter = Counter(
+        (group, sources[doc_id])
+        for doc_id, group in partition.items()
+        if sources.get(doc_id) in platforms
+    )
+    return sum(m * (m - 1) // 2 for m in per_group.values())
 
 
 def _ratio(numerator: int, denominator: int) -> str:

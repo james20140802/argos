@@ -238,4 +238,5 @@ def test_from_config_carries_penalty():
 
     config = EventDetectionConfig(same_source_penalty=0.07)
     assert EdgeWeights.from_config(config).same_source_penalty == 0.07
+    # ARG-296 실측: 채택 기준을 만족하는 0이 아닌 값이 없어 기본값은 꺼짐(0.0).
     assert EventDetectionConfig().same_source_penalty == 0.0
