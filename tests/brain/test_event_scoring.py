@@ -223,6 +223,20 @@ def test_near_duplicate_same_source_pair_is_exempt():
     assert NEAR_DUPLICATE_COSINE == 0.95
 
 
+def _unit_pair_at_cosine(cosine):
+    sine = (1.0 - cosine**2) ** 0.5
+    return _pair(
+        left_source="openai.com", right_source="openai.com", right_embedding=(cosine, sine)
+    )
+
+
+def test_near_duplicate_exemption_boundary_is_at_095():
+    below = _unit_pair_at_cosine(0.94)
+    assert _score(*below, 0.3) < _score(*below, 0.0)
+    above = _unit_pair_at_cosine(0.96)
+    assert _score(*above, 0.3) == _score(*above, 0.0)
+
+
 def test_corrected_score_never_goes_negative():
     weak = edge_weight(
         _doc(embedding=[1.0, 0.0], source="x.com", at=_NOW - timedelta(days=30)),

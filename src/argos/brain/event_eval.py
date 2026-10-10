@@ -74,16 +74,26 @@ class EvalReport:
         return (self.bad_merged + self.maybe_merged) / denominator
 
 
+_VALID_LABELS = frozenset({"ok", "maybe", "bad"})
+
+
 def load_judgments(path: str | Path) -> JudgmentSet:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    clusters = tuple(
-        JudgedCluster(
-            n=int(item["n"]),
-            label=item["label"],
-            doc_ids=tuple(uuid.UUID(value) for value in item["doc_ids"]),
-        )
-        for item in raw["clusters"]
-    )
+    clusters = []
+    for item in raw["clusters"]:
+        n = int(item["n"])
+        label = item["label"]
+        if label not in _VALID_LABELS:
+            raise ValueError(
+                f"판정 파일의 클러스터 {n}: 라벨 {label!r}은 ok/maybe/bad 중 하나여야 한다"
+            )
+        doc_ids = tuple(uuid.UUID(value) for value in item["doc_ids"])
+        if len(doc_ids) < 2:
+            raise ValueError(
+                f"판정 파일의 클러스터 {n}: doc_ids가 {len(doc_ids)}개 — 최소 2개가 필요하다"
+            )
+        clusters.append(JudgedCluster(n=n, label=label, doc_ids=doc_ids))
+    clusters = tuple(clusters)
     return JudgmentSet(clusters=clusters, must_keep=tuple(int(n) for n in raw.get("must_keep", ())))
 
 

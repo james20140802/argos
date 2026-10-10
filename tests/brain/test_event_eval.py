@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 
 from argos.brain.event_eval import (
+    PLATFORM_DOMAINS,
     JudgedCluster,
     JudgmentSet,
     evaluate,
     format_report,
     load_judgments,
-    PLATFORM_DOMAINS,
     platform_pairs_together,
 )
 
@@ -146,3 +146,24 @@ def test_platform_pairs_do_not_mix_platforms_or_count_unknown_sources():
     partition = {a: 1, b: 1, c: 1, d: 1}
     sources = {a: "github.com", b: "arxiv.org", c: None}  # d는 sources에 없음
     assert platform_pairs_together(partition, sources) == 0
+
+
+def _write_judgments(tmp_path: Path, label: str, doc_ids: list[str]) -> Path:
+    path = tmp_path / "judgments.json"
+    path.write_text(
+        json.dumps({"clusters": [{"n": 1, "label": label, "doc_ids": doc_ids}]}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_load_judgments_rejects_an_unknown_label(tmp_path):
+    ids = [str(value) for value in _ids(2)]
+    with pytest.raises(ValueError, match="ok/maybe/bad"):
+        load_judgments(_write_judgments(tmp_path, "okay", ids))
+
+
+def test_load_judgments_rejects_a_cluster_with_fewer_than_two_docs(tmp_path):
+    ids = [str(value) for value in _ids(1)]
+    with pytest.raises(ValueError, match="최소 2개"):
+        load_judgments(_write_judgments(tmp_path, "ok", ids))

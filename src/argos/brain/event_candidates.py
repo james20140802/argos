@@ -48,9 +48,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.entity_store import names_for_documents
 from argos.brain.event_scoring import DocumentFeatures
+from argos.brain.source_domain import registered_domain
 from argos.config import settings
 from argos.models.event_document import EventDocument
-from argos.brain.source_domain import registered_domain
 from argos.services.event_resolution import resolve_event, resolve_events
 
 _CANDIDATE_SQL = text(

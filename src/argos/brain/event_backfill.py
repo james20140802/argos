@@ -43,8 +43,8 @@ from argos.brain.event_assignment import (
 from argos.brain.event_candidates import CandidateNeighbor, as_vector, keywords_of
 from argos.brain.event_naming import EvidenceDoc, apply_event_naming
 from argos.brain.event_scoring import DocumentFeatures, cosine_similarity
-from argos.brain.source_domain import registered_domain
 from argos.brain.llm_client import OllamaClient
+from argos.brain.source_domain import registered_domain
 
 if TYPE_CHECKING:
     from argos.config import EventDetectionConfig

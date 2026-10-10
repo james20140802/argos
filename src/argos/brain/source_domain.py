@@ -4,7 +4,11 @@
 목록을 최신으로 두려면 실행 중 내려받아야 하는데 둘 다 금지다. 대신 자주 나오는
 이중 접미사만 내장한다. 근사이므로 한계가 있다 — github.com, arxiv.org,
 huggingface.co 같은 플랫폼 도메인에서는 서로 다른 작성자의 글도 같은 출처로
-친다. 그 영향은 Task 3(ARG-296)이 따로 잰다.
+친다. 접미사 표에 없는 호스팅 플랫폼(*.github.io, *.substack.com,
+*.medium.com, *.blogspot.com 등)도 마찬가지로 서로 다른 작성자를 한 출처로
+뭉친다. 그러므로 same_source_penalty 노브를 켜기 전에 이 표(또는
+event_eval.PLATFORM_DOMAINS의 플랫폼 지표)를 다시 살펴야 한다. 그 영향은
+Task 3(ARG-296)이 따로 잰다.
 """
 
 from __future__ import annotations

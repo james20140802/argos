@@ -58,7 +58,10 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="쉼표로 구분한 same_source_penalty 목록 — 각 값으로 낮·밤을 돌려 한 줄 요약 표를 찍는다",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.sweep is not None and args.same_source_penalty is not None:
+        parser.error("--sweep과 --same-source-penalty는 함께 쓸 수 없다 (스윕이 값을 직접 정한다)")
+    return args
 
 
 def _overrides(args: argparse.Namespace) -> dict[str, float]:
