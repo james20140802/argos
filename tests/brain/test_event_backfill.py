@@ -503,3 +503,24 @@ async def test_preview_counts_pending_documents_as_event_size(monkeypatch):
     joined = plan.assignments[1].event_id
     assert plan.assignments[2].event_id == joined
     assert seen_sizes[3] == {joined: 2}
+
+
+@pytest.mark.asyncio
+async def test_preview_virtual_event_ids_are_deterministic(monkeypatch):
+    # 이득이 같으면 choose_event가 사건 id 순서로 고른다 — 가상 id가 무작위면
+    # 같은 입력의 미리보기가 돌릴 때마다 다른 분할을 낸다.
+    from argos.brain import event_backfill
+
+    monkeypatch.setattr(
+        event_backfill, "db_candidate_source", AsyncMock(return_value=[])
+    )
+    docs = [
+        _doc([1.0, 0.0], ["anthropic"], AT, summary="claude 5 shipped"),
+        _doc([0.0, 1.0], ["openai"], AT + timedelta(hours=1), summary="gpt 7 shipped"),
+    ]
+    config = settings.user.event_detection
+    first = await plan_backfill(_session_without_db_neighbours(), docs, config=config)
+    second = await plan_backfill(_session_without_db_neighbours(), docs, config=config)
+    assert [a.event_id for a in first.assignments] == [
+        a.event_id for a in second.assignments
+    ]
