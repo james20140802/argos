@@ -14,6 +14,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
+from pydantic import ValidationError
 from sqlalchemy import text
 
 from argos.brain import event_backfill
@@ -78,6 +79,15 @@ def _overrides(args: argparse.Namespace) -> dict[str, float]:
     return overrides
 
 
+def _with_overrides(cfg, overrides: dict[str, float]):
+    # model_copy(update=...)는 검증을 건너뛴다 — penalty 2·nan 같은 값이 그대로
+    # 들어가 운영에서 불가능한 설정을 재게 된다. 다시 검증해서 만든다.
+    try:
+        return type(cfg).model_validate({**cfg.model_dump(), **overrides})
+    except ValidationError as exc:
+        raise SystemExit(f"잘못된 보정 값 {overrides}: {exc}") from exc
+
+
 def _display_path(path: Path) -> str:
     # 출력(README에 붙여넣는다)에 작업 디렉터리 절대 경로가 남지 않게 레포 기준 상대 경로로.
     try:
@@ -121,10 +131,13 @@ def _sweep_row(penalty: float, mode: str, report, platform_pairs: int) -> str:
 
 async def main() -> None:
     args = _parse_args()
-    cfg = settings.user.event_detection.model_copy(update=_overrides(args))
+    cfg = _with_overrides(settings.user.event_detection, _overrides(args))
     judgments = load_judgments(args.judgments)
     sweep = (
-        [float(value) for value in args.sweep.split(",") if value.strip()]
+        [
+            (penalty, _with_overrides(cfg, {"same_source_penalty": penalty}))
+            for penalty in (float(v) for v in args.sweep.split(",") if v.strip())
+        ]
         if args.sweep
         else None
     )
@@ -184,8 +197,7 @@ async def main() -> None:
         if sweep is not None:
             print()
             print(_sweep_header(judgments.must_keep))
-            for penalty in sweep:
-                run_cfg = cfg.model_copy(update={"same_source_penalty": penalty})
+            for penalty, run_cfg in sweep:
                 if docs is not None:
                     partition = await _day_partition(session, docs, run_cfg)
                     print(
