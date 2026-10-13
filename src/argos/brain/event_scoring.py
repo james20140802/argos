@@ -35,6 +35,17 @@
 중앙값이 0.43이라 무관한 이웃 둘이면 합이 τ를 넘는다. 사건이 커질수록 이웃
 자리를 더 차지해 표가 더 모이고, 실측(2026-10-05, 1,669건)에서 1,603건이 사건
 하나로 뭉쳤다. τ를 0.65로 올려도 결과가 같았다 — 값이 아니라 규칙의 모양 문제다.
+
+**같은 출처 보정 (ARG-284).** 같은 등록 도메인 글 쌍은 주제가 달라도 엔티티·시간·
+문체가 겹쳐 원래 점수가 높다. 그래서 두 문서의 출처가 같으면 가중합 점수에서
+`same_source_penalty`를 뺀다("같은 출처 쌍은 τ + penalty를 넘어야 같은 사건의
+근거"로 읽혀 `join_threshold`의 뜻이 유지된다). 한쪽이라도 출처를 모르면
+보정하지 않는다. 코사인이 `NEAR_DUPLICATE_COSINE` 이상이면 면제한다 — 같은 글이
+두 URL로 수집된 경우는 같은 출처라서 비슷한 게 아니라 같은 글이라서 비슷한
+것이고, 이 면제가 있어야 한 도메인의 내용 같은 큰 사건이 크기 때문에 갈라지지
+않는다(ARG-283). 면제 기준은 노브가 아니라 상수다 — 설정은 하나다(ARG-282).
+낮(`decide_event`)과 밤(`build_edges`)이 모두 `EdgeWeights.from_config`로 같은
+값을 읽으므로 이 보정도 둘이 함께 움직인다.
 """
 
 from __future__ import annotations
@@ -56,6 +67,13 @@ class DocumentFeatures:
     names: frozenset[str]
     at: datetime | None
     keywords: frozenset[str]
+    # 원문 URL의 등록 도메인(`source_domain.registered_domain`). 모르면 None.
+    # 기본값이 있는 마지막 필드라 기존 생성자 호출은 그대로 유효하다.
+    source: str | None = None
+
+
+NEAR_DUPLICATE_COSINE = 0.95
+"""이 코사인 이상이면 같은 글의 재수집으로 보고 같은 출처 보정을 면제한다."""
 
 
 @dataclass(frozen=True)
@@ -66,6 +84,8 @@ class EdgeWeights:
     entity: float
     time: float
     keyword: float
+    # 같은 출처 쌍의 점수에서 빼는 값. 0.0이면 보정 없음(기존 동작).
+    same_source_penalty: float = 0.0
 
     @classmethod
     def from_config(cls, config: "EventDetectionConfig") -> "EdgeWeights":
@@ -74,6 +94,7 @@ class EdgeWeights:
             entity=config.weight_entity,
             time=config.weight_time,
             keyword=config.weight_keyword,
+            same_source_penalty=config.same_source_penalty,
         )
 
 
@@ -137,13 +158,23 @@ def edge_weight(
     if total_weight <= 0:
         return 0.0
 
+    cosine = cosine_similarity(left.embedding, right.embedding)
     score = (
-        weights.cosine * cosine_similarity(left.embedding, right.embedding)
+        weights.cosine * cosine
         + weights.entity * _jaccard(left.names, right.names)
         + weights.time * _time_decay(left.at, right.at, window_days)
         + weights.keyword * _jaccard(left.keywords, right.keywords)
     )
-    return score / total_weight
+    score /= total_weight
+    if (
+        weights.same_source_penalty > 0.0
+        and left.source
+        and right.source
+        and left.source == right.source
+        and cosine < NEAR_DUPLICATE_COSINE
+    ):
+        score = max(0.0, score - weights.same_source_penalty)
+    return score
 
 
 def choose_event(

@@ -44,6 +44,7 @@ from argos.brain.event_candidates import CandidateNeighbor, as_vector, keywords_
 from argos.brain.event_naming import EvidenceDoc, apply_event_naming
 from argos.brain.event_scoring import DocumentFeatures, cosine_similarity
 from argos.brain.llm_client import OllamaClient
+from argos.brain.source_domain import registered_domain
 
 if TYPE_CHECKING:
     from argos.config import EventDetectionConfig
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 _UNASSIGNED_SQL = text(
     """
-    SELECT id, embedding, summary, digest, title,
+    SELECT id, embedding, summary, digest, title, source_url,
            COALESCE(published_at, created_at) AS occurred_at
     FROM tech_items
     WHERE embedding IS NOT NULL
@@ -149,6 +150,7 @@ async def fetch_unassigned_documents(
                     names=names_by_item.get(row.id, frozenset()),
                     at=row.occurred_at,
                     keywords=keywords_of(keyword_source),
+                    source=registered_domain(row.source_url),
                 ),
                 title=row.title,
                 summary=row.summary,
@@ -249,6 +251,10 @@ def _cap_candidates(
     return ranked[:k]
 
 
+# 미리보기 가상 사건 id의 네임스페이스 — 값 자체에는 뜻이 없다.
+_PREVIEW_EVENT_NAMESPACE = uuid.UUID("6f1c5b0e-2d4a-4e8b-9c3f-a1d2e3f4b5c6")
+
+
 async def plan_backfill(
     session: AsyncSession,
     docs: Sequence[BackfillDoc],
@@ -257,8 +263,11 @@ async def plan_backfill(
 ) -> BackfillPlan:
     """DB에 아무것도 쓰지 않고 배정 결과만 계산한다 (미리보기).
 
-    가상 사건 id는 ``uuid.uuid4()``로 만든다 — 리포트 안에서 사건을 구분하는
-    용도일 뿐, 실행 모드가 만들 실제 id와는 무관하다.
+    가상 사건 id는 그 사건을 연 문서 id에서 ``uuid.uuid5``로 만든다 — 리포트
+    안에서 사건을 구분하는 용도일 뿐, 실행 모드가 만들 실제 id와는 무관하다.
+    무작위가 아니어야 하는 이유: 후보 사건의 이득이 같으면 ``choose_event``가
+    사건 id 순서로 고르므로, ``uuid4``면 같은 입력의 미리보기가 돌릴 때마다
+    다른 분할을 내고 보정 스윕의 차이가 노브가 아니라 난수 탓일 수 있다.
     """
     overlay = _PendingOverlay()
     plan = BackfillPlan()
@@ -299,7 +308,7 @@ async def plan_backfill(
         )
         created = event_id is None
         if event_id is None:
-            event_id = uuid.uuid4()
+            event_id = uuid.uuid5(_PREVIEW_EVENT_NAMESPACE, str(doc.tech_item_id))
         overlay.add(doc, event_id, created=created)
         plan.assignments.append(Assignment(doc=doc, event_id=event_id, created=created))
     return plan

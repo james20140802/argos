@@ -1783,7 +1783,8 @@ def _print_recluster_report(candidates, *, start: datetime, end: datetime) -> No
     print(
         "  weights: "
         f"(cosine={config.weight_cosine}, entity={config.weight_entity}, "
-        f"time={config.weight_time}, keyword={config.weight_keyword})"
+        f"time={config.weight_time}, keyword={config.weight_keyword}, "
+        f"same_source_penalty={config.same_source_penalty})"
     )
     print(
         "  주의: 판정은 이 기간 안 문서만 본다 — 사건의 문서가 기간 밖에도 "
@@ -1859,7 +1860,8 @@ def _print_dry_run_report(plan, total_docs: int) -> None:
         f"window_days={config.window_days} "
         f"candidate_k={config.candidate_k} weights="
         f"(cosine={config.weight_cosine}, entity={config.weight_entity}, "
-        f"time={config.weight_time}, keyword={config.weight_keyword})"
+        f"time={config.weight_time}, keyword={config.weight_keyword}, "
+        f"same_source_penalty={config.same_source_penalty})"
     )
     distribution = plan.size_distribution
     if distribution:

@@ -449,3 +449,20 @@ async def test_a_concurrent_insert_cannot_steal_a_neighbor_slot(session_factory,
     assert captured == {left, right}  # 전제: 끼어든 문서는 대상이 아니다
     pairs = {(pair.left_id, pair.right_id) for pair in result.neighbor_pairs}
     assert (min(left, right), max(left, right)) in pairs
+
+
+@pytest.mark.asyncio
+async def test_period_documents_carry_the_registered_domain(session_factory, clean):
+    """ARG-295: 재군집 입력 문서의 피처 source는 source_url의 등록 도메인이다."""
+    base = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        item = await _make_item(session, slug="source", at=base, seed=0.01)
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_period_input(
+            session, start=base - timedelta(days=1), end=base + timedelta(days=1)
+        )
+
+    (doc,) = [d for d in result.documents if d.tech_item_id == item]
+    assert doc.features.source == "example.com"

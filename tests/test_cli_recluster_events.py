@@ -188,6 +188,7 @@ def test_the_report_header_records_the_scoring_weights(fake_recluster, capsys):
     assert f"entity={config.weight_entity}" in out
     assert f"time={config.weight_time}" in out
     assert f"keyword={config.weight_keyword}" in out
+    assert f"same_source_penalty={config.same_source_penalty}" in out
 
 
 def test_the_help_text_covers_both_install_paths(capsys):
