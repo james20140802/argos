@@ -157,7 +157,14 @@ def _time_decay(left: datetime | None, right: datetime | None, window_days: floa
 def _same_source_scale(
     left: datetime | None, right: datetime | None, full_at_days: float
 ) -> float:
-    """같은 출처 보정을 몇 할 적용할지 — 발행 간격 0이면 0, `full_at_days` 이상이면 1."""
+    """같은 출처 보정을 몇 할 적용할지 — 발행 간격 0이면 0, `full_at_days` 이상이면 1.
+
+    부르는 쪽은 발행 시각이 없으면 수집 시각(``COALESCE(published_at,
+    created_at)``, 온라인은 지금 시각)을 넘긴다. 일부러 그대로 둔다: 한꺼번에
+    긁힌 글은 간격이 0에 가까워 "모르면 보정 안 함"과 결과가 같고, 매일 새로
+    긁힌 글은 수집 시각이 발행 시각에 가까워 오히려 다른 발표를 떼어 준다.
+    모르면 전부 감점하는 쪽은 ARG-284의 일괄 감점으로 되돌아간다.
+    """
     if full_at_days <= 0:
         return 1.0
     if left is None or right is None:
