@@ -5,7 +5,11 @@
 잰다.
 
     uv run python scripts/eval_event_judgments.py [--mode day|night|both]
-        [--join-threshold F] [--same-source-penalty F] [--sweep 0,0.02,...]
+        [--join-threshold F] [--same-source-penalty F] [--same-source-gap-days F]
+        [--sweep 0,0.02,0.03:0.5,...]
+
+판정은 고르기 몫(홀수 번 묶음)과 채점 전용 몫(짝수 번 묶음)으로 나눠 따로 찍는다
+(ARG-299). 값은 고르기 몫만 보고 고르고, 채점 전용 몫은 그 값을 확인하는 데만 쓴다.
 """
 
 from __future__ import annotations
@@ -22,8 +26,10 @@ from argos.brain.event_eval import (
     UNVERIFIED,
     evaluate,
     format_report,
+    format_split_line,
     load_judgments,
     platform_pairs_together,
+    split_for_tuning,
 )
 from argos.brain.recluster_core import detect_communities
 from argos.brain.recluster_input import fetch_period_input
@@ -38,8 +44,9 @@ def _sweep_header(must_keep: tuple[int, ...]) -> str:
     # 바뀌어도 표가 엉뚱한 묶음을 가리키지 않게.
     keep_columns = "".join(f"| #{n} " for n in must_keep)
     return (
-        "penalty| 모드  | 틀린 비율(애매 제외) | 애매 남음 | 엄격 유지 | 느슨 유지 "
-        f"{keep_columns}| 2건+ 그룹 | 플랫폼 쌍  ({UNVERIFIED})"
+        "penalty:gap | 모드  | 틀린 비율(애매 제외) | 애매 남음 | 엄격 유지 | 느슨 유지 "
+        f"{keep_columns}| 2건+ 그룹 | 플랫폼 쌍 | 고르기 몫 틀린/엄격 "
+        f"| 채점 전용 몫 틀린/엄격  ({UNVERIFIED})"
     )
 
 _SPAN_SQL = text(
@@ -58,15 +65,33 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--judgments", type=Path, default=DEFAULT_JUDGMENTS)
     parser.add_argument("--join-threshold", type=float, default=None)
     parser.add_argument("--same-source-penalty", type=float, default=None)
+    parser.add_argument("--same-source-gap-days", type=float, default=None)
     parser.add_argument(
         "--sweep",
         default=None,
-        help="쉼표로 구분한 same_source_penalty 목록 — 각 값으로 낮·밤을 돌려 한 줄 요약 표를 찍는다",
+        help=(
+            "쉼표로 구분한 same_source_penalty[:same_source_gap_days] 목록 — 각 값으로 "
+            "낮·밤을 돌려 한 줄 요약 표를 찍는다. gap을 빼면 설정값(또는 "
+            "--same-source-gap-days)을 쓴다"
+        ),
     )
     args = parser.parse_args()
     if args.sweep is not None and args.same_source_penalty is not None:
         parser.error("--sweep과 --same-source-penalty는 함께 쓸 수 없다 (스윕이 값을 직접 정한다)")
     return args
+
+
+def _sweep_points(spec: str) -> list[dict[str, float]]:
+    points: list[dict[str, float]] = []
+    for item in (v.strip() for v in spec.split(",")):
+        if not item:
+            continue
+        penalty, _, gap = item.partition(":")
+        point = {"same_source_penalty": float(penalty)}
+        if gap:
+            point["same_source_gap_days"] = float(gap)
+        points.append(point)
+    return points
 
 
 def _overrides(args: argparse.Namespace) -> dict[str, float]:
@@ -76,6 +101,8 @@ def _overrides(args: argparse.Namespace) -> dict[str, float]:
         overrides["join_threshold"] = args.join_threshold
     if args.same_source_penalty is not None:
         overrides["same_source_penalty"] = args.same_source_penalty
+    if args.same_source_gap_days is not None:
+        overrides["same_source_gap_days"] = args.same_source_gap_days
     return overrides
 
 
@@ -114,18 +141,42 @@ async def _day_partition(session, docs, cfg) -> dict:
     return {a.doc.tech_item_id: a.event_id for a in plan.assignments}
 
 
-def _sweep_row(penalty: float, mode: str, report, platform_pairs: int) -> str:
+def _wrong_cell(report) -> str:
+    ratio = report.wrong_ratio
+    return (
+        f"{report.bad_merged}/{report.ok_merged + report.bad_merged} "
+        f"({'—' if ratio is None else f'{ratio:.1%}'})"
+    )
+
+
+def _split_cell(report) -> str:
+    return f"{_wrong_cell(report)} {report.ok_strict}/{report.ok_total}"
+
+
+def _sweep_row(label: str, mode: str, judgments, partition, platform_pairs: int) -> str:
+    report = evaluate(judgments, partition)
+    select, holdout = split_for_tuning(judgments)
     keep_cells = "".join(
         f"{'유지' if kept else '깨짐'} | " for _, kept in report.must_keep
     )
-    ratio = report.wrong_ratio
     return (
-        f"{penalty:<7g}| {mode:<5}| "
-        f"{report.bad_merged}/{report.ok_merged + report.bad_merged} "
-        f"({'—' if ratio is None else f'{ratio:.1%}'}) | "
+        f"{label:<12}| {mode:<5}| {_wrong_cell(report)} | "
         f"{report.maybe_merged}/{report.maybe_total} | "
         f"{report.ok_strict}/{report.ok_total} | {report.ok_merged}/{report.ok_total} | "
-        f"{keep_cells}{report.multi_doc_groups} | {platform_pairs}"
+        f"{keep_cells}{report.multi_doc_groups} | {platform_pairs} | "
+        f"{_split_cell(evaluate(select, partition))} | "
+        f"{_split_cell(evaluate(holdout, partition))}"
+    )
+
+
+def _print_report(judgments, partition, *, title: str, platform_pairs: int) -> None:
+    select, holdout = split_for_tuning(judgments)
+    print()
+    print(format_report(evaluate(judgments, partition), title=title))
+    print(_platform_line(platform_pairs))
+    print(format_split_line(evaluate(select, partition), label="고르기 몫(홀수 번 묶음)"))
+    print(
+        format_split_line(evaluate(holdout, partition), label="채점 전용 몫(짝수 번 묶음)")
     )
 
 
@@ -135,8 +186,12 @@ async def main() -> None:
     judgments = load_judgments(args.judgments)
     sweep = (
         [
-            (penalty, _with_overrides(cfg, {"same_source_penalty": penalty}))
-            for penalty in (float(v) for v in args.sweep.split(",") if v.strip())
+            (
+                f"{point['same_source_penalty']:g}:"
+                f"{point.get('same_source_gap_days', cfg.same_source_gap_days):g}",
+                _with_overrides(cfg, point),
+            )
+            for point in _sweep_points(args.sweep)
         ]
         if args.sweep
         else None
@@ -153,7 +208,8 @@ async def main() -> None:
             f"window_days={cfg.window_days} candidate_k={cfg.candidate_k} "
             f"weights(cos/entity/time/kw)={cfg.weight_cosine}/{cfg.weight_entity}/"
             f"{cfg.weight_time}/{cfg.weight_keyword} "
-            f"same_source_penalty={cfg.same_source_penalty}"
+            f"same_source_penalty={cfg.same_source_penalty} "
+            f"same_source_gap_days={cfg.same_source_gap_days}"
         )
         print(f"코퍼스 문서 수: {span.total}")
         if not span.total:
@@ -197,14 +253,15 @@ async def main() -> None:
         if sweep is not None:
             print()
             print(_sweep_header(judgments.must_keep))
-            for penalty, run_cfg in sweep:
+            for label, run_cfg in sweep:
                 if docs is not None:
                     partition = await _day_partition(session, docs, run_cfg)
                     print(
                         _sweep_row(
-                            penalty,
+                            label,
                             "day",
-                            evaluate(judgments, partition),
+                            judgments,
+                            partition,
                             platform_pairs_together(partition, day_sources),
                         ),
                         flush=True,
@@ -213,9 +270,10 @@ async def main() -> None:
                     partition = _night_partition(period, run_cfg)
                     print(
                         _sweep_row(
-                            penalty,
+                            label,
                             "night",
-                            evaluate(judgments, partition),
+                            judgments,
+                            partition,
                             platform_pairs_together(partition, night_sources),
                         ),
                         flush=True,
@@ -223,14 +281,20 @@ async def main() -> None:
         else:
             if docs is not None:
                 partition = await _day_partition(session, docs, cfg)
-                print()
-                print(format_report(evaluate(judgments, partition), title="day · backfill 미리보기"))
-                print(_platform_line(platform_pairs_together(partition, day_sources)))
+                _print_report(
+                    judgments,
+                    partition,
+                    title="day · backfill 미리보기",
+                    platform_pairs=platform_pairs_together(partition, day_sources),
+                )
             if period is not None:
                 partition = _night_partition(period, cfg)
-                print()
-                print(format_report(evaluate(judgments, partition), title="night · 전 기간 재군집"))
-                print(_platform_line(platform_pairs_together(partition, night_sources)))
+                _print_report(
+                    judgments,
+                    partition,
+                    title="night · 전 기간 재군집",
+                    platform_pairs=platform_pairs_together(partition, night_sources),
+                )
 
         await session.rollback()
 
