@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -191,23 +191,29 @@ def test_a_cap_below_the_event_size_is_what_made_the_day_refuse():
 _SAME = "openai.com"
 
 
-def _src_features(theta: float, source: str | None) -> DocumentFeatures:
+def _src_features(
+    theta: float, source: str | None, at: datetime = _AT
+) -> DocumentFeatures:
     return DocumentFeatures(
         embedding=(math.cos(theta), math.sin(theta)),
         names=frozenset({"openai"}),
-        at=_AT,
+        at=at,
         keywords=frozenset(),
         source=source,
     )
 
 
 def _pair_verdicts(
-    existing_source: str, new_source: str, config: EventDetectionConfig
+    existing_source: str,
+    new_source: str,
+    config: EventDetectionConfig,
+    *,
+    gap_days: float = 2.0,
 ) -> tuple[bool, bool]:
-    """기존 문서 하나(코사인 ≈0.8)에 새 문서가 (낮, 밤)에서 붙는가."""
+    """기존 문서 하나(코사인 ≈0.8)에 ``gap_days`` 뒤 발행된 새 문서가 (낮, 밤)에서 붙는가."""
     theta = math.acos(0.8)
     old = _src_features(0.0, existing_source)
-    new = _src_features(theta, new_source)
+    new = _src_features(theta, new_source, at=_AT + timedelta(days=gap_days))
     old_id, new_id = uuid.UUID(int=1), uuid.UUID(int=2)
     day = (
         decide_event(
@@ -229,17 +235,33 @@ def _pair_verdicts(
     return day, night
 
 
+_OFF = EventDetectionConfig(same_source_penalty=0.0)
+_STRONG = EventDetectionConfig(same_source_penalty=0.3, same_source_gap_days=0.5)
+
+
 @requires_graph_libs
 def test_same_source_penalty_moves_day_and_night_together():
-    assert _pair_verdicts(_SAME, _SAME, EventDetectionConfig()) == (True, True)
-    corrected = EventDetectionConfig(same_source_penalty=0.3)
-    assert _pair_verdicts(_SAME, _SAME, corrected) == (False, False)
+    assert _pair_verdicts(_SAME, _SAME, _OFF) == (True, True)
+    assert _pair_verdicts(_SAME, _SAME, _STRONG) == (False, False)
+
+
+@requires_graph_libs
+def test_simultaneous_same_source_pair_stays_together_day_and_night():
+    """ARG-299: 같은 시각에 나온 같은 출처 글(발표 + 시스템 카드)은 감점 없이 묶인다."""
+    assert _pair_verdicts(_SAME, _SAME, _STRONG, gap_days=0.0) == (True, True)
+
+
+@requires_graph_libs
+def test_gap_knob_moves_day_and_night_together():
+    """하루 간격 쌍: 전액 간격을 길게 잡으면 감점이 줄어 둘 다 붙고, 짧게 잡으면 둘 다 뗀다."""
+    lenient = EventDetectionConfig(same_source_penalty=0.3, same_source_gap_days=10.0)
+    assert _pair_verdicts(_SAME, _SAME, lenient, gap_days=1.0) == (True, True)
+    assert _pair_verdicts(_SAME, _SAME, _STRONG, gap_days=1.0) == (False, False)
 
 
 @requires_graph_libs
 def test_different_source_pair_unaffected_by_penalty():
-    corrected = EventDetectionConfig(same_source_penalty=0.3)
-    assert _pair_verdicts(_SAME, "techcrunch.com", corrected) == (True, True)
+    assert _pair_verdicts(_SAME, "techcrunch.com", _STRONG) == (True, True)
 
 
 def _identical_same_source_documents(count: int) -> list[ReclusterDocument]:
@@ -266,7 +288,8 @@ def _all_pairs(documents: list[ReclusterDocument]) -> list[NeighborPair]:
 def test_large_identical_same_source_event_does_not_split():
     """근사 중복 면제 덕에 보정 세기와 무관하게 큰 사건이 갈라지지 않는다 (ARG-283)."""
     documents = _identical_same_source_documents(60)
-    config = EventDetectionConfig(same_source_penalty=0.3)
+    # 간격 0이면 ARG-299 경사가 먼저 면제하므로, 근사 중복 면제만 보려고 경사를 끈다.
+    config = EventDetectionConfig(same_source_penalty=0.3, same_source_gap_days=0.0)
     communities = detect_communities(documents, _all_pairs(documents), config=config)
     assert len(communities) == 1
 
@@ -274,7 +297,8 @@ def test_large_identical_same_source_event_does_not_split():
 @requires_graph_libs
 def test_same_input_same_result_with_penalty():
     documents = _identical_same_source_documents(60)
-    config = EventDetectionConfig(same_source_penalty=0.3)
+    # 간격 0이면 ARG-299 경사가 먼저 면제하므로, 근사 중복 면제만 보려고 경사를 끈다.
+    config = EventDetectionConfig(same_source_penalty=0.3, same_source_gap_days=0.0)
     forward = detect_communities(documents, _all_pairs(documents), config=config)
     backward = detect_communities(
         list(reversed(documents)), list(reversed(_all_pairs(documents))), config=config

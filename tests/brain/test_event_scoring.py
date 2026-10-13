@@ -250,7 +250,79 @@ def test_corrected_score_never_goes_negative():
 def test_from_config_carries_penalty():
     from argos.config import EventDetectionConfig
 
-    config = EventDetectionConfig(same_source_penalty=0.07)
-    assert EdgeWeights.from_config(config).same_source_penalty == 0.07
-    # ARG-296 실측: 채택 기준을 만족하는 0이 아닌 값이 없어 기본값은 꺼짐(0.0).
-    assert EventDetectionConfig().same_source_penalty == 0.0
+    config = EventDetectionConfig(same_source_penalty=0.07, same_source_gap_days=2.0)
+    weights = EdgeWeights.from_config(config)
+    assert weights.same_source_penalty == 0.07
+    assert weights.same_source_gap_days == 2.0
+    # ARG-299: 간격 비례 보정으로 켜서 출하한다(실측은 evals/README.md).
+    assert EventDetectionConfig().same_source_penalty == 0.03
+    assert EventDetectionConfig().same_source_gap_days == 0.5
+
+
+# --- ARG-299: 같은 출처 보정은 발행 간격에 비례한다 ---------------------------
+
+
+def _gap_pair(gap_days, *, left_at=_NOW):
+    left = _doc(embedding=[1.0, 0.0], names=["openai"], source="openai.com", at=left_at)
+    right = _doc(
+        embedding=[0.8, 0.6],
+        names=["openai"],
+        source="openai.com",
+        at=None if gap_days is None else _NOW + timedelta(days=gap_days),
+    )
+    return left, right
+
+
+def _ramp_score(left, right, *, penalty=0.2, full_at=1.0):
+    weights = EdgeWeights(
+        cosine=0.55,
+        entity=0.25,
+        time=0.15,
+        keyword=0.05,
+        same_source_penalty=penalty,
+        same_source_gap_days=full_at,
+    )
+    return edge_weight(left, right, weights=weights, window_days=14)
+
+
+def test_simultaneous_same_source_pair_is_not_corrected():
+    pair = _gap_pair(0.0)
+    assert _ramp_score(*pair) == _ramp_score(*pair, penalty=0.0)
+
+
+def test_correction_grows_linearly_with_gap_up_to_full():
+    half = _gap_pair(0.5)
+    assert _ramp_score(*half) == pytest.approx(_ramp_score(*half, penalty=0.0) - 0.1)
+    for gap in (1.0, 3.0):
+        far = _gap_pair(gap)
+        assert _ramp_score(*far) == pytest.approx(_ramp_score(*far, penalty=0.0) - 0.2)
+
+
+def test_gap_is_symmetric():
+    left, right = _gap_pair(0.5)
+    assert _ramp_score(left, right) == _ramp_score(right, left)
+
+
+def test_unknown_gap_is_not_corrected():
+    pair = _gap_pair(None)
+    assert _ramp_score(*pair) == _ramp_score(*pair, penalty=0.0)
+
+
+def test_zero_full_at_is_the_flat_penalty():
+    """same_source_gap_days 0이면 간격과 무관하게 전액 — ARG-284의 일괄 감점."""
+    pair = _gap_pair(0.0)
+    assert _ramp_score(*pair, full_at=0.0) == pytest.approx(
+        _ramp_score(*pair, penalty=0.0) - 0.2
+    )
+
+
+def test_ramp_does_not_touch_different_sources():
+    left, right = _gap_pair(3.0)
+    other = DocumentFeatures(
+        embedding=right.embedding,
+        names=right.names,
+        at=right.at,
+        keywords=right.keywords,
+        source="techcrunch.com",
+    )
+    assert _ramp_score(left, other) == _ramp_score(left, other, penalty=0.0)
