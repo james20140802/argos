@@ -16,6 +16,7 @@ from argos.brain.event_eval import (
     format_report,
     load_judgments,
     platform_pairs_together,
+    split_for_tuning,
 )
 
 DATA = Path(__file__).resolve().parents[2] / "evals" / "event_judgments_arg283.json"
@@ -184,3 +185,24 @@ def test_load_judgments_rejects_must_keep_naming_a_missing_cluster(tmp_path):
     )
     with pytest.raises(ValueError, match=r"must_keep \[9\]"):
         load_judgments(path)
+
+
+# --- ARG-299: 고르기 몫 / 채점 전용 몫 ---------------------------------------
+
+
+def test_split_for_tuning_is_odd_vs_even_and_covers_everything():
+    judgments = load_judgments(DATA)
+    select, holdout = split_for_tuning(judgments)
+    assert {c.n % 2 for c in select.clusters} == {1}
+    assert {c.n % 2 for c in holdout.clusters} == {0}
+    assert len(select.clusters) + len(holdout.clusters) == len(judgments.clusters)
+    # 반드시 유지는 전체 리포트에서 본다 — 몫에 남기면 반대쪽에서 "깨짐"으로 찍힌다.
+    assert select.must_keep == () and holdout.must_keep == ()
+    # 두 몫 모두 세 라벨을 다 갖고 있어야 몫별 틀린 비율이 의미가 있다.
+    for part in (select, holdout):
+        assert {c.label for c in part.clusters} == {"ok", "maybe", "bad"}
+
+
+def test_split_for_tuning_is_deterministic():
+    judgments = load_judgments(DATA)
+    assert split_for_tuning(judgments) == split_for_tuning(judgments)

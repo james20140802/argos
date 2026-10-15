@@ -46,6 +46,16 @@
 않는다(ARG-283). 면제 기준은 노브가 아니라 상수다 — 설정은 하나다(ARG-282).
 낮(`decide_event`)과 밤(`build_edges`)이 모두 `EdgeWeights.from_config`로 같은
 값을 읽으므로 이 보정도 둘이 함께 움직인다.
+
+**보정은 발행 간격에 비례한다 (ARG-299).** 같은 출처라는 사실만으로 깎으면 맞는
+묶음과 틀린 묶음이 같은 비율로 깨졌다(ARG-284 스윕, 무릎 없음). 같은 회사가 같은
+소식을 여러 번 쓴 글(발표 글 + 시스템 카드, 한꺼번에 낸 사례 글 묶음)은 거의 같은
+시각에 나오고, 같은 블로그의 서로 다른 발표는 하루 이상 떨어져 나온다. 그래서
+같은 출처 쌍의 감점을 ``penalty × min(1, 간격 / same_source_gap_days)``로 둔다 —
+동시 발행이면 0, 간격이 벌어질수록 전액까지. 계단 대신 경사인 이유는 판정 128개
+스윕에서 계단(간격 ≥ g면 전액)이 같은 유지 수준에서 틀린 비율을 덜 줄였고, 경계
+바로 앞뒤 쌍이 정반대 대접을 받는 절벽이 없어서다. 엔티티 불일치는 신호로 쓰지
+않았다 — 평가 코퍼스의 문서에 이름 링크가 아직 없어 잴 수 없었다.
 """
 
 from __future__ import annotations
@@ -86,6 +96,9 @@ class EdgeWeights:
     keyword: float
     # 같은 출처 쌍의 점수에서 빼는 값. 0.0이면 보정 없음(기존 동작).
     same_source_penalty: float = 0.0
+    # 같은 출처 보정이 전액이 되는 발행 간격(일). 간격 0이면 보정 0, 이 값까지
+    # 선형으로 커진다. 0.0이면 간격과 무관하게 전액(ARG-284의 일괄 감점).
+    same_source_gap_days: float = 0.0
 
     @classmethod
     def from_config(cls, config: "EventDetectionConfig") -> "EdgeWeights":
@@ -95,6 +108,7 @@ class EdgeWeights:
             time=config.weight_time,
             keyword=config.weight_keyword,
             same_source_penalty=config.same_source_penalty,
+            same_source_gap_days=config.same_source_gap_days,
         )
 
 
@@ -140,6 +154,26 @@ def _time_decay(left: datetime | None, right: datetime | None, window_days: floa
     return max(0.0, 1.0 - delta_days / window_days)
 
 
+def _same_source_scale(
+    left: datetime | None, right: datetime | None, full_at_days: float
+) -> float:
+    """같은 출처 보정을 몇 할 적용할지 — 발행 간격 0이면 0, `full_at_days` 이상이면 1.
+
+    부르는 쪽은 발행 시각이 없으면 수집 시각(``COALESCE(published_at,
+    created_at)``, 온라인은 지금 시각)을 넘긴다. 일부러 그대로 둔다: 한꺼번에
+    긁힌 글은 간격이 0에 가까워 "모르면 보정 안 함"과 결과가 같고, 매일 새로
+    긁힌 글은 수집 시각이 발행 시각에 가까워 오히려 다른 발표를 떼어 준다.
+    모르면 전부 감점하는 쪽은 ARG-284의 일괄 감점으로 되돌아간다.
+    """
+    if full_at_days <= 0:
+        return 1.0
+    if left is None or right is None:
+        # 간격을 모르면 "다른 발표"의 근거도 없다 — 출처를 모를 때처럼 보정하지 않는다.
+        return 0.0
+    gap_days = abs((left - right).total_seconds()) / 86400.0
+    return min(1.0, gap_days / full_at_days)
+
+
 def edge_weight(
     left: DocumentFeatures,
     right: DocumentFeatures,
@@ -173,7 +207,8 @@ def edge_weight(
         and left.source == right.source
         and cosine < NEAR_DUPLICATE_COSINE
     ):
-        score = max(0.0, score - weights.same_source_penalty)
+        scale = _same_source_scale(left.at, right.at, weights.same_source_gap_days)
+        score = max(0.0, score - weights.same_source_penalty * scale)
     return score
 
 

@@ -15,6 +15,10 @@
   비율에서 빼고 개수만 따로 본다(사용자 확정 답변 3).
 - 분할에 없는 문서는 각자 홀로 있는 것으로 친다 — 빠진 문서끼리 묶였다고
   보면 없는 근거로 묶음을 지어내는 셈이다.
+
+**고르기 몫과 채점 전용 몫 (ARG-299).** 보정 값을 판정에 맞춰 고르면 같은 판정으로
+채점한 숫자는 낙관적으로 나온다. 그래서 묶음 번호 홀수는 값을 고르는 데 쓰고,
+짝수는 채점에만 남긴다(`split_for_tuning`). 나누는 규칙이 번호뿐이라 결정적이다.
 """
 
 from __future__ import annotations
@@ -139,6 +143,28 @@ def evaluate(judgments: JudgmentSet, partition: Mapping[uuid.UUID, Hashable]) ->
         missing_docs=missing,
         multi_doc_groups=sum(1 for size in sizes.values() if size >= 2),
         must_keep=tuple((n, strict_by_n.get(n, False)) for n in judgments.must_keep),
+    )
+
+
+def split_for_tuning(judgments: JudgmentSet) -> tuple[JudgmentSet, JudgmentSet]:
+    """(고르기 몫 = 홀수 번 묶음, 채점 전용 몫 = 짝수 번 묶음).
+
+    반드시 유지(`must_keep`)는 양쪽 다 비운다 — 그 판정은 몫과 상관없이 전체
+    판정 리포트에서 매번 확인한다. 몫에 남기면 반대쪽 몫에서 "없는 번호 = 깨짐"
+    으로 찍힌다.
+    """
+    select = tuple(c for c in judgments.clusters if c.n % 2 == 1)
+    holdout = tuple(c for c in judgments.clusters if c.n % 2 == 0)
+    return JudgmentSet(clusters=select, must_keep=()), JudgmentSet(
+        clusters=holdout, must_keep=()
+    )
+
+
+def format_split_line(report: EvalReport, *, label: str) -> str:
+    return (
+        f"  {label}: 틀린 비율(애매 제외) "
+        f"{_ratio(report.bad_merged, report.ok_merged + report.bad_merged)}, "
+        f"맞는 묶음 엄격 유지 {_ratio(report.ok_strict, report.ok_total)}"
     )
 
 
