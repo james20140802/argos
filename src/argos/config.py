@@ -279,6 +279,9 @@ class EventDetectionConfig(BaseModel):
     entity_min_doc_count: int = Field(default=1, ge=1)
     entity_max_doc_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
     entity_df_min_batch: int = Field(default=5, ge=1)
+    # 저장된 이름 전체에서 이 비율을 넘는 문서에 붙은 이름은 흔한 말로 보고
+    # 읽을 때 뺀다 (ARG-302). 분모는 이름이 1개 이상인 문서 수.
+    entity_common_doc_ratio: float = Field(default=0.05, gt=0.0, le=1.0)
     # spaCy 보강(ARG-253)은 켜져 있어도 미설치면 조용히 건너뛴다.
     entity_spacy_enabled: bool = True
     # 열어 둘 파이프라인 이름. 코드에 박아 두면 다른 호환 모델을 설치해

@@ -112,11 +112,14 @@ def _attach_extracted_names(states: list[BrainState]) -> list[BrainState]:
         return states
 
     documents = [states[i]["raw_text"] for i in valid_indices]
+    # 저장될 제목과 같은 규칙으로 파생한 제목을 같이 넘긴다 — 제목에 나온
+    # 회사·제품 이름이 본문에 안 나오는 글이 있다 (ARG-302).
+    titles = [derive_title(document) for document in documents]
     for i in valid_indices:
         states[i] = {**states[i], "simhash": simhash(states[i].get("raw_text") or "")}
 
     try:
-        extracted_batch = extract_names(documents)
+        extracted_batch = extract_names(documents, titles=titles)
     except Exception as exc:  # noqa: BLE001
         logger.warning("_attach_extracted_names: extraction failed: %r", exc)
         for i in valid_indices:

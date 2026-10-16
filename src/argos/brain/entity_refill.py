@@ -60,7 +60,12 @@ def extract_by_crawl_date(
     for _, group in groupby(ordered, key=lambda row: row.crawl_date):
         batch = list(group)
         # 모듈 속성으로 불러야 테스트가 추출기를 바꿔 끼울 수 있다.
-        names = entity_extraction.extract_names([row.raw_content or "" for row in batch])
+        # 제목도 같이 넘긴다 — 운영의 새 기사 경로(pipeline)와 같은 입력이어야
+        # 채운 이름이 새로 수집된 기사의 이름과 같은 모양이 된다 (ARG-302).
+        names = entity_extraction.extract_names(
+            [row.raw_content or "" for row in batch],
+            titles=[row.title for row in batch],
+        )
         for row, row_names in zip(batch, names):
             found[row.tech_item_id] = row_names
     return found

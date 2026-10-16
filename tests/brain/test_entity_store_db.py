@@ -14,7 +14,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from argos.brain.entity_extraction import ExtractedName
-from argos.brain.entity_store import attach_names, names_for_documents
+from argos.brain.entity_store import (
+    attach_names,
+    name_document_frequency,
+    names_for_documents,
+    raw_names_for_documents,
+)
 from argos.brain.graph_state import BrainState
 from argos.brain.nodes.save import save_node
 from argos.config import settings
@@ -100,7 +105,7 @@ async def test_attach_names_creates_entities_and_links(session_factory):
         await session.commit()
 
     async with session_factory() as session:
-        links = await names_for_documents(session, [item_id])
+        links = await raw_names_for_documents(session, [item_id])
         assert links[item_id] == frozenset({"arg-263-test-anthropic", "arg-263-test-openai"})
 
 
@@ -118,7 +123,7 @@ async def test_attaching_the_same_names_twice_adds_no_duplicate_links(session_fa
         await session.commit()
 
     async with session_factory() as session:
-        links = await names_for_documents(session, [item_id])
+        links = await raw_names_for_documents(session, [item_id])
         assert links[item_id] == frozenset({"arg-263-test-anthropic"})
 
 
@@ -139,7 +144,7 @@ async def test_the_same_name_on_two_documents_reuses_one_entity_row(session_fact
         )
         assert len(entity_rows.all()) == 1
 
-        links = await names_for_documents(session, [item_a, item_b])
+        links = await raw_names_for_documents(session, [item_a, item_b])
         assert links[item_a] == frozenset({"arg-263-test-shared-name"})
         assert links[item_b] == frozenset({"arg-263-test-shared-name"})
 
@@ -156,7 +161,7 @@ async def test_names_for_documents_reads_back_what_was_attached(session_factory)
         await session.commit()
 
     async with session_factory() as session:
-        links = await names_for_documents(session, [item_with_names, item_without_names])
+        links = await raw_names_for_documents(session, [item_with_names, item_without_names])
         assert links[item_with_names] == frozenset({"arg-263-test-lonely"})
         assert item_without_names not in links
         assert links.get(item_without_names, frozenset()) == frozenset()
@@ -188,5 +193,51 @@ async def test_save_node_attaches_the_names_carried_on_the_state(session_factory
         item_id = result["saved_item_id"]
 
     async with session_factory() as session:
-        links = await names_for_documents(session, [item_id])
+        links = await raw_names_for_documents(session, [item_id])
         assert links[item_id] == frozenset({"arg-263-test-save-node-name"})
+
+
+@pytest.mark.asyncio
+async def test_names_for_documents_drops_common_names_but_raw_keeps_them(
+    session_factory, monkeypatch
+):
+    """3건 모두에 붙은 이름은 걸러지고, 1건에만 붙은 이름은 남는다."""
+    async with session_factory() as session:
+        items = [await _make_item(session, f"common-{index}") for index in range(3)]
+        for item in items:
+            await attach_names(
+                session, item, _names(("arg-263-test-302-common", "Common"))
+            )
+        await attach_names(
+            session, items[0], _names(("arg-263-test-302-rare", "Rare"))
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        frequency, named = await name_document_frequency(session)
+        assert frequency["arg-263-test-302-common"] == 3
+        assert frequency["arg-263-test-302-rare"] == 1
+        # 다른 행이 섞여 있어도 결정적이도록 두 빈도 사이(2/분모)에서 컷을 잡는다.
+        ratio = 2 / named
+        monkeypatch.setattr(
+            settings.user.event_detection, "entity_common_doc_ratio", ratio
+        )
+
+        filtered = await names_for_documents(session, items)
+        raw = await raw_names_for_documents(session, items)
+
+    assert "arg-263-test-302-common" not in filtered[items[0]]
+    assert "arg-263-test-302-rare" in filtered[items[0]]
+    assert "arg-263-test-302-common" in raw[items[0]]
+    assert "arg-263-test-302-rare" in raw[items[0]]
+
+
+@pytest.mark.asyncio
+async def test_names_for_documents_without_any_links_is_empty(session_factory):
+    async with session_factory() as session:
+        item = await _make_item(session, "no-links")
+        await session.commit()
+
+    async with session_factory() as session:
+        assert await names_for_documents(session, [item]) == {}
+        assert await names_for_documents(session, []) == {}

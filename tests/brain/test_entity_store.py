@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from argos.brain import pipeline as brain_pipeline
 from argos.brain.entity_extraction import ExtractedName
 from argos.brain.entity_store import canonical_names, storage_key
+from argos.brain.titles import derive_title
 
 
 def test_storage_key_is_the_extraction_canonical_form():
@@ -71,7 +72,9 @@ def test_attach_extracted_names_loads_names_onto_valid_states_only(monkeypatch):
     result = brain_pipeline._attach_extracted_names([valid_state, invalid_state])
 
     # 배치 계약: 유효한 문서만 한 번의 호출로 넘긴다.
-    extract_mock.assert_called_once_with([valid_state["raw_text"]])
+    extract_mock.assert_called_once_with(
+        [valid_state["raw_text"]], titles=[derive_title(valid_state["raw_text"])]
+    )
 
     assert result[0]["entity_names"] == ["anthropic"]
     assert result[0]["entity_names_extracted"] == [

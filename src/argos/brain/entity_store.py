@@ -16,11 +16,13 @@ import logging
 import uuid
 from typing import Iterable, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.entity_extraction import ExtractedName
+from argos.brain.entity_frequency import drop_common_names
+from argos.config import settings
 from argos.models.document_entity import DocumentEntity
 from argos.models.entity import Entity
 
@@ -83,11 +85,15 @@ async def attach_names(
     )
 
 
-async def names_for_documents(
+async def raw_names_for_documents(
     session: AsyncSession,
     tech_item_ids: Sequence[uuid.UUID],
 ) -> dict[uuid.UUID, frozenset[str]]:
-    """이웃 문서들의 이름을 한 번의 쿼리로. 문서당 한 번씩 도는 N+1을 피한다."""
+    """이웃 문서들의 **저장된 그대로의** 이름을 한 번의 쿼리로.
+
+    문서당 한 번씩 도는 N+1을 피한다. 흔한 이름을 걸러내지 않는다 — 채우기
+    미리보기처럼 저장 상태를 그대로 봐야 하는 곳이 쓴다.
+    """
     if not tech_item_ids:
         return {}
 
@@ -100,3 +106,44 @@ async def names_for_documents(
     for tech_item_id, key in rows.all():
         collected.setdefault(tech_item_id, set()).add(key)
     return {key: frozenset(value) for key, value in collected.items()}
+
+
+async def name_document_frequency(session: AsyncSession) -> tuple[dict[str, int], int]:
+    """(정규형 키 -> 그 이름이 붙은 문서 수, 이름이 1개 이상인 문서 수).
+
+    빈도는 실행 시점에 저장된 링크에서 그때그때 센다 — 스키마에 통계를 따로
+    두지 않으니 이름이 갱신되면 다음 호출부터 바로 반영된다. (item, entity)가
+    유니크라 그룹별 행 수가 곧 문서 수다.
+    """
+    frequency_rows = await session.execute(
+        select(Entity.normalized_key, func.count())
+        .join(DocumentEntity, DocumentEntity.entity_id == Entity.id)
+        .group_by(Entity.normalized_key)
+    )
+    frequency = {key: count for key, count in frequency_rows.all()}
+    named = await session.scalar(
+        select(func.count(func.distinct(DocumentEntity.tech_item_id)))
+    )
+    return frequency, int(named or 0)
+
+
+async def names_for_documents(
+    session: AsyncSession,
+    tech_item_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, frozenset[str]]:
+    """이웃 문서들의 이름. 코퍼스 전반에 흔한 이름은 걸러서 돌려준다.
+
+    배치 안 문서빈도 컷은 크롤 날짜마다 따로 돌아서 ``ai``·``openai``가 새어
+    나온다. 저장된 이름 전체의 빈도로 한 번 더 거른다(ARG-302). 이름 링크가
+    하나도 없으면 빈도 통계가 비어 아무것도 지우지 않는다.
+    """
+    names = await raw_names_for_documents(session, tech_item_ids)
+    if not names:
+        return names
+    frequency, named_documents = await name_document_frequency(session)
+    return drop_common_names(
+        names,
+        document_frequency=frequency,
+        named_documents=named_documents,
+        max_ratio=settings.user.event_detection.entity_common_doc_ratio,
+    )

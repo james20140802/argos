@@ -21,12 +21,14 @@ import argparse
 import asyncio
 import contextlib
 import uuid
+from collections import Counter
 from pathlib import Path
 
 from pydantic import ValidationError
 from sqlalchemy import text
 
 from argos.brain import event_backfill, event_candidates, recluster_input
+from argos.brain.entity_frequency import drop_common_names
 from argos.brain.entity_refill import extract_by_crawl_date, load_refill_rows
 from argos.brain.entity_store import canonical_names
 from argos.brain.event_eval import (
@@ -102,6 +104,7 @@ def _parse_args() -> argparse.Namespace:
             "--same-source-gap-days)을 쓴다"
         ),
     )
+    parser.add_argument("--entity-common-doc-ratio", type=float, default=None)
     parser.add_argument(
         "--fill-names",
         action="store_true",
@@ -135,6 +138,8 @@ def _overrides(args: argparse.Namespace) -> dict[str, float]:
         overrides["same_source_penalty"] = args.same_source_penalty
     if args.same_source_gap_days is not None:
         overrides["same_source_gap_days"] = args.same_source_gap_days
+    if args.entity_common_doc_ratio is not None:
+        overrides["entity_common_doc_ratio"] = args.entity_common_doc_ratio
     return overrides
 
 
@@ -253,15 +258,34 @@ async def main() -> None:
         names_note = "이름: DB 저장분"
         if args.fill_names:
             extracted = extract_by_crawl_date(await load_refill_rows(session))
-            memory = {
+            raw_memory = {
                 item_id: frozenset(canonical_names(found))
                 for item_id, found in extracted.items()
             }
+            # 운영의 names_for_documents와 같은 필터를 메모리 사전 전체의 빈도로
+            # 건다 — 평가가 운영과 다른 이름을 보면 숫자가 의미가 없다 (ARG-302).
+            frequency: Counter[str] = Counter(
+                key for names in raw_memory.values() for key in names
+            )
+            named_documents = sum(1 for names in raw_memory.values() if names)
+            memory = drop_common_names(
+                raw_memory,
+                document_frequency=frequency,
+                named_documents=named_documents,
+                max_ratio=cfg.entity_common_doc_ratio,
+            )
+            dropped = sorted(
+                key
+                for key, count in frequency.items()
+                if named_documents and count / named_documents > cfg.entity_common_doc_ratio
+            )
             named = [v for v in memory.values() if v]
             average = sum(len(v) for v in named) / len(named) if named else 0.0
             names_note = (
                 f"이름: 메모리 채움(문서 {len(memory)}건 중 {len(named)}건에 이름, "
-                f"문서당 평균 {average:.1f}개) — DB 쓰기 없음"
+                f"문서당 평균 {average:.1f}개), 흔한 이름 {len(dropped)}종 제거"
+                f"(비율>{cfg.entity_common_doc_ratio:g}; 예: {', '.join(dropped[:8]) or '없음'})"
+                " — DB 쓰기 없음"
             )
             stack.enter_context(_memory_names(memory))
         print(names_note)
