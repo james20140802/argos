@@ -318,8 +318,10 @@ class EventDetectionConfig(BaseModel):
     # 감점과 독립이다. 낮·밤이 같은 edge_weight를 부르므로 칸은 이 둘뿐이다.
     # 실측(2026-10-17, --fill-names): min_names 2~3은 틀린 비율을 크게 줄이지만 #25
     # (밤은 #21도)와 엄격 유지를 깬다. 4부터 둘 다 지키고, penalty는 0.05 이상이면
-    # 결과가 같다(그래서 가장 작은 0.05). 표는 evals/README.md ARG-303.
-    entity_mismatch_penalty: float = Field(default=0.05, ge=0.0, le=1.0)
+    # 결과가 같았다. 최종 리뷰에서 제목 잡음을 고친 뒤 재측정하니 밤 #21이 0.05·0.03에서
+    # 깨지고 0.08에서만 유지돼(고르기 몫 밤 엄격 22/23 → 23/23, 틀린 비율 동률) 0.08로
+    # 올렸다. 표는 evals/README.md ARG-300.
+    entity_mismatch_penalty: float = Field(default=0.08, ge=0.0, le=1.0)
     entity_mismatch_min_names: int = Field(default=4, ge=1)
     # 같은 사건의 근거로 치는 쌍 점수의 하한이자, 밤의 CPM 해상도 γ의 기본값.
     # 낮은 "이 값 이상인 이웃 점수의 합 > γ × 사건 크기"일 때만 기존 사건에

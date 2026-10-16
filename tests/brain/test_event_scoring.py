@@ -413,5 +413,5 @@ def test_from_config_reads_mismatch_fields():
     weights = EdgeWeights.from_config(config)
     assert weights.entity_mismatch_penalty == 0.04
     assert weights.entity_mismatch_min_names == 5
-    assert EventDetectionConfig().entity_mismatch_penalty == 0.05
+    assert EventDetectionConfig().entity_mismatch_penalty == 0.08
     assert EventDetectionConfig().entity_mismatch_min_names == 4
