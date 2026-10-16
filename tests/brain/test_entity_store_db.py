@@ -9,12 +9,19 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from argos.brain.entity_extraction import ExtractedName
-from argos.brain.entity_store import attach_names, names_for_documents
+from argos.brain.entity_store import (
+    attach_names,
+    filter_common_names,
+    name_document_frequency,
+    names_for_documents,
+    raw_names_for_documents,
+    replace_names,
+)
 from argos.brain.graph_state import BrainState
 from argos.brain.nodes.save import save_node
 from argos.config import settings
@@ -100,7 +107,7 @@ async def test_attach_names_creates_entities_and_links(session_factory):
         await session.commit()
 
     async with session_factory() as session:
-        links = await names_for_documents(session, [item_id])
+        links = await raw_names_for_documents(session, [item_id])
         assert links[item_id] == frozenset({"arg-263-test-anthropic", "arg-263-test-openai"})
 
 
@@ -118,7 +125,7 @@ async def test_attaching_the_same_names_twice_adds_no_duplicate_links(session_fa
         await session.commit()
 
     async with session_factory() as session:
-        links = await names_for_documents(session, [item_id])
+        links = await raw_names_for_documents(session, [item_id])
         assert links[item_id] == frozenset({"arg-263-test-anthropic"})
 
 
@@ -139,7 +146,7 @@ async def test_the_same_name_on_two_documents_reuses_one_entity_row(session_fact
         )
         assert len(entity_rows.all()) == 1
 
-        links = await names_for_documents(session, [item_a, item_b])
+        links = await raw_names_for_documents(session, [item_a, item_b])
         assert links[item_a] == frozenset({"arg-263-test-shared-name"})
         assert links[item_b] == frozenset({"arg-263-test-shared-name"})
 
@@ -156,7 +163,7 @@ async def test_names_for_documents_reads_back_what_was_attached(session_factory)
         await session.commit()
 
     async with session_factory() as session:
-        links = await names_for_documents(session, [item_with_names, item_without_names])
+        links = await raw_names_for_documents(session, [item_with_names, item_without_names])
         assert links[item_with_names] == frozenset({"arg-263-test-lonely"})
         assert item_without_names not in links
         assert links.get(item_without_names, frozenset()) == frozenset()
@@ -188,5 +195,200 @@ async def test_save_node_attaches_the_names_carried_on_the_state(session_factory
         item_id = result["saved_item_id"]
 
     async with session_factory() as session:
-        links = await names_for_documents(session, [item_id])
+        links = await raw_names_for_documents(session, [item_id])
         assert links[item_id] == frozenset({"arg-263-test-save-node-name"})
+
+
+@pytest.mark.asyncio
+async def test_names_for_documents_drops_common_names_but_raw_keeps_them(
+    session_factory, monkeypatch
+):
+    """3건 모두에 붙은 이름은 걸러지고, 1건에만 붙은 이름은 남는다."""
+    async with session_factory() as session:
+        items = [await _make_item(session, f"common-{index}") for index in range(3)]
+        for item in items:
+            await attach_names(
+                session, item, _names(("arg-263-test-302-common", "Common"))
+            )
+        await attach_names(
+            session, items[0], _names(("arg-263-test-302-rare", "Rare"))
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        frequency, named = await name_document_frequency(session)
+        assert frequency["arg-263-test-302-common"] == 3
+        assert frequency["arg-263-test-302-rare"] == 1
+        # 다른 행이 섞여 있어도 결정적이도록 두 빈도 사이(2/분모)에서 컷을 잡는다.
+        ratio = 2 / named
+        monkeypatch.setattr(
+            settings.user.event_detection, "entity_common_doc_ratio", ratio
+        )
+        # 하한(콜드스타트 방어)이 이 작은 표본을 막지 않게 내린다.
+        monkeypatch.setattr(
+            settings.user.event_detection, "entity_common_min_documents", 1
+        )
+
+        filtered = await names_for_documents(session, items)
+        raw = await raw_names_for_documents(session, items)
+
+    assert "arg-263-test-302-common" not in filtered[items[0]]
+    assert "arg-263-test-302-rare" in filtered[items[0]]
+    assert "arg-263-test-302-common" in raw[items[0]]
+    assert "arg-263-test-302-rare" in raw[items[0]]
+
+
+@pytest.mark.asyncio
+async def test_filter_common_names_matches_what_neighbours_see(
+    session_factory, monkeypatch
+):
+    """새 글 이름(filter_common_names)과 이웃 이름(names_for_documents)이 같은 규칙."""
+    async with session_factory() as session:
+        items = [await _make_item(session, f"fcn-{index}") for index in range(3)]
+        for item in items:
+            await attach_names(
+                session, item, _names(("arg-300-test-fcn-common", "Common"))
+            )
+        await attach_names(session, items[0], _names(("arg-300-test-fcn-rare", "Rare")))
+        await session.commit()
+
+    async with session_factory() as session:
+        _, named = await name_document_frequency(session)
+        monkeypatch.setattr(
+            settings.user.event_detection, "entity_common_doc_ratio", 2 / named
+        )
+        monkeypatch.setattr(
+            settings.user.event_detection, "entity_common_min_documents", 1
+        )
+        both = frozenset({"arg-300-test-fcn-common", "arg-300-test-fcn-rare"})
+        neighbour = (await names_for_documents(session, items))[items[0]]
+        subject = await filter_common_names(session, both)
+        assert await filter_common_names(session, frozenset()) == frozenset()
+
+    assert subject == frozenset({"arg-300-test-fcn-rare"})
+    assert subject == neighbour & both
+
+
+@pytest.mark.asyncio
+async def test_names_for_documents_without_any_links_is_empty(session_factory):
+    async with session_factory() as session:
+        item = await _make_item(session, "no-links")
+        await session.commit()
+
+    async with session_factory() as session:
+        assert await names_for_documents(session, [item]) == {}
+        assert await names_for_documents(session, []) == {}
+
+
+@pytest.mark.asyncio
+async def test_name_document_frequency_counts_distinct_named_documents(session_factory):
+    """이름이 여러 개인 문서도 한 번만 세고, 링크 없는 문서는 세지 않는다."""
+    async with session_factory() as session:
+        _, named_before = await name_document_frequency(session)
+        multi = await _make_item(session, "df-multi")
+        single = await _make_item(session, "df-single")
+        await _make_item(session, "df-unlinked")
+        await attach_names(
+            session,
+            multi,
+            _names(("arg-263-test-302-df-a", "A"), ("arg-263-test-302-df-b", "B")),
+        )
+        await attach_names(session, single, _names(("arg-263-test-302-df-a", "A")))
+        await session.commit()
+
+    async with session_factory() as session:
+        frequency, named_after = await name_document_frequency(session)
+
+    assert named_after - named_before == 2
+    assert frequency["arg-263-test-302-df-a"] == 2
+    assert frequency["arg-263-test-302-df-b"] == 1
+
+
+async def _links(session_factory, item_id):
+    async with session_factory() as session:
+        return (await raw_names_for_documents(session, [item_id])).get(item_id, frozenset())
+
+
+@pytest.mark.asyncio
+async def test_replace_names_sets_exact_links(session_factory):
+    """기존 잡음 링크는 지워지고 새 이름만 남는다 (ARG-304)."""
+    async with session_factory() as session:
+        item_id = await _make_item(session, "replace-exact")
+        await attach_names(
+            session, item_id,
+            _names(("arg-263-test-we", "We"), ("arg-263-test-openai", "OpenAI")),
+        )
+        await replace_names(session, item_id, _names(("arg-263-test-frontier", "Frontier")))
+        await session.commit()
+    assert await _links(session_factory, item_id) == frozenset({"arg-263-test-frontier"})
+    # 가제티어 행은 지우지 않는다.
+    async with session_factory() as session:
+        remaining = await session.execute(
+            select(Entity.normalized_key).where(Entity.normalized_key == "arg-263-test-we")
+        )
+        assert remaining.scalar_one_or_none() == "arg-263-test-we"
+
+
+@pytest.mark.asyncio
+async def test_replace_names_idempotent(session_factory):
+    async with session_factory() as session:
+        item_id = await _make_item(session, "replace-idem")
+        names = _names(("arg-263-test-frontier", "Frontier"))
+        await replace_names(session, item_id, names)
+        await replace_names(session, item_id, names)
+        await session.commit()
+    assert await _links(session_factory, item_id) == frozenset({"arg-263-test-frontier"})
+
+
+@pytest.mark.asyncio
+async def test_replace_names_empty_clears_links(session_factory):
+    async with session_factory() as session:
+        item_id = await _make_item(session, "replace-empty")
+        await attach_names(session, item_id, _names(("arg-263-test-we", "We")))
+        await replace_names(session, item_id, [])
+        await session.commit()
+    assert await _links(session_factory, item_id) == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_plan_then_apply_then_plan_is_empty(session_factory, monkeypatch):
+    """채우기 두 번 -> 두 번째 계획은 변경 0건, 링크 스냅숏 동일 (ARG-304)."""
+    from argos.brain import entity_refill
+
+    async with session_factory() as session:
+        a = await _make_item(session, "plan-a")
+        b = await _make_item(session, "plan-b")
+        await attach_names(session, a, _names(("arg-263-test-we", "We")))
+        await session.commit()
+
+    wanted = {
+        a: [ExtractedName("arg-263-test-frontier", "Frontier")],
+        b: [ExtractedName("arg-263-test-claude", "Claude")],
+    }
+    real_load = entity_refill.load_refill_rows
+
+    async def only_ours(session):
+        return [r for r in await real_load(session) if r.tech_item_id in wanted]
+
+    monkeypatch.setattr(entity_refill, "load_refill_rows", only_ours)
+    monkeypatch.setattr(
+        entity_refill,
+        "extract_by_crawl_date",
+        lambda rows: {r.tech_item_id: wanted[r.tech_item_id] for r in rows},
+    )
+
+    async with session_factory() as session:
+        plan, extracted = await entity_refill.plan_refill(session)
+        assert len(plan.changes) == 2
+        assert await entity_refill.apply_refill(session, plan, extracted) == 2
+        await session.commit()
+    snapshot = [await _links(session_factory, a), await _links(session_factory, b)]
+    assert snapshot == [
+        frozenset({"arg-263-test-frontier"}),
+        frozenset({"arg-263-test-claude"}),
+    ]
+
+    async with session_factory() as session:
+        plan2, _ = await entity_refill.plan_refill(session)
+        assert plan2.changes == ()
+    assert [await _links(session_factory, a), await _links(session_factory, b)] == snapshot

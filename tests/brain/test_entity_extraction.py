@@ -971,3 +971,145 @@ def test_a_quoted_symbol_suffixed_name_survives_a_possessive_s():
     [bare] = canonicals(["Reviewers praised C++'s compiler today."])
     assert quoted
     assert quoted == bare
+
+
+# --- ARG-302: 이름 품질 정리 ---------------------------------------------------
+
+
+def test_common_function_words_are_not_names():
+    # 따옴표 안·콜론 뒤·제목형 줄은 문장 첫 단어 증거가 통하지 않는 자리다.
+    [names] = canonicals(
+        [
+            'Analysts said, "We expect It to ship." Note: If You wait, In time '
+            "Anthropic wins. Why: For What it costs, Anthropic leads.\n"
+            "What We Learned From Anthropic"
+        ]
+    )
+    assert names.isdisjoint({"we", "it", "if", "you", "in", "for", "what"})
+    assert "anthropic" in names
+
+
+def test_function_words_are_trimmed_off_the_edges_of_a_name():
+    [names] = canonicals(["Note: If Anthropic ships, For Google it matters."])
+    assert "anthropic" in names
+    assert "if anthropic" not in names
+    assert "for google" not in names
+
+
+def test_mojibake_does_not_survive():
+    [names] = canonicals(["OpenAIâ€™s new Frontier model and CafÃ© Labs"])
+    assert not any(set("âÃ€Â�") & set(name) for name in names)
+    assert "café labs" in names
+
+
+def test_unrepairable_mojibake_is_dropped_not_kept():
+    # 복구 가능한 짝이 아닌 깨진 표지(연속 바이트가 모자람)는 후보에서 버린다.
+    [names] = canonicals(["Yesterday we saw Anthropic meet â€ Zed and Foo� Bar today."])
+    assert not any(set("âÃÂ�") & set(name) for name in names)
+    assert "anthropic" in names
+
+
+def test_title_names_are_added():
+    [names] = canonicals(
+        ["The lab published a note about its roadmap."],
+        titles=["Introducing OpenAI Frontier"],
+    )
+    assert names & {"frontier", "openai frontier"}
+    assert not any(name.startswith("introducing") for name in names)
+
+
+def test_title_boundaries_split_on_verbs_and_function_words():
+    [names] = canonicals(
+        ["plain body"], titles=["Announcing Claude Sonnet 5 for Enterprise Teams"]
+    )
+    assert "claude sonnet 5" in names
+    assert "enterprise teams" in names
+    assert not any(name.startswith("announcing") for name in names)
+
+
+def test_titles_length_mismatch_raises():
+    with pytest.raises(ValueError):
+        extract_names(["a", "b"], titles=["only one"])
+
+
+def test_none_title_is_allowed():
+    [names] = canonicals(["Yesterday we saw Anthropic ship it."], titles=[None])
+    assert "anthropic" in names
+
+
+def test_same_input_same_names_with_titles():
+    docs = ["Body about Kimi K3 from Moonshot.", "Another body mentioning Moonshot."]
+    titles = ["Meet Kimi K3", "Moonshot Releases Weights"]
+    assert extract_names(docs, titles=titles) == extract_names(docs, titles=titles)
+
+
+def test_announcement_verb_is_trimmed_from_the_body_headline_too():
+    # 본문 첫 줄에 제목이 그대로 실려 와도 'introducing ...'이 이름이 되면 안 된다.
+    [names] = canonicals(["Introducing OpenAI Frontier\nThe lab shipped it."])
+    assert "openai frontier" in names
+    assert not any(name.startswith("introducing") for name in names)
+
+
+def test_leading_preposition_and_article_are_not_left_on_a_name():
+    [names] = canonicals(["On the Navier–Stokes Millennium Prize\nA body line."])
+    assert not any(name.startswith(("on ", "the ")) for name in names)
+    assert any("navier" in name for name in names)
+
+
+def test_real_accented_letters_before_curly_quotes_and_dashes_survive():
+    [names] = canonicals(
+        [
+            "Yesterday Nestlé’s lab and Beyoncé’s team met Zoë… then Café—Labs shipped. "
+            "Later we saw Nestlé and Beyoncé again."
+        ]
+    )
+    assert "beyoncé" in names
+    assert "nestlé" in names
+    assert "zoë" in names
+    assert "café" in names
+
+
+def test_new_prefixed_company_name_survives_in_title():
+    [names] = canonicals(
+        ["plain body"], titles=["New Relic Launches Observability Platform"]
+    )
+    assert "new relic" in names
+    assert "observability platform" in names
+
+
+def test_title_first_line_does_not_rescue_a_sentence_initial_word():
+    """제목은 본문 첫 줄이라 문장 첫 단어 점검을 끄면 'Engineers'가 이름이 된다."""
+    body = "Engineers met today. Anthropic shipped Claude Sonnet 5 yesterday."
+    names = canonicals([body, body], titles=["Engineers met today.", "Engineers met today."])
+    assert all("engineers" not in doc for doc in names)
+
+
+def test_one_word_title_candidate_needs_body_mid_sentence_evidence():
+    [names] = canonicals(
+        ["Plain body about databases and Rust tooling."],
+        titles=["How We Built A Faster Database With Rust"],
+    )
+    assert "built" not in names
+    assert "rust" in names  # 본문 중간에도 대문자로 나온다 = 증거
+
+
+def test_title_words_in_one_document_do_not_rescue_them_in_another():
+    docs = [
+        "Care was taken. Latency rose. Anthropic and Acme Labs responded.",
+        "Acme Labs said nothing. Anthropic likewise stayed quiet.",
+    ]
+    names = canonicals(docs, titles=["Why You Should Care About Latency", "Other news"])
+    assert not (names[0] & {"care", "latency"})
+    assert not (names[1] & {"care", "latency"})
+
+
+def test_accented_capitals_before_curly_punctuation_are_not_mis_decoded():
+    for text, expected in [
+        ("Then JOSÉ’s lab shipped and JOSÉ again.", "josé"),
+        ("Then CAFÉ—LABS shipped and CAFÉ again.", "café"),
+        ("Then HEIß“ shipped and heiß again.", "heiss"),
+        ("Then PERÚ” shipped and PERÚ again.", "perú"),
+    ]:
+        [names] = canonicals([text])
+        assert not any(set("ɒɗߓڔ") & set(name) for name in names), (text, names)
+        assert expected in names or any(expected in name for name in names), (text, names)

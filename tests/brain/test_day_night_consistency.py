@@ -317,3 +317,53 @@ def test_same_input_same_result_with_penalty():
         for _ in range(2)
     }
     assert verdicts == {_EVENT}
+
+
+# --- ARG-303: 이름 불일치 감점도 낮과 밤이 함께 움직인다 --------------------------
+
+
+def _named_features(theta: float, names: set[str], at: datetime = _AT) -> DocumentFeatures:
+    return DocumentFeatures(
+        embedding=(math.cos(theta), math.sin(theta)),
+        names=frozenset(names),
+        at=at,
+        keywords=frozenset(),
+        source=None,
+    )
+
+
+def _mismatch_verdicts(config: EventDetectionConfig) -> tuple[bool, bool]:
+    theta = math.acos(0.8)
+    old = _named_features(0.0, {"a1", "a2", "a3"})
+    new = _named_features(theta, {"b1", "b2", "b3"})
+    old_id, new_id = uuid.UUID(int=1), uuid.UUID(int=2)
+    day = (
+        decide_event(
+            new,
+            [CandidateNeighbor(tech_item_id=old_id, features=old, event_ids=(_EVENT,))],
+            event_sizes={_EVENT: 1},
+            config=config,
+        )
+        == _EVENT
+    )
+    documents = [
+        ReclusterDocument(tech_item_id=old_id, features=old, event_ids=()),
+        ReclusterDocument(tech_item_id=new_id, features=new, event_ids=()),
+    ]
+    communities = detect_communities(
+        documents, [NeighborPair(left_id=old_id, right_id=new_id)], config=config
+    )
+    night = any({old_id, new_id} <= set(c.members) for c in communities)
+    return day, night
+
+
+@requires_graph_libs
+def test_entity_mismatch_penalty_moves_day_and_night_together():
+    off = EventDetectionConfig(
+        same_source_penalty=0.0, entity_mismatch_penalty=0.0, entity_mismatch_min_names=3
+    )
+    on = EventDetectionConfig(
+        same_source_penalty=0.0, entity_mismatch_penalty=0.3, entity_mismatch_min_names=3
+    )
+    assert _mismatch_verdicts(off) == (True, True)
+    assert _mismatch_verdicts(on) == (False, False)

@@ -16,6 +16,7 @@ import pytest
 from argos.brain import pipeline as brain_pipeline
 from argos.brain.entity_extraction import ExtractedName
 from argos.brain.near_duplicate import simhash as compute_simhash
+from argos.brain.titles import derive_title
 from argos.models.tech_item import CategoryType
 
 
@@ -665,7 +666,9 @@ async def test_run_brain_pipeline_attaches_extracted_names_before_save(monkeypat
     session = MagicMock()
     result = await brain_pipeline.run_brain_pipeline("x", "https://e.com", session)
 
-    extract_mock.assert_called_once_with([cold["raw_text"]])
+    extract_mock.assert_called_once_with(
+        [cold["raw_text"]], titles=[derive_title(cold["raw_text"])]
+    )
     assert result["entity_names"] == ["anthropic"]
     assert result["entity_names_extracted"] == [
         ExtractedName(canonical="anthropic", surface="Anthropic")
@@ -760,7 +763,9 @@ async def test_batch_pipeline_attaches_extracted_names_to_valid_states_only(
 
     # 배치 계약: 유효한 문서(1개)만 한 번의 호출로 넘긴다 — invalid의 raw_text
     # ("junk")는 여기 나타나면 안 된다.
-    extract_mock.assert_called_once_with([valid["raw_text"]])
+    extract_mock.assert_called_once_with(
+        [valid["raw_text"]], titles=[derive_title(valid["raw_text"])]
+    )
 
     # ARG-266: Stage 4 now sorts by (published_at, source_url) before saving,
     # so results are no longer in input order — look each one up by URL.
@@ -1148,3 +1153,21 @@ async def test_assign_then_save_skips_naming_when_no_event_was_created(monkeypat
         {"source_url": "u", "raw_text": "T\nbody", "summary": "s"}, session=session
     )
     naming.assert_not_awaited()
+
+
+def test_attach_extracted_names_passes_the_first_line_as_title(monkeypatch):
+    """제목은 저장될 제목과 같은 규칙(첫 줄)으로 추출기에 넘어간다 (ARG-302)."""
+    extract_mock = MagicMock(return_value=[[], []])
+    monkeypatch.setattr(brain_pipeline, "extract_names", extract_mock)
+
+    states = [
+        _triaged_state(raw_text="Introducing OpenAI Frontier\nbody text"),
+        _triaged_state(raw_text="Second Headline\nmore"),
+        _triaged_state(raw_text="junk", is_valid=False),
+    ]
+    brain_pipeline._attach_extracted_names(states)
+
+    extract_mock.assert_called_once_with(
+        ["Introducing OpenAI Frontier\nbody text", "Second Headline\nmore"],
+        titles=["Introducing OpenAI Frontier", "Second Headline"],
+    )

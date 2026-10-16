@@ -46,6 +46,7 @@ from argos.brain.entity_names import (
     canonical_name,
     opens_a_position,
 )
+from argos.brain.titles import FALLBACK_TITLE
 from argos.config import settings
 
 # 문장 끝: 종결부호 뒤의 공백, 전각 종결부호, 또는 줄바꿈.
@@ -241,6 +242,60 @@ _WORD_BEFORE = re.compile(r"[^\W_]+$")
 # spaCy 스팬 안의 낱말. 위치를 알아야 표시용 원문을 스팬에서 그대로 자른다.
 _SPAN_WORD = re.compile(r"\S+")
 
+# 일반 영어 기능어 — 대명사·조동사·전치사·접속사·의문사 (ARG-302).
+# 문장 첫 단어 규칙은 따옴표 안·콜론 뒤·Title Case 제목 줄에서는 증거가 안
+# 통해서, 'We' 'It' 'If' 'You' 'In' 'For' 'What'이 문장 중간 대문자로 위장해
+# 코퍼스 곳곳의 이름으로 올라온다. 코퍼스를 보고 고른 낱말이 아니라 영어의
+# 닫힌 기능어 부류다. 'us'(US)·'will'(사람 이름)처럼 실제 이름과 겹치는 말은
+# 한 낱말일 때만 걸러지므로 'Will Smith'는 남지만, 'us'는 'US'(미국)라는
+# 이름을 지우게 되어 뺀다.
+_FUNCTION_WORDS = frozenset(
+    {
+        "we", "it", "if", "you", "he", "she", "they", "them", "our", "your",
+        "my", "his", "her", "its", "their", "me", "him", "who", "whom", "whose",
+        "what", "which", "when", "where", "why", "how", "whether", "while",
+        "in", "on", "at", "to", "for", "of", "by", "with", "from", "as", "into",
+        "about", "over", "after", "before", "under", "between", "through",
+        "during", "without", "within", "across", "against", "per", "via",
+        "is", "are", "was", "were", "be", "been", "am", "do", "does", "did",
+        "have", "has", "had", "can", "could", "should", "would", "shall",
+        "might", "must", "not", "no", "yes", "so", "then", "than", "there",
+        "here", "also", "just", "more", "most", "some", "any", "all", "each",
+        "every", "both", "other", "another", "such", "only", "many", "much",
+        "very", "too", "now", "once", "still", "even", "because", "since",
+        "although", "though", "until", "unless", "yet", "nor", "either",
+        "neither", "let", "get", "make", "see", "use", "say", "says", "said",
+    }
+)
+# 제목 첫머리의 알림 동사 — 발표·출시 어구 (ARG-302). 'new' 'open' 'building'처럼
+# 이름의 일부일 수 있는 말은 넣지 않는다.
+# Title Case 제목은 모든 낱말이 대문자라 'Introducing OpenAI Frontier'가 한
+# 덩이로 읽힌다. 이 동사들은 이름이 아니라 이름 앞의 경계다.
+_TITLE_VERBS = frozenset(
+    {
+        "introducing", "introduces", "introduce", "announcing", "announces",
+        "announce", "meet", "meets", "launching", "launches", "launch",
+        "releasing", "releases", "release", "released", "unveiling", "unveils",
+        "unveil", "presenting", "presents", "present",
+    }
+)
+# 제목에서 이름 경계로 쓰는 관사·접속사·지시어. 불용어 전체를 쓰지 않는 이유:
+# 'new'가 들어 있어 'New Relic'이 깨진다. 한 낱말짜리 흔한 말은 `_candidate`가
+# 이미 걸러낸다.
+_TITLE_BOUNDARY_STOPWORDS = frozenset(
+    {"a", "an", "and", "but", "or", "this", "that", "these", "those"}
+)
+# 본문 문장 첫머리에서도 떼어 내는 알림 동사 (ARG-302). 기사 본문은 제목 줄을
+# 그대로 첫 줄에 싣는 일이 흔해서 'Introducing OpenAI Frontier'가 본문 경로에서
+# 'introducing openai frontier'라는 없는 이름이 된다. 'new'·'open'처럼 이름의
+# 일부일 수 있는 말은 넣지 않는다 — 진행형·3인칭 알림 동사와 'meet'만이다.
+_ANNOUNCEMENT_VERBS = frozenset(
+    {
+        "introducing", "introduces", "announcing", "announces", "launching",
+        "launches", "releasing", "releases", "unveiling", "unveils",
+        "presenting", "presents", "meet", "meets",
+    }
+)
 # 대문자로 시작해도 이름이 아닌 말들. 문장 첫 단어 규칙이 대부분을 걸러 주므로
 # 여기 있는 건 문장 중간에서도 대문자로 나오는 것들이다. 최소한만 둔다 —
 # 목록이 길어지면 진짜 이름을 삼킨다.
@@ -291,7 +346,7 @@ _STOPWORDS = frozenset(
         "december",
         "i",
     }
-)
+) | _FUNCTION_WORDS
 # 이름 안에 끼는 소문자 낱말. 여기서 끊으면 'Bank of America'가 조각 둘로
 # 남고 회사 하나가 사라진다.
 # 'and'는 **일부러 뺀다** — 기사에서 'and'는 이름 안의 이음말이 아니라 나열
@@ -384,6 +439,8 @@ class _Candidate:
     sentence_initial: bool
     # 소유격 's를 뗀 정규형. 뗄 게 없으면 빈 문자열.
     stem: str = ""
+    # 제목에서 온 후보. 문장 중간 대문자 증거로 세지 않는다.
+    from_title: bool = False
 
 
 def _is_cased(character: str) -> bool:
@@ -976,6 +1033,119 @@ def _normalize_with_origins(document: str) -> tuple[str, list[int]]:
     return "".join(folded), origins
 
 
+# 깨진 인코딩(mojibake) 복구 (ARG-302). UTF-8 바이트를 cp1252/latin-1로 잘못
+# 읽으면 'é'가 'Ã©', '’'가 'â€™'가 된다. 앞바이트(U+00C2..U+00F4)와 그 뒤의
+# 연속바이트 자리 글자(U+0080..U+00BF, cp1252가 0x80..0x9F에 얹은 부호들)가 짝으로
+# 붙어 있는 구간만 본다 — 문서 전체를 되돌리면 멀쩡한 비ASCII 글자까지 깨진다.
+_CP1252_CONTINUATION = "\u0080-\u00bf\u20ac\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u017d\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u017e\u0178"
+_MOJIBAKE_RUN = re.compile(rf"[\u00c2-\u00f4][{_CP1252_CONTINUATION}]+")
+# 복구하지 못하고 남은 표지. 이 자리를 후보에서 빼야 'â'·'Ã' 같은 글자가 이름에
+# 붙어 나오지 않는다. 범위를 UTF-8 깨짐의 대표 앞바이트(Â Ã)와 'â' + 연속바이트
+# 자리 글자(€ 포함)로 좁힌다 — 앞바이트 범위 전체(é ë ï ó ô ñ ä …)를 잔여로 보면
+# 멀쩡한 'Beyoncé’s' 'Café—Labs' 'Zoë…'의 글자가 뒤따르는 곡선 따옴표·줄표와
+# 짝지어져 잘려 나간다. 복구 단계는 디코딩이 **성공할 때만** 바꾸므로 넓게 훑어도
+# 안전하지만, 잔여 마스킹은 틀리면 이름을 지우므로 좁게 둔다.
+_MOJIBAKE_RESIDUE = re.compile(
+    rf"[\u00c2\u00c3][{_CP1252_CONTINUATION}]+|\u00e2[\u0080-\u00bf\u20ac]+|\ufffd"
+)
+
+
+def _decode_mojibake(run: str) -> str:
+    """앞바이트 하나와 연속바이트 몇 개를 UTF-8로 되돌려 본다. 못 하면 원문."""
+    # 앞바이트가 길이를 정한다: C2..DF 둘, E0..EF 셋, F0..F4 넷.
+    lead = ord(run[0])
+    width = 2 if lead < 0xE0 else 3 if lead < 0xF0 else 4
+    head, tail = run[:width], run[width:]
+    try:
+        # cp1252에 비어 있는 자리(0x81 등)는 latin-1의 같은 바이트로 본다.
+        raw = bytearray()
+        for character in head:
+            try:
+                raw += character.encode("cp1252")
+            except UnicodeEncodeError:
+                raw += character.encode("latin-1")
+        fixed = bytes(raw).decode("utf-8")
+        # 진짜 'É’' 'ß“'이 우연히 UTF-8 바이트열로 읽혀 'ɒ' 'ߓ'이 되는 경우를
+        # 막는다. 서구 문자·기호 범위 밖으로 풀리면 깨짐이 아니라 원문이다.
+        if not all(
+            ord(char) < 0x80 or 0x80 <= ord(char) <= 0x24F or 0x2000 <= ord(char) <= 0x20CF
+            for char in fixed
+        ):
+            raise UnicodeDecodeError("utf-8", b"", 0, 1, "outside western range")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        # 첫 글자는 못 살리지만 뒤쪽이 짝일 수 있다 — 한 글자 밀어서 다시 본다.
+        return run[0] + (_repair_mojibake(run[1:]) if len(run) > 1 else "")
+    return fixed + (_repair_mojibake(tail) if tail else "")
+
+
+def _repair_mojibake(text: str) -> str:
+    """깨진 구간만 구간 단위로 되돌린다. 되돌려지지 않으면 그대로 둔다."""
+    return _MOJIBAKE_RUN.sub(lambda match: _decode_mojibake(match.group()), text)
+
+
+def _blank_mojibake_residue(text: str) -> str:
+    """못 고친 깨진 표지를 같은 길이의 구분자로 덮는다 — 위치표가 안 어긋난다."""
+    return _MOJIBAKE_RESIDUE.sub(lambda match: _MASK * len(match.group()), text)
+
+
+def _title_boundaries_blanked(title: str) -> str:
+    """제목에서 이름이 아닌 낱말(기능어·불용어·알림 동사)을 구분자로 덮는다.
+
+    Title Case 제목은 모든 낱말이 대문자라 문장 첫 단어 증거가 통하지 않고
+    'Introducing OpenAI Frontier'가 한 덩이가 된다. 경계 낱말을 같은 길이의
+    구분자로 덮고 나머지 대문자 묶음을 본문과 같은 규칙으로 후보로 만든다.
+    이음말('of' 'the' …)은 양옆이 이름 낱말일 때만 남겨 'Bank of America'를 지킨다.
+    """
+    matches = list(_TOKEN.finditer(title))
+    blank: set[int] = set()
+    for index, match in enumerate(matches):
+        word = match.group().casefold()
+        if word in _TITLE_VERBS or word in _FUNCTION_WORDS:
+            blank.add(index)
+        elif word in _TITLE_BOUNDARY_STOPWORDS:
+            blank.add(index)
+        elif word in _CONNECTORS:
+            before = matches[index - 1] if index else None
+            after = matches[index + 1] if index + 1 < len(matches) else None
+            if not (
+                before is not None
+                and after is not None
+                and index - 1 not in blank
+                and _opens_a_name(before.group())
+                and _opens_a_name(after.group())
+                and after.group().casefold() not in _TITLE_VERBS | _FUNCTION_WORDS
+            ):
+                blank.add(index)
+    pieces: list[str] = []
+    cursor = 0
+    for index, match in enumerate(matches):
+        if index in blank:
+            pieces.append(title[cursor : match.start()])
+            pieces.append(_MASK * len(match.group()))
+            cursor = match.end()
+    pieces.append(title[cursor:])
+    return "".join(pieces)
+
+
+def _title_candidates(title: str, max_ngram: int) -> list[_Candidate]:
+    """제목에서 이름 후보를 뽑는다.
+
+    여러 낱말로 이어진 대문자 묶음은 문장 첫 단어 의심을 받지 않는다. 낱말
+    하나짜리는 제목 맨 앞이 문장 첫 단어와 구별되지 않는다 — 제목은 보통 본문
+    첫 줄이고 Title Case라 'Built' 'Care'도 대문자다. 그래서 본문 중간에서도
+    대문자로 나온다는 증거가 있어야 이름이 된다(``extract_names``가 제목
+    후보를 증거 집합에서 뺀다).
+    """
+    # 제목을 못 구해 채운 'Untitled'는 제목이 아니라 자리표시자다.
+    if title.strip() == FALLBACK_TITLE:
+        return []
+    found = _candidates(_title_boundaries_blanked(title), max_ngram)
+    return [
+        replace(candidate, sentence_initial=candidate.word_count == 1, from_title=True)
+        for candidate in found
+    ]
+
+
 def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     """한 문서에서 대문자 n-gram 후보를 뽑는다 (필터 적용 전)."""
     found: list[_Candidate] = []
@@ -989,6 +1159,9 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
     # 문장을 닫는 전각 마침표는 접히기 전에 고리점으로 옮긴다. 어느 점이 문장을
     # 닫고 어느 점이 이름에 붙었는지는 `_fullwidth_stop`이 가른다.
     document = _FULLWIDTH_DOT.sub(_fullwidth_stop, document)
+    # 깨진 인코딩은 이름을 뽑기 **전에** 고친다 — 'CafÃ©'가 'Caf'와 'Ã'로 갈라지기
+    # 전에 'Café'로 돌려놔야 한다. 못 고친 표지는 후보가 되기 전에 덮는다.
+    document = _blank_mojibake_residue(_repair_mojibake(document))
     folded, origins = _normalize_with_origins(document)
     normalized = _mask_uncased(folded)
 
@@ -1002,6 +1175,33 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
         run: list[tuple[bool, str, int, int]] = []
 
         def flush() -> None:
+            # 묶음 양끝에 붙은 일반 기능어('If Anthropic' 'Google For')는 이름이
+            # 아니라 문장의 일부다 — 떼어 내야 'if anthropic' 같은 없는 이름이
+            # 안 생긴다. 떼고 남은 첫 낱말은 문장 첫 단어가 아니다.
+            # 이음말('&')이 이어 붙인 낱말은 그대로 둔다 — 'AT&T'의 AT는 기능어
+            # 'at'이 아니라 이름의 앞조각이다.
+            while (
+                run
+                and sentence[run[0][3] :].lstrip()[:1] not in _JOINERS
+                and (
+                    run[0][1].casefold() in _FUNCTION_WORDS
+                    # 알림 동사는 문장 맨 앞에서만 — 중간에 오면 이름의 일부일 수 있다.
+                    or (run[0][0] and run[0][1].casefold() in _ANNOUNCEMENT_VERBS)
+                )
+            ):
+                run.pop(0)
+                # 떼고 남은 소문자 이음말('on the Navier' 의 'the')은 이름 앞머리가
+                # 아니다 — 이음말은 이름 **안에서만** 이어 붙는다.
+                while run and run[0][1][0].islower() and run[0][1].casefold() in _CONNECTORS:
+                    run.pop(0)
+            while (
+                run
+                and run[-1][1].casefold() in _FUNCTION_WORDS
+                and sentence[: run[-1][2]].rstrip()[-1:] not in _JOINERS
+            ):
+                run.pop()
+                while run and run[-1][1][0].islower() and run[-1][1].casefold() in _CONNECTORS:
+                    run.pop()
             # n-gram 폭을 넘는 묶음은 앞부분만 남기고 버리는 대신 폭 단위로
             # 끊는다. 잘라 버리면 뒤쪽 이름이 결과 어디에도 나타나지 않는다.
             for start in range(0, len(run), max_ngram):
@@ -1104,14 +1304,30 @@ def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
 
 
 def extract_names(
-    documents: Sequence[str], *, max_ngram: int | None = None
+    documents: Sequence[str],
+    *,
+    titles: Sequence[str | None] | None = None,
+    max_ngram: int | None = None,
 ) -> list[list[ExtractedName]]:
-    """배치에서 문서별 고유명사를 뽑는다. 입력 순서와 길이를 그대로 지킨다."""
+    """배치에서 문서별 고유명사를 뽑는다. 입력 순서와 길이를 그대로 지킨다.
+
+    ``titles``가 있으면 문서와 길이가 같아야 하고, 제목에서 나온 이름이 그
+    문서의 이름에 합쳐진다. 제목은 본문 후보와 같은 문서빈도·불용어 규칙을
+    거친다(필터 앞에서 합친다) — 제목에서만 오는 길이 필터를 우회하면 안 된다.
+    """
     config = settings.user.event_detection
     if max_ngram is None:
         max_ngram = config.entity_max_ngram
+    if titles is not None and len(titles) != len(documents):
+        raise ValueError(
+            f"titles ({len(titles)}) must be the same length as documents ({len(documents)})"
+        )
 
     per_document = [_candidates(document, max_ngram) for document in documents]
+    if titles is not None:
+        for document_candidates, title in zip(per_document, titles):
+            if title:
+                document_candidates.extend(_title_candidates(title, max_ngram))
 
     # spaCy 보강(ARG-253)은 규칙 경로 **뒤에** 붙는다. 앞에 두면 표시형 우선순위가
     # 뒤집히고, 무엇보다 주 경로가 보조 경로에 가려진다.
@@ -1160,7 +1376,7 @@ def extract_names(
         candidate.canonical
         for document in per_document
         for candidate in document
-        if not candidate.sentence_initial
+        if not candidate.sentence_initial and not candidate.from_title
     }
 
     surviving: list[dict[str, str]] = []

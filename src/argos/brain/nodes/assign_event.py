@@ -48,6 +48,7 @@ from argos.brain.event_assignment import (
     db_event_sizes,
     decide_event,
 )
+from argos.brain.entity_store import filter_common_names
 from argos.brain.event_candidates import keywords_of
 from argos.brain.event_scoring import DocumentFeatures
 from argos.brain.graph_state import BrainState
@@ -85,7 +86,9 @@ async def assign_event_node(state: BrainState, session: AsyncSession) -> BrainSt
 
         subject = DocumentFeatures(
             embedding=tuple(float(value) for value in embedding),
-            names=frozenset(state.get("entity_names") or ()),
+            names=await filter_common_names(
+                session, frozenset(state.get("entity_names") or ())
+            ),
             at=at,
             keywords=keywords_of(state.get("summary") or state.get("digest")),
             source=registered_domain(state.get("source_url")),
