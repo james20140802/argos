@@ -6,7 +6,7 @@
 
     uv run python scripts/eval_event_judgments.py [--mode day|night|both]
         [--join-threshold F] [--same-source-penalty F] [--same-source-gap-days F]
-        [--sweep 0,0.02,0.03:0.5,...] [--fill-names]
+        [--sweep 0,0.02,0.03:0.5,...] [--sweep-mismatch 0,0.05:3,...] [--fill-names]
 
 `--fill-names`는 DB의 이름 링크 대신 크롤 날짜 배치로 그 자리에서 추출한 이름으로
 잰다(ARG-301). DB에는 쓰지 않는다.
@@ -104,6 +104,16 @@ def _parse_args() -> argparse.Namespace:
             "--same-source-gap-days)을 쓴다"
         ),
     )
+    parser.add_argument("--entity-mismatch-penalty", type=float, default=None)
+    parser.add_argument("--entity-mismatch-min-names", type=int, default=None)
+    parser.add_argument(
+        "--sweep-mismatch",
+        default=None,
+        help=(
+            "쉼표로 구분한 entity_mismatch_penalty[:entity_mismatch_min_names] 목록 — "
+            "--sweep과 같은 표를 찍는다(라벨 m{penalty}:{min}). --sweep과 함께 쓸 수 없다"
+        ),
+    )
     parser.add_argument("--entity-common-doc-ratio", type=float, default=None)
     parser.add_argument("--entity-common-min-documents", type=int, default=None)
     parser.add_argument(
@@ -121,7 +131,24 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--entity-common-* 옵션은 --fill-names와 함께만 쓸 수 있다")
     if args.sweep is not None and args.same_source_penalty is not None:
         parser.error("--sweep과 --same-source-penalty는 함께 쓸 수 없다 (스윕이 값을 직접 정한다)")
+    if args.sweep is not None and args.sweep_mismatch is not None:
+        parser.error("--sweep과 --sweep-mismatch는 함께 쓸 수 없다")
+    if args.sweep_mismatch is not None and args.entity_mismatch_penalty is not None:
+        parser.error("--sweep-mismatch와 --entity-mismatch-penalty는 함께 쓸 수 없다")
     return args
+
+
+def _mismatch_points(spec: str) -> list[dict[str, float]]:
+    points: list[dict[str, float]] = []
+    for item in (v.strip() for v in spec.split(",")):
+        if not item:
+            continue
+        penalty, _, min_names = item.partition(":")
+        point: dict[str, float] = {"entity_mismatch_penalty": float(penalty)}
+        if min_names:
+            point["entity_mismatch_min_names"] = int(min_names)
+        points.append(point)
+    return points
 
 
 def _sweep_points(spec: str) -> list[dict[str, float]]:
@@ -146,6 +173,10 @@ def _overrides(args: argparse.Namespace) -> dict[str, float]:
         overrides["same_source_penalty"] = args.same_source_penalty
     if args.same_source_gap_days is not None:
         overrides["same_source_gap_days"] = args.same_source_gap_days
+    if args.entity_mismatch_penalty is not None:
+        overrides["entity_mismatch_penalty"] = args.entity_mismatch_penalty
+    if args.entity_mismatch_min_names is not None:
+        overrides["entity_mismatch_min_names"] = args.entity_mismatch_min_names
     if args.entity_common_doc_ratio is not None:
         overrides["entity_common_doc_ratio"] = args.entity_common_doc_ratio
     if args.entity_common_min_documents is not None:
@@ -243,6 +274,15 @@ async def main() -> None:
         if args.sweep
         else None
     )
+    if args.sweep_mismatch:
+        sweep = [
+            (
+                f"m{point['entity_mismatch_penalty']:g}:"
+                f"{point.get('entity_mismatch_min_names', cfg.entity_mismatch_min_names)}",
+                _with_overrides(cfg, point),
+            )
+            for point in _mismatch_points(args.sweep_mismatch)
+        ]
 
     async with AsyncSessionLocal() as session, contextlib.AsyncExitStack() as stack:
         span = (await session.execute(_SPAN_SQL)).one()
@@ -256,7 +296,9 @@ async def main() -> None:
             f"weights(cos/entity/time/kw)={cfg.weight_cosine}/{cfg.weight_entity}/"
             f"{cfg.weight_time}/{cfg.weight_keyword} "
             f"same_source_penalty={cfg.same_source_penalty} "
-            f"same_source_gap_days={cfg.same_source_gap_days}"
+            f"same_source_gap_days={cfg.same_source_gap_days} "
+            f"entity_mismatch_penalty={cfg.entity_mismatch_penalty} "
+            f"entity_mismatch_min_names={cfg.entity_mismatch_min_names}"
         )
         print(f"코퍼스 문서 수: {span.total}")
         if not span.total:

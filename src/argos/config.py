@@ -313,6 +313,14 @@ class EventDetectionConfig(BaseModel):
     # 골랐고, 짝수 번 묶음(채점 전용)에서 낮 56.0% → 35.3%. 표는 evals/README.md.
     same_source_penalty: float = Field(default=0.03, ge=0.0, le=1.0)
     same_source_gap_days: float = Field(default=0.5, ge=0.0)
+    # ARG-303: 두 글 모두 이름이 entity_mismatch_min_names개 이상인데 하나도 겹치지
+    # 않으면 점수에서 뺀다(근사 중복은 면제, 이름이 빈약한 글은 면제). 같은 출처
+    # 감점과 독립이다. 낮·밤이 같은 edge_weight를 부르므로 칸은 이 둘뿐이다.
+    # 실측(2026-10-17, --fill-names): min_names 2~3은 틀린 비율을 크게 줄이지만 #25
+    # (밤은 #21도)와 엄격 유지를 깬다. 4부터 둘 다 지키고, penalty는 0.05 이상이면
+    # 결과가 같다(그래서 가장 작은 0.05). 표는 evals/README.md ARG-303.
+    entity_mismatch_penalty: float = Field(default=0.05, ge=0.0, le=1.0)
+    entity_mismatch_min_names: int = Field(default=4, ge=1)
     # 같은 사건의 근거로 치는 쌍 점수의 하한이자, 밤의 CPM 해상도 γ의 기본값.
     # 낮은 "이 값 이상인 이웃 점수의 합 > γ × 사건 크기"일 때만 기존 사건에
     # 붙인다 — 밤의 재군집과 같은 목적함수다(ARG-282, event_scoring docstring).
