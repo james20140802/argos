@@ -16,7 +16,7 @@ import logging
 import uuid
 from typing import Iterable, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,6 +82,35 @@ async def attach_names(
             for entity_id in sorted(entity_ids, key=str)
         ])
         .on_conflict_do_nothing(constraint="uq_document_entities_item_entity"),
+    )
+
+
+async def replace_names(
+    session: AsyncSession,
+    tech_item_id: uuid.UUID,
+    names: Sequence[ExtractedName],
+) -> None:
+    """문서의 이름 링크를 ``names``의 정규형 집합과 정확히 같게 맞춘다.
+
+    ``attach_names``는 붙이기만 해서, 잡음 이름이 이미 저장된 글에는 정리된
+    이름을 더해도 잡음이 남는다. 채우기는 '교체'여야 하므로 남는 링크를 지운다.
+    가제티어(``entities``) 행은 지우지 않는다 — 다른 문서가 같은 이름을 쓸 수
+    있고, 고아 행은 해롭지 않다. 같은 입력으로 다시 불러도 결과가 같다.
+    """
+    keys = canonical_names(names)
+    if not keys:
+        await session.execute(
+            delete(DocumentEntity).where(DocumentEntity.tech_item_id == tech_item_id)
+        )
+        return
+
+    await attach_names(session, tech_item_id, names)
+    keep_ids = select(Entity.id).where(Entity.normalized_key.in_(keys))
+    await session.execute(
+        delete(DocumentEntity).where(
+            DocumentEntity.tech_item_id == tech_item_id,
+            DocumentEntity.entity_id.not_in(keep_ids),
+        )
     )
 
 

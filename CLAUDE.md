@@ -99,6 +99,7 @@ uv run argos portfolio [--category] [--sort]      # Display your Keep portfolio
 uv run argos stats [--days]                       # Collection-status dashboard
 uv run argos backfill-images [--refetch] [--upgrade-favicons]  # Fill missing image_url (favicon by default)
 uv run argos backfill-digests [--limit] [--dry-run]  # Generate longform digest for rows where NULL (LLM, slow)
+uv run argos backfill-entities [--dry-run] [--yes]  # Rewrite stored entity names for existing articles (preview → confirm → write)
 uv run argos config {path,get,set,list,migrate-env}  # Read/update ~/.config/argos/config.toml
 
 # launchd scheduler (macOS) — see src/argos/scheduler.py

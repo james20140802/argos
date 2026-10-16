@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain import entity_extraction
 from argos.brain.entity_extraction import ExtractedName
+from argos.brain.entity_store import canonical_names, raw_names_for_documents, replace_names
 
 _ROWS_SQL = text(
     """
@@ -69,3 +70,65 @@ def extract_by_crawl_date(
         for row, row_names in zip(batch, names):
             found[row.tech_item_id] = row_names
     return found
+
+
+@dataclass(frozen=True)
+class DocChange:
+    tech_item_id: uuid.UUID
+    title: str | None
+    added: tuple[str, ...]
+    removed: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RefillPlan:
+    total: int
+    changes: tuple[DocChange, ...]
+
+    @property
+    def links_added(self) -> int:
+        return sum(len(change.added) for change in self.changes)
+
+    @property
+    def links_removed(self) -> int:
+        return sum(len(change.removed) for change in self.changes)
+
+
+async def plan_refill(
+    session: AsyncSession,
+) -> tuple[RefillPlan, dict[uuid.UUID, list[ExtractedName]]]:
+    """저장된 이름과 새로 뽑은 이름을 견줘 바뀔 문서만 모은다. 읽기만 한다.
+
+    저장 상태는 흔한 이름 필터를 거치지 않은 ``raw_names_for_documents``로 읽는다.
+    필터를 거치면 지워질 잡음 링크가 미리보기에서 빠져 계획과 실제가 어긋난다.
+    """
+    rows = await load_refill_rows(session)
+    extracted = extract_by_crawl_date(rows)
+    stored = await raw_names_for_documents(session, [row.tech_item_id for row in rows])
+
+    changes: list[DocChange] = []
+    for row in sorted(rows, key=lambda r: str(r.tech_item_id)):
+        new = set(canonical_names(extracted.get(row.tech_item_id, [])))
+        old = set(stored.get(row.tech_item_id, frozenset()))
+        if new == old:
+            continue
+        changes.append(
+            DocChange(
+                tech_item_id=row.tech_item_id,
+                title=row.title,
+                added=tuple(sorted(new - old)),
+                removed=tuple(sorted(old - new)),
+            )
+        )
+    return RefillPlan(total=len(rows), changes=tuple(changes)), extracted
+
+
+async def apply_refill(
+    session: AsyncSession,
+    plan: RefillPlan,
+    extracted: dict[uuid.UUID, list[ExtractedName]],
+) -> int:
+    """계획에 든 문서만 이름을 교체한다. 커밋은 호출자 몫이다."""
+    for change in plan.changes:
+        await replace_names(session, change.tech_item_id, extracted.get(change.tech_item_id, []))
+    return len(plan.changes)

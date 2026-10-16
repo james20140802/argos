@@ -68,3 +68,48 @@ def test_titles_are_passed_alongside_documents(monkeypatch):
     extract_by_crawl_date(rows)
 
     assert title_calls == [["t", "t"]]
+
+
+# --- plan_refill / apply_refill (ARG-304) — DB 없이 ---------------------------
+
+import pytest  # noqa: E402
+
+from argos.brain import entity_refill  # noqa: E402
+from argos.brain.entity_extraction import ExtractedName  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_plan_refill_reports_added_and_removed(monkeypatch):
+    changed, same, fresh = (uuid.uuid4() for _ in range(3))
+    rows = [
+        RefillRow(changed, "Changed", "x", datetime.date(2026, 10, 1)),
+        RefillRow(same, "Same", "x", datetime.date(2026, 10, 1)),
+        RefillRow(fresh, None, "x", datetime.date(2026, 10, 1)),
+    ]
+
+    async def fake_rows(session):
+        return rows
+
+    def fake_extract(_rows):
+        return {
+            changed: [ExtractedName("frontier", "Frontier")],
+            same: [ExtractedName("claude", "Claude")],
+            fresh: [],
+        }
+
+    async def fake_stored(session, ids):
+        return {changed: frozenset({"we", "openai"}), same: frozenset({"claude"})}
+
+    monkeypatch.setattr(entity_refill, "load_refill_rows", fake_rows)
+    monkeypatch.setattr(entity_refill, "extract_by_crawl_date", fake_extract)
+    monkeypatch.setattr(entity_refill, "raw_names_for_documents", fake_stored)
+
+    plan, extracted = await entity_refill.plan_refill(None)
+
+    assert plan.total == 3
+    assert [c.tech_item_id for c in plan.changes] == [changed]
+    change = plan.changes[0]
+    assert change.added == ("frontier",)
+    assert change.removed == ("openai", "we")
+    assert (plan.links_added, plan.links_removed) == (1, 2)
+    assert extracted[same][0].canonical == "claude"

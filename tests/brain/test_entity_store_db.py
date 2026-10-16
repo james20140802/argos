@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -19,6 +19,7 @@ from argos.brain.entity_store import (
     name_document_frequency,
     names_for_documents,
     raw_names_for_documents,
+    replace_names,
 )
 from argos.brain.graph_state import BrainState
 from argos.brain.nodes.save import save_node
@@ -269,3 +270,93 @@ async def test_name_document_frequency_counts_distinct_named_documents(session_f
     assert named_after - named_before == 2
     assert frequency["arg-263-test-302-df-a"] == 2
     assert frequency["arg-263-test-302-df-b"] == 1
+
+
+async def _links(session_factory, item_id):
+    async with session_factory() as session:
+        return (await raw_names_for_documents(session, [item_id])).get(item_id, frozenset())
+
+
+@pytest.mark.asyncio
+async def test_replace_names_sets_exact_links(session_factory):
+    """기존 잡음 링크는 지워지고 새 이름만 남는다 (ARG-304)."""
+    async with session_factory() as session:
+        item_id = await _make_item(session, "replace-exact")
+        await attach_names(
+            session, item_id,
+            _names(("arg-263-test-we", "We"), ("arg-263-test-openai", "OpenAI")),
+        )
+        await replace_names(session, item_id, _names(("arg-263-test-frontier", "Frontier")))
+        await session.commit()
+    assert await _links(session_factory, item_id) == frozenset({"arg-263-test-frontier"})
+    # 가제티어 행은 지우지 않는다.
+    async with session_factory() as session:
+        remaining = await session.execute(
+            select(Entity.normalized_key).where(Entity.normalized_key == "arg-263-test-we")
+        )
+        assert remaining.scalar_one_or_none() == "arg-263-test-we"
+
+
+@pytest.mark.asyncio
+async def test_replace_names_idempotent(session_factory):
+    async with session_factory() as session:
+        item_id = await _make_item(session, "replace-idem")
+        names = _names(("arg-263-test-frontier", "Frontier"))
+        await replace_names(session, item_id, names)
+        await replace_names(session, item_id, names)
+        await session.commit()
+    assert await _links(session_factory, item_id) == frozenset({"arg-263-test-frontier"})
+
+
+@pytest.mark.asyncio
+async def test_replace_names_empty_clears_links(session_factory):
+    async with session_factory() as session:
+        item_id = await _make_item(session, "replace-empty")
+        await attach_names(session, item_id, _names(("arg-263-test-we", "We")))
+        await replace_names(session, item_id, [])
+        await session.commit()
+    assert await _links(session_factory, item_id) == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_plan_then_apply_then_plan_is_empty(session_factory, monkeypatch):
+    """채우기 두 번 -> 두 번째 계획은 변경 0건, 링크 스냅숏 동일 (ARG-304)."""
+    from argos.brain import entity_refill
+
+    async with session_factory() as session:
+        a = await _make_item(session, "plan-a")
+        b = await _make_item(session, "plan-b")
+        await attach_names(session, a, _names(("arg-263-test-we", "We")))
+        await session.commit()
+
+    wanted = {
+        a: [ExtractedName("arg-263-test-frontier", "Frontier")],
+        b: [ExtractedName("arg-263-test-claude", "Claude")],
+    }
+    real_load = entity_refill.load_refill_rows
+
+    async def only_ours(session):
+        return [r for r in await real_load(session) if r.tech_item_id in wanted]
+
+    monkeypatch.setattr(entity_refill, "load_refill_rows", only_ours)
+    monkeypatch.setattr(
+        entity_refill,
+        "extract_by_crawl_date",
+        lambda rows: {r.tech_item_id: wanted[r.tech_item_id] for r in rows},
+    )
+
+    async with session_factory() as session:
+        plan, extracted = await entity_refill.plan_refill(session)
+        assert len(plan.changes) == 2
+        assert await entity_refill.apply_refill(session, plan, extracted) == 2
+        await session.commit()
+    snapshot = [await _links(session_factory, a), await _links(session_factory, b)]
+    assert snapshot == [
+        frozenset({"arg-263-test-frontier"}),
+        frozenset({"arg-263-test-claude"}),
+    ]
+
+    async with session_factory() as session:
+        plan2, _ = await entity_refill.plan_refill(session)
+        assert plan2.changes == ()
+    assert [await _links(session_factory, a), await _links(session_factory, b)] == snapshot
