@@ -222,6 +222,10 @@ async def test_names_for_documents_drops_common_names_but_raw_keeps_them(
         monkeypatch.setattr(
             settings.user.event_detection, "entity_common_doc_ratio", ratio
         )
+        # 하한(콜드스타트 방어)이 이 작은 표본을 막지 않게 내린다.
+        monkeypatch.setattr(
+            settings.user.event_detection, "entity_common_min_documents", 1
+        )
 
         filtered = await names_for_documents(session, items)
         raw = await raw_names_for_documents(session, items)
@@ -241,3 +245,27 @@ async def test_names_for_documents_without_any_links_is_empty(session_factory):
     async with session_factory() as session:
         assert await names_for_documents(session, [item]) == {}
         assert await names_for_documents(session, []) == {}
+
+
+@pytest.mark.asyncio
+async def test_name_document_frequency_counts_distinct_named_documents(session_factory):
+    """이름이 여러 개인 문서도 한 번만 세고, 링크 없는 문서는 세지 않는다."""
+    async with session_factory() as session:
+        _, named_before = await name_document_frequency(session)
+        multi = await _make_item(session, "df-multi")
+        single = await _make_item(session, "df-single")
+        await _make_item(session, "df-unlinked")
+        await attach_names(
+            session,
+            multi,
+            _names(("arg-263-test-302-df-a", "A"), ("arg-263-test-302-df-b", "B")),
+        )
+        await attach_names(session, single, _names(("arg-263-test-302-df-a", "A")))
+        await session.commit()
+
+    async with session_factory() as session:
+        frequency, named_after = await name_document_frequency(session)
+
+    assert named_after - named_before == 2
+    assert frequency["arg-263-test-302-df-a"] == 2
+    assert frequency["arg-263-test-302-df-b"] == 1

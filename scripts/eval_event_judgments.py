@@ -28,7 +28,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 
 from argos.brain import event_backfill, event_candidates, recluster_input
-from argos.brain.entity_frequency import drop_common_names
+from argos.brain.entity_frequency import common_names
 from argos.brain.entity_refill import extract_by_crawl_date, load_refill_rows
 from argos.brain.entity_store import canonical_names
 from argos.brain.event_eval import (
@@ -105,12 +105,20 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--entity-common-doc-ratio", type=float, default=None)
+    parser.add_argument("--entity-common-min-documents", type=int, default=None)
     parser.add_argument(
         "--fill-names",
         action="store_true",
         help="DB 이름 링크 대신 크롤 날짜 배치로 메모리에서 추출한 이름으로 잰다(DB 쓰기 없음)",
     )
     args = parser.parse_args()
+    # 흔한 이름 필터 옵션은 메모리 채움에서만 읽는다. DB 이름 모드는 운영 설정
+    # (names_for_documents)을 그대로 쓰므로, 조용히 무시하느니 거부한다.
+    if not args.fill_names and (
+        args.entity_common_doc_ratio is not None
+        or args.entity_common_min_documents is not None
+    ):
+        parser.error("--entity-common-* 옵션은 --fill-names와 함께만 쓸 수 있다")
     if args.sweep is not None and args.same_source_penalty is not None:
         parser.error("--sweep과 --same-source-penalty는 함께 쓸 수 없다 (스윕이 값을 직접 정한다)")
     return args
@@ -140,6 +148,8 @@ def _overrides(args: argparse.Namespace) -> dict[str, float]:
         overrides["same_source_gap_days"] = args.same_source_gap_days
     if args.entity_common_doc_ratio is not None:
         overrides["entity_common_doc_ratio"] = args.entity_common_doc_ratio
+    if args.entity_common_min_documents is not None:
+        overrides["entity_common_min_documents"] = args.entity_common_min_documents
     return overrides
 
 
@@ -268,17 +278,16 @@ async def main() -> None:
                 key for names in raw_memory.values() for key in names
             )
             named_documents = sum(1 for names in raw_memory.values() if names)
-            memory = drop_common_names(
-                raw_memory,
+            dropped_keys = common_names(
                 document_frequency=frequency,
                 named_documents=named_documents,
                 max_ratio=cfg.entity_common_doc_ratio,
+                min_documents=cfg.entity_common_min_documents,
             )
-            dropped = sorted(
-                key
-                for key, count in frequency.items()
-                if named_documents and count / named_documents > cfg.entity_common_doc_ratio
-            )
+            memory = {
+                item_id: names - dropped_keys for item_id, names in raw_memory.items()
+            }
+            dropped = sorted(dropped_keys)
             named = [v for v in memory.values() if v]
             average = sum(len(v) for v in named) / len(named) if named else 0.0
             names_note = (

@@ -15,26 +15,45 @@ from typing import Hashable, Mapping, TypeVar
 K = TypeVar("K", bound=Hashable)
 
 
+def common_names(
+    *,
+    document_frequency: Mapping[str, int],
+    named_documents: int,
+    max_ratio: float,
+    min_documents: int = 1,
+) -> frozenset[str]:
+    """흔한 이름의 키 집합. 평가 스크립트와 ``drop_common_names``가 같이 쓴다.
+
+    두 안전장치가 있다. (1) 한 문서에만 붙은 이름은 아무리 비율이 높아도 흔한 말이
+    아니다 — 코퍼스가 작을 때 비율만 보면 모든 이름이 걸린다. (2) 이름 있는 문서가
+    ``min_documents``에 못 미치면 빈도 통계가 믿을 만하지 않아 아무것도 걸지 않는다.
+    분모 ``named_documents``는 이름이 1개 이상 붙은 문서 수다 — 전체 기사 수로
+    나누면 이름 링크가 일부 글에만 있는 운영 DB에서 흔한 이름이 안 걸린다.
+    경계값(비율 == max_ratio)은 남긴다.
+    """
+    if named_documents <= 0 or named_documents < min_documents:
+        return frozenset()
+    return frozenset(
+        key
+        for key, count in document_frequency.items()
+        if count >= 2 and count / named_documents > max_ratio
+    )
+
+
 def drop_common_names(
     names_by_doc: Mapping[K, frozenset[str]],
     *,
     document_frequency: Mapping[str, int],
     named_documents: int,
     max_ratio: float,
+    min_documents: int = 1,
 ) -> dict[K, frozenset[str]]:
-    """문서빈도 비율이 ``max_ratio``를 **넘는** 이름을 모든 문서에서 뺀다.
-
-    분모 ``named_documents``는 이름이 1개 이상 붙은 문서 수다. 전체 기사 수로
-    나누면 이름 링크가 일부 글에만 있는 운영 DB에서 흔한 이름이 하나도 안
-    걸린다. 이름이 붙은 문서가 없으면(0) 지울 근거가 없으니 입력을 그대로 둔다.
-    경계값(비율 == max_ratio)은 남긴다.
-    """
-    if named_documents <= 0:
-        return dict(names_by_doc)
-    common = frozenset(
-        key
-        for key, count in document_frequency.items()
-        if count / named_documents > max_ratio
+    """``common_names``에 든 이름을 모든 문서에서 뺀다. 지울 게 없으면 입력 그대로."""
+    common = common_names(
+        document_frequency=document_frequency,
+        named_documents=named_documents,
+        max_ratio=max_ratio,
+        min_documents=min_documents,
     )
     if not common:
         return dict(names_by_doc)

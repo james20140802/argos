@@ -282,6 +282,9 @@ class EventDetectionConfig(BaseModel):
     # 저장된 이름 전체에서 이 비율을 넘는 문서에 붙은 이름은 흔한 말로 보고
     # 읽을 때 뺀다 (ARG-302). 분모는 이름이 1개 이상인 문서 수.
     entity_common_doc_ratio: float = Field(default=0.05, gt=0.0, le=1.0)
+    # 이름 있는 문서가 이보다 적으면 빈도 통계를 못 믿어 흔한 이름을 걸지 않는다
+    # (콜드스타트에서 비율만 보면 모든 이름이 흔한 말로 걸린다).
+    entity_common_min_documents: int = Field(default=100, ge=1)
     # spaCy 보강(ARG-253)은 켜져 있어도 미설치면 조용히 건너뛴다.
     entity_spacy_enabled: bool = True
     # 열어 둘 파이프라인 이름. 코드에 박아 두면 다른 호환 모델을 설치해

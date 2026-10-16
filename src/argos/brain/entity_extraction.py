@@ -267,7 +267,8 @@ _FUNCTION_WORDS = frozenset(
         "neither", "let", "get", "make", "see", "use", "say", "says", "said",
     }
 )
-# 제목 첫머리에 흔한 일반 영어 동사형 — 발표·출시 알림 어구 (ARG-302).
+# 제목 첫머리의 알림 동사 — 발표·출시 어구 (ARG-302). 'new' 'open' 'building'처럼
+# 이름의 일부일 수 있는 말은 넣지 않는다.
 # Title Case 제목은 모든 낱말이 대문자라 'Introducing OpenAI Frontier'가 한
 # 덩이로 읽힌다. 이 동사들은 이름이 아니라 이름 앞의 경계다.
 _TITLE_VERBS = frozenset(
@@ -275,15 +276,14 @@ _TITLE_VERBS = frozenset(
         "introducing", "introduces", "introduce", "announcing", "announces",
         "announce", "meet", "meets", "launching", "launches", "launch",
         "releasing", "releases", "release", "released", "unveiling", "unveils",
-        "unveil", "presenting", "presents", "present", "building", "builds",
-        "build", "using", "showing", "show", "ask", "adds", "adding", "add",
-        "open", "opens", "opening", "bringing", "brings", "bring", "welcome",
-        "welcoming", "new", "now", "rolling", "rolls", "scaling", "making",
-        "makes", "getting", "gets", "going", "goes", "powering", "powers",
-        "expanding", "expands", "updating", "updates", "updated", "improving",
-        "improves", "enabling", "enables", "teaching", "teaches", "learning",
-        "learns", "why", "how", "what", "when", "where", "who",
+        "unveil", "presenting", "presents", "present",
     }
+)
+# 제목에서 이름 경계로 쓰는 관사·접속사·지시어. 불용어 전체를 쓰지 않는 이유:
+# 'new'가 들어 있어 'New Relic'이 깨진다. 한 낱말짜리 흔한 말은 `_candidate`가
+# 이미 걸러낸다.
+_TITLE_BOUNDARY_STOPWORDS = frozenset(
+    {"a", "an", "and", "but", "or", "this", "that", "these", "those"}
 )
 # 본문 문장 첫머리에서도 떼어 내는 알림 동사 (ARG-302). 기사 본문은 제목 줄을
 # 그대로 첫 줄에 싣는 일이 흔해서 'Introducing OpenAI Frontier'가 본문 경로에서
@@ -1038,9 +1038,14 @@ def _normalize_with_origins(document: str) -> tuple[str, list[int]]:
 _CP1252_CONTINUATION = "\u0080-\u00bf\u20ac\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u017d\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u017e\u0178"
 _MOJIBAKE_RUN = re.compile(rf"[\u00c2-\u00f4][{_CP1252_CONTINUATION}]+")
 # 복구하지 못하고 남은 표지. 이 자리를 후보에서 빼야 'â'·'Ã' 같은 글자가 이름에
-# 붙어 나오지 않는다. 멀쩡한 'Château'의 â는 뒤에 연속바이트 자리 글자가 안 와서
-# 걸리지 않는다.
-_MOJIBAKE_RESIDUE = re.compile(rf"[\u00c2-\u00f4][{_CP1252_CONTINUATION}]+|\ufffd")
+# 붙어 나오지 않는다. 범위를 UTF-8 깨짐의 대표 앞바이트(Â Ã)와 'â' + 연속바이트
+# 자리 글자(€ 포함)로 좁힌다 — 앞바이트 범위 전체(é ë ï ó ô ñ ä …)를 잔여로 보면
+# 멀쩡한 'Beyoncé’s' 'Café—Labs' 'Zoë…'의 글자가 뒤따르는 곡선 따옴표·줄표와
+# 짝지어져 잘려 나간다. 복구 단계는 디코딩이 **성공할 때만** 바꾸므로 넓게 훑어도
+# 안전하지만, 잔여 마스킹은 틀리면 이름을 지우므로 좁게 둔다.
+_MOJIBAKE_RESIDUE = re.compile(
+    rf"[\u00c2\u00c3][{_CP1252_CONTINUATION}]+|\u00e2[\u0080-\u00bf\u20ac]+|\ufffd"
+)
 
 
 def _decode_mojibake(run: str) -> str:
@@ -1088,7 +1093,7 @@ def _title_boundaries_blanked(title: str) -> str:
         word = match.group().casefold()
         if word in _TITLE_VERBS or word in _FUNCTION_WORDS:
             blank.add(index)
-        elif word in _STOPWORDS and word not in _CONNECTORS:
+        elif word in _TITLE_BOUNDARY_STOPWORDS:
             blank.add(index)
         elif word in _CONNECTORS:
             before = matches[index - 1] if index else None

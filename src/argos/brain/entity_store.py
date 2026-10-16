@@ -136,6 +136,12 @@ async def names_for_documents(
     배치 안 문서빈도 컷은 크롤 날짜마다 따로 돌아서 ``ai``·``openai``가 새어
     나온다. 저장된 이름 전체의 빈도로 한 번 더 거른다(ARG-302). 이름 링크가
     하나도 없으면 빈도 통계가 비어 아무것도 지우지 않는다.
+
+    호출마다 ``name_document_frequency``의 전체 GROUP BY가 한 번 돈다. 일부러
+    캐시하지 않는다 — 낮(backfill)·밤(재군집)·온라인 후보 조회가 **같은 DB 상태에서
+    같은 빈도**를 읽어야 같은 입력에 같은 결과가 나온다. 프로세스 캐시는 호출 시점에
+    따라 빈도가 달라져 그 결정성을 깬다. 비용은 이름 링크 수에 비례하고 문서 조회
+    한 번당 쿼리 두 개 수준이다.
     """
     names = await raw_names_for_documents(session, tech_item_ids)
     if not names:
@@ -146,4 +152,5 @@ async def names_for_documents(
         document_frequency=frequency,
         named_documents=named_documents,
         max_ratio=settings.user.event_detection.entity_common_doc_ratio,
+        min_documents=settings.user.event_detection.entity_common_min_documents,
     )

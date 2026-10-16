@@ -259,10 +259,7 @@ async def test_the_limit_caps_the_result(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_neighbours_carry_their_event_links_and_names(session_factory, monkeypatch):
-    # 이 테스트는 이름 하나가 붙은 문서 하나뿐이라 흔한 이름 필터(ARG-302)가 그
-    # 이름을 지운다 — 이웃이 이름을 실어 나르는지를 보는 자리라 필터는 끈다.
-    monkeypatch.setattr(settings.user.event_detection, "entity_common_doc_ratio", 1.0)
+async def test_neighbours_carry_their_event_links_and_names(session_factory):
     async with session_factory() as session:
         item_id = await _make_item(
             session,

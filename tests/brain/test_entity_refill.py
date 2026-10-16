@@ -18,13 +18,11 @@ def _row(content, day) -> RefillRow:
     )
 
 
-title_calls: list = []
-
-
-def _fake_extractor(calls):
+def _fake_extractor(calls, title_calls=None):
     def fake(documents, *, titles=None):
         calls.append(list(documents))
-        title_calls.append(None if titles is None else list(titles))
+        if title_calls is not None:
+            title_calls.append(None if titles is None else list(titles))
         return [
             [entity_extraction.ExtractedName(canonical=doc.lower(), surface=doc)]
             for doc in documents
@@ -61,9 +59,11 @@ def test_none_raw_content_becomes_empty_string(monkeypatch):
 
 
 def test_titles_are_passed_alongside_documents(monkeypatch):
-    title_calls.clear()
+    title_calls: list = []
     rows = [_row("a", 1), _row("b", 1)]
-    monkeypatch.setattr(entity_extraction, "extract_names", _fake_extractor([]))
+    monkeypatch.setattr(
+        entity_extraction, "extract_names", _fake_extractor([], title_calls)
+    )
 
     extract_by_crawl_date(rows)
 

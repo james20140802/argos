@@ -1054,3 +1054,24 @@ def test_leading_preposition_and_article_are_not_left_on_a_name():
     [names] = canonicals(["On the Navier–Stokes Millennium Prize\nA body line."])
     assert not any(name.startswith(("on ", "the ")) for name in names)
     assert any("navier" in name for name in names)
+
+
+def test_real_accented_letters_before_curly_quotes_and_dashes_survive():
+    [names] = canonicals(
+        [
+            "Yesterday Nestlé’s lab and Beyoncé’s team met Zoë… then Café—Labs shipped. "
+            "Later we saw Nestlé and Beyoncé again."
+        ]
+    )
+    assert "beyoncé" in names
+    assert "nestlé" in names
+    assert "zoë" in names
+    assert "café" in names
+
+
+def test_new_prefixed_company_name_survives_in_title():
+    [names] = canonicals(
+        ["plain body"], titles=["New Relic Launches Observability Platform"]
+    )
+    assert "new relic" in names
+    assert "observability platform" in names

@@ -59,3 +59,34 @@ def test_deterministic():
         document_frequency={"openai": 6, "kimi k3": 2}, named_documents=10, max_ratio=0.3
     )
     assert drop_common_names(docs, **kwargs) == drop_common_names(docs, **kwargs)
+
+
+def test_singleton_name_is_never_dropped():
+    docs = {0: frozenset({"solo"}), 1: frozenset({"other"})}
+    result = drop_common_names(
+        docs,
+        document_frequency={"solo": 1, "other": 1},
+        named_documents=2,
+        max_ratio=0.05,
+    )
+    assert result == docs
+
+
+def test_below_min_documents_nothing_is_dropped():
+    docs = _docs(6, 0, 10)
+    kwargs = dict(document_frequency={"openai": 6}, named_documents=10, max_ratio=0.3)
+    assert "openai" in drop_common_names(docs, min_documents=11, **kwargs)[0]
+
+
+def test_at_min_documents_ratio_rule_applies():
+    docs = _docs(6, 0, 10)
+    kwargs = dict(document_frequency={"openai": 6}, named_documents=10, max_ratio=0.3)
+    assert "openai" not in drop_common_names(docs, min_documents=10, **kwargs)[0]
+
+
+def test_common_names_returns_the_keys():
+    from argos.brain.entity_frequency import common_names
+
+    assert common_names(
+        document_frequency={"openai": 6, "kimi k3": 1}, named_documents=10, max_ratio=0.3
+    ) == frozenset({"openai"})
