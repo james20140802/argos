@@ -1075,3 +1075,41 @@ def test_new_prefixed_company_name_survives_in_title():
     )
     assert "new relic" in names
     assert "observability platform" in names
+
+
+def test_title_first_line_does_not_rescue_a_sentence_initial_word():
+    """제목은 본문 첫 줄이라 문장 첫 단어 점검을 끄면 'Engineers'가 이름이 된다."""
+    body = "Engineers met today. Anthropic shipped Claude Sonnet 5 yesterday."
+    names = canonicals([body, body], titles=["Engineers met today.", "Engineers met today."])
+    assert all("engineers" not in doc for doc in names)
+
+
+def test_one_word_title_candidate_needs_body_mid_sentence_evidence():
+    [names] = canonicals(
+        ["Plain body about databases and Rust tooling."],
+        titles=["How We Built A Faster Database With Rust"],
+    )
+    assert "built" not in names
+    assert "rust" in names  # 본문 중간에도 대문자로 나온다 = 증거
+
+
+def test_title_words_in_one_document_do_not_rescue_them_in_another():
+    docs = [
+        "Care was taken. Latency rose. Anthropic and Acme Labs responded.",
+        "Acme Labs said nothing. Anthropic likewise stayed quiet.",
+    ]
+    names = canonicals(docs, titles=["Why You Should Care About Latency", "Other news"])
+    assert not (names[0] & {"care", "latency"})
+    assert not (names[1] & {"care", "latency"})
+
+
+def test_accented_capitals_before_curly_punctuation_are_not_mis_decoded():
+    for text, expected in [
+        ("Then JOSÉ’s lab shipped and JOSÉ again.", "josé"),
+        ("Then CAFÉ—LABS shipped and CAFÉ again.", "café"),
+        ("Then HEIß“ shipped and heiß again.", "heiss"),
+        ("Then PERÚ” shipped and PERÚ again.", "perú"),
+    ]:
+        [names] = canonicals([text])
+        assert not any(set("ɒɗߓڔ") & set(name) for name in names), (text, names)
+        assert expected in names or any(expected in name for name in names), (text, names)

@@ -439,6 +439,8 @@ class _Candidate:
     sentence_initial: bool
     # 소유격 's를 뗀 정규형. 뗄 게 없으면 빈 문자열.
     stem: str = ""
+    # 제목에서 온 후보. 문장 중간 대문자 증거로 세지 않는다.
+    from_title: bool = False
 
 
 def _is_cased(character: str) -> bool:
@@ -1063,6 +1065,13 @@ def _decode_mojibake(run: str) -> str:
             except UnicodeEncodeError:
                 raw += character.encode("latin-1")
         fixed = bytes(raw).decode("utf-8")
+        # 진짜 'É’' 'ß“'이 우연히 UTF-8 바이트열로 읽혀 'ɒ' 'ߓ'이 되는 경우를
+        # 막는다. 서구 문자·기호 범위 밖으로 풀리면 깨짐이 아니라 원문이다.
+        if not all(
+            ord(char) < 0x80 or 0x80 <= ord(char) <= 0x24F or 0x2000 <= ord(char) <= 0x20CF
+            for char in fixed
+        ):
+            raise UnicodeDecodeError("utf-8", b"", 0, 1, "outside western range")
     except (UnicodeEncodeError, UnicodeDecodeError):
         # 첫 글자는 못 살리지만 뒤쪽이 짝일 수 있다 — 한 글자 밀어서 다시 본다.
         return run[0] + (_repair_mojibake(run[1:]) if len(run) > 1 else "")
@@ -1119,12 +1128,22 @@ def _title_boundaries_blanked(title: str) -> str:
 
 
 def _title_candidates(title: str, max_ngram: int) -> list[_Candidate]:
-    """제목에서 이름 후보를 뽑는다. 제목 낱말은 문장 첫 단어가 아니다."""
+    """제목에서 이름 후보를 뽑는다.
+
+    여러 낱말로 이어진 대문자 묶음은 문장 첫 단어 의심을 받지 않는다. 낱말
+    하나짜리는 제목 맨 앞이 문장 첫 단어와 구별되지 않는다 — 제목은 보통 본문
+    첫 줄이고 Title Case라 'Built' 'Care'도 대문자다. 그래서 본문 중간에서도
+    대문자로 나온다는 증거가 있어야 이름이 된다(``extract_names``가 제목
+    후보를 증거 집합에서 뺀다).
+    """
     # 제목을 못 구해 채운 'Untitled'는 제목이 아니라 자리표시자다.
     if title.strip() == FALLBACK_TITLE:
         return []
     found = _candidates(_title_boundaries_blanked(title), max_ngram)
-    return [replace(candidate, sentence_initial=False) for candidate in found]
+    return [
+        replace(candidate, sentence_initial=candidate.word_count == 1, from_title=True)
+        for candidate in found
+    ]
 
 
 def _candidates(document: str, max_ngram: int) -> list[_Candidate]:
@@ -1357,7 +1376,7 @@ def extract_names(
         candidate.canonical
         for document in per_document
         for candidate in document
-        if not candidate.sentence_initial
+        if not candidate.sentence_initial and not candidate.from_title
     }
 
     surviving: list[dict[str, str]] = []

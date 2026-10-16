@@ -16,6 +16,7 @@ from sqlalchemy.pool import NullPool
 from argos.brain.entity_extraction import ExtractedName
 from argos.brain.entity_store import (
     attach_names,
+    filter_common_names,
     name_document_frequency,
     names_for_documents,
     raw_names_for_documents,
@@ -235,6 +236,37 @@ async def test_names_for_documents_drops_common_names_but_raw_keeps_them(
     assert "arg-263-test-302-rare" in filtered[items[0]]
     assert "arg-263-test-302-common" in raw[items[0]]
     assert "arg-263-test-302-rare" in raw[items[0]]
+
+
+@pytest.mark.asyncio
+async def test_filter_common_names_matches_what_neighbours_see(
+    session_factory, monkeypatch
+):
+    """새 글 이름(filter_common_names)과 이웃 이름(names_for_documents)이 같은 규칙."""
+    async with session_factory() as session:
+        items = [await _make_item(session, f"fcn-{index}") for index in range(3)]
+        for item in items:
+            await attach_names(
+                session, item, _names(("arg-300-test-fcn-common", "Common"))
+            )
+        await attach_names(session, items[0], _names(("arg-300-test-fcn-rare", "Rare")))
+        await session.commit()
+
+    async with session_factory() as session:
+        _, named = await name_document_frequency(session)
+        monkeypatch.setattr(
+            settings.user.event_detection, "entity_common_doc_ratio", 2 / named
+        )
+        monkeypatch.setattr(
+            settings.user.event_detection, "entity_common_min_documents", 1
+        )
+        both = frozenset({"arg-300-test-fcn-common", "arg-300-test-fcn-rare"})
+        neighbour = (await names_for_documents(session, items))[items[0]]
+        subject = await filter_common_names(session, both)
+        assert await filter_common_names(session, frozenset()) == frozenset()
+
+    assert subject == frozenset({"arg-300-test-fcn-rare"})
+    assert subject == neighbour & both
 
 
 @pytest.mark.asyncio

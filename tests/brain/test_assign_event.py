@@ -14,6 +14,17 @@ from argos.brain.event_scoring import DocumentFeatures
 from argos.brain.nodes.assign_event import assign_event_node
 
 
+@pytest.fixture(autouse=True)
+def _no_common_name_lookup(monkeypatch):
+    """새 글 이름의 흔한 이름 거르기는 DB 빈도를 읽는다 — 이 파일은 DB 없이 돈다."""
+    from argos.brain.nodes import assign_event as node_module
+
+    async def _identity(session, names):
+        return names
+
+    monkeypatch.setattr(node_module, "filter_common_names", _identity)
+
+
 def _session() -> MagicMock:
     """assign_event_node가 후보 조회를 ``session.begin_nested()`` 세이브포인트
     안에서 부르므로(ARG-266 C2), 그 async context manager 프로토콜을 실제로
@@ -217,3 +228,33 @@ async def test_the_subject_carries_the_registered_domain_of_the_source_url(monke
     )
 
     assert seen["subject"].source == "openai.com"
+
+
+@pytest.mark.asyncio
+async def test_the_subjects_names_go_through_the_common_name_filter(monkeypatch):
+    """ARG-300: 새 글도 이웃과 같은 흔한 이름 거르기를 거친다(낮·밤·온라인 일치)."""
+    from argos.brain.nodes import assign_event as node_module
+
+    seen: dict[str, DocumentFeatures] = {}
+
+    async def _drop_ai(session, names):
+        return frozenset(name for name in names if name != "ai")
+
+    def _capture(subject, candidates, *, event_sizes, config):
+        seen["subject"] = subject
+        return None
+
+    monkeypatch.setattr(node_module, "filter_common_names", _drop_ai)
+    monkeypatch.setattr(
+        event_assignment_module, "fetch_candidates", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        event_assignment_module, "fetch_event_sizes", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr(node_module, "decide_event", _capture)
+
+    await assign_event_node(
+        _state(entity_names=["ai", "acme corp"]), session=_session()
+    )
+
+    assert seen["subject"].names == frozenset({"acme corp"})

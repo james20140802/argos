@@ -175,6 +175,25 @@ async def names_for_documents(
     names = await raw_names_for_documents(session, tech_item_ids)
     if not names:
         return names
+    return await _drop_common(session, names)
+
+
+async def filter_common_names(
+    session: AsyncSession, names: frozenset[str]
+) -> frozenset[str]:
+    """한 문서의 이름 집합에서 코퍼스 전반에 흔한 이름을 거른다.
+
+    새로 들어온 글(온라인 배정)의 이름도 이웃과 **같은 규칙·같은 빈도**로 걸러야
+    낮·밤·온라인이 같은 입력에 같은 점수를 낸다 — 이웃만 걸러 놓고 새 글은 날것으로
+    비교하면 ``ai``가 한쪽에만 남아 겹침이 부풀거나 감점이 어긋난다.
+    """
+    if not names:
+        return names
+    filtered = await _drop_common(session, {None: names})
+    return filtered[None]
+
+
+async def _drop_common(session: AsyncSession, names: dict):
     frequency, named_documents = await name_document_frequency(session)
     return drop_common_names(
         names,
