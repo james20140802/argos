@@ -110,7 +110,7 @@ class EdgeWeights:
     # 두 글의 이름이 모두 `entity_mismatch_min_names`개 이상이고 서로소일 때 빼는
     # 값(ARG-303). 0.0이면 감점 없음. 같은 출처 감점과 독립이다.
     entity_mismatch_penalty: float = 0.0
-    entity_mismatch_min_names: int = 3
+    entity_mismatch_min_names: int = 4
 
     @classmethod
     def from_config(cls, config: "EventDetectionConfig") -> "EdgeWeights":

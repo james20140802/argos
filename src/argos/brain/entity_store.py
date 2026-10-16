@@ -21,7 +21,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain.entity_extraction import ExtractedName
-from argos.brain.entity_frequency import drop_common_names
+from argos.brain.entity_frequency import common_names
 from argos.config import settings
 from argos.models.document_entity import DocumentEntity
 from argos.models.entity import Entity
@@ -175,7 +175,10 @@ async def names_for_documents(
     names = await raw_names_for_documents(session, tech_item_ids)
     if not names:
         return names
-    return await _drop_common(session, names)
+    common = await _common_names(session)
+    if not common:
+        return names
+    return {doc: doc_names - common for doc, doc_names in names.items()}
 
 
 async def filter_common_names(
@@ -189,16 +192,15 @@ async def filter_common_names(
     """
     if not names:
         return names
-    filtered = await _drop_common(session, {None: names})
-    return filtered[None]
+    return names - await _common_names(session)
 
 
-async def _drop_common(session: AsyncSession, names: dict):
+async def _common_names(session: AsyncSession) -> frozenset[str]:
     frequency, named_documents = await name_document_frequency(session)
-    return drop_common_names(
-        names,
+    config = settings.user.event_detection
+    return common_names(
         document_frequency=frequency,
         named_documents=named_documents,
-        max_ratio=settings.user.event_detection.entity_common_doc_ratio,
-        min_documents=settings.user.event_detection.entity_common_min_documents,
+        max_ratio=config.entity_common_doc_ratio,
+        min_documents=config.entity_common_min_documents,
     )
