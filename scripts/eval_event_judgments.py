@@ -6,7 +6,10 @@
 
     uv run python scripts/eval_event_judgments.py [--mode day|night|both]
         [--join-threshold F] [--same-source-penalty F] [--same-source-gap-days F]
-        [--sweep 0,0.02,0.03:0.5,...]
+        [--sweep 0,0.02,0.03:0.5,...] [--fill-names]
+
+`--fill-names`는 DB의 이름 링크 대신 크롤 날짜 배치로 그 자리에서 추출한 이름으로
+잰다(ARG-301). DB에는 쓰지 않는다.
 
 판정은 고르기 몫(홀수 번 묶음)과 채점 전용 몫(짝수 번 묶음)으로 나눠 따로 찍는다
 (ARG-299). 값은 고르기 몫만 보고 고르고, 채점 전용 몫은 그 값을 확인하는 데만 쓴다.
@@ -16,12 +19,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import uuid
 from pathlib import Path
 
 from pydantic import ValidationError
 from sqlalchemy import text
 
-from argos.brain import event_backfill
+from argos.brain import event_backfill, event_candidates, recluster_input
+from argos.brain.entity_refill import extract_by_crawl_date, load_refill_rows
+from argos.brain.entity_store import canonical_names
 from argos.brain.event_eval import (
     UNVERIFIED,
     evaluate,
@@ -38,6 +45,26 @@ from argos.database import AsyncSessionLocal
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_JUDGMENTS = REPO_ROOT / "evals" / "event_judgments_arg283.json"
+
+# 이름을 읽는 모듈들 — `from ... import names_for_documents`로 이름을 붙들고 있어
+# 각 모듈 속성을 바꿔야 한다.
+_NAME_READERS = (event_backfill, recluster_input, event_candidates)
+
+
+@contextlib.contextmanager
+def _memory_names(names: dict[uuid.UUID, frozenset[str]]):
+    async def lookup(session, ids):
+        return {i: names[i] for i in ids if i in names}
+
+    originals = [(m, m.names_for_documents) for m in _NAME_READERS]
+    for module in _NAME_READERS:
+        module.names_for_documents = lookup
+    try:
+        yield
+    finally:
+        for module, original in originals:
+            module.names_for_documents = original
+
 
 def _sweep_header(must_keep: tuple[int, ...]) -> str:
     # 반드시 유지 열은 판정 파일의 must_keep에서 만든다 — 재매핑한 파일의 번호가
@@ -74,6 +101,11 @@ def _parse_args() -> argparse.Namespace:
             "낮·밤을 돌려 한 줄 요약 표를 찍는다. gap을 빼면 설정값(또는 "
             "--same-source-gap-days)을 쓴다"
         ),
+    )
+    parser.add_argument(
+        "--fill-names",
+        action="store_true",
+        help="DB 이름 링크 대신 크롤 날짜 배치로 메모리에서 추출한 이름으로 잰다(DB 쓰기 없음)",
     )
     args = parser.parse_args()
     if args.sweep is not None and args.same_source_penalty is not None:
@@ -197,7 +229,7 @@ async def main() -> None:
         else None
     )
 
-    async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session, contextlib.AsyncExitStack() as stack:
         span = (await session.execute(_SPAN_SQL)).one()
         print(
             f"판정 파일: {_display_path(args.judgments)} "
@@ -217,6 +249,22 @@ async def main() -> None:
             print("평가할 문서가 없다 — tech_items가 비어 있다.")
             await session.rollback()
             return
+
+        names_note = "이름: DB 저장분"
+        if args.fill_names:
+            extracted = extract_by_crawl_date(await load_refill_rows(session))
+            memory = {
+                item_id: frozenset(canonical_names(found))
+                for item_id, found in extracted.items()
+            }
+            named = [v for v in memory.values() if v]
+            average = sum(len(v) for v in named) / len(named) if named else 0.0
+            names_note = (
+                f"이름: 메모리 채움(문서 {len(memory)}건 중 {len(named)}건에 이름, "
+                f"문서당 평균 {average:.1f}개) — DB 쓰기 없음"
+            )
+            stack.enter_context(_memory_names(memory))
+        print(names_note)
 
         docs = None
         day_sources: dict = {}
