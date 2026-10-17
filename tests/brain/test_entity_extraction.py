@@ -1027,6 +1027,13 @@ def test_title_boundaries_split_on_verbs_and_function_words():
     assert not any(name.startswith("announcing") for name in names)
 
 
+def test_title_connector_between_name_words_is_kept():
+    # 'of'는 기능어 목록에도 있다 — 이음말 검사를 먼저 해야 회사 이름이 안 쪼개진다.
+    [names] = canonicals(["plain body"], titles=["Bank of America Launches AI Fund"])
+    assert "bank of america" in names
+    assert not names & {"bank", "america"}
+
+
 def test_titles_length_mismatch_raises():
     with pytest.raises(ValueError):
         extract_names(["a", "b"], titles=["only one"])

@@ -1100,11 +1100,9 @@ def _title_boundaries_blanked(title: str) -> str:
     blank: set[int] = set()
     for index, match in enumerate(matches):
         word = match.group().casefold()
-        if word in _TITLE_VERBS or word in _FUNCTION_WORDS:
-            blank.add(index)
-        elif word in _TITLE_BOUNDARY_STOPWORDS:
-            blank.add(index)
-        elif word in _CONNECTORS:
+        # 이음말 검사가 먼저다 — 'of'는 기능어 목록에도 있어서 뒤에 두면
+        # 'Bank of America'가 이음말 판정 전에 쪼개진다.
+        if word in _CONNECTORS:
             before = matches[index - 1] if index else None
             after = matches[index + 1] if index + 1 < len(matches) else None
             if not (
@@ -1116,6 +1114,10 @@ def _title_boundaries_blanked(title: str) -> str:
                 and after.group().casefold() not in _TITLE_VERBS | _FUNCTION_WORDS
             ):
                 blank.add(index)
+        elif word in _TITLE_VERBS or word in _FUNCTION_WORDS:
+            blank.add(index)
+        elif word in _TITLE_BOUNDARY_STOPWORDS:
+            blank.add(index)
     pieces: list[str] = []
     cursor = 0
     for index, match in enumerate(matches):
