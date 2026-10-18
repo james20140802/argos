@@ -10,6 +10,75 @@ This history was reconstructed retroactively from annotated release tags
 (`git tag -n99`) and their commit ranges; entries before this file existed may be
 less granular than future ones.
 
+## [0.4.0] — 2026-10-18
+
+The event layer: articles about the same happening are grouped into one event,
+and the web feed shows events instead of individual articles. Also a
+recommendation-ranked feed, a portfolio tracking timeline, and trust-score
+synthesis. 233 commits since v0.3.2.
+
+**Upgrade note:** six new Alembic migrations (event tables, document names,
+SimHash, feed score, feed events, trust rubric). Run `uv run alembic upgrade head`
+from a source checkout before starting the new version — `argos doctor` reports when the DB is behind.
+Existing articles are not grouped into events until you run
+`argos backfill-entities` and then `argos backfill-events` (preview each with
+`--dry-run` first).
+
+### Added
+
+- **Events** — every newly saved article is assigned to an existing event or
+  starts a new one, and new events get an LLM-written name. Near-duplicate
+  copies of the same article (syndication, reposts) are detected and counted as
+  one piece of evidence instead of many. (ARG-239, ARG-240, ARG-241, ARG-242)
+- **Event feed and event pages** — the web feed lists events; articles not yet
+  in an event appear as single-article items. Each event has a detail page with
+  its articles, and the web UI was restyled. (ARG-243)
+- **`argos recluster-events`** — regroups a period from scratch and reports
+  which events look like they should be merged or split. Read-only; applying
+  the corrections is not wired to a command yet. Needs the optional `graph`
+  extra (`pipx inject argos-scout python-igraph leidenalg`). (ARG-244, ARG-283)
+- **`argos backfill-events`** — groups articles saved before the event layer
+  into events (`--dry-run` previews without writing; resumable), then
+  `--rename-stale` names the events. (ARG-242)
+- **`argos backfill-entities`** — re-extracts company/product names for
+  existing articles, previews the change, and replaces names only after you
+  answer yes. Running it twice leaves the DB unchanged. (ARG-300)
+- **Company/product names per article** — extracted on crawl and used when
+  deciding whether two articles belong to the same event. Generic words,
+  mojibake, and names that appear across the whole corpus (`ai`, `openai`, …)
+  are ignored; two articles whose names clearly differ are less likely to be
+  grouped. Optional `nlp` extra adds a spaCy assist. (ARG-239, ARG-259, ARG-300)
+- **Recommended feed** — the feed is sorted by a per-item score that blends
+  your Keep history, trust, and freshness, with a "latest" toggle, a hero card,
+  and source diversity. Impressions, clicks and dwell time are logged locally
+  to improve ranking. (ARG-201, ARG-213)
+- **Portfolio tracking timeline** — each kept asset shows its history and
+  related signals on one timeline; a successor handoff banner lets you move
+  Keep to the newer technology, and Archived items can be kept again. (ARG-199)
+- **Trust score synthesis** — trust combines source prior, a rubric score, and
+  cross-source corroboration; `argos backfill-trust` fills existing rows.
+  (ARG-200)
+
+### Changed
+
+- **Day and night grouping use the same rule**, so the online assignment and
+  the nightly regrouping move in the same direction when settings change.
+  (ARG-282)
+- **Same-source articles** published far apart are less likely to be grouped
+  as one event, while same-source copies of the same news still group.
+  (ARG-284, ARG-299)
+- Keep/Pass and feed filters respond immediately without redrawing the whole
+  page.
+
+### Fixed
+
+- Many name-extraction fixes (accents, initials, quotes, dots, corporate
+  suffixes, `Bank of America`-style names in titles). (ARG-259, ARG-300)
+- A failed event assignment no longer creates an empty event, and a failed
+  link no longer reports the article as saved. (ARG-241)
+- Succession alerts are sent once per asset/successor pair. (ARG-200)
+- Install hints point pipx users to a command that works for them.
+
 ## [0.3.2] — 2026-07-10
 
 Operational observability. 21 commits since v0.3.1.
