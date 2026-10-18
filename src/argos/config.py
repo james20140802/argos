@@ -279,6 +279,12 @@ class EventDetectionConfig(BaseModel):
     entity_min_doc_count: int = Field(default=1, ge=1)
     entity_max_doc_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
     entity_df_min_batch: int = Field(default=5, ge=1)
+    # 저장된 이름 전체에서 이 비율을 넘는 문서에 붙은 이름은 흔한 말로 보고
+    # 읽을 때 뺀다 (ARG-302). 분모는 이름이 1개 이상인 문서 수.
+    entity_common_doc_ratio: float = Field(default=0.05, gt=0.0, le=1.0)
+    # 이름 있는 문서가 이보다 적으면 빈도 통계를 못 믿어 흔한 이름을 걸지 않는다
+    # (콜드스타트에서 비율만 보면 모든 이름이 흔한 말로 걸린다).
+    entity_common_min_documents: int = Field(default=100, ge=1)
     # spaCy 보강(ARG-253)은 켜져 있어도 미설치면 조용히 건너뛴다.
     entity_spacy_enabled: bool = True
     # 열어 둘 파이프라인 이름. 코드에 박아 두면 다른 호환 모델을 설치해
@@ -307,6 +313,16 @@ class EventDetectionConfig(BaseModel):
     # 골랐고, 짝수 번 묶음(채점 전용)에서 낮 56.0% → 35.3%. 표는 evals/README.md.
     same_source_penalty: float = Field(default=0.03, ge=0.0, le=1.0)
     same_source_gap_days: float = Field(default=0.5, ge=0.0)
+    # ARG-303: 두 글 모두 이름이 entity_mismatch_min_names개 이상인데 하나도 겹치지
+    # 않으면 점수에서 뺀다(근사 중복은 면제, 이름이 빈약한 글은 면제). 같은 출처
+    # 감점과 독립이다. 낮·밤이 같은 edge_weight를 부르므로 칸은 이 둘뿐이다.
+    # 실측(2026-10-17, --fill-names): min_names 2~3은 틀린 비율을 크게 줄이지만 #25
+    # (밤은 #21도)와 엄격 유지를 깬다. 4부터 둘 다 지키고, penalty는 0.05 이상이면
+    # 결과가 같았다. 최종 리뷰에서 제목 잡음을 고친 뒤 재측정하니 밤 #21이 0.05·0.03에서
+    # 깨지고 0.08에서만 유지돼(고르기 몫 밤 엄격 22/23 → 23/23, 틀린 비율 동률) 0.08로
+    # 올렸다. 표는 evals/README.md ARG-300.
+    entity_mismatch_penalty: float = Field(default=0.08, ge=0.0, le=1.0)
+    entity_mismatch_min_names: int = Field(default=4, ge=1)
     # 같은 사건의 근거로 치는 쌍 점수의 하한이자, 밤의 CPM 해상도 γ의 기본값.
     # 낮은 "이 값 이상인 이웃 점수의 합 > γ × 사건 크기"일 때만 기존 사건에
     # 붙인다 — 밤의 재군집과 같은 목적함수다(ARG-282, event_scoring docstring).

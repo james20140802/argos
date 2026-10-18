@@ -54,8 +54,16 @@
 같은 출처 쌍의 감점을 ``penalty × min(1, 간격 / same_source_gap_days)``로 둔다 —
 동시 발행이면 0, 간격이 벌어질수록 전액까지. 계단 대신 경사인 이유는 판정 128개
 스윕에서 계단(간격 ≥ g면 전액)이 같은 유지 수준에서 틀린 비율을 덜 줄였고, 경계
-바로 앞뒤 쌍이 정반대 대접을 받는 절벽이 없어서다. 엔티티 불일치는 신호로 쓰지
-않았다 — 평가 코퍼스의 문서에 이름 링크가 아직 없어 잴 수 없었다.
+바로 앞뒤 쌍이 정반대 대접을 받는 절벽이 없어서다.
+
+**이름이 확실히 다르면 감점한다 (ARG-303).** 같은 회사가 같은 날 낸 다른 제품
+발표는 문체·시각·출처가 같아 점수가 높지만 기사에 오른 이름은 서로 다르다.
+두 글 모두 이름이 `entity_mismatch_min_names`개 이상인데 하나도 겹치지 않고
+코사인이 `NEAR_DUPLICATE_COSINE` 미만이면 `entity_mismatch_penalty`를 뺀다. 이름이
+빈약한 글(0개·1~2개)은 증거가 없으므로 면제한다 — 이름이 적다는 이유만으로
+떨어지면 "정보가 적을수록 쉽게 갈라지는" 역전이 생긴다. 같은 출처 감점과는 독립
+이라 둘 다 빼기만 하고 0에서 자른다(적용 순서와 무관). 이름 추출·정리는 이 모듈의
+몫이 아니라(Task 1~2) 여기서는 이미 정리된 집합만 비교한다.
 """
 
 from __future__ import annotations
@@ -99,6 +107,10 @@ class EdgeWeights:
     # 같은 출처 보정이 전액이 되는 발행 간격(일). 간격 0이면 보정 0, 이 값까지
     # 선형으로 커진다. 0.0이면 간격과 무관하게 전액(ARG-284의 일괄 감점).
     same_source_gap_days: float = 0.0
+    # 두 글의 이름이 모두 `entity_mismatch_min_names`개 이상이고 서로소일 때 빼는
+    # 값(ARG-303). 0.0이면 감점 없음. 같은 출처 감점과 독립이다.
+    entity_mismatch_penalty: float = 0.0
+    entity_mismatch_min_names: int = 4
 
     @classmethod
     def from_config(cls, config: "EventDetectionConfig") -> "EdgeWeights":
@@ -109,6 +121,8 @@ class EdgeWeights:
             keyword=config.weight_keyword,
             same_source_penalty=config.same_source_penalty,
             same_source_gap_days=config.same_source_gap_days,
+            entity_mismatch_penalty=config.entity_mismatch_penalty,
+            entity_mismatch_min_names=config.entity_mismatch_min_names,
         )
 
 
@@ -208,8 +222,16 @@ def edge_weight(
         and cosine < NEAR_DUPLICATE_COSINE
     ):
         scale = _same_source_scale(left.at, right.at, weights.same_source_gap_days)
-        score = max(0.0, score - weights.same_source_penalty * scale)
-    return score
+        score -= weights.same_source_penalty * scale
+    if (
+        weights.entity_mismatch_penalty > 0.0
+        and len(left.names) >= weights.entity_mismatch_min_names
+        and len(right.names) >= weights.entity_mismatch_min_names
+        and not (left.names & right.names)
+        and cosine < NEAR_DUPLICATE_COSINE
+    ):
+        score -= weights.entity_mismatch_penalty
+    return max(0.0, score)
 
 
 def choose_event(

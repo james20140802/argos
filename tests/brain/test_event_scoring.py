@@ -326,3 +326,92 @@ def test_ramp_does_not_touch_different_sources():
         source="techcrunch.com",
     )
     assert _ramp_score(left, other) == _ramp_score(left, other, penalty=0.0)
+
+
+# --- ARG-303: 이름이 확실히 다르면 감점 ----------------------------------------
+
+_A_NAMES = ("alpha corp", "alpha one", "alpha two")
+_B_NAMES = ("beta inc", "beta one", "beta two")
+
+
+def _mismatch_weights(penalty, min_names=3, **extra):
+    return EdgeWeights(
+        cosine=0.55,
+        entity=0.25,
+        time=0.15,
+        keyword=0.05,
+        entity_mismatch_penalty=penalty,
+        entity_mismatch_min_names=min_names,
+        **extra,
+    )
+
+
+def _mismatch_score(left, right, penalty, min_names=3, **extra):
+    return edge_weight(
+        left,
+        right,
+        weights=_mismatch_weights(penalty, min_names, **extra),
+        window_days=14,
+    )
+
+
+def _names_pair(left_names, right_names, right_embedding=(0.8, 0.6), **kw):
+    return (
+        _doc(embedding=[1.0, 0.0], names=left_names, **kw),
+        _doc(embedding=right_embedding, names=right_names, **kw),
+    )
+
+
+def test_mismatch_penalty_applies_when_both_have_enough_disjoint_names():
+    left, right = _names_pair(_A_NAMES, _B_NAMES)
+    base = _mismatch_score(left, right, 0.0)
+    assert _mismatch_score(left, right, 0.05) == pytest.approx(base - 0.05)
+
+
+def test_mismatch_penalty_exempts_sparse_names():
+    for sparse in ((), ("beta inc",), ("beta inc", "beta one")):
+        left, right = _names_pair(_A_NAMES, sparse)
+        assert _mismatch_score(left, right, 0.2) == _mismatch_score(left, right, 0.0)
+        assert _mismatch_score(right, left, 0.2) == _mismatch_score(right, left, 0.0)
+    # min_names를 낮추면 두 개짜리도 대상이 된다.
+    left, right = _names_pair(("a1", "a2"), ("b1", "b2"))
+    assert _mismatch_score(left, right, 0.2, 2) < _mismatch_score(left, right, 0.0, 2)
+
+
+def test_mismatch_penalty_skips_when_any_name_shared():
+    left, right = _names_pair(_A_NAMES, ("beta inc", "alpha one", "beta two"))
+    assert _mismatch_score(left, right, 0.2) == _mismatch_score(left, right, 0.0)
+
+
+def test_mismatch_penalty_exempts_near_duplicates():
+    left, right = _names_pair(_A_NAMES, _B_NAMES, right_embedding=(1.0, 0.0))
+    assert _mismatch_score(left, right, 0.3) == _mismatch_score(left, right, 0.0)
+
+
+def test_mismatch_penalty_symmetric():
+    left, right = _names_pair(_A_NAMES, _B_NAMES)
+    assert _mismatch_score(left, right, 0.05) == _mismatch_score(right, left, 0.05)
+
+
+def test_mismatch_independent_of_same_source():
+    left, right = _names_pair(_A_NAMES, _B_NAMES, source="openai.com")
+    both = _mismatch_score(
+        left, right, 0.05, same_source_penalty=0.1, same_source_gap_days=0.0
+    )
+    base = _mismatch_score(left, right, 0.0)
+    assert both == pytest.approx(base - 0.15)
+    # 점수 아래로는 내려가지 않는다 — 0에서 자른다.
+    assert _mismatch_score(
+        left, right, 1.0, same_source_penalty=1.0, same_source_gap_days=0.0
+    ) == 0.0
+
+
+def test_from_config_reads_mismatch_fields():
+    from argos.config import EventDetectionConfig
+
+    config = EventDetectionConfig(entity_mismatch_penalty=0.04, entity_mismatch_min_names=5)
+    weights = EdgeWeights.from_config(config)
+    assert weights.entity_mismatch_penalty == 0.04
+    assert weights.entity_mismatch_min_names == 5
+    assert EventDetectionConfig().entity_mismatch_penalty == 0.08
+    assert EventDetectionConfig().entity_mismatch_min_names == 4

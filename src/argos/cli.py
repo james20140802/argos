@@ -1382,6 +1382,77 @@ async def _backfill_images(
     return EXIT_OK
 
 
+def _build_backfill_entities_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos backfill-entities`` subcommand (ARG-304)."""
+    p = sub.add_parser(
+        "backfill-entities",
+        help="Rewrite stored entity names for existing articles (preview, confirm, write)",
+        parents=[common],
+        description=(
+            "Re-extract names for every stored article (batched by crawl date) and "
+            "replace the stored name links. Shows a preview first and writes only "
+            "after confirmation. Idempotent: a second run reports no changes."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--dry-run", action="store_true", help="Show the preview and exit without writing")
+    p.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    p.add_argument(
+        "--sample",
+        type=_positive_int,
+        default=5,
+        metavar="N",
+        help="Number of changed articles to show in the preview (default: 5)",
+    )
+
+
+def _cmd_backfill_entities(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _backfill_entities(
+            dry_run=bool(getattr(args, "dry_run", False)),
+            yes=bool(getattr(args, "yes", False)),
+            sample=getattr(args, "sample", 5),
+        )
+    )
+
+
+async def _backfill_entities(dry_run: bool = False, yes: bool = False, sample: int = 5) -> int:
+    """미리보기 -> 확인 -> 교체 쓰기. 확인 없이는 DB에 아무것도 쓰지 않는다."""
+    from argos.brain import entity_refill
+
+    async with AsyncSessionLocal() as session:
+        plan, extracted = await entity_refill.plan_refill(session)
+
+        print(
+            f"전체 {plan.total}건 중 {len(plan.changes)}건 변경 "
+            f"(이름 링크 +{plan.links_added} / -{plan.links_removed})"
+        )
+        for change in plan.changes[:sample]:
+            print(f"  - {change.title or change.tech_item_id}")
+            print(f"      추가: {', '.join(change.added) or '(없음)'}")
+            print(f"      삭제: {', '.join(change.removed) or '(없음)'}")
+
+        if not plan.changes:
+            print("변경 없음")
+            return EXIT_OK
+        if dry_run:
+            return EXIT_OK
+
+        if not yes:
+            reply = input("계속하시겠습니까? [y/N] ").strip().lower()
+            if reply not in ("y", "yes"):
+                print("취소되었습니다.")
+                return EXIT_GENERIC
+
+        changed = await entity_refill.apply_refill(session, plan, extracted)
+        await session.commit()
+    print(f"✅ {changed}건의 이름을 교체했습니다.")
+    return EXIT_OK
+
+
 def _build_backfill_digests_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -2341,6 +2412,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_add_parser(sub, common)
     _build_backfill_images_parser(sub, common)
     _build_backfill_digests_parser(sub, common)
+    _build_backfill_entities_parser(sub, common)
     _build_backfill_trust_parser(sub, common)
     _build_backfill_events_parser(sub, common)
     _build_recluster_events_parser(sub, common)
@@ -2458,6 +2530,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_backfill_digests(args)
+    if args.command == "backfill-entities":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_backfill_entities(args)
     if args.command == "backfill-trust":
         rc = _apply_config_override(args)
         if rc is not None:
