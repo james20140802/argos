@@ -156,3 +156,28 @@ def test_end_before_start_is_rejected(extra, fake_recluster, fake_apply, capsys)
     assert "--to" in capsys.readouterr().err
     assert recluster["calls"] == 0
     assert applied["calls"] == 0
+
+
+def test_empty_exception_message_names_the_type(fake_recluster, fake_apply, capsys):
+    fake_recluster(error=TimeoutError())
+    fake_apply(CorrectionResult())
+    assert main(["correct-events", *PERIOD]) == 1
+    captured = capsys.readouterr()
+    assert "TimeoutError" in captured.err
+    assert "교정 실패 — 기존 묶음은 그대로다: TimeoutError" in captured.err
+
+
+def test_print_failure_after_apply_is_not_reported_as_correction_failure(
+    monkeypatch, fake_recluster, fake_apply, capsys
+):
+    fake_recluster(_candidates())
+    applied = fake_apply(CorrectionResult())
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("stdout closed")
+
+    monkeypatch.setattr(cli_module, "_print_correction_result", _boom)
+    with pytest.raises(RuntimeError, match="stdout closed"):
+        main(["correct-events", *PERIOD])
+    assert applied["calls"] == 1
+    assert "교정 실패" not in capsys.readouterr().err

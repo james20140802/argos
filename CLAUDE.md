@@ -100,12 +100,13 @@ uv run argos stats [--days]                       # Collection-status dashboard
 uv run argos backfill-images [--refetch] [--upgrade-favicons]  # Fill missing image_url (favicon by default)
 uv run argos backfill-digests [--limit] [--dry-run]  # Generate longform digest for rows where NULL (LLM, slow)
 uv run argos backfill-entities [--dry-run] [--yes] [--sample N]  # Rewrite stored entity names for existing articles (preview → confirm → write)
+uv run argos correct-events [--from] [--to] [--dry-run]  # Apply event merge/split corrections for a period (--dry-run: read-only preview)
 uv run argos config {path,get,set,list,migrate-env}  # Read/update ~/.config/argos/config.toml
 
 # launchd scheduler (macOS) — see src/argos/scheduler.py
-uv run argos schedule install                     # Render + bootstrap both plists from config
-uv run argos schedule status                      # Show loaded/not-loaded for both labels
-uv run argos schedule uninstall                   # Bootout both plists (idempotent)
+uv run argos schedule install                     # Render + bootstrap all plists from config
+uv run argos schedule status                      # Show loaded/not-loaded for all labels
+uv run argos schedule uninstall                   # Bootout all plists (idempotent; correct plist is also deleted)
 # Plists land at:  ~/Library/LaunchAgents/com.argos.{run,brief,correct}.plist
 # Logs land at:    ~/Library/Logs/argos/{run,brief,correct}.log
 # Times configured via:  briefing.time, briefing.weekdays, run.time, correction.time (daily `correct-events`; must differ from run/brief times)

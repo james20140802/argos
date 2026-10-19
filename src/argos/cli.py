@@ -1994,14 +1994,12 @@ def _cmd_correct_events(args: argparse.Namespace) -> int:
                 end=end,
                 title="correct-events --dry-run (read-only)",
             )
-            return EXIT_OK
-        result = await _apply_corrections_for_cli(candidates)
-        _print_correction_result(result, start=start, end=end)
-        return EXIT_OK
+            return None
+        return await _apply_corrections_for_cli(candidates)
 
     logger = logging.getLogger(__name__)
     try:
-        return asyncio.run(_run_once())
+        result = asyncio.run(_run_once())
     except GraphLibsUnavailable as exc:
         # launchd 실행이 라이브러리 누락 하나로 매일 실패 처리되지 않게 0으로
         # 끝낸다 — 대신 경고를 남긴다.
@@ -2011,8 +2009,15 @@ def _cmd_correct_events(args: argparse.Namespace) -> int:
     except Exception as exc:
         # 트레이스백 대신 한 줄. 반영 중 실패는 엔진 트랜잭션이 롤백한다.
         logger.error("correct-events failed: %s", exc, exc_info=False)
-        print(f"ERROR: 교정 실패 — 기존 묶음은 그대로다: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: 교정 실패 — 기존 묶음은 그대로다: {exc or type(exc).__name__}",
+            file=sys.stderr,
+        )
         return EXIT_GENERIC
+    # 반영이 이미 커밋된 뒤의 출력 실패가 "교정 실패"로 보고되지 않게 try 밖에서 찍는다.
+    if result is not None:
+        _print_correction_result(result, start=start, end=end)
+    return EXIT_OK
 
 
 def _print_dry_run_report(plan, total_docs: int) -> None:
@@ -2297,8 +2302,8 @@ def _build_schedule_parser(sub: argparse._SubParsersAction) -> None:
             "Manage the macOS launchd schedule for Argos.\n\n"
             "Actions:\n"
             "  install    Render + bootstrap both plists from the current config.\n"
-            "  uninstall  Bootout both plists (no error if already absent).\n"
-            "  status     Print loaded/not-loaded for both labels."
+            "  uninstall  Bootout all plists (no error if already absent).\n"
+            "  status     Print loaded/not-loaded for all labels."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2310,7 +2315,7 @@ def _build_schedule_parser(sub: argparse._SubParsersAction) -> None:
     actions = schedule_p.add_subparsers(dest="schedule_action", required=True)
     actions.add_parser("install", help="Install + bootstrap both launchd jobs")
     actions.add_parser("uninstall", help="Bootout both launchd jobs")
-    actions.add_parser("status", help="Show loaded/not-loaded for both labels")
+    actions.add_parser("status", help="Show loaded/not-loaded for all labels")
 
 
 def _cmd_schedule_install(args: argparse.Namespace) -> int:
@@ -2414,9 +2419,12 @@ def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
     # com.argos.web is RunAtLoad + KeepAlive: a plist left in ~/Library/
     # LaunchAgents is auto-loaded at the next login and resurrects the daemon,
     # so bootout alone doesn't uninstall it. Delete the file too (mirrors the
-    # opt-out path in reload_schedule). The scheduled jobs are calendar-driven
-    # and follow the existing bootout-only convention.
-    (scheduler._DEFAULT_LAUNCH_AGENTS / "com.argos.web.plist").unlink(missing_ok=True)
+    # opt-out path in reload_schedule). com.argos.correct is deleted too: it
+    # writes to the DB and must not resurrect at login after an uninstall. The
+    # other scheduled jobs (run/brief/brief-weekly) follow the existing
+    # bootout-only convention.
+    for name in ("com.argos.web", "com.argos.correct"):
+        (scheduler._DEFAULT_LAUNCH_AGENTS / f"{name}.plist").unlink(missing_ok=True)
     return EXIT_GENERIC if failures else EXIT_OK
 
 

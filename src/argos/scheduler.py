@@ -577,7 +577,9 @@ def reload_schedule(
             if hm == correction_hm:
                 raise SchedulerError(
                     f"correction.time {correction.time} overlaps {key} — "
-                    f"교정은 run/brief와 다른 시각이어야 한다"
+                    f"교정은 run/brief와 다른 시각이어야 한다 — 바꾸려면: "
+                    f"argos config set correction.time HH:MM "
+                    f"(또는 argos config set correction.enabled false)"
                 )
 
     _DEFAULT_LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
@@ -654,6 +656,9 @@ def reload_schedule(
                 "correction disabled; bootout of com.argos.correct failed",
                 exc_info=True,
             )
+        # 교정은 DB 에 쓰는 job 이라 plist 가 LaunchAgents 에 남아 있으면 다음
+        # 로그인 때 다시 올라온다 (web opt-out 과 같은 이유). 파일도 지운다.
+        correct_plist_path.unlink(missing_ok=True)
 
     if web_enabled:
         web_xml = render_web_plist(

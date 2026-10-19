@@ -868,6 +868,29 @@ def test_cli_schedule_uninstall_calls_bootout(
     assert not web_plist.exists()
 
 
+def test_cli_schedule_uninstall_removes_correct_plist_keeps_others(
+    monkeypatch, capsys, fake_uid: int, isolated_paths: dict[str, Path]
+) -> None:
+    from argos.cli import main
+
+    monkeypatch.setattr(
+        scheduler,
+        "_run_launchctl",
+        lambda args: subprocess.CompletedProcess(
+            ["launchctl", *args], 0, stdout="", stderr=""
+        ),
+    )
+    la = isolated_paths["launch_agents"]
+    la.mkdir(parents=True, exist_ok=True)
+    for name in ("run", "brief", "correct"):
+        (la / f"com.argos.{name}.plist").write_text("<x/>")
+
+    assert main(["schedule", "uninstall"]) == 0
+    assert not (la / "com.argos.correct.plist").exists()
+    assert (la / "com.argos.run.plist").exists()
+    assert (la / "com.argos.brief.plist").exists()
+
+
 # ---------------------------------------------------------------------------
 # Regression: reload_schedule forwards config_path to both plist renderers
 # (Codex PR #41 — PRRT_kwDOR4m8Js6BC_SD)
@@ -1905,8 +1928,10 @@ def test_reload_schedule_rejects_correction_overlap(
     isolated_paths: dict[str, Path], clash: str,
 ) -> None:
     calls = _record_launchctl(monkeypatch)
-    with pytest.raises(SchedulerError, match="overlaps"):
+    with pytest.raises(SchedulerError, match="overlaps") as excinfo:
         reload_schedule(_correction_config(time=clash))
+    assert "correction.time" in str(excinfo.value)
+    assert "argos config set correction.time" in str(excinfo.value)
     la = isolated_paths["launch_agents"]
     assert not la.exists() or list(la.iterdir()) == []
     assert calls == []
@@ -1937,11 +1962,15 @@ def test_reload_schedule_allows_weekly_time_when_weekly_disabled(
 def test_reload_schedule_correction_disabled_boots_out_only_correct(
     monkeypatch, fake_argos_binary: Path, fake_uid: int, isolated_paths: dict[str, Path]
 ) -> None:
+    la = isolated_paths["launch_agents"]
+    la.mkdir(parents=True, exist_ok=True)
+    stale = la / "com.argos.correct.plist"
+    stale.write_text("<stale/>")
     calls = _record_launchctl(monkeypatch, bootout_error=True)
     reload_schedule(_correction_config(enabled=False))  # bootout 실패는 삼킨다
 
-    la = isolated_paths["launch_agents"]
-    assert not (la / "com.argos.correct.plist").exists()
+    # 로그인 때 되살아나지 않도록 파일 자체가 지워진다.
+    assert not stale.exists()
     assert (la / "com.argos.run.plist").exists()
     bootouts = [a[1].rsplit("/", 1)[-1] for a in calls if a[0] == "bootout"]
     assert "com.argos.correct" in bootouts
