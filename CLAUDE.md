@@ -106,7 +106,7 @@ uv run argos config {path,get,set,list,migrate-env}  # Read/update ~/.config/arg
 # launchd scheduler (macOS) — see src/argos/scheduler.py
 uv run argos schedule install                     # Render + bootstrap all plists from config
 uv run argos schedule status                      # Show loaded/not-loaded for all labels
-uv run argos schedule uninstall                   # Bootout all plists (idempotent; correct plist is also deleted)
+uv run argos schedule uninstall                   # Bootout all plists (idempotent; web/correct plists are also deleted)
 # Plists land at:  ~/Library/LaunchAgents/com.argos.{run,brief,correct}.plist
 # Logs land at:    ~/Library/Logs/argos/{run,brief,correct}.log
 # Times configured via:  briefing.time, briefing.weekdays, run.time, correction.time (daily `correct-events`; must differ from run/brief times)

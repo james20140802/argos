@@ -1984,7 +1984,8 @@ def _cmd_correct_events(args: argparse.Namespace) -> int:
 
     dry_run = bool(getattr(args, "dry_run", False))
 
-    async def _run_once() -> int:
+    async def _run_once():
+        """반영 결과를 돌려준다. dry-run 이면 리포트만 찍고 None."""
         async with AsyncSessionLocal() as session:
             candidates = await _recluster_period_for_cli(session, start=start, end=end)
         if dry_run:
@@ -2301,7 +2302,7 @@ def _build_schedule_parser(sub: argparse._SubParsersAction) -> None:
         description=(
             "Manage the macOS launchd schedule for Argos.\n\n"
             "Actions:\n"
-            "  install    Render + bootstrap both plists from the current config.\n"
+            "  install    Render + bootstrap all plists from the current config.\n"
             "  uninstall  Bootout all plists (no error if already absent).\n"
             "  status     Print loaded/not-loaded for all labels."
         ),
@@ -2313,8 +2314,8 @@ def _build_schedule_parser(sub: argparse._SubParsersAction) -> None:
         help="Path to config.toml (defaults to ~/.config/argos/config.toml)",
     )
     actions = schedule_p.add_subparsers(dest="schedule_action", required=True)
-    actions.add_parser("install", help="Install + bootstrap both launchd jobs")
-    actions.add_parser("uninstall", help="Bootout both launchd jobs")
+    actions.add_parser("install", help="Install + bootstrap all launchd jobs")
+    actions.add_parser("uninstall", help="Bootout all launchd jobs")
     actions.add_parser("status", help="Show loaded/not-loaded for all labels")
 
 
@@ -2398,18 +2399,22 @@ def _cmd_schedule_install(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# schedule uninstall/status 가 다루는 launchd label 전부. 새 label 은 여기 한 곳에만 더한다.
+_SCHEDULE_LABELS: tuple[str, ...] = (
+    "com.argos.run",
+    "com.argos.brief",
+    "com.argos.brief-weekly",
+    "com.argos.web",
+    "com.argos.correct",
+)
+
+
 def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
     from argos import scheduler
     from argos.scheduler import SchedulerError, bootout_plist
 
     failures: list[str] = []
-    for label in (
-        "com.argos.run",
-        "com.argos.brief",
-        "com.argos.brief-weekly",
-        "com.argos.web",
-        "com.argos.correct",
-    ):
+    for label in _SCHEDULE_LABELS:
         try:
             bootout_plist(label)
             print(f"Unloaded: {label}")
@@ -2431,13 +2436,7 @@ def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
 def _cmd_schedule_status(_args: argparse.Namespace) -> int:
     from argos.scheduler import is_loaded
 
-    for label in (
-        "com.argos.run",
-        "com.argos.brief",
-        "com.argos.brief-weekly",
-        "com.argos.web",
-        "com.argos.correct",
-    ):
+    for label in _SCHEDULE_LABELS:
         state = "loaded" if is_loaded(label) else "not loaded"
         print(f"{label}: {state}")
     return EXIT_OK

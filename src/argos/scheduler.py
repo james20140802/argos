@@ -700,15 +700,6 @@ def reload_schedule(
                 f"job (com.argos.brief-weekly) failed: {exc}. "
                 f"To clean up, run: argos schedule uninstall && argos schedule install"
             ) from exc
-    if correct_xml is not None:
-        try:
-            bootstrap_plist(correct_plist_path)
-        except SchedulerError as exc:
-            raise SchedulerError(
-                f"run/brief jobs bootstrapped successfully but correction job "
-                f"(com.argos.correct) failed: {exc}. "
-                f"To clean up, run: argos schedule uninstall && argos schedule install"
-            ) from exc
     if web_enabled:
         try:
             bootstrap_plist(web_plist_path)
@@ -716,6 +707,17 @@ def reload_schedule(
             raise SchedulerError(
                 f"run/brief jobs bootstrapped successfully but web daemon "
                 f"(com.argos.web) failed: {exc}. "
+                f"To clean up, run: argos schedule uninstall && argos schedule install"
+            ) from exc
+    # 교정은 마지막에 올린다 — 교정 job 실패가 web 등 다른 job 의 bootstrap 을
+    # 막지 않게 한다.
+    if correct_xml is not None:
+        try:
+            bootstrap_plist(correct_plist_path)
+        except SchedulerError as exc:
+            raise SchedulerError(
+                f"run/brief jobs bootstrapped successfully but correction job "
+                f"(com.argos.correct) failed: {exc}. "
                 f"To clean up, run: argos schedule uninstall && argos schedule install"
             ) from exc
 
