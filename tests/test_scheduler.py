@@ -28,6 +28,7 @@ from argos.scheduler import (
     is_loaded,
     reload_schedule,
     render_brief_plist,
+    render_correct_plist,
     render_run_plist,
 )
 
@@ -806,6 +807,7 @@ def test_cli_schedule_status(
     assert rc == 0
     assert "com.argos.run: loaded" in out
     assert "com.argos.brief: not loaded" in out
+    assert "com.argos.correct: not loaded" in out
 
 
 def test_cli_schedule_install_invokes_reload(
@@ -861,6 +863,7 @@ def test_cli_schedule_uninstall_calls_bootout(
     assert "com.argos.run" in bootout_labels
     assert "com.argos.brief" in bootout_labels
     assert "com.argos.web" in bootout_labels
+    assert "com.argos.correct" in bootout_labels
     assert "Unloaded: com.argos.run" in out
     assert not web_plist.exists()
 
@@ -1828,3 +1831,166 @@ def test_reload_schedule_bootouts_web_when_disabled(
     # The opt-out must persist across logins: the plist is deleted, not just
     # booted out of the current session.
     assert not web_plist.exists()
+
+
+# ---------------------------------------------------------------------------
+# Daily correction job (ARG-298)
+# ---------------------------------------------------------------------------
+
+
+def _correction_config(**correction_kw):
+    from argos.config import CorrectionConfig, UserConfig
+
+    cfg = UserConfig()
+    cfg.run.time = "06:00"
+    cfg.briefing.time = "07:00"
+    cfg.correction = CorrectionConfig(**correction_kw)
+    return cfg
+
+
+def _record_launchctl(monkeypatch, *, bootout_error: bool = False) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def fake(args: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        if args[0] == "print":
+            label = args[1].rsplit("/", 1)[-1]
+            return subprocess.CompletedProcess(
+                ["launchctl", *args], 0, stdout=f"{label} = service", stderr=""
+            )
+        if args[0] == "bootout" and bootout_error and args[1].endswith("com.argos.correct"):
+            return subprocess.CompletedProcess(["launchctl", *args], 5, stdout="", stderr="boom")
+        return subprocess.CompletedProcess(["launchctl", *args], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", fake)
+    return calls
+
+
+def test_render_correct_plist_daily_single_dict(fake_argos_binary: Path, tmp_path: Path) -> None:
+    payload = plistlib.loads(
+        render_correct_plist(time="03:00", log_dir=tmp_path / "logs").encode()
+    )
+    assert payload["Label"] == "com.argos.correct"
+    assert payload["ProgramArguments"][1:] == ["correct-events"]
+    assert payload["StartCalendarInterval"] == {"Hour": 3, "Minute": 0}
+    assert payload["StandardOutPath"].endswith("correct.log")
+
+    cfg = tmp_path / "c.toml"
+    payload = plistlib.loads(
+        render_correct_plist(time="03:00", config_path=cfg).encode()
+    )
+    assert payload["ProgramArguments"][1:] == ["correct-events", "--config", str(cfg)]
+
+
+def test_reload_schedule_installs_and_bootstraps_correct(
+    monkeypatch, fake_argos_binary: Path, fake_uid: int, isolated_paths: dict[str, Path]
+) -> None:
+    calls = _record_launchctl(monkeypatch)
+    reload_schedule(_correction_config())
+
+    la = isolated_paths["launch_agents"]
+    for name in ("run", "brief", "brief-weekly", "correct"):
+        assert (la / f"com.argos.{name}.plist").exists()
+    bootstrapped = [a[2] for a in calls if a[0] == "bootstrap"]
+    assert str(la / "com.argos.correct.plist") in bootstrapped
+    # correct is bootstrapped after run/brief.
+    assert bootstrapped.index(str(la / "com.argos.correct.plist")) > bootstrapped.index(
+        str(la / "com.argos.brief.plist")
+    )
+
+
+@pytest.mark.parametrize("clash", ["06:00", "07:00", "6:00"])
+def test_reload_schedule_rejects_correction_overlap(
+    monkeypatch, fake_argos_binary: Path, fake_uid: int,
+    isolated_paths: dict[str, Path], clash: str,
+) -> None:
+    calls = _record_launchctl(monkeypatch)
+    with pytest.raises(SchedulerError, match="overlaps"):
+        reload_schedule(_correction_config(time=clash))
+    la = isolated_paths["launch_agents"]
+    assert not la.exists() or list(la.iterdir()) == []
+    assert calls == []
+
+
+def test_reload_schedule_rejects_correction_overlapping_weekly(
+    monkeypatch, fake_argos_binary: Path, fake_uid: int, isolated_paths: dict[str, Path]
+) -> None:
+    calls = _record_launchctl(monkeypatch)
+    cfg = _correction_config(time="08:00")
+    cfg.briefing.weekly_time = "08:00"
+    with pytest.raises(SchedulerError, match="overlaps"):
+        reload_schedule(cfg)
+    assert calls == []
+
+
+def test_reload_schedule_allows_weekly_time_when_weekly_disabled(
+    monkeypatch, fake_argos_binary: Path, fake_uid: int, isolated_paths: dict[str, Path]
+) -> None:
+    _record_launchctl(monkeypatch)
+    cfg = _correction_config(time="08:00")
+    cfg.briefing.weekly_time = "08:00"
+    cfg.briefing.weekly_enabled = False
+    reload_schedule(cfg)
+    assert (isolated_paths["launch_agents"] / "com.argos.correct.plist").exists()
+
+
+def test_reload_schedule_correction_disabled_boots_out_only_correct(
+    monkeypatch, fake_argos_binary: Path, fake_uid: int, isolated_paths: dict[str, Path]
+) -> None:
+    calls = _record_launchctl(monkeypatch, bootout_error=True)
+    reload_schedule(_correction_config(enabled=False))  # bootout 실패는 삼킨다
+
+    la = isolated_paths["launch_agents"]
+    assert not (la / "com.argos.correct.plist").exists()
+    assert (la / "com.argos.run.plist").exists()
+    bootouts = [a[1].rsplit("/", 1)[-1] for a in calls if a[0] == "bootout"]
+    assert "com.argos.correct" in bootouts
+    bootstrapped = [a[2] for a in calls if a[0] == "bootstrap"]
+    assert not any(Path(b).name == "com.argos.correct.plist" for b in bootstrapped)
+
+
+def test_reload_schedule_without_correction_attr_skips_correct_entirely(
+    monkeypatch, fake_argos_binary: Path, fake_uid: int, isolated_paths: dict[str, Path]
+) -> None:
+    calls = _record_launchctl(monkeypatch)
+    reload_schedule(
+        SimpleNamespace(
+            run=SimpleNamespace(time="06:00"),
+            briefing=SimpleNamespace(time="07:00", weekdays=["Mon"]),
+        )
+    )
+    assert not any("com.argos.correct" in " ".join(a) for a in calls)
+
+
+def test_cli_schedule_install_overlap_exits_cleanly(
+    monkeypatch, capsys, fake_argos_binary: Path, fake_uid: int,
+    isolated_paths: dict[str, Path], tmp_path: Path,
+) -> None:
+    from argos.cli import main
+
+    cfg_path = tmp_path / "overlap.toml"
+    cfg_path.write_text(
+        '[run]\ntime = "06:00"\n\n[briefing]\ntime = "07:00"\n\n'
+        '[correction]\ntime = "06:00"\n'
+    )
+    calls = _record_launchctl(monkeypatch)
+    rc = main(["schedule", "--config", str(cfg_path), "install"])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "overlaps" in captured.err
+    assert "Traceback" not in captured.err
+    assert calls == []
+
+
+def test_cli_schedule_install_reports_correct_when_enabled(
+    monkeypatch, capsys, fake_argos_binary: Path, fake_uid: int,
+    isolated_paths: dict[str, Path], tmp_path: Path,
+) -> None:
+    from argos.cli import main
+
+    cfg_path = tmp_path / "ok.toml"
+    cfg_path.write_text("")
+    _record_launchctl(monkeypatch)
+    rc = main(["schedule", "--config", str(cfg_path), "install"])
+    assert rc == 0
+    assert "com.argos.correct" in capsys.readouterr().out

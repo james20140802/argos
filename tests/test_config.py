@@ -378,3 +378,17 @@ def test_spa_config_loads_from_toml(tmp_path):
     assert len(cfg.spa.sources) == 1
     assert cfg.spa.sources[0].name == "example"
     assert cfg.spa.sources[0].category == "Alpha"
+
+
+def test_correction_config_defaults():
+    cfg = UserConfig()
+    assert cfg.correction.enabled is True
+    assert cfg.correction.time == "03:00"
+
+
+def test_correction_config_loads_from_toml(tmp_path):
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_text('[correction]\ntime = "04:30"\nenabled = false\n')
+    cfg = UserConfig.load(path=toml_file)
+    assert cfg.correction.time == "04:30"
+    assert cfg.correction.enabled is False
