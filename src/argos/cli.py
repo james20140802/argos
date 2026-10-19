@@ -2010,7 +2010,7 @@ def _cmd_correct_events(args: argparse.Namespace) -> int:
         # 트레이스백 대신 한 줄. 반영 중 실패는 엔진 트랜잭션이 롤백한다.
         logger.error("correct-events failed: %s", exc, exc_info=False)
         print(
-            f"ERROR: 교정 실패 — 기존 묶음은 그대로다: {exc or type(exc).__name__}",
+            f"ERROR: 교정 실패 — 기존 묶음은 그대로다: {str(exc) or type(exc).__name__}",
             file=sys.stderr,
         )
         return EXIT_GENERIC
