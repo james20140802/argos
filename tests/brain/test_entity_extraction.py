@@ -2,7 +2,7 @@ import unicodedata
 
 import pytest
 
-from argos.brain.entity_extraction import ExtractedName, extract_names
+from argos.brain.entity_extraction import MAX_NAME_CHARS, ExtractedName, extract_names
 from argos.brain.entity_names import canonical_name
 from argos.config import EventDetectionConfig, settings
 
@@ -1120,3 +1120,18 @@ def test_accented_capitals_before_curly_punctuation_are_not_mis_decoded():
         [names] = canonicals([text])
         assert not any(set("ɒɗߓڔ") & set(name) for name in names), (text, names)
         assert expected in names or any(expected in name for name in names), (text, names)
+
+
+def test_a_name_longer_than_the_gazetteer_column_is_dropped():
+    # 본문에 박힌 base64 덩어리가 '이름' 하나로 잡혀 entities INSERT를 깨뜨렸다.
+    blob = "PCFET0NUWVBFIGh0bWw" + "A" * 600
+    [names] = canonicals([f"Yesterday we saw Anthropic and {blob} ship it."])
+    assert "anthropic" in names
+    assert all(len(name) <= MAX_NAME_CHARS for name in names)
+
+
+def test_max_name_chars_matches_the_entities_columns():
+    from argos.models.entity import Entity
+
+    assert Entity.__table__.c.name.type.length == MAX_NAME_CHARS
+    assert Entity.__table__.c.normalized_key.type.length == MAX_NAME_CHARS

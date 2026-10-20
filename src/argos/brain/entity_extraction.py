@@ -49,6 +49,10 @@ from argos.brain.entity_names import (
 from argos.brain.titles import FALLBACK_TITLE
 from argos.config import settings
 
+# 가제티어 ``entities.name``·``normalized_key`` 칸 길이와 같다. 바꾸면 두 칸도
+# 마이그레이션으로 같이 바꿔야 한다.
+MAX_NAME_CHARS = 500
+
 # 문장 끝: 종결부호 뒤의 공백, 전각 종결부호, 또는 줄바꿈.
 # `GPT-5.2`의 점은 뒤에 공백이 없어서 안 걸린다. 전각 종결부호(。！？)는 뒤에
 # 공백을 두지 않는 게 보통이라 공백을 요구하지 않는다.
@@ -1387,6 +1391,11 @@ def extract_names(
         for candidate in document:
             suspect = candidate.sentence_initial and candidate.word_count == 1
             if suspect and candidate.canonical not in mid_sentence:
+                continue
+            # 본문에 박힌 base64·데이터 URI가 한 덩어리 '이름'으로 잡힌다.
+            # 저장 칸보다 긴 이름은 이름이 아니고, 남기면 가제티어 INSERT가
+            # 실패해 그 배치의 이름 저장 전체가 롤백된다.
+            if max(len(candidate.canonical), len(candidate.surface)) > MAX_NAME_CHARS:
                 continue
             kept.setdefault(candidate.canonical, candidate.surface)
         surviving.append(kept)
