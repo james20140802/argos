@@ -10,6 +10,20 @@ This history was reconstructed retroactively from annotated release tags
 (`git tag -n99`) and their commit ranges; entries before this file existed may be
 less granular than future ones.
 
+## [0.4.1] — 2026-10-21
+
+Fix for `argos backfill-entities`. 1 commit since v0.4.0.
+
+### Fixed
+
+- **`argos backfill-entities` no longer fails with "value too long"** — an
+  article whose body embedded a base64 blob produced a 13,649-character "name"
+  that did not fit the name column, and the whole fill rolled back. Candidates
+  longer than the stored name length (500 characters) are no longer extracted
+  as names, so the fill completes. During crawling, the same article would
+  previously save without any names; it now keeps its real ones. Event
+  grouping is otherwise unchanged.
+
 ## [0.4.0] — 2026-10-18
 
 The event layer: articles about the same happening are grouped into one event,
