@@ -32,6 +32,24 @@
 연결성을 보장한다 — 화면에서 "무관한 기사 둘이 같은 카드에"가 나오지 않는
 근거가 이 보장이다.
 
+**CPM 뒤에 출처가 다른 조각끼리 평균 연결로 한 번 더 합친다 (ARG-306).**
+γ = τ인 CPM은 짝 하나하나가 τ를 넘는, 거의 완전 그래프인 묶음만 남긴다.
+τ를 겨우 넘는 간선(+0.01~0.05)은 이득이 거의 없는데, 간선이 없는 짝은 −γ를
+통째로 물기 때문이다. 같은 출시를 여러 사이트가 각자 다른 결로 쓴 사건(공식
+발표·벤치마크 분석·개인 감상)은 짝 점수가 고르게 높지 않아 바로 그 자리에서
+갈라졌다 — Kimi K3 출시 주간 다섯 글이 2+3으로 쪼개졌다. 그래서 Leiden이 낸
+조각 둘의 **모든 짝 평균**(이웃이 아닌 짝은 0)이 τ 이상이면 합친다. 평균이 τ
+이상이면 그중 가장 센 짝은 반드시 τ 이상이므로, 합친 커뮤니티도 τ 이상 간선으로
+이어져 있다는 보장은 그대로다.
+
+합치기는 **출처(등록 도메인)가 둘 이상인 경우에만** 한다. 실측(2026-10-22,
+1,902건)에서 출처 조건 없이 평균 연결로 합치면 판정상 틀린 묶음이 20 → 21로
+늘고 판정 밖에서도 새 짝이 130개 생겼는데, 그 대부분이 같은 사이트의 서로
+다른 발표(OpenAI 고객 사례·제휴 발표)였다. 출처 조건을 걸면 틀린 묶음은 20
+그대로, 새 짝은 13개였다. 출처를 모르는 문서는 "다른 출처"의 근거로 세지
+않는다 — 모르는 것을 다르다고 치면 근거 없이 합치는 셈이다. 간선 채택 컷이
+τ인 것처럼 합치기 기준도 τ다. 밤 전용 기준을 두지 않는 이유는 위와 같다.
+
 **결정성은 두 겹이다.** (1) 노드를 id 오름차순으로 삽입해 그래프의 정점 번호를
 입력 순서와 무관하게 만들고, (2) leidenalg에 시드를 고정해 준다. 둘 중 하나만
 해서는 부족하다 — 시드만 고정하면 정점 번호가 입력 순서를 타고, 정렬만 하면
@@ -40,7 +58,9 @@
 
 from __future__ import annotations
 
+import heapq
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
@@ -83,10 +103,24 @@ def build_edges(
     양끝 중 하나라도 `documents`에 없는 쌍은 버린다(그래프의 노드는 넘겨받은
     문서 집합이 전부다).
     """
+    return tuple(
+        edge
+        for edge in _scored_pairs(documents, pairs, config=config)
+        if edge.weight >= config.join_threshold
+    )
+
+
+def _scored_pairs(
+    documents: Sequence["ReclusterDocument"],
+    pairs: Sequence["NeighborPair"],
+    *,
+    config: "EventDetectionConfig",
+) -> tuple[WeightedEdge, ...]:
+    """이웃 쌍 전부의 점수 — τ 미만도 버리지 않는다. 정렬·중복 제거는 `build_edges`와 같다."""
     weights = EdgeWeights.from_config(config)
     features_by_id = {doc.tech_item_id: doc.features for doc in documents}
 
-    edges: list[WeightedEdge] = []
+    scored: list[WeightedEdge] = []
     seen: set[tuple[uuid.UUID, uuid.UUID]] = set()
     for pair in pairs:
         left_id, right_id = sorted([pair.left_id, pair.right_id])
@@ -100,11 +134,9 @@ def build_edges(
         weight = edge_weight(
             left, right, weights=weights, window_days=config.window_days
         )
-        if weight < config.join_threshold:
-            continue
-        edges.append(WeightedEdge(left_id=left_id, right_id=right_id, weight=weight))
+        scored.append(WeightedEdge(left_id=left_id, right_id=right_id, weight=weight))
 
-    return tuple(sorted(edges, key=lambda edge: (edge.left_id, edge.right_id)))
+    return tuple(sorted(scored, key=lambda edge: (edge.left_id, edge.right_id)))
 
 
 def detect_communities(
@@ -146,7 +178,9 @@ def detect_communities(
         return ()
     index_of = {node_id: index for index, node_id in enumerate(node_ids)}
 
-    edges = build_edges(documents, pairs, config=config)
+    # 점수는 한 번만 매긴다 — τ 이상은 Leiden 간선, 전부는 출처 간 합치기 평균에.
+    scored = _scored_pairs(documents, pairs, config=config)
+    edges = tuple(edge for edge in scored if edge.weight >= config.join_threshold)
 
     graph = igraph.Graph(n=len(node_ids), directed=False)
     if edges:
@@ -176,6 +210,94 @@ def detect_communities(
         for group in partition
         if group
     ]
+    if config.cross_source_merge:
+        communities = merge_cross_source(
+            sorted(communities, key=lambda community: community.members),
+            scored,
+            sources={doc.tech_item_id: doc.features.source for doc in documents},
+            threshold=config.join_threshold,
+        )
     # 커뮤니티 자체도 정렬해 돌려준다 — 소비자(후보 도출·CLI 출력)가 순서에
     # 기대도 안전하게.
     return tuple(sorted(communities, key=lambda community: community.members))
+
+
+def merge_cross_source(
+    communities: Sequence[Community],
+    scored_pairs: Sequence[WeightedEdge],
+    *,
+    sources: dict[uuid.UUID, str | None],
+    threshold: float,
+) -> list[Community]:
+    """출처가 둘 이상 섞이는 조각끼리만, 짝 평균이 `threshold` 이상인 동안 합친다.
+
+    평균 연결(average linkage) 응집 군집이다. 두 조각 A·B의 연결 세기는
+    A×B 모든 짝 점수의 합 ÷ (|A|·|B|) — `scored_pairs`에 없는 짝(이웃이 아님)은
+    0으로 친다. 가장 센 짝부터 합치고, 합친 뒤에는 그 조각과 나머지의 세기를 다시
+    잰다. 한 출처뿐인 합치기는 건너뛴다(모듈 docstring, ARG-306).
+
+    입력 커뮤니티 순서와 `scored_pairs` 순서가 정렬돼 있으면 결과도 결정적이다 —
+    동점은 조각 번호(입력 순서)로 깨고, 점수 합도 정렬된 순서로 더한다.
+    """
+    cluster_of: dict[uuid.UUID, int] = {}
+    members: dict[int, list[uuid.UUID]] = {}
+    for index, community in enumerate(communities):
+        members[index] = list(community.members)
+        for member in community.members:
+            cluster_of[member] = index
+
+    link: dict[int, dict[int, float]] = defaultdict(dict)
+    for edge in scored_pairs:
+        left = cluster_of.get(edge.left_id)
+        right = cluster_of.get(edge.right_id)
+        if left is None or right is None or left == right or edge.weight <= 0.0:
+            continue
+        link[left][right] = link[left].get(right, 0.0) + edge.weight
+        link[right][left] = link[right].get(left, 0.0) + edge.weight
+
+    def known_sources(cluster: int) -> frozenset[str]:
+        return frozenset(
+            source for member in members[cluster] if (source := sources.get(member))
+        )
+
+    source_sets = {cluster: known_sources(cluster) for cluster in members}
+    version = {cluster: 0 for cluster in members}
+    heap: list[tuple[float, int, int, int, int]] = []
+
+    def push(a: int, b: int) -> None:
+        low, high = min(a, b), max(a, b)
+        average = link[low][high] / (len(members[low]) * len(members[high]))
+        if average >= threshold:
+            heapq.heappush(heap, (-average, low, high, version[low], version[high]))
+
+    for left in sorted(link):
+        for right in sorted(link[left]):
+            if left < right:
+                push(left, right)
+
+    next_id = len(members)
+    while heap:
+        _, left, right, left_version, right_version = heapq.heappop(heap)
+        if version.get(left) != left_version or version.get(right) != right_version:
+            continue  # 이미 다른 조각에 합쳐졌거나 세기가 바뀐 낡은 항목
+        if len(source_sets[left] | source_sets[right]) < 2:
+            continue
+        merged = next_id
+        next_id += 1
+        members[merged] = members.pop(left) + members.pop(right)
+        source_sets[merged] = source_sets.pop(left) | source_sets.pop(right)
+        del version[left], version[right]
+        version[merged] = 0
+        neighbors: dict[int, float] = {}
+        for old in (left, right):
+            for other, total in link.pop(old).items():
+                if other in (left, right):
+                    continue
+                neighbors[other] = neighbors.get(other, 0.0) + total
+                del link[other][old]
+        link[merged] = neighbors
+        for other in sorted(neighbors):
+            link[other][merged] = neighbors[other]
+            push(other, merged)
+
+    return [Community(members=tuple(sorted(group))) for group in members.values()]

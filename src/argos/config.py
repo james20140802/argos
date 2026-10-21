@@ -389,6 +389,12 @@ class EventDetectionConfig(BaseModel):
     # leidenalg는 내부적으로 난수를 쓴다. 시드를 고정하지 않으면 같은 입력에서
     # 실행마다 다른 파티션이 나와 "교정"이 아니라 소음이 된다.
     leiden_seed: int = Field(default=42, ge=0)
+    # ARG-306: CPM이 낸 조각 중 출처가 둘 이상 섞이는 조각끼리, 모든 짝 평균
+    # 점수가 join_threshold 이상이면 합친다(recluster_core 모듈 docstring).
+    # γ = τ인 CPM은 짝마다 τ를 넘는 거의 완전 그래프만 남겨, 여러 사이트가 같은
+    # 출시를 각자 다르게 쓴 사건(Kimi K3 출시 주간)을 갈랐다. 밤에만 쓰인다 —
+    # 낮 배정은 문서를 하나씩 붙이므로 조각이 생기지 않는다. 끄면 예전 동작.
+    cross_source_merge: bool = True
 
     @property
     def effective_leiden_resolution(self) -> float:
