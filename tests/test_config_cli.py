@@ -411,3 +411,14 @@ def test_config_migrate_env_preserves_0600_perms(tmp_path, monkeypatch, capsys):
     dest = tmp_path / ".config" / "argos" / ".env"
     mode = stat.S_IMODE(dest.stat().st_mode)
     assert mode == 0o600
+
+
+def test_set_correction_time_and_enabled(tmp_path, capsys):
+    """[correction] 섹션은 일반 config_store 경로로 읽고 쓴다 (ARG-298)."""
+    cfg = tmp_path / "config.toml"
+    assert run_cli("config", "--config", str(cfg), "set", "correction.time", "06:30") == 0
+    assert run_cli("config", "--config", str(cfg), "set", "correction.enabled", "false") == 0
+    capsys.readouterr()
+    with open(cfg, "rb") as f:
+        data = tomllib.load(f)
+    assert data["correction"] == {"time": "06:30", "enabled": False}

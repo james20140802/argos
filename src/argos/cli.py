@@ -1768,6 +1768,26 @@ def _graph_install_commands() -> str:
     return INSTALL_COMMANDS
 
 
+def _add_period_arguments(parser: argparse.ArgumentParser) -> None:
+    """recluster-events와 correct-events가 같은 `--from`/`--to` 정의를 쓴다."""
+    parser.add_argument(
+        "--from",
+        dest="period_from",
+        type=_period_date,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Period start (default: the period spans window_days ending at --to)",
+    )
+    parser.add_argument(
+        "--to",
+        dest="period_to",
+        type=_period_date,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Period end, inclusive (default: today)",
+    )
+
+
 def _build_recluster_events_parser(sub, common) -> None:
     rc_p = sub.add_parser(
         "recluster-events",
@@ -1782,22 +1802,7 @@ def _build_recluster_events_parser(sub, common) -> None:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    rc_p.add_argument(
-        "--from",
-        dest="period_from",
-        type=_period_date,
-        default=None,
-        metavar="YYYY-MM-DD",
-        help="Period start (default: the period spans window_days ending at --to)",
-    )
-    rc_p.add_argument(
-        "--to",
-        dest="period_to",
-        type=_period_date,
-        default=None,
-        metavar="YYYY-MM-DD",
-        help="Period end, inclusive (default: today)",
-    )
+    _add_period_arguments(rc_p)
 
 
 # 테스트가 갈아 끼울 수 있도록 모듈 속성으로 둔다 — CLI 리포트만 따로 보려면
@@ -1830,12 +1835,18 @@ def _resolve_period(args: argparse.Namespace) -> tuple[datetime, datetime]:
     return start, end + timedelta(days=1) - timedelta(microseconds=1)
 
 
-def _print_recluster_report(candidates, *, start: datetime, end: datetime) -> None:
+def _print_recluster_report(
+    candidates,
+    *,
+    start: datetime,
+    end: datetime,
+    title: str = "recluster-events (read-only)",
+) -> None:
     """후보 리포트. 어떤 설정으로 나온 결과인지 함께 찍는다 —
     backfill-events의 dry-run 리포트와 같은 이유다."""
     config = settings.user.event_detection
     print(
-        f"recluster-events (read-only): "
+        f"{title}: "
         f"{start.date().isoformat()} ~ {end.date().isoformat()}"
     )
     # resolution은 **실효값**을 찍는다 — 비워 두면 join_threshold를 따라가므로
@@ -1912,6 +1923,102 @@ def _cmd_recluster_events(args: argparse.Namespace) -> int:
         # 스택트레이스가 아니라 "무엇을 설치하면 되는지" 한 줄.
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+
+
+def _build_correct_events_parser(sub, common) -> None:
+    ce_p = sub.add_parser(
+        "correct-events",
+        help="Apply event boundary corrections (merge/split) for a period",
+        parents=[common],
+        description=(
+            "Recompute a period's event boundaries and apply the resulting "
+            "merge/split corrections in one transaction. --dry-run is the same "
+            "preview as recluster-events: it never writes to the database. "
+            f"Requires the 'graph' optional extra: {_graph_install_commands()}."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_period_arguments(ce_p)
+    ce_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the candidate report only; apply nothing",
+    )
+
+
+# 테스트가 갈아 끼울 수 있도록 모듈 속성으로 둔다 — 반영은 DB를 쓴다.
+async def _apply_corrections_for_cli(candidates):
+    from argos.brain.event_correction import apply_corrections
+
+    return await apply_corrections(AsyncSessionLocal, candidates)
+
+
+def _print_correction_result(result, *, start: datetime, end: datetime) -> None:
+    print(
+        f"correct-events: {start.date().isoformat()} ~ {end.date().isoformat()}"
+    )
+    print(f"  합침 반영: {len(result.merges)}건")
+    for merge in result.merges:
+        absorbed = ", ".join(str(event_id) for event_id in merge.absorbed_ids)
+        print(f"    {merge.survivor_id} ← {absorbed}")
+    print(f"  가름 반영: {len(result.splits)}건")
+    for split in result.splits:
+        created = ", ".join(str(event_id) for event_id in split.new_event_ids)
+        print(f"    {split.event_id} → {created}")
+    print(f"  건너뜀: {len(result.skipped)}건")
+    for skipped in result.skipped:
+        ids = ", ".join(str(event_id) for event_id in skipped.event_ids)
+        print(f"    {skipped.kind} {ids} {skipped.reason}")
+
+
+def _cmd_correct_events(args: argparse.Namespace) -> int:
+    start, end = _resolve_period(args)
+    if start > end:
+        print(
+            "ERROR: --to가 --from보다 앞선다 — 아무것도 계산하지 않았다.",
+            file=sys.stderr,
+        )
+        return 2
+
+    from argos.brain.graph_backend import GraphLibsUnavailable
+
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    async def _run_once():
+        """반영 결과를 돌려준다. dry-run 이면 리포트만 찍고 None."""
+        async with AsyncSessionLocal() as session:
+            candidates = await _recluster_period_for_cli(session, start=start, end=end)
+        if dry_run:
+            _print_recluster_report(
+                candidates,
+                start=start,
+                end=end,
+                title="correct-events --dry-run (read-only)",
+            )
+            return None
+        return await _apply_corrections_for_cli(candidates)
+
+    logger = logging.getLogger(__name__)
+    try:
+        result = asyncio.run(_run_once())
+    except GraphLibsUnavailable as exc:
+        # launchd 실행이 라이브러리 누락 하나로 매일 실패 처리되지 않게 0으로
+        # 끝낸다 — 대신 경고를 남긴다.
+        print(f"WARNING: {exc} — 교정을 건너뛴다.", file=sys.stderr)
+        logger.warning("correct-events skipped: %s", exc)
+        return EXIT_OK
+    except Exception as exc:
+        # 트레이스백 대신 한 줄. 반영 중 실패는 엔진 트랜잭션이 롤백한다.
+        logger.error("correct-events failed: %s", exc, exc_info=False)
+        print(
+            f"ERROR: 교정 실패 — 기존 묶음은 그대로다: {str(exc) or type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return EXIT_GENERIC
+    # 반영이 이미 커밋된 뒤의 출력 실패가 "교정 실패"로 보고되지 않게 try 밖에서 찍는다.
+    if result is not None:
+        _print_correction_result(result, start=start, end=end)
+    return EXIT_OK
 
 
 def _print_dry_run_report(plan, total_docs: int) -> None:
@@ -2195,9 +2302,9 @@ def _build_schedule_parser(sub: argparse._SubParsersAction) -> None:
         description=(
             "Manage the macOS launchd schedule for Argos.\n\n"
             "Actions:\n"
-            "  install    Render + bootstrap both plists from the current config.\n"
-            "  uninstall  Bootout both plists (no error if already absent).\n"
-            "  status     Print loaded/not-loaded for both labels."
+            "  install    Render + bootstrap all plists from the current config.\n"
+            "  uninstall  Bootout all plists (no error if already absent).\n"
+            "  status     Print loaded/not-loaded for all labels."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2207,9 +2314,9 @@ def _build_schedule_parser(sub: argparse._SubParsersAction) -> None:
         help="Path to config.toml (defaults to ~/.config/argos/config.toml)",
     )
     actions = schedule_p.add_subparsers(dest="schedule_action", required=True)
-    actions.add_parser("install", help="Install + bootstrap both launchd jobs")
-    actions.add_parser("uninstall", help="Bootout both launchd jobs")
-    actions.add_parser("status", help="Show loaded/not-loaded for both labels")
+    actions.add_parser("install", help="Install + bootstrap all launchd jobs")
+    actions.add_parser("uninstall", help="Bootout all launchd jobs")
+    actions.add_parser("status", help="Show loaded/not-loaded for all labels")
 
 
 def _cmd_schedule_install(args: argparse.Namespace) -> int:
@@ -2284,8 +2391,22 @@ def _cmd_schedule_install(args: argparse.Namespace) -> int:
     except SchedulerError as exc:
         print(f"Scheduler error: {exc}", file=sys.stderr)
         return EXIT_GENERIC
-    print("Scheduled: com.argos.run, com.argos.brief, com.argos.brief-weekly")
+    scheduled = "com.argos.run, com.argos.brief, com.argos.brief-weekly"
+    correction = getattr(user_config, "correction", None)
+    if correction is not None and correction.enabled:
+        scheduled += ", com.argos.correct"
+    print(f"Scheduled: {scheduled}")
     return EXIT_OK
+
+
+# schedule uninstall/status 가 다루는 launchd label 전부. 새 label 은 여기 한 곳에만 더한다.
+_SCHEDULE_LABELS: tuple[str, ...] = (
+    "com.argos.run",
+    "com.argos.brief",
+    "com.argos.brief-weekly",
+    "com.argos.web",
+    "com.argos.correct",
+)
 
 
 def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
@@ -2293,7 +2414,7 @@ def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
     from argos.scheduler import SchedulerError, bootout_plist
 
     failures: list[str] = []
-    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly", "com.argos.web"):
+    for label in _SCHEDULE_LABELS:
         try:
             bootout_plist(label)
             print(f"Unloaded: {label}")
@@ -2303,16 +2424,19 @@ def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
     # com.argos.web is RunAtLoad + KeepAlive: a plist left in ~/Library/
     # LaunchAgents is auto-loaded at the next login and resurrects the daemon,
     # so bootout alone doesn't uninstall it. Delete the file too (mirrors the
-    # opt-out path in reload_schedule). The scheduled jobs are calendar-driven
-    # and follow the existing bootout-only convention.
-    (scheduler._DEFAULT_LAUNCH_AGENTS / "com.argos.web.plist").unlink(missing_ok=True)
+    # opt-out path in reload_schedule). com.argos.correct is deleted too: it
+    # writes to the DB and must not resurrect at login after an uninstall. The
+    # other scheduled jobs (run/brief/brief-weekly) follow the existing
+    # bootout-only convention.
+    for name in ("com.argos.web", "com.argos.correct"):
+        (scheduler._DEFAULT_LAUNCH_AGENTS / f"{name}.plist").unlink(missing_ok=True)
     return EXIT_GENERIC if failures else EXIT_OK
 
 
 def _cmd_schedule_status(_args: argparse.Namespace) -> int:
     from argos.scheduler import is_loaded
 
-    for label in ("com.argos.run", "com.argos.brief", "com.argos.brief-weekly", "com.argos.web"):
+    for label in _SCHEDULE_LABELS:
         state = "loaded" if is_loaded(label) else "not loaded"
         print(f"{label}: {state}")
     return EXIT_OK
@@ -2416,6 +2540,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_backfill_trust_parser(sub, common)
     _build_backfill_events_parser(sub, common)
     _build_recluster_events_parser(sub, common)
+    _build_correct_events_parser(sub, common)
     _build_backup_parser(sub)
     _build_restore_parser(sub)
     _build_config_parser(sub)
@@ -2550,6 +2675,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_recluster_events(args)
+    if args.command == "correct-events":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_correct_events(args)
     if args.command == "backup":
         return _cmd_backup(args)
     if args.command == "restore":

@@ -27,7 +27,20 @@ def run_schedule_step(user_config) -> None:  # type: ignore[no-untyped-def]
             "    (Install ARG-51’s argos.scheduler module to enable launchd schedules.)"
         )
         return
-    reload_schedule(user_config)
+    from argos.init_wizard import WizardStepError
+    from argos.scheduler import SchedulerError
+
+    try:
+        reload_schedule(user_config)
+    except SchedulerError as exc:
+        raise WizardStepError(
+            f"스케줄 설치 실패: {exc}",
+            hint=(
+                "시각이 겹치면 `argos config set correction.time HH:MM` "
+                "(또는 correction.enabled false) 로 바꾼 뒤 "
+                "`argos init --reconfigure schedule` 를 다시 실행한다."
+            ),
+        ) from exc
 
 
 __all__ = ["run_schedule_step"]

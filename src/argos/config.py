@@ -135,6 +135,13 @@ class RunConfig(BaseModel):
     daily_limit: int = Field(default=150, ge=0)
 
 
+class CorrectionConfig(BaseModel):
+    """하루 한 번 자동 교정 실행 (ARG-298, ``argos correct-events``)."""
+
+    enabled: bool = True
+    time: str = "03:00"
+
+
 class InterestsConfig(BaseModel):
     topics: list[str] = []
     exclusions: list[str] = []
@@ -454,6 +461,7 @@ class UserConfig(BaseModel):
     trust: TrustConfig = Field(default_factory=TrustConfig)
     feed_ranking: FeedRankingConfig = Field(default_factory=FeedRankingConfig)
     event_detection: EventDetectionConfig = Field(default_factory=EventDetectionConfig)
+    correction: CorrectionConfig = Field(default_factory=CorrectionConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:

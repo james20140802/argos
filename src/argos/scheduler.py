@@ -279,6 +279,31 @@ def render_run_plist(
     )
 
 
+def render_correct_plist(
+    *,
+    time: str,
+    label: str = "com.argos.correct",
+    config_path: Path | None = None,
+    log_dir: Path | None = None,
+    working_directory: Path | None = None,
+) -> str:
+    """Render the ``argos correct-events`` plist as XML text (ARG-298).
+
+    교정은 매일 한 번 돌므로 ``Weekday`` 키 없는 단일
+    ``StartCalendarInterval`` dict 를 쓴다. 로그는 ``correct.log``.
+    """
+    return _render_plist(
+        label=label,
+        subcommand="correct-events",
+        log_basename="correct",
+        time=time,
+        weekdays=None,  # `argos correct-events` is daily.
+        config_path=config_path,
+        log_dir=log_dir,
+        working_directory=working_directory,
+    )
+
+
 def render_brief_weekly_plist(
     *,
     time: str,
@@ -528,6 +553,35 @@ def reload_schedule(
     # installs that don't have `web.launchd_enabled = true` in their config).
     web_enabled = bool(getattr(getattr(user_config, "web", None), "launchd_enabled", False))
 
+    # ARG-298: daily correction job. A stripped namespace without a
+    # ``.correction`` attribute (tests, legacy callers) is treated as absent:
+    # no plist, no launchctl call. A real UserConfig always carries it.
+    correction = getattr(user_config, "correction", None)
+    correction_enabled = correction is not None and bool(correction.enabled)
+
+    # 겹침 검사는 어떤 plist 도 쓰거나 launchctl 을 부르기 전에 끝낸다 —
+    # 거부되면 기존 스케줄이 그대로 남아야 한다.
+    if correction_enabled:
+        try:
+            correction_hm = _parse_hhmm(correction.time)
+            others = {
+                "run.time": _parse_hhmm(run_time),
+                "briefing.time": _parse_hhmm(brief_time),
+            }
+            if weekly_enabled:
+                # weekly_time 은 비어 있으면 briefing.time 을 따른다.
+                others["briefing.weekly_time"] = _parse_hhmm(weekly_time or brief_time)
+        except ValueError as exc:
+            raise SchedulerError(f"invalid time format: {exc}") from exc
+        for key, hm in others.items():
+            if hm == correction_hm:
+                raise SchedulerError(
+                    f"correction.time {correction.time} overlaps {key} — "
+                    f"교정은 run/brief와 다른 시각이어야 한다 — 바꾸려면: "
+                    f"argos config set correction.time HH:MM "
+                    f"(또는 argos config set correction.enabled false)"
+                )
+
     _DEFAULT_LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
     _DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -537,6 +591,7 @@ def reload_schedule(
         _DEFAULT_LAUNCH_AGENTS / "com.argos.brief-weekly.plist"
     )
     web_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.web.plist"
+    correct_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.correct.plist"
 
     # Capture cwd once so all plists agree on the same WorkingDirectory,
     # even if some caller mutates cwd between the render calls.
@@ -562,6 +617,13 @@ def reload_schedule(
                 config_path=config_path,
                 working_directory=install_cwd,
             )
+        correct_xml: str | None = None
+        if correction_enabled:
+            correct_xml = render_correct_plist(
+                time=correction.time,
+                config_path=config_path,
+                working_directory=install_cwd,
+            )
     except ValueError as exc:
         raise SchedulerError(f"invalid time format: {exc}") from exc
 
@@ -582,6 +644,21 @@ def reload_schedule(
                 "weekly briefing disabled; bootout of com.argos.brief-weekly failed",
                 exc_info=True,
             )
+
+    if correct_xml is not None:
+        install_plist(correct_plist_path, correct_xml)
+    elif correction is not None:
+        # 교정 꺼짐 — 이전 install 에서 올라간 job 이 있으면 내린다 (best-effort).
+        try:
+            bootout_plist("com.argos.correct")
+        except SchedulerError:
+            logger.warning(
+                "correction disabled; bootout of com.argos.correct failed",
+                exc_info=True,
+            )
+        # 교정은 DB 에 쓰는 job 이라 plist 가 LaunchAgents 에 남아 있으면 다음
+        # 로그인 때 다시 올라온다 (web opt-out 과 같은 이유). 파일도 지운다.
+        correct_plist_path.unlink(missing_ok=True)
 
     if web_enabled:
         web_xml = render_web_plist(
@@ -632,6 +709,17 @@ def reload_schedule(
                 f"(com.argos.web) failed: {exc}. "
                 f"To clean up, run: argos schedule uninstall && argos schedule install"
             ) from exc
+    # 교정은 마지막에 올린다 — 교정 job 실패가 web 등 다른 job 의 bootstrap 을
+    # 막지 않게 한다.
+    if correct_xml is not None:
+        try:
+            bootstrap_plist(correct_plist_path)
+        except SchedulerError as exc:
+            raise SchedulerError(
+                f"run/brief jobs bootstrapped successfully but correction job "
+                f"(com.argos.correct) failed: {exc}. "
+                f"To clean up, run: argos schedule uninstall && argos schedule install"
+            ) from exc
 
 
 __all__ = [
@@ -643,6 +731,7 @@ __all__ = [
     "reload_schedule",
     "render_brief_plist",
     "render_brief_weekly_plist",
+    "render_correct_plist",
     "render_run_plist",
     "render_web_plist",
 ]
