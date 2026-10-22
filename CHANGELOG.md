@@ -10,6 +10,49 @@ This history was reconstructed retroactively from annotated release tags
 (`git tag -n99`) and their commit ranges; entries before this file existed may be
 less granular than future ones.
 
+## [0.4.2] — 2026-10-22
+
+Nightly event-boundary correction: Argos can now re-check a period's events
+once a day, merging events that are really one happening and splitting ones
+that mixed unrelated news. 7 commits since v0.4.1.
+
+**Upgrade note:** correction needs the optional graph libraries. With pipx:
+`pipx inject argos-scout python-igraph leidenalg` (source checkout:
+`uv sync --all-extras`). Without them the correction run prints a warning and
+does nothing. Preview first with `argos correct-events --dry-run`, then run
+`argos schedule install` to add the daily job.
+
+### Added
+
+- **`argos correct-events`** — recomputes event boundaries for a period
+  (`--from` / `--to`, default: the last `window_days` ending today) and applies
+  the merges and splits in one transaction. `--dry-run` shows the same
+  candidate report and writes nothing.
+- **Daily correction schedule** — `argos schedule install` now also installs a
+  daily `correct-events` job (`correction.time`, default 03:00; set
+  `correction.enabled = false` to opt out). Install refuses a correction time
+  that collides with the crawl or briefing times. `schedule status` and
+  `schedule uninstall` include the new job.
+
+### Changed
+
+- **Nightly regrouping no longer splits one launch covered by several sites.**
+  When the same release is written up differently by different sites (official
+  post, benchmark analysis, personal take), the nightly pass used to cut it
+  into pieces. Pieces from different sites whose articles are, on average,
+  as related as the grouping threshold are now joined back. Pieces from a
+  single site are not joined this way, so different announcements from one
+  blog do not merge. Daytime grouping during crawls is unchanged. Opt out with
+  `event_detection.cross_source_merge = false`.
+
+### Fixed
+
+- Turning the correction job off now removes it from launchd instead of
+  leaving the old job behind; `argos init` no longer crashes when the schedule
+  step hits a time collision, and the error says how to fix it.
+- `correct-events` failures with an empty error message now show the error
+  type instead of a blank line.
+
 ## [0.4.1] — 2026-10-21
 
 Fix for `argos backfill-entities`. 1 commit since v0.4.0.
