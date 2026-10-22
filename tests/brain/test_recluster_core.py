@@ -12,7 +12,13 @@ from datetime import datetime, timezone
 import pytest
 
 from argos.brain.event_scoring import DocumentFeatures, cosine_similarity
-from argos.brain.recluster_core import build_edges, detect_communities
+from argos.brain.recluster_core import (
+    Community,
+    WeightedEdge,
+    build_edges,
+    detect_communities,
+    merge_cross_source,
+)
 from argos.brain.recluster_input import NeighborPair, ReclusterDocument
 from argos.config import EventDetectionConfig
 from tests.conftest import requires_graph_libs
@@ -385,3 +391,138 @@ def test_large_identical_events_partition_the_same_way_every_time():
     second = detect_communities(list(reversed(docs)), list(reversed(pairs)), config=config)
 
     assert first == second
+
+
+# --- ARG-306: CPM 조각을 출처가 다를 때만 평균 연결로 합치기 -----------------
+
+
+def _id(index: int) -> uuid.UUID:
+    return uuid.UUID(int=index)
+
+
+def _community(*indexes: int) -> Community:
+    return Community(members=tuple(sorted(_id(i) for i in indexes)))
+
+
+def _scored(weights: dict[tuple[int, int], float]) -> list[WeightedEdge]:
+    return sorted(
+        (
+            WeightedEdge(left_id=_id(min(a, b)), right_id=_id(max(a, b)), weight=w)
+            for (a, b), w in weights.items()
+        ),
+        key=lambda edge: (edge.left_id, edge.right_id),
+    )
+
+
+# 조각 {1,2}와 {3,4,5}. 조각 사이 여섯 짝 중 넷은 τ를 겨우 넘고 둘은 조금 못 미친다
+# — CPM(γ=τ)이 가르는 바로 그 모양이다. 평균 = (0.60×4 + 0.52×2) / 6 ≈ 0.573.
+_KIMI_LIKE = {
+    (1, 2): 0.68,
+    (3, 4): 0.60,
+    (3, 5): 0.60,
+    (4, 5): 0.60,
+    (1, 3): 0.60,
+    (1, 4): 0.60,
+    (2, 3): 0.60,
+    (2, 5): 0.60,
+    (1, 5): 0.52,
+    (2, 4): 0.52,
+}
+
+
+def test_pieces_from_different_sites_merge_when_their_average_clears_the_threshold():
+    sources = {_id(1): "a.com", _id(2): "a.com", _id(3): "b.com", _id(4): "c.com", _id(5): "d.com"}
+    merged = merge_cross_source(
+        [_community(1, 2), _community(3, 4, 5)],
+        _scored(_KIMI_LIKE),
+        sources=sources,
+        threshold=0.55,
+    )
+    assert _members(merged) == {frozenset(_id(i) for i in (1, 2, 3, 4, 5))}
+
+
+def test_pieces_from_a_single_site_are_not_merged():
+    # 같은 사이트의 다른 발표가 한 카드로 뭉치는 게 가장 흔한 오병합이었다.
+    sources = {_id(i): "openai.com" for i in range(1, 6)}
+    merged = merge_cross_source(
+        [_community(1, 2), _community(3, 4, 5)],
+        _scored(_KIMI_LIKE),
+        sources=sources,
+        threshold=0.55,
+    )
+    assert _members(merged) == {
+        frozenset({_id(1), _id(2)}),
+        frozenset({_id(3), _id(4), _id(5)}),
+    }
+
+
+def test_unknown_sources_do_not_count_as_a_second_site():
+    sources = {_id(1): "a.com", _id(2): "a.com", _id(3): None, _id(4): None, _id(5): None}
+    merged = merge_cross_source(
+        [_community(1, 2), _community(3, 4, 5)],
+        _scored(_KIMI_LIKE),
+        sources=sources,
+        threshold=0.55,
+    )
+    assert len(merged) == 2
+
+
+def test_pairs_that_are_not_neighbors_count_as_zero_in_the_average():
+    # 이웃으로 보인 짝 둘이 아무리 세도, 안 보인 짝 넷이 0으로 평균을 끌어내린다:
+    # (0.9 + 0.9) / 6 = 0.30 < 0.55 → 합치지 않는다. 약한 사슬이 다시 뭉치지 않는 이유.
+    sources = {_id(1): "a.com", _id(2): "a.com", _id(3): "b.com", _id(4): "b.com", _id(5): "b.com"}
+    weights = {(1, 2): 0.9, (3, 4): 0.9, (4, 5): 0.9, (3, 5): 0.9, (1, 3): 0.9, (2, 3): 0.9}
+    merged = merge_cross_source(
+        [_community(1, 2), _community(3, 4, 5)],
+        _scored(weights),
+        sources=sources,
+        threshold=0.55,
+    )
+    assert len(merged) == 2
+
+
+def test_merging_happens_strongest_first_and_rechecks_the_grown_piece():
+    # {1}+{2}가 0.9로 먼저 합쳐진 뒤 {3}과의 평균은 (0.6 + 0.0)/2 = 0.30이라 붙지 않는다.
+    # 순서를 무시하고 짝별로 따로 판정하면 {3}이 {1}과의 0.6 하나로 끌려 들어온다.
+    sources = {_id(1): "a.com", _id(2): "b.com", _id(3): "c.com"}
+    merged = merge_cross_source(
+        [_community(1), _community(2), _community(3)],
+        _scored({(1, 2): 0.9, (1, 3): 0.6}),
+        sources=sources,
+        threshold=0.55,
+    )
+    assert _members(merged) == {frozenset({_id(1), _id(2)}), frozenset({_id(3)})}
+
+
+def test_the_merge_result_does_not_depend_on_input_order():
+    sources = {_id(1): "a.com", _id(2): "a.com", _id(3): "b.com", _id(4): "c.com", _id(5): "d.com"}
+    communities = [_community(1, 2), _community(3, 4, 5)]
+    expected = merge_cross_source(
+        communities, _scored(_KIMI_LIKE), sources=sources, threshold=0.55
+    )
+    for seed in range(5):
+        shuffled = list(communities)
+        random.Random(seed).shuffle(shuffled)
+        got = merge_cross_source(
+            sorted(shuffled, key=lambda c: c.members),
+            _scored(_KIMI_LIKE),
+            sources=sources,
+            threshold=0.55,
+        )
+        assert _members(got) == _members(expected)
+
+
+@requires_graph_libs
+def test_turning_the_merge_off_restores_the_cpm_only_partition(monkeypatch):
+    # 끄면 Leiden 결과 그대로 — 합치기 단계가 호출조차 되지 않는다.
+    import argos.brain.recluster_core as core
+
+    def boom(*args, **kwargs):  # pragma: no cover - 호출되면 실패
+        raise AssertionError("cross_source_merge=False인데 합치기가 돌았다")
+
+    monkeypatch.setattr(core, "merge_cross_source", boom)
+    config = EventDetectionConfig(cross_source_merge=False)
+    docs = [_doc(i, theta=0.0, names={"x"}, keywords={"x"}) for i in (1, 2, 3)]
+    pairs = [_pair(docs[0], docs[1]), _pair(docs[1], docs[2]), _pair(docs[0], docs[2])]
+    communities = detect_communities(docs, pairs, config=config)
+    assert _members(communities) == {frozenset(d.tech_item_id for d in docs)}

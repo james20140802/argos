@@ -1857,7 +1857,8 @@ def _print_recluster_report(
         f"candidate_k={config.candidate_k} leiden="
         f"({config.leiden_objective}, "
         f"resolution={config.effective_leiden_resolution}, "
-        f"seed={config.leiden_seed})"
+        f"seed={config.leiden_seed}, "
+        f"cross_source_merge={config.cross_source_merge})"
     )
     # 가중치도 함께 찍는다 — build_edges가 실제로 쓰는 값이라, 빠뜨리면
     # 가중치만 바꿔 돌린 두 출력이 글자 단위로 같아져서 나중에 어느 설정이
