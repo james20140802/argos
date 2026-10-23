@@ -30,6 +30,7 @@ def _view(
     asset_id: uuid.UUID | None = None,
     trust_rubric: dict | None = None,
     corroboration_count: int | None = None,
+    has_body: bool = True,
 ) -> ItemDetailView:
     return ItemDetailView(
         id=uuid.uuid4(),
@@ -45,6 +46,7 @@ def _view(
         asset_id=asset_id,
         trust_rubric=trust_rubric,
         corroboration_count=corroboration_count,
+        has_body=has_body,
     )
 
 
@@ -319,3 +321,24 @@ def test_item_detail_omits_trust_breakdown_for_legacy_row(monkeypatch):
     assert resp.status_code == 200
     assert "신뢰도 구성" not in resp.text
     assert "detail-trust-breakdown" not in resp.text
+
+
+def test_item_detail_shows_no_body_note_for_thin_items(monkeypatch):
+    """ARG-309: 본문을 못 가져온 기사는 상세에 '본문 없음'이 보인다."""
+    view = _view(has_body=False)
+    client = _client_with_detail(monkeypatch, view)
+
+    resp = client.get(f"/item/{view.id}")
+
+    assert resp.status_code == 200
+    assert "본문 없음" in resp.text
+
+
+def test_item_detail_hides_no_body_note_when_body_exists(monkeypatch):
+    view = _view(has_body=True)
+    client = _client_with_detail(monkeypatch, view)
+
+    resp = client.get(f"/item/{view.id}")
+
+    assert resp.status_code == 200
+    assert "본문 없음" not in resp.text

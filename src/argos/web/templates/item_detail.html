@@ -74,6 +74,10 @@
   </section>
   {% endif %}
 
+  {% if not item.has_body %}
+  <p class="detail-no-body">본문 없음 — 제목·링크만 수집됨</p>
+  {% endif %}
+
   <p class="detail-source">
     <a class="detail-source__link"
        href="{{ item.source_url }}"
