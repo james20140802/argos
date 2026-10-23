@@ -189,6 +189,27 @@ class DigestConfig(BaseModel):
     min_output_chars: int = Field(default=150, ge=0)
 
 
+class EventSummaryConfig(BaseModel):
+    """ARG-310 사건 이름·요약 생성 모델과 입력 예산.
+
+    ``num_ctx``는 고정값이다 — Ollama는 num_ctx가 바뀌면 모델을 재적재하고,
+    KV 캐시 크기가 곧 메모리 상한이다. 입력을 이 안에 맞춘다
+    (``brain/event_summary_input.py``).
+    """
+
+    model: str = Field(default="gemma4:26b")
+    num_ctx: int = Field(default=16384, ge=2048)
+    # 문서 1건 본문 상한(문자). 한 문서가 청크를 독식하지 못하게 한다.
+    doc_max_chars: int = Field(default=6000, ge=200)
+    # 실행 시간 상한용 안전 캡(최근 링크 순 유지).
+    max_docs: int = Field(default=30, ge=1)
+    # 토큰 수 추정(문자/토큰). 보수적으로 잡는다(실측 약 2.8).
+    chars_per_token: float = Field(default=2.5, gt=0)
+    output_reserve_tokens: int = Field(default=1024, ge=128)
+    timeout: float = Field(default=600, gt=0)
+    temperature: float | None = Field(default=0.3)
+
+
 class RSSFeedConfig(BaseModel):
     url: str
     category: Literal["Mainstream", "Alpha"] = "Mainstream"
@@ -460,6 +481,7 @@ class UserConfig(BaseModel):
     triage: TriageConfig = TriageConfig()
     genealogist: GenealogistConfig = GenealogistConfig()
     digest: DigestConfig = DigestConfig()
+    event_summary: EventSummaryConfig = Field(default_factory=EventSummaryConfig)
     rss: RSSConfig = Field(default_factory=RSSConfig)
     spa: SPAConfig = Field(default_factory=SPAConfig)
     web: WebConfig = Field(default_factory=WebConfig)
