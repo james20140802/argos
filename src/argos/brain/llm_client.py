@@ -6,6 +6,7 @@ from argos.brain.ollama_client import (
     DEFAULT_NUM_CTX,
     LARGE_MODEL_TIMEOUT,
     prewarm_model,
+    query_exclusive,
     query_ollama,
     unload_model,
     unload_then_query,
@@ -39,6 +40,8 @@ class LLMClient(Protocol):
         num_ctx: int = DEFAULT_NUM_CTX,
         think: bool | None = None,
         temperature: float | None = None,
+        exclusive: bool = False,
+        stats_out: dict | None = None,
     ) -> str: ...
 
     async def unload(self, model_role: Literal["small", "large"]) -> None: ...
@@ -88,7 +91,26 @@ class OllamaClient:
         num_ctx: int = DEFAULT_NUM_CTX,
         think: bool | None = None,
         temperature: float | None = None,
+        exclusive: bool = False,
+        stats_out: dict | None = None,
     ) -> str:
+        """Run a query.
+
+        ``exclusive=True`` first unloads every other resident model (ARG-310, see
+        ``query_exclusive``); ``stats_out`` then receives the response's
+        token/duration counters (ignored when not exclusive).
+        """
+        if exclusive:
+            return await query_exclusive(
+                self._resolve(model_role),
+                prompt,
+                keep_alive=keep_alive,
+                timeout=timeout if timeout is not None else self._default_timeout(model_role),
+                num_ctx=num_ctx,
+                think=think,
+                temperature=temperature,
+                stats_out=stats_out,
+            )
         return await query_ollama(
             self._resolve(model_role),
             prompt,
@@ -166,6 +188,19 @@ def get_genealogist_llm_client() -> OllamaClient:
     backend = settings.user.llm.backend
     if backend == "ollama":
         return OllamaClient(settings=settings, large_model=settings.user.genealogist.model)
+    raise ValueError(f"Unknown LLM backend: {backend!r}")
+
+
+def get_event_summary_llm_client() -> OllamaClient:
+    """Return an OllamaClient whose large role resolves to event_summary.model.
+
+    Same "large slot override" pattern as genealogist/digest. Callers query it
+    with ``exclusive=True`` so any other resident model is unloaded first.
+    """
+    settings = _get_settings()
+    backend = settings.user.llm.backend
+    if backend == "ollama":
+        return OllamaClient(settings=settings, large_model=settings.user.event_summary.model)
     raise ValueError(f"Unknown LLM backend: {backend!r}")
 
 

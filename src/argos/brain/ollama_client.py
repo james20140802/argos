@@ -1,6 +1,10 @@
 from __future__ import annotations
 import asyncio
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 SMALL_MODEL = "qwen3:8b"
@@ -36,7 +40,7 @@ def _base_url() -> str:
     return OLLAMA_BASE_URL
 
 
-async def _generate(
+async def _generate_raw(
     model: str,
     prompt: str,
     keep_alive: str | int,
@@ -44,7 +48,8 @@ async def _generate(
     num_ctx: int = DEFAULT_NUM_CTX,
     think: bool | None = None,
     temperature: float | None = None,
-) -> str:
+) -> dict:
+    """POST /api/generate and return the whole JSON body (response + stats)."""
     payload: dict = {
         "model": model,
         "prompt": prompt,
@@ -62,7 +67,22 @@ async def _generate(
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10)) as client:
         resp = await client.post(f"{_base_url()}/api/generate", json=payload)
         resp.raise_for_status()
-        return resp.json()["response"]
+        return resp.json()
+
+
+async def _generate(
+    model: str,
+    prompt: str,
+    keep_alive: str | int,
+    timeout: float = DEFAULT_TIMEOUT,
+    num_ctx: int = DEFAULT_NUM_CTX,
+    think: bool | None = None,
+    temperature: float | None = None,
+) -> str:
+    body = await _generate_raw(
+        model, prompt, keep_alive, timeout, num_ctx, think, temperature
+    )
+    return body["response"]
 
 
 async def _unload(model: str) -> None:
@@ -96,6 +116,79 @@ async def query_ollama(
             # Ollama raises when it resets the socket mid-request under OOM/crash.
             # All are infra failures the pipeline must retain+retry, not drop. (ARG-190)
             raise OllamaInfraError(str(exc)) from exc
+
+
+async def loaded_models() -> list[str]:
+    """Names of the models Ollama currently holds in memory (``GET /api/ps``)."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{_base_url()}/api/ps")
+        resp.raise_for_status()
+        entries = resp.json().get("models") or []
+    names: list[str] = []
+    for entry in entries:
+        name = entry.get("name") or entry.get("model")
+        if name:
+            names.append(name)
+    return names
+
+
+async def query_exclusive(
+    model: str,
+    prompt: str,
+    keep_alive: str | int = "5m",
+    timeout: float = DEFAULT_TIMEOUT,
+    num_ctx: int = DEFAULT_NUM_CTX,
+    think: bool | None = None,
+    temperature: float | None = None,
+    stats_out: dict | None = None,
+) -> str:
+    """Query `model` after unloading every OTHER loaded model (ARG-310).
+
+    Enforces the one-model-at-a-time VRAM invariant at call time: under a single
+    ``_MODEL_LOCK`` hold it asks ``/api/ps`` what is resident, unloads each model
+    other than `model`, then generates. No other in-process query can slip in
+    between the unload and the load.
+
+    Error handling matches ``query_ollama``: 5xx / transport failures raise
+    ``OllamaInfraError``. A failing ``/api/ps`` or unload is logged and skipped
+    (availability first) -- the generate call then proceeds as it would have.
+
+    The lock is per process; a different process (launchd brief, web Deep Dive)
+    can still load a model concurrently. The ``/api/ps`` check right before the
+    call removes the common overlap, not every race.
+
+    If `stats_out` is given it is filled with ``prompt_eval_count``,
+    ``eval_count`` and ``total_duration`` (ns) from the response, when present,
+    so callers can log token/time cost.
+    """
+    async with _MODEL_LOCK:
+        try:
+            try:
+                resident = await loaded_models()
+            except (httpx.HTTPError, ValueError, KeyError, AttributeError) as exc:
+                logger.warning("query_exclusive: /api/ps failed (%r) -- skipping unload", exc)
+                resident = []
+            for other in resident:
+                if other == model:
+                    continue
+                try:
+                    await _unload(other)
+                except httpx.HTTPError as exc:
+                    logger.warning("query_exclusive: unloading %s failed: %r", other, exc)
+            body = await _generate_raw(
+                model, prompt, keep_alive, timeout, num_ctx, think, temperature
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code >= 500:
+                raise OllamaInfraError(str(exc)) from exc
+            raise
+        except httpx.TransportError as exc:
+            raise OllamaInfraError(str(exc)) from exc
+    if stats_out is not None:
+        for key in ("prompt_eval_count", "eval_count", "total_duration"):
+            if key in body:
+                stats_out[key] = body[key]
+    return body["response"]
 
 
 async def unload_model(model: str) -> None:
