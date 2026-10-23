@@ -17,10 +17,11 @@ ARG-307이 읽는 입력이라, 여기서 바꾸면 사건 묶기 결과가 달�
 
 from __future__ import annotations
 
-import enum
 import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, Sequence
+
+from argos.models.entity_alias import AliasRule
 
 # 문턱값 — 실측 사례(openai codex 9 / claude opus 5 18 / code 0.75 / agent 0.88 ...)로
 # 정했다. config가 아니라 모듈 상수로 둔다(ARG-311과 config.py 충돌을 피하려는 뜻도 있다).
@@ -29,12 +30,6 @@ MAX_LOWERCASE_RATIO = 0.2  # B가 소문자로 쓰인 비율의 상한
 MIN_LITERAL_DOCS = 2  # "V B"를 그대로 쓴 문서 수의 하한
 COMPETITOR_MARGIN = 3  # 1위가 2위의 이 배수 이상이어야 한다
 MIN_SINGLE_WORD_LENGTH = 4  # 한 낱말 B의 최소 글자 수(숫자를 품으면 예외)
-
-
-class AliasRule(str, enum.Enum):
-    SPACING = "Spacing"
-    VENDOR_PREFIX = "VendorPrefix"
-    MANUAL = "Manual"
 
 
 @dataclass(frozen=True)
