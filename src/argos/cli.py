@@ -1460,6 +1460,67 @@ async def _backfill_entities(dry_run: bool = False, yes: bool = False, sample: i
     return EXIT_OK
 
 
+def _build_body_stats_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos body-stats`` subcommand (ARG-309)."""
+    p = sub.add_parser(
+        "body-stats",
+        help="Show how many stored articles have no real body (< 500 chars)",
+        parents=[common],
+        description=(
+            "Read-only. Reports the share of stored articles whose body is shorter than\n"
+            "500 characters, the median body length and the number of garbled rows.\n"
+            "Use --by-host for a per-source table."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--by-host", action="store_true", help="Also print a per-host table")
+    p.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="With --by-host: show only the N largest hosts",
+    )
+
+
+def _cmd_body_stats(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _body_stats(
+            by_host=bool(getattr(args, "by_host", False)),
+            limit=getattr(args, "limit", None),
+        )
+    )
+
+
+async def _body_stats(by_host: bool = False, limit: int | None = None) -> int:
+    """본문 500자 미만 비율 집계 (읽기 전용)."""
+    from argos.crawler import body_backfill
+    from argos.crawler.body_quality import BODY_MIN_CHARS
+
+    async with AsyncSessionLocal() as session:
+        rows = await body_backfill.load_rows(session)
+    stats = body_backfill.compute_stats(rows)
+
+    print(f"전체 {stats.total}건")
+    print(
+        f"본문 {BODY_MIN_CHARS}자 미만 {stats.short}건 ({stats.short_pct:.1f}%)"
+        f" | 본문 길이 중앙값 {stats.median_len}자 | 문자 깨짐 {stats.mojibake}건"
+    )
+    if by_host:
+        hosts = stats.by_host[:limit] if limit else stats.by_host
+        print()
+        print(f"{'호스트':<32}{'건수':>7}{f'<{BODY_MIN_CHARS}자':>9}{'비율':>8}{'중앙값':>8}{'깨짐':>6}")
+        for h in hosts:
+            print(
+                f"{h.host[:31]:<32}{h.total:>7}{h.short:>9}{h.short_pct:>7.1f}%"
+                f"{h.median_len:>8}{h.mojibake:>6}"
+            )
+    return EXIT_OK
+
+
 def _build_backfill_digests_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -2545,6 +2606,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_backfill_images_parser(sub, common)
     _build_backfill_digests_parser(sub, common)
     _build_backfill_entities_parser(sub, common)
+    _build_body_stats_parser(sub, common)
     _build_backfill_trust_parser(sub, common)
     _build_backfill_events_parser(sub, common)
     _build_recluster_events_parser(sub, common)
@@ -2668,6 +2730,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_backfill_entities(args)
+    if args.command == "body-stats":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_body_stats(args)
     if args.command == "backfill-trust":
         rc = _apply_config_override(args)
         if rc is not None:
