@@ -681,6 +681,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     from argos.doctor import (
         check_alembic_head,
         check_docker,
+        check_event_summary_model,
         check_macos_version,
         check_ollama_installed,
         check_ollama_models,
@@ -699,6 +700,10 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         check_docker(),
         check_ollama_installed(),
         *check_ollama_models(ollama_host=settings.user.ollama.host),
+        check_event_summary_model(
+            ollama_host=settings.user.ollama.host,
+            model=settings.user.event_summary.model,
+        ),
         check_python_version(),
         check_macos_version(),
         check_uv_installed(),

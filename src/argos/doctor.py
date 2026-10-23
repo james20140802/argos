@@ -119,6 +119,40 @@ def check_ollama_models(ollama_host: str = "http://localhost:11434") -> list[Row
     return rows
 
 
+def check_event_summary_model(
+    ollama_host: str = "http://localhost:11434",
+    model: str = "gemma4:26b",
+) -> Row:
+    """Probe: the configured event-summary model (ARG-310) is pulled locally.
+
+    WARN, never FAIL: without it event names/summaries fall back to the derived
+    title and ``naming_stale`` stays set, but the feed keeps working. It is also
+    intentionally not in ``REQUIRED_OLLAMA_MODELS`` -- the default model is
+    ~18 GB, so ``argos init`` does not pull it automatically; this row only
+    tells the operator what to run.
+
+    Args:
+        ollama_host: Base URL for the Ollama API (``cfg.ollama.host``).
+        model: ``event_summary.model`` from the config.
+    """
+    from argos.init_wizard import runners
+    from argos.init_wizard import WizardStepError
+
+    name = f"Event summary model ({model})"
+    try:
+        available = runners.ollama_list(host=ollama_host)
+    except WizardStepError as exc:
+        return (name, "WARN", f"cannot check -- {str(exc).splitlines()[0]}")
+
+    if model in available:
+        return (name, "OK", "")
+    return (
+        name,
+        "WARN",
+        f"model not found -- event summaries will fall back to derived titles; run: ollama pull {model}",
+    )
+
+
 def check_uv_installed() -> Row:
     """Probe: uv binary is on PATH.
 
