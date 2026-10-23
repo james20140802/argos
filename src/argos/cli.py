@@ -81,6 +81,11 @@ def _print_run_summary(summary, elapsed: float, failed: bool = False) -> None:
             table.add_row("일일 처리", queue_detail)
             if summary.preflight_filtered:
                 table.add_row("사전 필터 제거", f"{summary.preflight_filtered}개")
+            if summary.bodies_enriched or summary.bodies_missing:
+                table.add_row(
+                    "본문 보강",
+                    f"{summary.bodies_enriched}개 보강 / {summary.bodies_missing}개 본문 없음",
+                )
             table.add_row("트리아지 통과", f"{summary.triage_pass}개")
             table.add_row("신규 저장", f"{summary.saved_new}개")
             if summary.trust_skipped:
@@ -107,6 +112,8 @@ def _print_run_summary(summary, elapsed: float, failed: bool = False) -> None:
     print(f"일일 처리: {queue_detail}")
     if summary.preflight_filtered:
         print(f"사전 필터 제거: {summary.preflight_filtered}개")
+    if summary.bodies_enriched or summary.bodies_missing:
+        print(f"본문 보강: {summary.bodies_enriched}개 보강 / {summary.bodies_missing}개 본문 없음")
     print(f"트리아지 통과: {summary.triage_pass}개")
     print(f"신규 저장: {summary.saved_new}개")
     if summary.trust_skipped:

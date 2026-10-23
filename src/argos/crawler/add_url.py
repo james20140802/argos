@@ -275,6 +275,11 @@ async def _fetch_url_content(url: str) -> dict | None:
     }
 
 
+# 다른 크롤러 모듈(본문 보강·refetch-bodies, ARG-309)이 같은 가져오기 경로를
+# 쓰도록 공개 이름을 하나 둔다. 동작은 _fetch_url_content와 같다.
+fetch_article = _fetch_url_content
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------

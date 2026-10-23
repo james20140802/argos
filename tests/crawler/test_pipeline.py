@@ -841,3 +841,63 @@ async def test_run_full_pipeline_forwards_published_at(mocker) -> None:
 
     assert len(captured_items) == 1
     assert captured_items[0]["_published_at"] == pub
+
+
+# ---------------------------------------------------------------------------
+# ARG-309: 큐에서 꺼낸 배치의 본문 보강
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_full_pipeline_enriches_short_bodies_before_brain(mocker, patched_queue, monkeypatch) -> None:
+    from argos.crawler.body_enrich import EnrichReport
+
+    crawl_items = [
+        {"title": "t1", "source_url": "https://a.com", "raw_content": "t1\n\nshort"},
+    ]
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
+    batch_mock = mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
+    seen_limits: list = []
+
+    async def _fake_enrich(items, **kwargs):
+        seen_limits.append(kwargs.get("max_attempts"))
+        for it in items:
+            it["raw_content"] = "t1\n\n" + "full body " * 100
+        return EnrichReport(attempted=1, enriched=1, missing=0)
+
+    monkeypatch.setattr("argos.crawler.pipeline.enrich_bodies", _fake_enrich)
+
+    _, summary = await pipeline.run_full_pipeline(AsyncMock())
+
+    passed = batch_mock.call_args.args[0]
+    assert passed[0]["raw_content"].startswith("t1\n\nfull body")
+    assert seen_limits == [1]  # 시도 상한 = 그날 배치 크기
+    assert summary.bodies_enriched == 1
+    assert summary.bodies_missing == 0
+
+
+@pytest.mark.asyncio
+async def test_run_full_pipeline_survives_enrichment_failure(mocker, patched_queue, monkeypatch) -> None:
+    crawl_items = [{"title": "t1", "source_url": "https://a.com", "raw_content": "short"}]
+    mocker.patch("argos.crawler.pipeline.run_full_crawl", new=AsyncMock(return_value=crawl_items))
+    batch_mock = mocker.patch(
+        "argos.crawler.pipeline.run_batch_brain_pipeline",
+        new=AsyncMock(return_value=[]),
+    )
+
+    async def _boom(items, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("argos.crawler.pipeline.enrich_bodies", _boom)
+
+    _, summary = await pipeline.run_full_pipeline(AsyncMock())
+    assert len(batch_mock.call_args.args[0]) == 1
+    assert summary.bodies_enriched == 0
+
+
+def test_pipeline_summary_body_fields_default_to_zero() -> None:
+    summary = PipelineSummary(crawled_total=1)
+    assert summary.bodies_enriched == 0 and summary.bodies_missing == 0
