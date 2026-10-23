@@ -1521,6 +1521,91 @@ async def _body_stats(by_host: bool = False, limit: int | None = None) -> int:
     return EXIT_OK
 
 
+def _build_refetch_bodies_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos refetch-bodies`` subcommand (ARG-309)."""
+    p = sub.add_parser(
+        "refetch-bodies",
+        help="Re-fetch stored articles with a thin or garbled body (preview, confirm, write)",
+        parents=[common],
+        description=(
+            "Re-download the article page for stored items whose body is shorter than 500\n"
+            "characters or contains garbled characters. Shows how many items will be\n"
+            "re-fetched first and writes only after confirmation. Updates raw_content and\n"
+            "simhash only (no LLM, no embeddings). A host that fails twice in a row is\n"
+            "skipped for the rest of the run."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--dry-run", action="store_true", help="Show the preview and exit without fetching or writing")
+    p.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    p.add_argument("--host", default=None, metavar="HOST", help="Only items from this host (e.g. huggingface.co)")
+    p.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Re-fetch at most N items",
+    )
+
+
+def _cmd_refetch_bodies(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _refetch_bodies(
+            dry_run=bool(getattr(args, "dry_run", False)),
+            yes=bool(getattr(args, "yes", False)),
+            host=getattr(args, "host", None),
+            limit=getattr(args, "limit", None),
+        )
+    )
+
+
+async def _refetch_bodies(
+    dry_run: bool = False,
+    yes: bool = False,
+    host: str | None = None,
+    limit: int | None = None,
+) -> int:
+    """미리보기 -> 확인 -> 다시 가져오기. 확인 없이는 네트워크도 DB 쓰기도 하지 않는다."""
+    from argos.crawler import body_backfill
+
+    async with AsyncSessionLocal() as session:
+        rows = await body_backfill.load_rows(session)
+        targets = body_backfill.select_targets(rows, host=host, limit=limit)
+        if not targets:
+            print("다시 가져올 기사가 없습니다.")
+            return EXIT_OK
+
+        by_host = body_backfill.count_by_host(targets)
+        shown = ", ".join(f"{h} {n}" for h, n in by_host[:8])
+        more = f" 외 {len(by_host) - 8}개 호스트" if len(by_host) > 8 else ""
+        print(f"다시 가져올 기사 {len(targets)}건 (호스트별: {shown}{more})")
+        if dry_run:
+            return EXIT_OK
+
+        if not yes:
+            reply = input("계속하시겠습니까? [y/N] ").strip().lower()
+            if reply not in ("y", "yes"):
+                print("취소되었습니다.")
+                return EXIT_GENERIC
+
+        def _progress(done: int, total: int) -> None:
+            print(f"  진행 {done}/{total}", flush=True)
+
+        summary = await body_backfill.refetch_and_apply(
+            session, targets, on_progress=_progress
+        )
+    print(f"✅ 갱신 {summary.updated}건 / 그대로 {summary.unchanged}건(본문 없음)")
+    if summary.skipped:
+        print(
+            f"   차단으로 건너뜀 {summary.skipped}건 "
+            f"({', '.join(sorted(summary.skipped_hosts))})"
+        )
+    return EXIT_OK
+
+
 def _build_backfill_digests_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -2607,6 +2692,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_backfill_digests_parser(sub, common)
     _build_backfill_entities_parser(sub, common)
     _build_body_stats_parser(sub, common)
+    _build_refetch_bodies_parser(sub, common)
     _build_backfill_trust_parser(sub, common)
     _build_backfill_events_parser(sub, common)
     _build_recluster_events_parser(sub, common)
@@ -2735,6 +2821,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_body_stats(args)
+    if args.command == "refetch-bodies":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_refetch_bodies(args)
     if args.command == "backfill-trust":
         rc = _apply_config_override(args)
         if rc is not None:
