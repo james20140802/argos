@@ -20,7 +20,7 @@ from __future__ import annotations
 import enum
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 # 문턱값 — 실측 사례(openai codex 9 / claude opus 5 18 / code 0.75 / agent 0.88 ...)로
 # 정했다. config가 아니라 모듈 상수로 둔다(ARG-311과 config.py 충돌을 피하려는 뜻도 있다).
@@ -147,3 +147,211 @@ def build_alias_groups(
             }
         groups.append(AliasGroup(canonical, aliases, rules, evidence))
     return sorted(groups, key=lambda g: g.canonical)
+
+
+# --------------------------------------------------------------------------- #
+# 규칙 B: 회사 접두어 (VendorPrefix)
+# --------------------------------------------------------------------------- #
+
+HOLD_BASE_MISSING = "base_missing"
+HOLD_VERSION_MISMATCH = "version_mismatch"
+HOLD_BASE_IS_VENDOR = "base_is_vendor"
+HOLD_BASE_TOO_SHORT = "base_too_short"
+HOLD_BASE_COMMON = "base_common"
+HOLD_FEW_LITERAL_DOCS = "few_literal_docs"
+HOLD_COMPETING_VENDOR = "competing_vendor"
+HOLD_BASE_LOWERCASE = "base_lowercase"
+HOLD_BASE_UNVERIFIED = "base_unverified"
+
+# 살아남은 B 집합 -> 소문자 비율. 비율을 못 구한 B는 빠져도 된다(보류된다).
+RatioFn = Callable[[frozenset[str]], Mapping[str, float]]
+
+
+@dataclass(frozen=True)
+class VendorCandidate:
+    """``alias`` = "``vendor`` ``base``" 꼴의 이름. ``base``로 합칠지가 판정 대상이다."""
+
+    alias: str
+    vendor: str
+    base: str
+
+
+@dataclass(frozen=True)
+class HeldPair:
+    """합치지 않고 따로 둔 쌍과 그 사유."""
+
+    alias: str
+    base: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class VendorStats:
+    """접두어 판정에 필요한 코퍼스 통계. DB가 아니라 값으로 받는다."""
+
+    keys: frozenset[str]
+    roots: frozenset[str]
+    doc_counts: Mapping[str, int]
+    # 읽기 시점 흔한 이름(``filter_common_names``와 같은 판정으로 구한 집합)
+    common: frozenset[str]
+    lowercase_ratios: RatioFn
+
+
+@dataclass(frozen=True)
+class VendorDecision:
+    edges: tuple[AliasEdge, ...]
+    held: tuple[HeldPair, ...]
+
+
+def find_roots(keys: Iterable[str]) -> frozenset[str]:
+    """접두어 뿌리 — 자신이 이름이고, 그것으로 시작하는 다른 이름이 3개 이상인 이름.
+
+    하드코딩 목록이 아니라 코퍼스에서 뽑는다. 낱말 경계로 센다(``open``은
+    ``openai x``를 따르는 이름으로 치지 않는다).
+    """
+    key_set = set(keys)
+    followers: dict[str, int] = {}
+    for key in key_set:
+        tokens = key.split()
+        for cut in range(1, len(tokens)):
+            prefix = " ".join(tokens[:cut])
+            followers[prefix] = followers.get(prefix, 0) + 1
+    return frozenset(
+        prefix
+        for prefix, count in followers.items()
+        if prefix in key_set and count >= MIN_ROOT_FOLLOWERS
+    )
+
+
+def vendor_candidates(keys: Iterable[str], roots: frozenset[str]) -> list[VendorCandidate]:
+    """접두어 뿌리로 시작하는 모든 (이름, 뿌리, 나머지) 분해. 정렬해 결정적이다."""
+    found: list[VendorCandidate] = []
+    for key in sorted(set(keys)):
+        tokens = key.split()
+        for cut in range(1, len(tokens)):
+            vendor = " ".join(tokens[:cut])
+            if vendor in roots:
+                found.append(VendorCandidate(key, vendor, " ".join(tokens[cut:])))
+    return found
+
+
+def _is_distinctive_length(base: str) -> bool:
+    if " " in base:
+        return True
+    return len(base) >= MIN_SINGLE_WORD_LENGTH or any(ch.isdigit() for ch in base)
+
+
+def decide_vendor_prefix(
+    candidates: Sequence[VendorCandidate], stats: VendorStats
+) -> VendorDecision:
+    """후보마다 합칠지 정한다. 한 조건이라도 모자라면 합치지 않는다.
+
+    싼 검사를 먼저 하고, 마지막에 살아남은 B들에 대해서만 소문자 비율을 한 번에
+    구한다(본문 전체를 훑는 비싼 계산이라서).
+    """
+    held: list[HeldPair] = []
+    survivors: list[VendorCandidate] = []
+
+    # 같은 B를 노리는 접두어 후보들의 문서 수 — 경쟁 판정용.
+    rivals: dict[str, dict[str, int]] = {}
+    for cand in candidates:
+        rivals.setdefault(cand.base, {})[cand.alias] = stats.doc_counts.get(cand.alias, 0)
+
+    for cand in candidates:
+        reason = _cheap_hold_reason(cand, stats, rivals[cand.base])
+        if reason is None:
+            survivors.append(cand)
+        else:
+            held.append(HeldPair(cand.alias, cand.base, reason))
+
+    ratios = stats.lowercase_ratios(frozenset(c.base for c in survivors)) if survivors else {}
+    edges: list[AliasEdge] = []
+    for cand in survivors:
+        ratio = ratios.get(cand.base)
+        if ratio is None:
+            held.append(HeldPair(cand.alias, cand.base, HOLD_BASE_UNVERIFIED))
+        elif ratio > MAX_LOWERCASE_RATIO:
+            held.append(HeldPair(cand.alias, cand.base, HOLD_BASE_LOWERCASE))
+        else:
+            others = [n for alias, n in rivals[cand.base].items() if alias != cand.alias]
+            edges.append(
+                AliasEdge(
+                    cand.alias,
+                    cand.base,
+                    AliasRule.VENDOR_PREFIX,
+                    {
+                        "vendor": cand.vendor,
+                        "literal_docs": stats.doc_counts.get(cand.alias, 0),
+                        "lowercase_ratio": round(ratio, 4),
+                        "rival_docs": max(others, default=0),
+                    },
+                )
+            )
+    return VendorDecision(
+        edges=tuple(sorted(edges, key=lambda e: (e.a, e.b))),
+        held=tuple(sorted(held, key=lambda h: (h.alias, h.base))),
+    )
+
+
+def _cheap_hold_reason(
+    cand: VendorCandidate, stats: VendorStats, rivals: Mapping[str, int]
+) -> str | None:
+    base = cand.base
+    if base not in stats.keys:
+        return HOLD_BASE_MISSING
+    if version_signature(cand.alias) != version_signature(base):
+        return HOLD_VERSION_MISMATCH
+    if base in stats.roots:
+        return HOLD_BASE_IS_VENDOR
+    if not _is_distinctive_length(base):
+        return HOLD_BASE_TOO_SHORT
+    if base in stats.common:
+        return HOLD_BASE_COMMON
+    own = stats.doc_counts.get(cand.alias, 0)
+    if own < MIN_LITERAL_DOCS:
+        return HOLD_FEW_LITERAL_DOCS
+    others = [n for alias, n in rivals.items() if alias != cand.alias]
+    if others and own < COMPETITOR_MARGIN * max(others):
+        return HOLD_COMPETING_VENDOR
+    return None
+
+
+_WORD = re.compile(r"[^\W_]+")
+
+
+def lowercase_ratios(texts: Iterable[str], targets: Iterable[str]) -> dict[str, float]:
+    """각 target 이름이 본문에서 **전부 소문자로** 쓰인 비율.
+
+    ``code``·``agent``는 일반 낱말이라 소문자로 많이 쓰이고(0.75, 0.88), ``codex``·
+    ``cuda``는 고유명이라 거의 안 그렇다(0.07, 0.0). 본문에 한 번도 안 나온 target은
+    결과에서 빠진다 — 확인할 수 없으니 호출자가 보류해야 한다.
+    """
+    by_tokens: dict[tuple[str, ...], list[str]] = {}
+    for target in targets:
+        tokens = tuple(w.casefold() for w in _WORD.findall(target))
+        if tokens:
+            by_tokens.setdefault(tokens, []).append(target)
+    if not by_tokens:
+        return {}
+    lengths = sorted({len(t) for t in by_tokens})
+    firsts = {t[0] for t in by_tokens}
+    total: dict[str, int] = {}
+    lower: dict[str, int] = {}
+    for text in texts:
+        words = _WORD.findall(text)
+        folded = [w.casefold() for w in words]
+        for i, word in enumerate(folded):
+            if word not in firsts:
+                continue
+            for n in lengths:
+                if i + n > len(folded):
+                    break
+                keys = by_tokens.get(tuple(folded[i : i + n]))
+                if not keys:
+                    continue
+                is_lower = all(w == w.lower() for w in words[i : i + n])
+                for key in keys:
+                    total[key] = total.get(key, 0) + 1
+                    if is_lower:
+                        lower[key] = lower.get(key, 0) + 1
+    return {key: lower.get(key, 0) / count for key, count in total.items()}
