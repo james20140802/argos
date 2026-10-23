@@ -72,7 +72,7 @@ async def _seed(session) -> dict[str, uuid.UUID]:
     entity_ids: dict[str, uuid.UUID] = {}
     keys = [
         _VENDOR, _ALIAS, _BASE,
-        f"{_VENDOR} alpha", f"{_VENDOR} beta",
+        f"{_VENDOR} zzargalpha", f"{_VENDOR} zzargbeta", "zzargalpha", "zzargbeta",
         "zzarghug face", "zzarghugface",
         "zzargman one", "zzargman two",
     ]

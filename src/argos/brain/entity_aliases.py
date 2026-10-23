@@ -26,7 +26,7 @@ from argos.models.entity_alias import AliasRule
 
 # 문턱값 — 실측 사례(openai codex 9 / claude opus 5 18 / code 0.75 / agent 0.88 ...)로
 # 정했다. config가 아니라 모듈 상수로 둔다(ARG-311과 config.py 충돌을 피하려는 뜻도 있다).
-MIN_ROOT_FOLLOWERS = 3  # V로 시작하는 다른 이름이 이만큼 있어야 V가 접두어 뿌리다
+MIN_ROOT_FOLLOWERS = 3  # "V X"(X도 이름) 꼴이 이만큼 있어야 V가 접두어 뿌리다
 MAX_LOWERCASE_RATIO = 0.2  # B가 소문자로 쓰인 비율의 상한
 MIN_LITERAL_DOCS = 2  # "V B"를 그대로 쓴 문서 수의 하한
 COMPETITOR_MARGIN = 3  # 1위가 2위의 이 배수 이상이어야 한다
@@ -153,7 +153,6 @@ HOLD_BASE_MISSING = "base_missing"
 HOLD_VERSION_MISMATCH = "version_mismatch"
 HOLD_BASE_IS_VENDOR = "base_is_vendor"
 HOLD_BASE_TOO_SHORT = "base_too_short"
-HOLD_BASE_COMMON = "base_common"
 HOLD_FEW_LITERAL_DOCS = "few_literal_docs"
 HOLD_COMPETING_VENDOR = "competing_vendor"
 HOLD_BASE_LOWERCASE = "base_lowercase"
@@ -188,8 +187,6 @@ class VendorStats:
     keys: frozenset[str]
     roots: frozenset[str]
     doc_counts: Mapping[str, int]
-    # 읽기 시점 흔한 이름(``filter_common_names``와 같은 판정으로 구한 집합)
-    common: frozenset[str]
     lowercase_ratios: RatioFn
 
 
@@ -200,10 +197,17 @@ class VendorDecision:
 
 
 def find_roots(keys: Iterable[str]) -> frozenset[str]:
-    """접두어 뿌리 — 자신이 이름이고, 그것으로 시작하는 다른 이름이 3개 이상인 이름.
+    """접두어 뿌리 — 자신이 이름이고, "뿌리 X" 꼴 이름 중 **X도 이름인 것**이 3개 이상인 이름.
 
     하드코딩 목록이 아니라 코퍼스에서 뽑는다. 낱말 경계로 센다(``open``은
     ``openai x``를 따르는 이름으로 치지 않는다).
+
+    나머지 X도 이름이어야 센다는 조건이 회사/제품 접두어를 가른다. ``openai``는
+    ``openai codex``(codex도 이름), ``openai sora`` ...처럼 따르는 이름의 나머지가 각자
+    독립된 이름이라 뿌리지만, ``codex``는 ``codex cli``의 ``cli`` 같은 짧은 조각이
+    따를 뿐이라 뿌리가 아니다. 그래서 ``microsoft openai -> openai``(회사끼리)는 막히고
+    ``openai codex -> codex``(회사와 제품)는 통과한다. 사람 이름의 이름 쪽(``adam
+    harvey``)도 같은 이유로 뿌리가 못 된다.
     """
     key_set = set(keys)
     followers: dict[str, int] = {}
@@ -211,12 +215,35 @@ def find_roots(keys: Iterable[str]) -> frozenset[str]:
         tokens = key.split()
         for cut in range(1, len(tokens)):
             prefix = " ".join(tokens[:cut])
-            followers[prefix] = followers.get(prefix, 0) + 1
+            if " ".join(tokens[cut:]) in key_set:
+                followers[prefix] = followers.get(prefix, 0) + 1
     return frozenset(
         prefix
         for prefix, count in followers.items()
         if prefix in key_set and count >= MIN_ROOT_FOLLOWERS
     )
+
+
+def trusted_vendors(
+    roots: frozenset[str],
+    doc_counts: Mapping[str, int],
+    ratio_fn: RatioFn,
+) -> frozenset[str]:
+    """접두어 뿌리 중 **회사/제품 접두어로 믿을 만한** 것만 남긴다.
+
+    따르는 이름이 3개라는 사실만으로는 뿌리가 일반 낱말(``open``, ``read``, ``us``)이나
+    사람 이름(``adam``)이어도 통과한다. 실측 미리보기에서 ``open the url -> the url``,
+    ``adam harvey -> harvey`` 같은 오탐이 나와서 두 조건을 더 건다. 둘 다 "덜 합치는
+    쪽"으로만 작용한다.
+
+    - 뿌리 자신이 ``MIN_LITERAL_DOCS`` 문서 이상에 이름으로 나왔다(한 문서짜리는 접두어로
+      확립된 게 아니다).
+    - 뿌리가 본문에서 소문자로 쓰인 비율이 ``MAX_LOWERCASE_RATIO`` 이하다(일반 낱말 거름).
+      비율을 못 구하면 믿지 않는다.
+    """
+    seen = frozenset(r for r in roots if doc_counts.get(r, 0) >= MIN_LITERAL_DOCS)
+    ratios = ratio_fn(seen) if seen else {}
+    return frozenset(r for r in seen if r in ratios and ratios[r] <= MAX_LOWERCASE_RATIO)
 
 
 def vendor_candidates(keys: Iterable[str], roots: frozenset[str]) -> list[VendorCandidate]:
@@ -232,9 +259,11 @@ def vendor_candidates(keys: Iterable[str], roots: frozenset[str]) -> list[Vendor
 
 
 def _is_distinctive_length(base: str) -> bool:
-    if " " in base:
-        return True
-    return len(base) >= MIN_SINGLE_WORD_LENGTH or any(ch.isdigit() for ch in base)
+    """짧은 약어는 접두어를 떼면 다른 말과 부딪힌다(``api``, ``i o``). 낱말 사이 공백은
+    글자 수에 세지 않는다 — ``i o``(I/O)가 두 낱말이라는 이유로 통과하면 안 된다."""
+    return len(base.replace(" ", "")) >= MIN_SINGLE_WORD_LENGTH or any(
+        ch.isdigit() for ch in base
+    )
 
 
 def decide_vendor_prefix(
@@ -297,12 +326,17 @@ def _cheap_hold_reason(
         return HOLD_BASE_MISSING
     if version_signature(cand.alias) != version_signature(base):
         return HOLD_VERSION_MISMATCH
-    if base in stats.roots:
+    if base in stats.roots and stats.doc_counts.get(cand.vendor, 0) <= stats.doc_counts.get(base, 0):
+        # B도 뿌리면 V가 B보다 확립된 이름(문서가 더 많음)일 때만 접두어로 본다.
+        # `microsoft openai -> openai`는 막히고(openai가 더 크다) `openai codex -> codex`는
+        # 통과한다. 제품(codex, cuda, opus 5)도 자기 이름이 따르는 이름을 거느려 뿌리가
+        # 되기 때문에, "B는 뿌리가 아니다"만으로는 가장 흔한 사례가 다 막힌다.
         return HOLD_BASE_IS_VENDOR
     if not _is_distinctive_length(base):
         return HOLD_BASE_TOO_SHORT
-    if base in stats.common:
-        return HOLD_BASE_COMMON
+    # 읽기 시점 "흔한 이름"(문서 비율)은 거르지 않는다 — codex·claude처럼 흔한 건
+    # 그만큼 많이 언급되는 제품이라서, 문서 비율만으로는 일반 낱말과 가를 수 없다.
+    # 일반 낱말은 위의 길이 검사와 아래 소문자 비율 검사가 가른다.
     own = stats.doc_counts.get(cand.alias, 0)
     if own < MIN_LITERAL_DOCS:
         return HOLD_FEW_LITERAL_DOCS
@@ -340,8 +374,6 @@ class AliasInputs:
     doc_counts: Mapping[str, int]
     # 문서 본문(title + raw_content). 소문자 비율 계산에만 쓴다.
     texts: Sequence[str]
-    # ``filter_common_names``가 거르는 이름 — 읽기 시점 판정과 같아야 한다.
-    common: frozenset[str]
     existing: Sequence[ExistingAlias]
 
 
@@ -390,14 +422,18 @@ def compute_alias_plan(inputs: AliasInputs) -> AliasPlan:
     keys = frozenset(entity_by_key)
 
     roots = find_roots(keys)
+
+    def ratio_fn(names: frozenset[str]) -> Mapping[str, float]:
+        return lowercase_ratios(inputs.texts, names)
+
     stats = VendorStats(
         keys=keys,
-        roots=roots,
+        roots=roots,  # B가 뿌리인지 막는 검사는 믿을 만하지 않은 뿌리까지 전부 쓴다
         doc_counts=inputs.doc_counts,
-        common=inputs.common & keys,
-        lowercase_ratios=lambda bases: lowercase_ratios(inputs.texts, bases),
+        lowercase_ratios=ratio_fn,
     )
-    decision = decide_vendor_prefix(vendor_candidates(keys, roots), stats)
+    vendors = trusted_vendors(roots, inputs.doc_counts, ratio_fn)
+    decision = decide_vendor_prefix(vendor_candidates(keys, vendors), stats)
     groups = build_alias_groups(
         [*spacing_edges(keys), *decision.edges],
         inputs.doc_counts,

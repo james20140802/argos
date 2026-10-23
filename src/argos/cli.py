@@ -1503,9 +1503,16 @@ def _cmd_alias_names(args: argparse.Namespace) -> int:
 
 async def _alias_names_show(name: str) -> int:
     """이름 하나의 대표 표기와 다른 이름을 보여 준다. 읽기만 한다."""
+    from argos.brain import alias_store
     from argos.services import technology_names
 
     async with AsyncSessionLocal() as session:
+        if not await alias_store.alias_table_exists(session):
+            print(
+                "오류: entity_aliases 테이블이 없습니다 (`uv run alembic upgrade head` 필요).",
+                file=sys.stderr,
+            )
+            return EXIT_GENERIC
         names = await technology_names.names_for(session, name)
     if names is None:
         print(f"저장된 이름에 없습니다: {name}", file=sys.stderr)

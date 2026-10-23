@@ -94,6 +94,10 @@ _KEYS = [
     "codex", "api", "opus 5", "opus 5.5", "code", "agent", "max", "pro", "cuda", "gpu",
     "gemini", "chrome", "gemma", "anthropic", "pro 11",
     "anthropic api", "anthropic sdk", "anthropic console",
+    # "뿌리 X"에서 X도 이름이어야 뿌리로 센다
+    "azure", "copilot", "sdk", "console", "home", "enterprise", "search",
+    # 제품도 따르는 이름을 거느리면 뿌리가 된다 (opus 5 -> opus 5 max ...)
+    "opus 5 max", "opus 5 pro", "opus 5 mini", "mini",
 ]
 _DOCS = {
     "openai codex": 9, "openai api": 7, "openai anthropic": 3,
@@ -116,7 +120,7 @@ _RATIOS = {
 }
 
 
-def _decide(common=frozenset(), ratios=None, docs=None, keys=None):
+def _decide(ratios=None, docs=None, keys=None):
     keys = frozenset(keys or _KEYS)
     docs = docs or _DOCS
     table = _RATIOS if ratios is None else ratios
@@ -124,7 +128,6 @@ def _decide(common=frozenset(), ratios=None, docs=None, keys=None):
         keys=keys,
         roots=ea.find_roots(keys),
         doc_counts=docs,
-        common=frozenset(common),
         lowercase_ratios=lambda bases: {b: table[b] for b in bases if b in table},
     )
     cands = ea.vendor_candidates(keys, stats.roots)
@@ -166,18 +169,39 @@ def test_vendor_prefix_holds_short_single_words():
     assert held[("nvidia gpu", "gpu")] == ea.HOLD_BASE_TOO_SHORT
 
 
+def test_vendor_prefix_holds_short_multiword_acronyms_too():
+    # "google i o" -> "i o" (I/O): 낱말이 둘이어도 글자 수는 2 — 합치지 않는다
+    keys = [*_KEYS, "google i o", "i o"]
+    docs = {**_DOCS, "google i o": 5, "i o": 10}
+    merged, held = _decide(keys=keys, docs=docs, ratios={**_RATIOS, "i o": 0.0})
+    assert ("google i o", "i o") not in merged
+    assert held[("google i o", "i o")] == ea.HOLD_BASE_TOO_SHORT
+
+
 def test_vendor_prefix_never_collapses_a_vendor_into_its_partner():
     merged, held = _decide()
     assert ("microsoft openai", "openai") not in merged
     assert held[("microsoft openai", "openai")] == ea.HOLD_BASE_IS_VENDOR
-    assert ("openai anthropic", "anthropic") not in merged
-    assert held[("openai anthropic", "anthropic")] == ea.HOLD_BASE_IS_VENDOR
 
 
-def test_vendor_prefix_holds_names_that_are_common_at_read_time():
-    merged, held = _decide(common={"chrome"})
-    assert ("google chrome", "chrome") not in merged
-    assert held[("google chrome", "chrome")] == ea.HOLD_BASE_COMMON
+def test_vendor_prefix_allows_a_root_base_only_when_the_vendor_is_bigger():
+    # opus 5도 "opus 5 max" 등을 거느려 뿌리지만, claude(120건)가 opus 5(7건)보다 크므로 접두어다.
+    assert "opus 5" in ea.find_roots(_KEYS)
+    merged, _ = _decide()
+    assert ("claude opus 5", "opus 5") in merged
+    # 반대로 B 쪽이 더 크면 막는다
+    docs = {**_DOCS, "opus 5": 500}
+    merged, held = _decide(docs=docs)
+    assert ("claude opus 5", "opus 5") not in merged
+    assert held[("claude opus 5", "opus 5")] == ea.HOLD_BASE_IS_VENDOR
+
+
+def test_vendor_prefix_does_not_hold_a_base_just_for_being_frequent():
+    # codex·chrome처럼 흔한 제품은 문서 비율이 높다. 일반 낱말 거름은 소문자 비율이 맡는다.
+    docs = {**_DOCS, "chrome": 5000, "codex": 5000}
+    merged, _ = _decide(docs=docs)
+    assert ("google chrome", "chrome") in merged
+    assert ("openai codex", "codex") in merged
 
 
 def test_vendor_prefix_needs_two_literal_documents():
@@ -225,7 +249,7 @@ def test_vendor_prefix_never_merges_across_versions():
 
 
 def test_vendor_prefix_missing_base_is_held_not_created():
-    keys = [k for k in _KEYS if k != "codex"]
+    keys = [k for k in _KEYS if k != "codex"] + ["openai sora", "sora"]
     merged, held = _decide(keys=keys)
     assert ("openai codex", "codex") not in merged
     assert held[("openai codex", "codex")] == ea.HOLD_BASE_MISSING
@@ -252,22 +276,45 @@ def test_lowercase_ratios_counts_case_sensitive_surface_forms():
 # ----- 계획 계산 ------------------------------------------------------------ #
 
 
-def _inputs(existing=(), texts=None, keys=None, docs=None, common=frozenset()):
+def _inputs(existing=(), texts=None, keys=None, docs=None):
     keys = list(keys or _KEYS + ["hugging face", "huggingface"])
     ids = {key: uuid.uuid5(uuid.NAMESPACE_DNS, key) for key in keys}
     entities = tuple(ea.EntityRow(ids[key], key, key.title()) for key in keys)
     texts = texts or [
         # 소문자 비율은 이 본문에서 계산된다.
         "Codex and Opus 5 and Opus 5.5 and CUDA and Chrome and Gemini. Codex, Gemini.",
+        # 뿌리(접두어) 쪽도 고유명으로 쓰였음이 본문에서 확인돼야 믿는다
+        "OpenAI, Claude, NVIDIA, Google, Microsoft, Anthropic and Windows 11 all shipped.",
         "Write code. Run the agent. code code code agent agent.",
     ]
     return ea.AliasInputs(
         entities=entities,
         doc_counts=docs or {**_DOCS, "hugging face": 4, "huggingface": 9},
         texts=texts,
-        common=common,
         existing=tuple(existing),
     ), ids
+
+
+def test_trusted_vendors_drop_generic_words_and_barely_seen_roots():
+    roots = frozenset({"openai", "open", "adam", "claude"})
+    docs = {"openai": 40, "open": 30, "adam": 1, "claude": 20}
+    ratios = {"openai": 0.05, "open": 0.9, "adam": 0.0, "claude": 0.08}
+    trusted = ea.trusted_vendors(roots, docs, lambda names: {n: ratios[n] for n in names})
+    # open: 일반 낱말(소문자 비율 높음), adam: 이름으로 한 문서에만 나옴
+    assert trusted == frozenset({"openai", "claude"})
+    # 비율을 못 구한 뿌리는 믿지 않는다
+    assert ea.trusted_vendors(roots, docs, lambda names: {}) == frozenset()
+
+
+def test_plan_does_not_merge_when_vendor_is_a_generic_word():
+    inputs, _ = _inputs(
+        texts=[
+            "Codex and CUDA. codex, cuda.",
+            "we claude it and openai it: claude claude claude openai openai openai",
+        ]
+    )
+    plan = ea.compute_alias_plan(inputs)
+    assert not any(link.alias_key.startswith(("claude ", "openai ")) for link in plan.added)
 
 
 def test_plan_adds_expected_links_and_reports_held_reasons():

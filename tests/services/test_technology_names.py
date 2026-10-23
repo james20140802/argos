@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from argos import cli
+from argos.brain import alias_store
 from argos.config import settings
 from argos.models.document_entity import DocumentEntity
 from argos.models.entity import Entity
@@ -61,6 +62,7 @@ def test_cli_show_prints_display_and_other_names(monkeypatch, capsys):
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
     monkeypatch.setattr(cli, "AsyncSessionLocal", lambda: ctx)
+    monkeypatch.setattr(alias_store, "alias_table_exists", AsyncMock(return_value=True))
     monkeypatch.setattr(
         tn,
         "names_for",
@@ -76,9 +78,20 @@ def test_cli_show_unknown_name_fails(monkeypatch, capsys):
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
     monkeypatch.setattr(cli, "AsyncSessionLocal", lambda: ctx)
+    monkeypatch.setattr(alias_store, "alias_table_exists", AsyncMock(return_value=True))
     monkeypatch.setattr(tn, "names_for", AsyncMock(return_value=None))
     assert cli.main(["alias-names", "--show", "nope"]) != 0
     assert "저장된 이름에 없습니다" in capsys.readouterr().err
+
+
+def test_cli_show_without_the_alias_table_explains_how_to_migrate(monkeypatch, capsys):
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=MagicMock())
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(cli, "AsyncSessionLocal", lambda: ctx)
+    monkeypatch.setattr(alias_store, "alias_table_exists", AsyncMock(return_value=False))
+    assert cli.main(["alias-names", "--show", "codex"]) != 0
+    assert "alembic upgrade head" in capsys.readouterr().err
 
 
 # ----- DB 조회 ---------------------------------------------------------------- #

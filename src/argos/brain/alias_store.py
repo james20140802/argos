@@ -23,7 +23,7 @@ from argos.brain.entity_aliases import (
     ExistingAlias,
     compute_alias_plan,
 )
-from argos.brain.entity_store import filter_common_names, name_document_frequency
+from argos.brain.entity_store import name_document_frequency
 from argos.models.entity import Entity
 from argos.models.entity_alias import AliasRule, EntityAlias
 from argos.models.tech_item import TechItem
@@ -45,11 +45,8 @@ async def load_inputs(session: AsyncSession) -> AliasInputs:
     """읽기 전용. 테이블이 아직 없으면 기존 별칭은 비어 있는 것으로 본다."""
     rows = (await session.execute(select(Entity.id, Entity.normalized_key, Entity.name))).all()
     entities = tuple(EntityRow(id=r[0], key=r[1], name=r[2]) for r in rows)
-    keys = frozenset(e.key for e in entities)
 
     frequency, _ = await name_document_frequency(session)
-    # 읽기 시점 흔한 이름은 사건 묶기와 **같은 함수**로 구한다 — 규칙을 복제하지 않는다.
-    common = keys - await filter_common_names(session, keys)
 
     text_rows = (await session.execute(select(TechItem.title, TechItem.raw_content))).all()
     texts = tuple(f"{title or ''}\n{raw or ''}" for title, raw in text_rows)
@@ -71,7 +68,6 @@ async def load_inputs(session: AsyncSession) -> AliasInputs:
         entities=entities,
         doc_counts=frequency,
         texts=texts,
-        common=frozenset(common),
         existing=existing,
     )
 
