@@ -592,3 +592,51 @@ Leiden 결과의 조각 둘이 **출처(등록 도메인)가 둘 이상 섞이�
 합치기 여유는 여전히 작다: 합치기 기준만 0.57로 올리면 #21이 다시 갈린다. 코퍼스 변형에서는 버텼지만, 짝 점수가 τ 근처에
 몰린 사건은 계속 경계에 있다. 틀린 묶음(같은 사이트의 다른 발표)을 줄이려면 짝 점수에 "같은 발표인가"를 가리는 새 신호가
 필요하다 — 별도 이슈.
+
+## ARG-309 — 본문 없이 저장되는 기사를 줄인다 (2026-10-23, 코퍼스 1929건)
+
+평가 데이터(판정 JSON)가 아니라 **본문 길이 실측** 기록이다. 본문 = 저장된 `raw_content`에서 제목 접두·HTML을
+뗀 글자 수, "본문 없음" = 500자 미만(`argos body-stats`, 컬럼·마이그레이션 없음).
+
+### 전 (구현 전, `argos body-stats --by-host`, 읽기 전용)
+
+| 출처 | 행 수 | 500자 미만 | 비율 | 길이 중앙값 | 문자 깨짐 |
+|---|---|---|---|---|---|
+| openai.com | 786 | 780 | 99.2% | 153 | 5 |
+| huggingface.co | 395 | 394 | 99.7% | 0 | 1 |
+| blog.google | 48 | 39 | 81.2% | 118 | 8 |
+| github.com | 102 | 10 | 9.8% | 4641 | 58 |
+| **전체** | **1929** | **1342** | **69.6%** | **156** | **441** |
+
+(문자 깨짐은 C1 제어문자·`â€`·`Ã`+0x80~0xBF 패턴이 든 행. 기획 시점 423건에서 판정 패턴을 넓혀 441건.)
+
+`argos refetch-bodies --dry-run`의 대상: **1,748건** (openai.com 785 · huggingface.co 395 · github.com 67 ·
+blog.google 47 · blog.cloudflare.com 13 · anthropic.com 12 …, 364개 호스트 더).
+
+### 원인
+
+1. RSS는 기사 페이지를 열지 않고 피드의 한 줄 요약만 저장한다 (openai/HF/blog.google).
+2. `extract_main_content`가 UTF-8 바이트를 Latin-1로 읽어 `we’re` → `weâ\x80\x99re`로 깨뜨렸다.
+3. openai.com 기사 페이지는 Cloudflare 봇 챌린지(403, `cf-mitigated: challenge`)로 막혀 있다. 공개 1:1 경로는
+   없다 (조사 표는 PR 본문). 지난 기사는 Wayback 보관본(`refetch-bodies`에서만)으로 보충한다.
+
+### 후 — 구현으로 확인한 것 (네트워크 몇 건, DB 쓰기 없음)
+
+| 확인 | 결과 |
+|---|---|
+| HF 기사 `huggingface.co/blog/smolvlm`을 `add_url`과 같은 경로로 가져옴 | 8,190자, 깨짐 없음 |
+| Wayback `id_` 스냅샷 `openai.com/index/deliberative-alignment/` (2025-12-31) | readability 1,624자 → `<article>` 폴백 10,824자, 깨짐 없음 |
+| Wayback 가용성 API(`archive.org/wayback/available`) | 이 IP에서 HTTP 429 (속도 제한). 코드는 429를 받으면 그 실행의 보관본 조회를 멈춘다 |
+
+### 후 — 사용자가 `argos refetch-bodies` 실행 뒤 채울 자리
+
+```bash
+uv run argos body-stats --by-host --limit 12     # 후
+```
+
+| 출처 | 500자 미만 비율 (전 → 후) |
+|---|---|
+| huggingface.co | 99.7% → _(실행 후 기입)_ |
+| blog.google | 81.2% → _(실행 후 기입)_ |
+| openai.com | 99.2% → _(실행 후 기입, Wayback 허용 시)_ |
+| 전체 | 69.6% → _(실행 후 기입)_ |
