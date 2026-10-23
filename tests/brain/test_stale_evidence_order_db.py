@@ -1,6 +1,6 @@
 """``--rename-stale``의 근거 표본 정렬 — ARG-274 DB 통합 테스트.
 
-``generate_event_naming``은 근거를 앞에서부터 ``MAX_EVIDENCE_DOCS``개만 쓴다.
+``generate_event_naming``은 근거를 앞에서부터 ``event_summary.max_docs``개만 쓴다.
 그래서 ``fetch_stale_events``가 사건 안의 근거를 어떤 순서로 돌려주느냐가 곧
 "무엇을 보고 이름을 짓느냐"다. 근거가 캡을 넘는 사건에서 방금 붙어
 ``naming_stale``을 세운 문서가 표본 밖으로 밀리면, 옛 근거로 지은 이름을 쓰면서
@@ -21,12 +21,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from argos.brain.event_backfill import fetch_stale_events
-from argos.brain.event_naming import MAX_EVIDENCE_DOCS
 from argos.config import settings
 from argos.models.event_document import EventDocument
 from argos.models.tech_event import TechEvent
 from argos.models.tech_item import CategoryType, TechItem
 from tests.conftest import db_reachable as _db_reachable
+
+MAX_EVIDENCE_DOCS = settings.user.event_summary.max_docs
 
 _DB_URL: str = settings.database_url
 _URL_PREFIX = "https://arg-274-stale-order-test.example.com/"

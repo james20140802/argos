@@ -25,10 +25,19 @@ async def test_parses_title_and_summary():
 
 
 @pytest.mark.asyncio
-async def test_uses_the_small_model_role():
+async def test_uses_the_large_slot_exclusively_with_configured_budget():
+    from argos.config import settings
+
+    cfg = settings.user.event_summary
     client = _client("TITLE: t\nSUMMARY: s")
     await generate_event_naming([EvidenceDoc(title="a", summary=None)], client=client)
-    assert client.query.await_args.args[0] == "small"
+    assert client.query.await_args.args[0] == "large"
+    kwargs = client.query.await_args.kwargs
+    assert kwargs["exclusive"] is True
+    assert kwargs["num_ctx"] == cfg.num_ctx
+    assert kwargs["think"] is False
+    assert kwargs["timeout"] == cfg.timeout
+    assert kwargs["temperature"] == cfg.temperature
 
 
 @pytest.mark.asyncio
@@ -251,3 +260,139 @@ async def test_apply_writes_nothing_when_the_model_omits_the_summary():
         session, uuid.uuid4(), [EvidenceDoc(title="a", summary="b")], client=client
     ) is False
     session.execute.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# ARG-310: body in the input, budget, map-reduce
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_single_call_when_evidence_fits_and_body_is_included():
+    client = _client("TITLE: t\nSUMMARY: s")
+    await generate_event_naming(
+        [EvidenceDoc(title="h", summary="sum", body="BODY-TEXT-MARKER")], client=client
+    )
+    assert client.query.await_count == 1
+    assert "BODY-TEXT-MARKER" in client.query.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_body_only_doc_counts_as_evidence():
+    client = _client("TITLE: t\nSUMMARY: s")
+    assert await generate_event_naming(
+        [EvidenceDoc(title=None, summary=None, body="only a body")], client=client
+    ) is not None
+
+
+@pytest.mark.asyncio
+async def test_body_is_capped_per_document(monkeypatch):
+    from argos.config import settings
+
+    monkeypatch.setattr(settings.user.event_summary, "doc_max_chars", 300)
+    client = _client("TITLE: t\nSUMMARY: s")
+    await generate_event_naming(
+        [EvidenceDoc(title="h", summary="s", body="x" * 300 + "TAILMARK" * 50)], client=client
+    )
+    prompt = client.query.await_args.args[1]
+    assert "TAILMARK" not in prompt  # past the 300-char cap
+    assert "x" * 300 in prompt
+
+
+@pytest.mark.asyncio
+async def test_max_docs_cap_keeps_the_first_documents(monkeypatch):
+    from argos.config import settings
+
+    monkeypatch.setattr(settings.user.event_summary, "max_docs", 2)
+    client = _client("TITLE: t\nSUMMARY: s")
+    await generate_event_naming(
+        [EvidenceDoc(title=f"doc-{n}", summary="s") for n in range(5)], client=client
+    )
+    prompt = client.query.await_args.args[1]
+    assert "doc-0" in prompt and "doc-1" in prompt
+    assert "doc-2" not in prompt
+
+
+def _big_docs(n: int = 6, size: int = 5000) -> list[EvidenceDoc]:
+    return [EvidenceDoc(title=f"doc-{i}", summary="s", body=f"B{i} " * (size // 3)) for i in range(n)]
+
+
+def _scripted_client(final: str = "TITLE: 최종\nSUMMARY: 요약") -> AsyncMock:
+    """Memo prompts get a short note; the final naming prompt gets ``final``."""
+
+    async def query(role, prompt, **kwargs):
+        if prompt.lstrip().startswith("You are preparing fact notes"):
+            return "MEMO-LINE fact"
+        return final
+
+    client = AsyncMock()
+    client.query = AsyncMock(side_effect=query)
+    return client
+
+
+@pytest.fixture
+def small_budget(monkeypatch):
+    from argos.config import settings
+
+    monkeypatch.setattr(settings.user.event_summary, "num_ctx", 4096)
+    monkeypatch.setattr(settings.user.event_summary, "output_reserve_tokens", 512)
+
+
+@pytest.mark.asyncio
+async def test_over_budget_evidence_runs_map_then_final(small_budget):
+    client = _scripted_client()
+    result = await generate_event_naming(_big_docs(), client=client)
+    assert result == EventNaming(title="최종", summary="요약")
+    prompts = [c.args[1] for c in client.query.await_args_list]
+    assert client.query.await_count >= 3  # >=2 memo calls + 1 final
+    assert all(p.lstrip().startswith("You are preparing fact notes") for p in prompts[:-1])
+    assert prompts[-1].lstrip().startswith("You are a news editor")
+    assert "MEMO-LINE fact" in prompts[-1]
+    assert "B0 " not in prompts[-1]  # raw bodies do not reach the final call
+
+
+@pytest.mark.asyncio
+async def test_every_mapreduce_call_uses_same_ctx_and_exclusive(small_budget):
+    client = _scripted_client()
+    await generate_event_naming(_big_docs(), client=client)
+    for call in client.query.await_args_list:
+        assert call.kwargs["num_ctx"] == 4096
+        assert call.kwargs["exclusive"] is True
+        assert call.args[0] == "large"
+
+
+@pytest.mark.asyncio
+async def test_memo_call_failure_returns_none(small_budget):
+    client = AsyncMock()
+    client.query = AsyncMock(side_effect=RuntimeError("boom"))
+    assert await generate_event_naming(_big_docs(), client=client) is None
+
+
+@pytest.mark.asyncio
+async def test_empty_memo_returns_none(small_budget):
+    client = AsyncMock()
+    client.query = AsyncMock(return_value="   ")
+    assert await generate_event_naming(_big_docs(), client=client) is None
+
+
+@pytest.mark.asyncio
+async def test_fold_depth_exceeded_returns_none(small_budget, monkeypatch):
+    import argos.brain.event_naming as en
+
+    monkeypatch.setattr(en, "MAX_FOLD_DEPTH", 0)
+    client = _scripted_client()
+    assert await generate_event_naming(_big_docs(), client=client) is None
+    client.query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_many_memos_fold_again(small_budget, monkeypatch):
+    """Enough documents that the memos alone exceed the budget fold a second level."""
+    from argos.config import settings
+
+    monkeypatch.setattr(settings.user.event_summary, "max_docs", 200)
+    client = _scripted_client()
+    docs = [EvidenceDoc(title=f"d{i}", summary="s", body="y" * 5000) for i in range(120)]
+    result = await generate_event_naming(docs, client=client)
+    assert result is not None
+    assert client.query.await_args_list[-1].args[1].lstrip().startswith("You are a news editor")

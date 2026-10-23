@@ -5,9 +5,12 @@ choose_event)에는 LLM을 쓰지 않는다 — 같은 입력이 항상 같은 �
 하는 결정성 요구 때문이다. 이름과 요약은 사람이 읽는 산출물이라 그 제약이
 없다.
 
-모델은 8B(``get_llm_client()``의 ``"small"`` 역할)다. 32B
-``get_genealogist_llm_client()``는 계보 분석용이고, VRAM은 한 번에 한 모델만
-허용하므로 여기서 잡으면 충돌한다.
+ARG-310: 모델은 ``event_summary.model``(기본 ``gemma4:26b``)이고
+``get_event_summary_llm_client()``의 ``"large"`` 슬롯으로 부른다. VRAM은 한 번에
+한 모델만 허용하므로 호출은 ``exclusive=True``다 -- 적재돼 있는 다른 모델을 내린
+뒤에 올린다. 근거는 제목·요약에 더해 기사 본문까지 넣고, 컨텍스트
+(``event_summary.num_ctx``)를 넘기면 청크로 나눠 맵리듀스로 접는다
+(``event_summary_input``). 메모리는 num_ctx로 고정되고 입력이 거기 맞춰진다.
 
 실패는 ``None``으로 돌린다 — ``generate_digest``와 같은 계약이다. 부르는
 쪽이 폴백(``derive_title``)을 쥐고 있고, 명명 실패가 저장이나 배정을 막으면
@@ -18,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,18 +31,21 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.brain._language import language_directive
-from argos.brain.llm_client import OllamaClient, get_llm_client
+from argos.brain.event_summary_input import (
+    BLOCK_SEPARATOR,
+    MAX_FOLD_DEPTH,
+    budget_chars,
+    pack_chunks,
+)
+from argos.brain.llm_client import OllamaClient, get_event_summary_llm_client
 from argos.brain.titles import MAX_TITLE_CHARS
 from argos.config import settings
 from argos.models.tech_event import TechEvent
 
 logger = logging.getLogger(__name__)
 
-MAX_EVIDENCE_DOCS = 8
-"""프롬프트에 실을 근거 문서 상한. 사건이 커져도 컨텍스트가 터지지 않게 한다."""
-
 MAX_EVIDENCE_CHARS = 400
-"""근거 한 건이 차지할 수 있는 글자 수."""
+"""근거 한 건의 제목·요약 각각이 차지할 수 있는 글자 수. 본문은 ``event_summary.doc_max_chars``."""
 
 
 @dataclass(frozen=True)
@@ -47,6 +54,8 @@ class EvidenceDoc:
 
     title: str | None
     summary: str | None
+    body: str | None = None
+    """기사 본문(ARG-310). 없으면 제목·요약만으로 짓는다."""
 
 
 @dataclass(frozen=True)
@@ -76,6 +85,16 @@ SUMMARY: <the summary>
 
 Articles:
 {evidence}{language_reminder}"""
+
+_MEMO_PROMPT = """You are preparing fact notes for a news editor. Below are articles that all report the SAME event. Write compact notes of the concrete facts they contain: who did what, when, numbers, product and company names.
+
+Rules:
+- Plain text, at most 12 short lines, no markdown, no preamble.
+- Keep proper nouns, product names and code identifiers exactly as written in the articles (do not translate or transliterate them).
+- Use ONLY facts present below. Do NOT invent details.
+
+Articles:
+{evidence}"""
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9_-]*\s*$", re.MULTILINE)
@@ -113,48 +132,22 @@ def _scrub(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _format_evidence(docs: Sequence[EvidenceDoc]) -> str:
-    lines: list[str] = []
-    for index, doc in enumerate(docs[:MAX_EVIDENCE_DOCS], start=1):
-        title = (doc.title or "").strip()[:MAX_EVIDENCE_CHARS]
-        summary = (doc.summary or "").strip()[:MAX_EVIDENCE_CHARS]
-        lines.append(f"[{index}] {title}\n{summary}".rstrip())
-    return "\n\n".join(lines)
+def _format_block(index: int, doc: EvidenceDoc, doc_max_chars: int) -> str:
+    title = (doc.title or "").strip()[:MAX_EVIDENCE_CHARS]
+    summary = (doc.summary or "").strip()[:MAX_EVIDENCE_CHARS]
+    body = (doc.body or "").strip()[:doc_max_chars]
+    return "\n".join(part for part in (f"[{index}] {title}", summary, body) if part)
 
 
-async def generate_event_naming(
-    docs: Sequence[EvidenceDoc],
-    *,
-    client: OllamaClient | None = None,
-    keep_alive: str | int = "5m",
-) -> EventNaming | None:
-    """근거 문서들로 사건 제목·요약을 짓는다. 실패하면 ``None``.
+def _format_evidence(docs: Sequence[EvidenceDoc], doc_max_chars: int, max_docs: int) -> list[str]:
+    """문서마다 한 블록 (제목 + 요약 + 본문). 앞에서부터 ``max_docs``건."""
+    return [
+        _format_block(index, doc, doc_max_chars)
+        for index, doc in enumerate(docs[:max_docs], start=1)
+    ]
 
-    ``None``이 되는 경우: 근거가 하나도 없음 / LLM 호출 실패 / 정제 후 제목이
-    비어 있음 / 정제 후 요약이 비어 있음. 부르는 쪽은 ``None``을 받으면
-    ``derive_title`` 폴백을 쓰고 ``naming_stale``을 세워 둔 채 넘어간다.
 
-    ``client``를 넘기면 재사용한다 — 백필이 배치 전체에서 모델을 한 번만
-    적재하기 위해서다. ``keep_alive``도 그 목적으로 열어 둔다.
-    """
-    evidence_docs = [doc for doc in docs if (doc.title or doc.summary)]
-    if not evidence_docs:
-        return None
-
-    if client is None:
-        client = get_llm_client()
-    language = settings.user.slack.summary_language or "English"
-    prompt = _PROMPT.format(
-        evidence=_format_evidence(evidence_docs),
-        language_reminder=language_directive(language),
-    )
-
-    try:
-        raw = await client.query("small", prompt, keep_alive=keep_alive, think=False)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("generate_event_naming failed: %r", exc)
-        return None
-
+def _parse_naming(raw: str) -> EventNaming | None:
     cleaned = _clean(raw or "")
     title_match = _TITLE_RE.search(cleaned)
     if title_match is None:
@@ -174,6 +167,130 @@ async def generate_event_naming(
         logger.warning("generate_event_naming: no SUMMARY line in the model output")
         return None
     return EventNaming(title=title, summary=summary)
+
+
+class _CallLog:
+    """한 사건 명명 안의 LLM 호출 비용 집계 (ARG-310 관측)."""
+
+    def __init__(self, num_ctx: int) -> None:
+        self.num_ctx = num_ctx
+        self.calls = 0
+        self.prompt_tokens = 0
+        self.started = time.monotonic()
+
+    def add(self, stats: dict) -> None:
+        self.calls += 1
+        tokens = int(stats.get("prompt_eval_count") or 0)
+        self.prompt_tokens += tokens
+        if tokens and tokens >= self.num_ctx:
+            # Ollama는 넘친 앞부분을 조용히 버린다 -- 품질 버그가 숨지 않게 알린다.
+            logger.warning(
+                "event summary prompt used %d tokens >= num_ctx %d -- input may be truncated",
+                tokens,
+                self.num_ctx,
+            )
+
+
+async def generate_event_naming(
+    docs: Sequence[EvidenceDoc],
+    *,
+    client: OllamaClient | None = None,
+    keep_alive: str | int = "5m",
+    label: str | None = None,
+) -> EventNaming | None:
+    """근거 문서들로 사건 제목·요약을 짓는다. 실패하면 ``None``.
+
+    ``None``이 되는 경우: 근거가 하나도 없음 / LLM 호출 실패 / 정제 후 제목이
+    비어 있음 / 정제 후 요약이 비어 있음 / 맵리듀스가 ``MAX_FOLD_DEPTH``단계
+    안에 안 접힘. 부르는 쪽은 ``None``을 받으면 ``derive_title`` 폴백을 쓰고
+    ``naming_stale``을 세워 둔 채 넘어간다.
+
+    근거가 컨텍스트 예산 안이면 한 번 부르고, 넘치면 청크마다 사실 메모를 뽑은
+    뒤 메모들로 최종 TITLE/SUMMARY를 짓는다. 모든 호출은 같은 모델·같은
+    ``num_ctx``·``exclusive=True``라 재적재가 없다.
+
+    ``client``를 넘기면 재사용한다 -- 백필이 배치 전체에서 모델을 한 번만
+    적재하기 위해서다. ``keep_alive``도 그 목적으로 열어 둔다. ``label``은
+    로그에 찍을 사건 식별자다.
+    """
+    evidence_docs = [doc for doc in docs if (doc.title or doc.summary or doc.body)]
+    if not evidence_docs:
+        return None
+
+    cfg = settings.user.event_summary
+    if client is None:
+        client = get_event_summary_llm_client()
+    language = settings.user.slack.summary_language or "English"
+    reminder = language_directive(language)
+
+    template_chars = max(len(_PROMPT), len(_MEMO_PROMPT)) + len(reminder)
+    budget = budget_chars(
+        num_ctx=cfg.num_ctx,
+        output_reserve_tokens=cfg.output_reserve_tokens,
+        chars_per_token=cfg.chars_per_token,
+        template_chars=template_chars,
+    )
+    log = _CallLog(cfg.num_ctx)
+
+    async def _ask(prompt: str) -> str:
+        stats: dict = {}
+        raw = await client.query(
+            "large",
+            prompt,
+            keep_alive=keep_alive,
+            timeout=cfg.timeout,
+            num_ctx=cfg.num_ctx,
+            think=False,
+            temperature=cfg.temperature,
+            exclusive=True,
+            stats_out=stats,
+        )
+        log.add(stats)
+        return raw
+
+    blocks = _format_evidence(evidence_docs, cfg.doc_max_chars, cfg.max_docs)
+    chunk_count = 1
+    try:
+        items = blocks
+        depth = 0
+        while True:
+            chunks = pack_chunks(items, budget)
+            if len(chunks) <= 1:
+                break
+            if depth >= MAX_FOLD_DEPTH:
+                logger.warning(
+                    "generate_event_naming: evidence still over budget after %d folds", depth
+                )
+                return None
+            if depth == 0:
+                chunk_count = len(chunks)
+            memo_cap = max(budget // 4, 1)  # 메모가 청크만큼 부풀어 접기가 안 끝나는 일을 막는다
+            memos: list[str] = []
+            for chunk in chunks:
+                raw = await _ask(_MEMO_PROMPT.format(evidence=BLOCK_SEPARATOR.join(chunk)))
+                memo = _clean(raw or "")[:memo_cap]
+                if not memo:
+                    logger.warning("generate_event_naming: empty fact memo")
+                    return None
+                memos.append(f"[notes {len(memos) + 1}]\n{memo}")
+            items = memos
+            depth += 1
+        evidence = BLOCK_SEPARATOR.join(chunks[0]) if chunks else ""
+        raw = await _ask(_PROMPT.format(evidence=evidence, language_reminder=reminder))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("generate_event_naming failed: %r", exc)
+        return None
+
+    logger.info(
+        "event naming %s: docs=%d chunks=%d calls=%d prompt_tokens=%d seconds=%.1f",
+        label or "-",
+        len(blocks),
+        chunk_count,
+        log.calls,
+        log.prompt_tokens,
+        time.monotonic() - log.started,
+    )
+    return _parse_naming(raw)
 
 
 async def apply_event_naming(
@@ -205,7 +322,9 @@ async def apply_event_naming(
     붙는다. 온라인 경로는 방금 만든 사건을 자기 트랜잭션 안에서 명명하므로
     끼어들 여지가 없어 가드를 넘기지 않는다(기본값 ``None``).
     """
-    naming = await generate_event_naming(docs, client=client, keep_alive=keep_alive)
+    naming = await generate_event_naming(
+        docs, client=client, keep_alive=keep_alive, label=str(event_id)
+    )
     if naming is None:
         return False
 
