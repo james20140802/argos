@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -266,3 +267,194 @@ def parse_verdict(text: str) -> "tuple[str, str] | None":
     rest = body[first.end():].strip()
     reason = rest.splitlines()[0] if rest else ""
     return found.pop(), reason.lstrip(" -:–—").strip()
+
+
+# --- 비동기 오케스트레이션 ---------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PairVerdict:
+    """한 짝에 대한 판단 한 건. `cached`면 이번 실행에서 묻지 않고 캐시에서 읽었다."""
+
+    left_id: uuid.UUID
+    right_id: uuid.UUID
+    left_title: str
+    right_title: str
+    verdict: str
+    reason: str
+    cached: bool
+
+
+@dataclass(frozen=True)
+class PairCheckReport:
+    """한 번의 확인 결과. CLI 미리보기가 그대로 찍는다."""
+
+    model: str
+    vetoed: frozenset[tuple[uuid.UUID, uuid.UUID]] = frozenset()
+    band_pairs: int = 0
+    asked: int = 0
+    cache_hits: int = 0
+    skipped: int = 0
+    skipped_reason: str | None = None
+    elapsed_s: float = 0.0
+    verdicts: tuple[PairVerdict, ...] = ()
+
+
+async def _ask_ollama(model: str, prompt: str) -> str:
+    from argos.brain.ollama_client import query_ollama
+
+    # temperature 0 + think 끔: 짧은 판정이라 추론 토큰이 필요 없다. keep_alive는
+    # 배치 안에서만 살려 두고, 끝나면 호출부가 내린다.
+    return await query_ollama(
+        model, prompt, keep_alive="2m", temperature=0.0, think=False
+    )
+
+
+async def _unload_ollama(model: str) -> None:
+    from argos.brain.ollama_client import unload_model
+
+    await unload_model(model)
+
+
+async def fetch_pair_texts(session, ids) -> "dict[uuid.UUID, tuple[str, str | None]]":
+    """밴드 짝에 걸린 문서만 제목·요약을 읽는다(읽기 전용)."""
+    from sqlalchemy import select
+
+    from argos.models.tech_item import TechItem
+
+    id_list = sorted(set(ids))
+    if not id_list:
+        return {}
+    rows = await session.execute(
+        select(TechItem.id, TechItem.title, TechItem.summary).where(
+            TechItem.id.in_(id_list)
+        )
+    )
+    return {row.id: (row.title or "", row.summary) for row in rows}
+
+
+async def check_ambiguous_pairs(
+    session,
+    documents: "Sequence",
+    scored_pairs: "Sequence[WeightedEdge]",
+    *,
+    config,
+    cache: PairVerdictCache,
+    ask=None,
+    load_texts=None,
+    max_calls: int | None = None,
+    unload=None,
+) -> PairCheckReport:
+    """밴드 짝을 골라 캐시를 먼저 보고, 미스만 LLM에 묻는다.
+
+    Ollama가 안 닿거나 응답이 이상해도 예외를 올리지 않는다 — 교정은 이 확인이 꺼진
+    것과 같은 결과로 계속 진행돼야 한다(캐시에 이미 있는 거부는 그대로 적용).
+    `ask(model, prompt) -> str`, `load_texts(session, ids)`, `unload(model)`은
+    테스트가 갈아 끼우는 자리다.
+    """
+    started = time.monotonic()
+    model = config.pair_check_model
+    ask = ask or _ask_ollama
+    load_texts = load_texts or fetch_pair_texts
+    unload = unload or _unload_ollama
+    limit = config.pair_check_max_calls if max_calls is None else max_calls
+
+    band = select_ambiguous_pairs(
+        scored_pairs,
+        {doc.tech_item_id: doc.features.source for doc in documents},
+        lower=config.join_threshold,
+        upper=config.pair_check_upper,
+        same_source_only=config.pair_check_same_source_only,
+    )
+    if not band:
+        return PairCheckReport(model=model, elapsed_s=time.monotonic() - started)
+
+    texts = await load_texts(
+        session, {i for edge in band for i in (edge.left_id, edge.right_id)}
+    )
+    vetoed: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    verdicts: list[PairVerdict] = []
+    asked = cache_hits = skipped = 0
+    infra_down = False
+    reasons: list[str] = []
+    over_cap = 0
+
+    def record(edge, verdict, reason, *, cached):
+        left_text, right_text = texts[edge.left_id], texts[edge.right_id]
+        verdicts.append(
+            PairVerdict(
+                edge.left_id, edge.right_id, left_text[0], right_text[0],
+                verdict, reason, cached,
+            )
+        )
+        if verdict == DIFFERENT:
+            vetoed.add((edge.left_id, edge.right_id))
+
+    try:
+        for edge in band:
+            left_text, right_text = texts.get(edge.left_id), texts.get(edge.right_id)
+            if left_text is None or right_text is None:
+                skipped += 1
+                continue
+            sha = input_sha(left_text, right_text)
+            hit = cache.get(edge.left_id, edge.right_id, model=model, input_sha=sha)
+            if hit is not None:
+                cache_hits += 1
+                record(edge, hit.verdict, hit.reason, cached=True)
+                continue
+            if infra_down:
+                skipped += 1
+                continue
+            if asked >= limit:
+                skipped += 1
+                over_cap += 1
+                continue
+            asked += 1
+            try:
+                answer = await ask(model, build_prompt(left_text, right_text))
+            except Exception as exc:  # noqa: BLE001 — 교정을 막지 않는다
+                from argos.brain.ollama_client import OllamaInfraError
+
+                infra_down = True
+                asked -= 1  # 답을 못 받은 시도는 물음으로 세지 않는다
+                skipped += 1
+                label = "Ollama 연결 실패" if isinstance(exc, OllamaInfraError) else (
+                    f"LLM 호출 실패({type(exc).__name__})"
+                )
+                reasons.append(label)
+                logger.warning("pair_check: %s — 남은 짝은 건너뛴다: %s", label, exc)
+                continue
+            parsed = parse_verdict(answer)
+            if parsed is None:
+                logger.info("pair_check: unparseable answer for %s/%s", edge.left_id, edge.right_id)
+                continue
+            verdict, reason = parsed
+            cache.put(
+                edge.left_id, edge.right_id,
+                model=model, input_sha=sha, verdict=verdict, reason=reason,
+            )
+            record(edge, verdict, reason, cached=False)
+    finally:
+        try:
+            cache.flush()
+        except OSError as exc:
+            logger.warning("pair_check: cache write failed: %s", exc)
+        if asked:
+            try:
+                await unload(model)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("pair_check: unload %s failed: %s", model, exc)
+
+    if over_cap:
+        reasons.append(f"호출 상한 {limit} 초과 {over_cap}건 미확인")
+    return PairCheckReport(
+        model=model,
+        vetoed=frozenset(vetoed),
+        band_pairs=len(band),
+        asked=asked,
+        cache_hits=cache_hits,
+        skipped=skipped,
+        skipped_reason="; ".join(reasons) or None,
+        elapsed_s=time.monotonic() - started,
+        verdicts=tuple(verdicts),
+    )
