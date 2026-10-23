@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from argos.brain.near_duplicate import simhash
 from argos.brain.simhash_storage import to_storage
 from argos.crawler import body_enrich
+from argos.crawler.archive_fallback import is_archive_eligible
 from argos.crawler.body_enrich import (
     HostBreaker,
     accept_replacement,
@@ -158,6 +159,7 @@ class RefetchSummary:
     unchanged: int = 0  # 가져왔지만 더 나은 본문을 얻지 못해 그대로 둔 행 (본문 없음)
     skipped: int = 0  # 호스트 차단기로 건너뛴 행
     skipped_hosts: set[str] = field(default_factory=set)
+    via_archive: int = 0  # 그중 Wayback 보관본에서 가져온 행 (결정 1′, refetch-bodies 전용)
 
 
 FetchFn = Callable[[str], Awaitable["dict | None"]]
@@ -184,6 +186,7 @@ async def refetch_and_apply(
     targets: list[BodyRow],
     *,
     fetch: FetchFn | None = None,
+    archive: Any | None = None,
     concurrency: int = _REFETCH_CONCURRENCY,
     chunk_size: int = _COMMIT_CHUNK,
     on_progress: Callable[[int, int], None] | None = None,
@@ -192,30 +195,49 @@ async def refetch_and_apply(
 
     새 본문이 500자 이상이면서 기존보다 길 때(또는 기존이 깨졌을 때)만 쓴다.
     ``chunk_size``건마다 커밋해서 중간에 멈춰도 끝낸 만큼은 남는다.
+
+    ``archive``(``ArchiveFetcher``)를 주면 — 사람이 실행한 refetch-bodies에서만 —
+    원 사이트에서 못 가져온 허용 호스트(openai.com)의 기사를 Wayback 보관본으로
+    한 번 더 시도한다. 매일 실행 경로는 이 인자를 쓰지 않는다.
     """
     fetch_fn: FetchFn = fetch or body_enrich.fetch_article
     summary = RefetchSummary()
     breaker = HostBreaker()
     sem = asyncio.Semaphore(max(1, concurrency))
 
-    async def _one(row: BodyRow) -> tuple[BodyRow, str | None]:
+    async def _one(row: BodyRow) -> tuple[BodyRow, str | None, bool]:
         host = host_of(row.source_url)
         async with sem:
-            if breaker.is_open(host):
+            candidate: str | None = None
+            live_skipped = breaker.is_open(host)
+            if not live_skipped:
+                candidate = await _try_live(row.source_url, row, fetch_fn)
+                breaker.record(host, ok=candidate is not None)
+            tried_archive = False
+            if (
+                candidate is None
+                and archive is not None
+                and not archive.disabled
+                and is_archive_eligible(row.source_url)
+            ):
+                tried_archive = True
+                candidate = await _try_live(row.source_url, row, archive.fetch)
+                if candidate is not None:
+                    return row, candidate, True
+            if live_skipped and not tried_archive:
                 summary.skipped += 1
                 summary.skipped_hosts.add(host)
-                return row, None
-            candidate = await _try_live(row.source_url, row, fetch_fn)
-            breaker.record(host, ok=candidate is not None)
-            return row, candidate
+            return row, candidate, False
 
     done = 0
     for start in range(0, len(targets), chunk_size):
         chunk = targets[start : start + chunk_size]
         results = await asyncio.gather(*(_one(r) for r in chunk))
-        for row, new_raw in results:
+        for row, new_raw, via_archive in results:
             if new_raw is None:
                 continue
+            if via_archive:
+                summary.via_archive += 1
             await session.execute(
                 update(TechItem)
                 .where(TechItem.id == row.id)

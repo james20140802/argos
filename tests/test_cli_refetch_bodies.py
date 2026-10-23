@@ -184,3 +184,32 @@ def test_nothing_to_refetch(wired, capsys, monkeypatch):
     monkeypatch.setattr(body_backfill, "load_rows", AsyncMock(return_value=[]))
     assert cli.main(["refetch-bodies", "--yes"]) == 0
     assert "다시 가져올 기사가 없습니다" in capsys.readouterr().out
+
+
+def test_openai_rows_trigger_archive_note_and_archive_argument(wired, capsys):
+    session, apply = wired
+    body_backfill.load_rows.return_value = [  # type: ignore[attr-defined]
+        _row("https://openai.com/index/a"),
+        _row("https://openai.com/index/b"),
+        _row("https://a.com/1"),
+    ]
+    assert cli.main(["refetch-bodies", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "openai.com 기사 2건" in out and "Internet Archive" in out
+    assert apply.await_args.kwargs["archive"] is not None
+
+
+def test_no_archive_flag_disables_fallback(wired, capsys):
+    session, apply = wired
+    body_backfill.load_rows.return_value = [_row("https://openai.com/index/a")]  # type: ignore[attr-defined]
+    assert cli.main(["refetch-bodies", "--yes", "--no-archive"]) == 0
+    assert "Internet Archive" not in capsys.readouterr().out
+    assert "archive" not in apply.await_args.kwargs
+
+
+def test_summary_reports_archive_count(wired, capsys):
+    session, apply = wired
+    apply.return_value = body_backfill.RefetchSummary(updated=3, unchanged=0, via_archive=3)
+    body_backfill.load_rows.return_value = [_row("https://openai.com/index/a")]  # type: ignore[attr-defined]
+    assert cli.main(["refetch-bodies", "--yes"]) == 0
+    assert "보관본에서 가져옴 3건" in capsys.readouterr().out

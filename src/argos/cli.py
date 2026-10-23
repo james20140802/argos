@@ -1549,6 +1549,15 @@ def _build_refetch_bodies_parser(
         metavar="N",
         help="Re-fetch at most N items",
     )
+    p.add_argument(
+        "--no-archive",
+        action="store_true",
+        help=(
+            "Do not fall back to Internet Archive snapshots for openai.com articles "
+            "(the origin site blocks bots; the fallback runs only in this command, "
+            "at most 1 request/second)"
+        ),
+    )
 
 
 def _cmd_refetch_bodies(args: argparse.Namespace) -> int:
@@ -1558,6 +1567,7 @@ def _cmd_refetch_bodies(args: argparse.Namespace) -> int:
             yes=bool(getattr(args, "yes", False)),
             host=getattr(args, "host", None),
             limit=getattr(args, "limit", None),
+            use_archive=not bool(getattr(args, "no_archive", False)),
         )
     )
 
@@ -1567,9 +1577,11 @@ async def _refetch_bodies(
     yes: bool = False,
     host: str | None = None,
     limit: int | None = None,
+    use_archive: bool = True,
 ) -> int:
     """미리보기 -> 확인 -> 다시 가져오기. 확인 없이는 네트워크도 DB 쓰기도 하지 않는다."""
     from argos.crawler import body_backfill
+    from argos.crawler.archive_fallback import ArchiveFetcher, is_archive_eligible
 
     async with AsyncSessionLocal() as session:
         rows = await body_backfill.load_rows(session)
@@ -1582,6 +1594,15 @@ async def _refetch_bodies(
         shown = ", ".join(f"{h} {n}" for h, n in by_host[:8])
         more = f" 외 {len(by_host) - 8}개 호스트" if len(by_host) > 8 else ""
         print(f"다시 가져올 기사 {len(targets)}건 (호스트별: {shown}{more})")
+        archive_candidates = (
+            sum(1 for r in targets if is_archive_eligible(r.source_url)) if use_archive else 0
+        )
+        if archive_candidates:
+            print(
+                f"  openai.com 기사 {archive_candidates}건은 원 사이트가 막혀 있으면 Internet Archive "
+                f"보관본으로 시도합니다 (초당 1건 이하, 최대 약 {archive_candidates * 2 // 60 + 1}분). "
+                "끄려면 --no-archive."
+            )
         if dry_run:
             return EXIT_OK
 
@@ -1594,10 +1615,22 @@ async def _refetch_bodies(
         def _progress(done: int, total: int) -> None:
             print(f"  진행 {done}/{total}", flush=True)
 
-        summary = await body_backfill.refetch_and_apply(
-            session, targets, on_progress=_progress
-        )
+        archive_stopped = False
+        if archive_candidates:
+            async with ArchiveFetcher() as archive:
+                summary = await body_backfill.refetch_and_apply(
+                    session, targets, archive=archive, on_progress=_progress
+                )
+                archive_stopped = archive.disabled
+        else:
+            summary = await body_backfill.refetch_and_apply(
+                session, targets, on_progress=_progress
+            )
     print(f"✅ 갱신 {summary.updated}건 / 그대로 {summary.unchanged}건(본문 없음)")
+    if summary.via_archive:
+        print(f"   그중 Internet Archive 보관본에서 가져옴 {summary.via_archive}건")
+    if archive_stopped:
+        print("   Internet Archive가 제한·오류로 응답하지 않아 중간에 보관본 조회를 멈췄습니다. 잠시 뒤 다시 실행하면 이어서 채웁니다.")
     if summary.skipped:
         print(
             f"   차단으로 건너뜀 {summary.skipped}건 "
