@@ -12,8 +12,8 @@ def test_defaults():
     assert cfg.num_ctx == 16384
     assert cfg.doc_max_chars == 6000
     assert cfg.max_docs == 30
-    assert cfg.chars_per_token == 2.5
-    assert cfg.output_reserve_tokens == 1024
+    assert cfg.chars_per_tok == 2.5
+    assert cfg.output_reserve_tok == 1024
     assert cfg.timeout == 600
     assert cfg.temperature == 0.3
 

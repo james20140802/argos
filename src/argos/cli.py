@@ -2086,7 +2086,7 @@ async def _backfill_events(
     """
     if rename_stale:
         from argos.brain.event_backfill import fetch_stale_events, rename_stale_events
-        from argos.brain.llm_client import get_llm_client
+        from argos.brain.llm_client import get_event_summary_llm_client
 
         async with AsyncSessionLocal() as session:
             events = await fetch_stale_events(session, limit=limit)
@@ -2097,32 +2097,24 @@ async def _backfill_events(
                 _print_rename_dry_run(len(events))
                 return 0
             print(f"backfill-events: renaming {len(events)} event(s)...")
-            client = get_llm_client()
-            # Deep Dive는 32B를 keep_alive="5m"으로 올려 두고 내리지 않는다
-            # (slack/handlers/deep_dive.py의 unload_then_query). 그 5분 안에 이
-            # 배치가 시작되면 8B 명명 요청이 32B 위에 얹혀 VRAM 예산(한 번에 한
-            # 모델)을 깨고, 배치 전체가 OOM으로 skip될 수 있다. 이 클라이언트의
-            # "large"가 바로 그 ollama.model_deepdive라 여기서 내리면 정확히
-            # 그 모델이 내려간다. 실제로 안 떠 있으면 Ollama에는 값싼 no-op다.
-            #
-            # 다른 large 모델(genealogist·digest)은 여기서 안 건드린다 — 그쪽은
-            # 각자 배치 끝에 스스로 내리고(run_batch_brain_pipeline,
-            # batch_digest_states), 이 커맨드가 올리지도 않는 모델이다.
-            try:
-                await client.unload("large")
-            except Exception:  # noqa: BLE001
-                pass
+            client = get_event_summary_llm_client()
+            # ARG-310: 사건 요약 모델(기본 gemma4:26b)은 질의마다 exclusive=True로
+            # 부르므로, 적재돼 있는 다른 모델(Deep Dive의 32B, 8B 등)은 호출 직전에
+            # ``query_exclusive``가 내린다 -- 여기서 따로 사전 정리를 하지 않는다.
+            # 끝나면 요약 모델을 내린다: keep_alive 5분 동안 18 GB가 남아 다음
+            # 프로세스(Deep Dive 32B 등)와 겹치는 것을 막는다.
             try:
                 result = await rename_stale_events(
                     session, events, batch_size=batch_size, client=client
                 )
             finally:
                 try:
-                    await client.unload("small")
+                    await client.unload("large")
                 except Exception:  # noqa: BLE001
                     pass
         print(
-            f"backfill-events done: renamed={result.renamed}, skipped={result.skipped}"
+            f"backfill-events done: renamed={result.renamed}, skipped={result.skipped}, "
+            f"elapsed={result.elapsed_seconds:.1f}s"
         )
         # Same rule as the assign-mode branch below: every skip here is a
         # swallowed generation failure (see rename_stale_events's per-event

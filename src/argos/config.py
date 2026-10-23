@@ -204,8 +204,8 @@ class EventSummaryConfig(BaseModel):
     # 실행 시간 상한용 안전 캡(최근 링크 순 유지).
     max_docs: int = Field(default=30, ge=1)
     # 토큰 수 추정(문자/토큰). 보수적으로 잡는다(실측 약 2.8).
-    chars_per_token: float = Field(default=2.5, gt=0)
-    output_reserve_tokens: int = Field(default=1024, ge=128)
+    chars_per_tok: float = Field(default=2.5, gt=0)
+    output_reserve_tok: int = Field(default=1024, ge=128)
     timeout: float = Field(default=600, gt=0)
     temperature: float | None = Field(default=0.3)
 

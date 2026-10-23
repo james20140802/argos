@@ -20,6 +20,19 @@ from argos.brain.titles import derive_title
 from argos.models.tech_item import CategoryType
 
 
+@pytest.fixture(autouse=True)
+def event_summary_unloads(monkeypatch):
+    """ARG-310: never let a test reach a real Ollama through the summary-model unload."""
+    unloads: list[str] = []
+
+    class _Client:
+        async def unload(self, role):
+            unloads.append(role)
+
+    monkeypatch.setattr(brain_pipeline, "get_event_summary_llm_client", lambda: _Client())
+    return unloads
+
+
 def _triaged_state(**overrides):
     base = {
         "raw_text": "x",
@@ -1171,3 +1184,123 @@ def test_attach_extracted_names_passes_the_first_line_as_title(monkeypatch):
         ["Introducing OpenAI Frontier\nbody text", "Second Headline\nmore"],
         titles=["Introducing OpenAI Frontier", "Second Headline"],
     )
+
+
+@pytest.mark.asyncio
+async def test_assign_then_save_passes_the_body_as_evidence(monkeypatch):
+    """ARG-310: 새 사건 명명 근거에 기사 본문이 실린다."""
+
+    async def _save(state, session, flush=True):
+        return {**state, "saved": True, "created_event_id": uuid.uuid4()}
+
+    monkeypatch.setattr(
+        brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
+    )
+    monkeypatch.setattr(brain_pipeline, "save_node", _save)
+    naming = AsyncMock(return_value=True)
+    monkeypatch.setattr(brain_pipeline, "apply_event_naming", naming)
+
+    await brain_pipeline._assign_then_save(
+        {"source_url": "u", "raw_text": "T\nthe full body", "summary": "s"},
+        session=_begin_nested_session(),
+    )
+    doc = naming.await_args.args[2][0]
+    assert doc.body == "T\nthe full body"
+
+
+@pytest.mark.asyncio
+async def test_single_pipeline_unloads_the_summary_model_after_naming(
+    monkeypatch, event_summary_unloads
+):
+    triaged = _triaged_state()
+    cold = _triaged_state(genealogy_skipped=True)
+    monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
+    monkeypatch.setattr(brain_pipeline, "digest_node", AsyncMock(side_effect=lambda s: s))
+    monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock(return_value=cold))
+    monkeypatch.setattr(
+        brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
+    )
+
+    async def _save(state, *, session, flush=True):
+        return {**state, "saved": True, "created_event_id": uuid.uuid4()}
+
+    monkeypatch.setattr(brain_pipeline, "save_node", _save)
+    monkeypatch.setattr(brain_pipeline, "apply_event_naming", AsyncMock(return_value=False))
+
+    result = await brain_pipeline.run_brain_pipeline(
+        "x", "https://e.com", _begin_nested_session()
+    )
+
+    # 명명이 실패(False)해도 저장 결과는 같고, 요약 모델은 내려간다.
+    assert result["saved"] is True
+    assert event_summary_unloads == ["large"]
+
+
+@pytest.mark.asyncio
+async def test_single_pipeline_does_not_unload_when_no_event_was_created(
+    monkeypatch, event_summary_unloads
+):
+    cold = _triaged_state(genealogy_skipped=True)
+    monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=_triaged_state()))
+    monkeypatch.setattr(brain_pipeline, "digest_node", AsyncMock(side_effect=lambda s: s))
+    monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock(return_value=cold))
+    monkeypatch.setattr(
+        brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
+    )
+    monkeypatch.setattr(
+        brain_pipeline,
+        "save_node",
+        AsyncMock(side_effect=lambda s, session, flush=True: {**s, "saved": True}),
+    )
+
+    await brain_pipeline.run_brain_pipeline("x", "https://e.com", _begin_nested_session())
+
+    assert event_summary_unloads == []
+
+
+@pytest.mark.asyncio
+async def test_unload_failure_is_swallowed(monkeypatch):
+    class _Boom:
+        async def unload(self, role):
+            raise RuntimeError("ollama down")
+
+    monkeypatch.setattr(brain_pipeline, "get_event_summary_llm_client", lambda: _Boom())
+    await brain_pipeline._unload_event_summary_model()  # must not raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("creates_event, expected", [(True, ["large"]), (False, [])])
+async def test_batch_pipeline_unloads_the_summary_model_only_after_naming(
+    monkeypatch, event_summary_unloads, creates_event, expected
+):
+    state = _batch_state(
+        source_url="https://example.com/a",
+        genealogy_skipped=True,
+        genealogy_skip_reason="cold_start",
+    )
+    monkeypatch.setattr(brain_pipeline, "batch_triage_states", AsyncMock(return_value=[state]))
+    monkeypatch.setattr(
+        brain_pipeline, "batch_embed_and_search_node", AsyncMock(return_value=[state])
+    )
+    monkeypatch.setattr(brain_pipeline, "get_genealogist_llm_client", lambda: MagicMock())
+    monkeypatch.setattr(
+        brain_pipeline,
+        "assign_event_node",
+        AsyncMock(side_effect=lambda s, *, session: {**s, "event_id": None}),
+    )
+
+    async def _fake_save(state, *, session, flush=True):
+        return {
+            **state,
+            "saved": True,
+            "created_event_id": uuid.uuid4() if creates_event else None,
+        }
+
+    monkeypatch.setattr(brain_pipeline, "save_node", _fake_save)
+    monkeypatch.setattr(brain_pipeline, "apply_event_naming", AsyncMock(return_value=True))
+
+    await brain_pipeline.run_batch_brain_pipeline(
+        [_item(url="https://example.com/a")], _begin_nested_session()
+    )
+
+    assert event_summary_unloads == expected

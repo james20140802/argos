@@ -226,8 +226,8 @@ async def generate_event_naming(
     template_chars = max(len(_PROMPT), len(_MEMO_PROMPT)) + len(reminder)
     budget = budget_chars(
         num_ctx=cfg.num_ctx,
-        output_reserve_tokens=cfg.output_reserve_tokens,
-        chars_per_token=cfg.chars_per_token,
+        output_reserve_tok=cfg.output_reserve_tok,
+        chars_per_tok=cfg.chars_per_tok,
         template_chars=template_chars,
     )
     log = _CallLog(cfg.num_ctx)

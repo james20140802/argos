@@ -10,14 +10,14 @@ from argos.brain.event_summary_input import (
 
 def test_budget_subtracts_reserve_and_template():
     b = budget_chars(
-        num_ctx=16384, output_reserve_tokens=1024, chars_per_token=2.5, template_chars=1000
+        num_ctx=16384, output_reserve_tok=1024, chars_per_tok=2.5, template_chars=1000
     )
     assert b == int((16384 - 1024) * 2.5) - 1000
 
 
 def test_budget_has_a_floor():
     b = budget_chars(
-        num_ctx=2048, output_reserve_tokens=1024, chars_per_token=1.0, template_chars=10_000
+        num_ctx=2048, output_reserve_tok=1024, chars_per_tok=1.0, template_chars=10_000
     )
     assert b > 0
 

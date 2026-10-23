@@ -335,7 +335,7 @@ def small_budget(monkeypatch):
     from argos.config import settings
 
     monkeypatch.setattr(settings.user.event_summary, "num_ctx", 4096)
-    monkeypatch.setattr(settings.user.event_summary, "output_reserve_tokens", 512)
+    monkeypatch.setattr(settings.user.event_summary, "output_reserve_tok", 512)
 
 
 @pytest.mark.asyncio

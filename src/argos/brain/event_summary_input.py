@@ -5,7 +5,7 @@
 (``event_naming.generate_event_naming``). 이 모듈은 DB도 LLM도 모르는 순수
 함수만 둔다.
 
-토큰 수는 토크나이저 없이 **문자 수 / chars_per_token**으로 어림한다. 어림이
+토큰 수는 토크나이저 없이 **문자 수 / chars_per_tok**으로 어림한다. 어림이
 틀려 컨텍스트를 넘기면 Ollama가 앞부분을 조용히 버리므로, 호출부가
 ``prompt_eval_count``로 넘침을 감지해 경고한다.
 """
@@ -27,13 +27,13 @@ _MIN_BUDGET_CHARS = 500
 def budget_chars(
     *,
     num_ctx: int,
-    output_reserve_tokens: int,
-    chars_per_token: float,
+    output_reserve_tok: int,
+    chars_per_tok: float,
     template_chars: int,
 ) -> int:
     """프롬프트 템플릿을 뺀, 근거 텍스트에 쓸 수 있는 문자 수 예산."""
-    usable_tokens = max(num_ctx - output_reserve_tokens, 0)
-    return max(int(usable_tokens * chars_per_token) - template_chars, _MIN_BUDGET_CHARS)
+    usable_tokens = max(num_ctx - output_reserve_tok, 0)
+    return max(int(usable_tokens * chars_per_tok) - template_chars, _MIN_BUDGET_CHARS)
 
 
 def joined_length(blocks: Sequence[str]) -> int:
