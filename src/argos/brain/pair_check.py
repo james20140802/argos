@@ -15,13 +15,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from argos.brain.recluster_core import WeightedEdge
 
 logger = logging.getLogger(__name__)
 
@@ -162,3 +168,101 @@ def default_cache_path() -> Path:
     base = os.environ.get("XDG_STATE_HOME")
     root = Path(base) if base else Path.home() / ".local" / "state"
     return root / "argos" / "pair_checks.jsonl"
+
+
+# --- 순수 함수: 짝 고르기 · 프롬프트 · 응답 읽기 ---------------------------------
+
+SUMMARY_CHARS = 400
+
+_PROMPT = """\
+Two articles are shown. Decide whether they cover the SAME single announcement, \
+release, or event (for example the announcement post and its system card, or two \
+write-ups of the same launch), or DIFFERENT ones (for example the same company \
+announcing two separate partnerships, products, or customer stories).
+
+Examples:
+- "Intuit and OpenAI partner on ..." vs "Target and OpenAI partner on ..." -> DIFFERENT
+- "Introducing Codex" vs "o3 system card addendum: Codex" -> SAME
+
+Article 1
+Title: {title_1}
+Summary: {summary_1}
+
+Article 2
+Title: {title_2}
+Summary: {summary_2}
+
+Answer with exactly one word, SAME or DIFFERENT, then a short one-line reason."""
+
+
+def select_ambiguous_pairs(
+    scored: "Sequence[WeightedEdge]",
+    sources: "Mapping[uuid.UUID, str | None]",
+    *,
+    lower: float,
+    upper: float,
+    same_source_only: bool,
+) -> "tuple[WeightedEdge, ...]":
+    """점수가 `[lower, upper)`에 있는 짝만 고른다.
+
+    `same_source_only`면 두 문서의 등록 도메인이 같은 짝만 남긴다. 출처를 모르는
+    문서(None)는 같은 출처로 치지 않는다 — 모르는 것을 같다고 치면 근거 없이 묻는
+    셈이다(ARG-306과 같은 원칙). 결과는 `(left_id, right_id)` 오름차순이라
+    입력 순서와 무관하다.
+    """
+    picked = []
+    for edge in scored:
+        if not (lower <= edge.weight < upper):
+            continue
+        if same_source_only:
+            left = sources.get(edge.left_id)
+            right = sources.get(edge.right_id)
+            if left is None or right is None or left != right:
+                continue
+        picked.append(edge)
+    return tuple(sorted(picked, key=lambda edge: (edge.left_id, edge.right_id)))
+
+
+def _squash(text: str | None) -> str:
+    return " ".join((text or "").split())
+
+
+def _clip(summary: str | None) -> str:
+    return _squash(summary)[:SUMMARY_CHARS]
+
+
+def build_prompt(
+    first: "tuple[str, str | None]", second: "tuple[str, str | None]"
+) -> str:
+    """각각 (제목, 요약). 요약은 `SUMMARY_CHARS`자로 자른다."""
+    return _PROMPT.format(
+        title_1=_squash(first[0]),
+        summary_1=_clip(first[1]),
+        title_2=_squash(second[0]),
+        summary_2=_clip(second[1]),
+    )
+
+
+def input_sha(first: "tuple[str, str | None]", second: "tuple[str, str | None]") -> str:
+    """프롬프트에 들어가는 텍스트의 해시. 순서와 무관하다."""
+    parts = sorted(
+        f"{_squash(title)}\x1f{_clip(summary)}" for title, summary in (first, second)
+    )
+    return hashlib.sha1("\x1e".join(parts).encode("utf-8")).hexdigest()
+
+
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_VERDICT_WORD = re.compile(r"\b(SAME|DIFFERENT)\b", re.IGNORECASE)
+
+
+def parse_verdict(text: str) -> "tuple[str, str] | None":
+    """`(SAME|DIFFERENT, 근거)`. 판단 단어가 없거나 둘 다 있으면 None(= 판단 없음)."""
+    body = _THINK_BLOCK.sub("", text or "").strip()
+    found = {match.group(1).upper() for match in _VERDICT_WORD.finditer(body)}
+    if len(found) != 1:
+        return None
+    first = _VERDICT_WORD.search(body)
+    assert first is not None
+    rest = body[first.end():].strip()
+    reason = rest.splitlines()[0] if rest else ""
+    return found.pop(), reason.lstrip(" -:–—").strip()
