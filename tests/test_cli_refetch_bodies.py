@@ -106,7 +106,7 @@ async def test_refetch_host_breaker_skips_blocked_host():
     summary = await refetch_and_apply(_session(), rows, fetch=fetch, concurrency=1)
     assert len(calls) == 2
     assert summary.skipped == 3 and summary.unchanged == 2
-    assert "blocked.com" in summary.skipped_hosts
+    assert summary.skipped_hosts == {"blocked.com"}
 
 
 @pytest.mark.asyncio

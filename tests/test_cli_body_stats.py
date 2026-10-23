@@ -62,6 +62,11 @@ def test_compute_stats_empty():
     assert stats.total == 0 and stats.short_pct == 0.0 and stats.median_len == 0
 
 
+def _hosts(out: str) -> set[str]:
+    """출력 각 줄의 첫 칸 — 호스트 표의 호스트 열."""
+    return {line.split()[0] for line in out.splitlines() if line.strip()}
+
+
 @pytest.fixture
 def wired(monkeypatch):
     rows = [_row("a.com", "short"), _row("a.com", LONG), _row("b.com", "tiny")]
@@ -80,13 +85,13 @@ def test_body_stats_prints_overall_numbers(wired, capsys):
     assert "전체 3건" in out
     assert "본문 500자 미만 2건 (66.7%)" in out
     assert "문자 깨짐 0건" in out
-    assert "a.com" not in out  # --by-host 없이는 호스트 표 없음
+    assert "a.com" not in _hosts(out)  # --by-host 없이는 호스트 표 없음
 
 
 def test_body_stats_by_host_table(wired, capsys):
     assert cli.main(["body-stats", "--by-host"]) == 0
     out = capsys.readouterr().out
-    assert "a.com" in out and "b.com" in out
+    assert {"a.com", "b.com"} <= _hosts(out)
     a_line = next(line for line in out.splitlines() if line.strip().startswith("a.com"))
     assert " 2" in a_line and "50.0%" in a_line
 
@@ -94,4 +99,5 @@ def test_body_stats_by_host_table(wired, capsys):
 def test_body_stats_limit_caps_host_rows(wired, capsys):
     assert cli.main(["body-stats", "--by-host", "--limit", "1"]) == 0
     out = capsys.readouterr().out
-    assert "a.com" in out and "b.com" not in out
+    hosts = _hosts(out)
+    assert "a.com" in hosts and "b.com" not in hosts
