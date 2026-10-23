@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from argos.brain import entity_aliases as ea
 
 
@@ -245,3 +247,78 @@ def test_lowercase_ratios_counts_case_sensitive_surface_forms():
     assert ratios["code"] == 2 / 3
     assert ratios["opus 5"] == 1 / 2
     assert "missing" not in ratios  # 한 번도 안 나오면 비율을 만들지 않는다
+
+
+# ----- 계획 계산 ------------------------------------------------------------ #
+
+
+def _inputs(existing=(), texts=None, keys=None, docs=None, common=frozenset()):
+    keys = list(keys or _KEYS + ["hugging face", "huggingface"])
+    ids = {key: uuid.uuid5(uuid.NAMESPACE_DNS, key) for key in keys}
+    entities = tuple(ea.EntityRow(ids[key], key, key.title()) for key in keys)
+    texts = texts or [
+        # 소문자 비율은 이 본문에서 계산된다.
+        "Codex and Opus 5 and Opus 5.5 and CUDA and Chrome and Gemini. Codex, Gemini.",
+        "Write code. Run the agent. code code code agent agent.",
+    ]
+    return ea.AliasInputs(
+        entities=entities,
+        doc_counts=docs or {**_DOCS, "hugging face": 4, "huggingface": 9},
+        texts=texts,
+        common=common,
+        existing=tuple(existing),
+    ), ids
+
+
+def test_plan_adds_expected_links_and_reports_held_reasons():
+    inputs, ids = _inputs()
+    plan = ea.compute_alias_plan(inputs)
+    added = {(link.alias_key, link.canonical_key): link.rule for link in plan.added}
+    assert added[("hugging face", "huggingface")] is ea.AliasRule.SPACING
+    assert added[("openai codex", "codex")] is ea.AliasRule.VENDOR_PREFIX
+    # 문서 수가 더 많은 쪽(claude opus 5, 18건)이 대표다
+    assert added[("opus 5", "claude opus 5")] is ea.AliasRule.VENDOR_PREFIX
+    assert ("claude code", "code") not in added
+    assert ("claude opus 5.5", "opus 5") not in added
+    assert plan.removed == () and plan.unchanged == 0
+    assert plan.held_by_reason()[ea.HOLD_BASE_LOWERCASE] >= 2
+    link = next(link for link in plan.added if link.alias_key == "openai codex")
+    assert link.alias_id == ids["openai codex"] and link.canonical_id == ids["codex"]
+    assert link.evidence["edges"][0]["literal_docs"] == 9
+
+
+def test_plan_is_idempotent_after_applying_its_own_output():
+    inputs, _ = _inputs()
+    first = ea.compute_alias_plan(inputs)
+    applied = [ea.ExistingAlias(link.alias_id, link.canonical_id, link.rule) for link in first.added]
+    again = ea.compute_alias_plan(_inputs(existing=applied)[0])
+    assert again.added == () and again.removed == ()
+    assert again.unchanged == len(first.added)
+    assert not again.changed
+
+
+def test_plan_replaces_a_stale_auto_link_but_never_touches_manual_rows():
+    _, ids = _inputs()
+    stale = ea.ExistingAlias(ids["claude code"], ids["code"], ea.AliasRule.VENDOR_PREFIX)
+    manual = ea.ExistingAlias(ids["pro 11"], ids["pro"], ea.AliasRule.MANUAL)
+    plan = ea.compute_alias_plan(_inputs(existing=[stale, manual])[0])
+    assert [link.alias_key for link in plan.removed] == ["claude code"]
+    # 수동 행의 두 이름은 자동 판정에서 빠진다 -> 어떤 링크에도 나오지 않는다
+    touched = set()
+    for link in (*plan.added, *plan.removed):
+        touched.update((link.alias_key, link.canonical_key))
+    assert "pro 11" not in touched and "pro" not in touched
+
+
+def test_plan_recanonicalizes_when_the_best_name_changes():
+    _, ids = _inputs()
+    old = ea.ExistingAlias(ids["codex"], ids["openai codex"], ea.AliasRule.VENDOR_PREFIX)
+    plan = ea.compute_alias_plan(_inputs(existing=[old])[0])
+    # 예전 방향(codex -> openai codex)은 지우고 새 방향으로 넣는다
+    assert [link.alias_key for link in plan.removed] == ["codex"]
+    assert any(link.alias_key == "openai codex" for link in plan.added)
+
+
+def test_plan_is_deterministic():
+    inputs, _ = _inputs()
+    assert ea.compute_alias_plan(inputs) == ea.compute_alias_plan(inputs)

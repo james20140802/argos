@@ -18,6 +18,7 @@ ARG-307이 읽는 입력이라, 여기서 바꾸면 사건 묶기 결과가 달�
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -312,6 +313,149 @@ def _cheap_hold_reason(
 
 
 _WORD = re.compile(r"[^\W_]+")
+
+
+# --------------------------------------------------------------------------- #
+# 계획 계산 — DB 없이 입력 값만으로
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class EntityRow:
+    id: uuid.UUID
+    key: str
+    name: str
+
+
+@dataclass(frozen=True)
+class ExistingAlias:
+    alias_id: uuid.UUID
+    canonical_id: uuid.UUID
+    rule: AliasRule
+
+
+@dataclass(frozen=True)
+class AliasInputs:
+    entities: Sequence[EntityRow]
+    doc_counts: Mapping[str, int]
+    # 문서 본문(title + raw_content). 소문자 비율 계산에만 쓴다.
+    texts: Sequence[str]
+    # ``filter_common_names``가 거르는 이름 — 읽기 시점 판정과 같아야 한다.
+    common: frozenset[str]
+    existing: Sequence[ExistingAlias]
+
+
+@dataclass(frozen=True)
+class AliasLink:
+    alias_id: uuid.UUID
+    canonical_id: uuid.UUID
+    alias_key: str
+    canonical_key: str
+    rule: AliasRule
+    evidence: Mapping[str, object] = field(default_factory=dict, hash=False, compare=False)
+
+
+@dataclass(frozen=True)
+class AliasPlan:
+    added: tuple[AliasLink, ...]
+    removed: tuple[AliasLink, ...]
+    unchanged: int
+    held: tuple[HeldPair, ...]
+    groups: int
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added or self.removed)
+
+    def held_by_reason(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for pair in self.held:
+            counts[pair.reason] = counts.get(pair.reason, 0) + 1
+        return dict(sorted(counts.items()))
+
+
+def compute_alias_plan(inputs: AliasInputs) -> AliasPlan:
+    """저장된 이름과 코퍼스 통계로 별칭을 다시 계산하고 기존 행과 견준다.
+
+    ``Manual`` 행(신고 교정, ARG-317)은 건드리지 않는다 — 그 행에 걸린 이름은
+    자동 판정 대상에서 아예 뺀다. 같은 입력이면 항상 같은 계획이 나오고, 방금 쓴
+    결과를 다시 넣으면 ``added``/``removed``가 비어 있다(멱등).
+    """
+    manual_ids: set[uuid.UUID] = set()
+    for row in inputs.existing:
+        if row.rule is AliasRule.MANUAL:
+            manual_ids.update((row.alias_id, row.canonical_id))
+    entity_by_key = {e.key: e for e in inputs.entities if e.id not in manual_ids}
+    entity_by_id = {e.id: e for e in inputs.entities}
+    keys = frozenset(entity_by_key)
+
+    roots = find_roots(keys)
+    stats = VendorStats(
+        keys=keys,
+        roots=roots,
+        doc_counts=inputs.doc_counts,
+        common=inputs.common & keys,
+        lowercase_ratios=lambda bases: lowercase_ratios(inputs.texts, bases),
+    )
+    decision = decide_vendor_prefix(vendor_candidates(keys, roots), stats)
+    groups = build_alias_groups(
+        [*spacing_edges(keys), *decision.edges],
+        inputs.doc_counts,
+    )
+
+    desired: dict[uuid.UUID, AliasLink] = {}
+    for group in groups:
+        canonical = entity_by_key[group.canonical]
+        for alias_key in group.aliases:
+            alias = entity_by_key[alias_key]
+            desired[alias.id] = AliasLink(
+                alias_id=alias.id,
+                canonical_id=canonical.id,
+                alias_key=alias_key,
+                canonical_key=group.canonical,
+                rule=group.rules[alias_key],
+                evidence=group.evidence[alias_key],
+            )
+
+    existing_auto = {
+        row.alias_id: row for row in inputs.existing if row.rule is not AliasRule.MANUAL
+    }
+    added: list[AliasLink] = []
+    unchanged = 0
+    for alias_id, link in desired.items():
+        current = existing_auto.get(alias_id)
+        if current is not None and (current.canonical_id, current.rule) == (
+            link.canonical_id,
+            link.rule,
+        ):
+            unchanged += 1
+        else:
+            added.append(link)
+
+    removed: list[AliasLink] = []
+    for alias_id, row in existing_auto.items():
+        link = desired.get(alias_id)
+        if link is not None and (link.canonical_id, link.rule) == (row.canonical_id, row.rule):
+            continue
+        alias = entity_by_id.get(alias_id)
+        canonical = entity_by_id.get(row.canonical_id)
+        removed.append(
+            AliasLink(
+                alias_id=alias_id,
+                canonical_id=row.canonical_id,
+                alias_key=alias.key if alias else str(alias_id),
+                canonical_key=canonical.key if canonical else str(row.canonical_id),
+                rule=row.rule,
+            )
+        )
+
+    return AliasPlan(
+        added=tuple(sorted(added, key=lambda link: link.alias_key)),
+        removed=tuple(sorted(removed, key=lambda link: link.alias_key)),
+        unchanged=unchanged,
+        held=decision.held,
+        groups=len(groups),
+    )
 
 
 def lowercase_ratios(texts: Iterable[str], targets: Iterable[str]) -> dict[str, float]:

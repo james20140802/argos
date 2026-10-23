@@ -1453,6 +1453,91 @@ async def _backfill_entities(dry_run: bool = False, yes: bool = False, sample: i
     return EXIT_OK
 
 
+def _build_alias_names_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos alias-names`` subcommand (ARG-312)."""
+    p = sub.add_parser(
+        "alias-names",
+        help="Merge different names of the same technology into one (preview, confirm, write)",
+        parents=[common],
+        description=(
+            "Recompute name aliases (spacing variants and vendor-prefix variants such as "
+            "'OpenAI Codex' -> 'Codex') over the stored entity names. Shows a preview first "
+            "and writes only after confirmation. Names whose version numbers differ are "
+            "never merged. Stored names are not modified. Idempotent: a second run "
+            "reports no changes."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--dry-run", action="store_true", help="Show the preview and exit without writing")
+    p.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    p.add_argument(
+        "--sample",
+        type=_positive_int,
+        default=10,
+        metavar="N",
+        help="Number of merged / held pairs to show in the preview (default: 10)",
+    )
+
+
+def _cmd_alias_names(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _alias_names(
+            dry_run=bool(getattr(args, "dry_run", False)),
+            yes=bool(getattr(args, "yes", False)),
+            sample=getattr(args, "sample", 10),
+        )
+    )
+
+
+async def _alias_names(dry_run: bool = False, yes: bool = False, sample: int = 10) -> int:
+    """미리보기 -> 확인 -> 쓰기. 미리보기(--dry-run)는 SELECT만 실행한다."""
+    from argos.brain import alias_store
+
+    async with AsyncSessionLocal() as session:
+        table_ready = await alias_store.alias_table_exists(session)
+        plan = await alias_store.plan_aliases(session)
+
+        print(
+            f"별칭 묶음 {plan.groups}개 "
+            f"(별칭 +{len(plan.added)} / -{len(plan.removed)}, 유지 {plan.unchanged})"
+        )
+        for link in plan.added[:sample]:
+            print(f"  + {link.alias_key} → {link.canonical_key}  [{link.rule.value}]")
+        for link in plan.removed[:sample]:
+            print(f"  - {link.alias_key} → {link.canonical_key}  [{link.rule.value}]")
+        by_reason = plan.held_by_reason()
+        if by_reason:
+            summary = ", ".join(f"{reason} {count}" for reason, count in by_reason.items())
+            print(f"합치지 않고 따로 둠 {len(plan.held)}쌍: {summary}")
+            for pair in plan.held[:sample]:
+                print(f"  ↛ {pair.alias} / {pair.base}  ({pair.reason})")
+        if not table_ready:
+            print("참고: entity_aliases 테이블이 아직 없습니다 (`uv run alembic upgrade head` 필요).")
+
+        if not plan.changed:
+            print("변경 없음")
+            return EXIT_OK
+        if dry_run:
+            return EXIT_OK
+        if not table_ready:
+            print("오류: entity_aliases 테이블이 없어 쓸 수 없습니다.", file=sys.stderr)
+            return EXIT_GENERIC
+
+        if not yes:
+            reply = input("계속하시겠습니까? [y/N] ").strip().lower()
+            if reply not in ("y", "yes"):
+                print("취소되었습니다.")
+                return EXIT_GENERIC
+
+        changed = await alias_store.apply_aliases(session, plan)
+        await session.commit()
+    print(f"✅ 별칭 {changed}건을 반영했습니다.")
+    return EXIT_OK
+
+
 def _build_backfill_digests_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -2535,6 +2620,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     _build_add_parser(sub, common)
+    _build_alias_names_parser(sub, common)
     _build_backfill_images_parser(sub, common)
     _build_backfill_digests_parser(sub, common)
     _build_backfill_entities_parser(sub, common)
@@ -2646,6 +2732,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"오류: --days 값은 양의 정수여야 합니다. (입력값: {args.days})", file=sys.stderr)
             return 1
         return asyncio.run(_stats(args.days))
+    if args.command == "alias-names":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_alias_names(args)
     if args.command == "backfill-images":
         rc = _apply_config_override(args)
         if rc is not None:
