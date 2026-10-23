@@ -85,7 +85,7 @@ def test_body_stats_prints_overall_numbers(wired, capsys):
     assert "전체 3건" in out
     assert "본문 500자 미만 2건 (66.7%)" in out
     assert "문자 깨짐 0건" in out
-    assert "a.com" not in _hosts(out)  # --by-host 없이는 호스트 표 없음
+    assert not {"a.com"} & _hosts(out)  # --by-host 없이는 호스트 표 없음
 
 
 def test_body_stats_by_host_table(wired, capsys):
@@ -99,5 +99,4 @@ def test_body_stats_by_host_table(wired, capsys):
 def test_body_stats_limit_caps_host_rows(wired, capsys):
     assert cli.main(["body-stats", "--by-host", "--limit", "1"]) == 0
     out = capsys.readouterr().out
-    hosts = _hosts(out)
-    assert "a.com" in hosts and "b.com" not in hosts
+    assert {"a.com", "b.com"} & _hosts(out) == {"a.com"}
