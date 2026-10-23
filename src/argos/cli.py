@@ -1480,9 +1480,18 @@ def _build_alias_names_parser(
         metavar="N",
         help="Number of merged / held pairs to show in the preview (default: 10)",
     )
+    p.add_argument(
+        "--show",
+        metavar="NAME",
+        default=None,
+        help="Look up one name and print its display name and other names (read-only)",
+    )
 
 
 def _cmd_alias_names(args: argparse.Namespace) -> int:
+    show = getattr(args, "show", None)
+    if show is not None:
+        return asyncio.run(_alias_names_show(show))
     return asyncio.run(
         _alias_names(
             dry_run=bool(getattr(args, "dry_run", False)),
@@ -1490,6 +1499,22 @@ def _cmd_alias_names(args: argparse.Namespace) -> int:
             sample=getattr(args, "sample", 10),
         )
     )
+
+
+async def _alias_names_show(name: str) -> int:
+    """이름 하나의 대표 표기와 다른 이름을 보여 준다. 읽기만 한다."""
+    from argos.services import technology_names
+
+    async with AsyncSessionLocal() as session:
+        names = await technology_names.names_for(session, name)
+    if names is None:
+        print(f"저장된 이름에 없습니다: {name}", file=sys.stderr)
+        return EXIT_GENERIC
+    if names.aliases:
+        print(f"{names.display} — 다른 이름: {', '.join(names.aliases)}")
+    else:
+        print(f"{names.display} — 다른 이름 없음")
+    return EXIT_OK
 
 
 async def _alias_names(dry_run: bool = False, yes: bool = False, sample: int = 10) -> int:
