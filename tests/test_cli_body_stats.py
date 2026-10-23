@@ -92,7 +92,7 @@ def test_body_stats_by_host_table(wired, capsys):
     assert cli.main(["body-stats", "--by-host"]) == 0
     out = capsys.readouterr().out
     assert {"a.com", "b.com"} <= _hosts(out)
-    a_line = next(line for line in out.splitlines() if line.strip().startswith("a.com"))
+    a_line = next(line for line in out.splitlines() if line.split()[:1] == ["a.com"])
     assert " 2" in a_line and "50.0%" in a_line
 
 
