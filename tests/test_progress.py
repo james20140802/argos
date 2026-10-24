@@ -33,10 +33,9 @@ def _has_ansi(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def test_digest_stage_has_label():
-    """ARG-173: the digest stage (14B longform pass) must render a real label,
-    not fall back to the raw-name capitalisation used for unknown stages."""
-    assert _STAGE_LABELS["digest"] == "Digest (14B)"
+def test_digest_stage_is_gone():
+    """ARG-308: the per-article digest stage was removed from ``argos run``."""
+    assert "digest" not in _STAGE_LABELS
 
 
 # ---------------------------------------------------------------------------

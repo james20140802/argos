@@ -11,7 +11,6 @@ from argos.brain.entity_store import canonical_names
 from argos.brain.event_naming import EvidenceDoc, apply_event_naming
 from argos.brain.graph_state import BrainState
 from argos.brain.nodes.triage import triage_node, batch_triage_states
-from argos.brain.nodes.digest import digest_node, batch_digest_states
 from argos.brain.nodes.embed import embed_and_search_node, batch_embed_and_search_node
 from argos.brain.nodes.genealogist import genealogist_node
 from argos.brain.near_duplicate import simhash
@@ -99,8 +98,8 @@ async def _unload_event_summary_model() -> None:
     """사건 요약 모델(ARG-310, 기본 gemma4:26b 18 GB)을 내린다.
 
     명명이 keep_alive="5m"으로 올려 둔 채 두면 그 5분 안에 시작하는 다음
-    프로세스(Deep Dive 32B 등)와 VRAM이 겹친다. digest 노드가 14B를 끝나고
-    내리는 관례와 같다. 실패는 삼킨다 -- 저장 결과에 영향이 없다.
+    프로세스(Deep Dive 32B 등)와 VRAM이 겹친다. (옛 digest 노드가 14B를 끝나고
+    내리던 관례와 같다.) 실패는 삼킨다 -- 저장 결과에 영향이 없다.
     """
     try:
         await get_event_summary_llm_client().unload("large")
@@ -198,20 +197,18 @@ async def run_brain_pipeline(
     if not triaged["is_valid"]:
         return triaged
 
-    # ARG-173: longform digest from raw_content (14B), between triage and embed.
-    # digest does not depend on embed/genealogy results, so running it here keeps
-    # the 32B genealogist swap isolated to its own branch.
-    digested = await digest_node(triaged)
+    # ARG-308: 기사별 장문 요약(digest, ARG-173)은 더 만들지 않는다. 상세 내용은
+    # 사건 단위로 기사 본문 전부를 근거로 짓는다(event_naming).
 
     # Run embed_and_search first so we can decide whether to spend VRAM on the
     # 32B prewarm. On cold start the genealogist branch is skipped and we never
     # need to load the large model.
-    embedded = await embed_and_search_node(digested, session=session)
+    embedded = await embed_and_search_node(triaged, session=session)
     embedded = _attach_extracted_names([embedded])[0]
     if embedded.get("genealogy_skipped"):
         return await _save_and_release(embedded, session)
 
-    trust_score = digested.get("trust_score")
+    trust_score = triaged.get("trust_score")
     from argos.config import settings as _settings
     threshold = _settings.user.genealogist.trust_skip_threshold
     if trust_score is not None and trust_score < threshold:
@@ -236,7 +233,7 @@ async def run_brain_pipeline(
     # VRAM 예산이 한 번에 한 모델뿐이라 32B가 얹힌 채로 8B를 부르면 명명이 OOM으로
     # 죽고 사건이 무명으로 남는다. genealogist_node는 keep_alive="5m"으로 질의하니
     # 놔두면 실제로 얹혀 있다. 배치 경로가 계보 작업을 끝내고 unload하는 자리와
-    # 같고, 단건 경로의 triage_node/digest_node가 각자 finally에서 내리는 관례와도
+    # 같고, 단건 경로의 triage_node가 finally에서 내리는 관례와도
     # 같다 — 계보 분기만 예외였다.
     #
     # 내리기 실패는 삼킨다: 명명이 OOM으로 실패해도 저장은 진행돼야 하므로
@@ -275,7 +272,6 @@ async def run_batch_brain_pipeline(
     session: AsyncSession,
     *,
     on_triage_item_done: Callable[[], None] | None = None,
-    on_digest_item_done: Callable[[], None] | None = None,
     on_embed_item_done: Callable[[], None] | None = None,
     on_genealogy_item_done: Callable[[], None] | None = None,
     on_save_item_done: Callable[[], None] | None = None,
@@ -296,12 +292,11 @@ async def run_batch_brain_pipeline(
     ----------
     items, session:
         See module-level usage.
-    on_triage_item_done, on_digest_item_done, on_embed_item_done,
+    on_triage_item_done, on_embed_item_done,
     on_genealogy_item_done, on_save_item_done:
         Optional zero-arg callbacks for per-item progress reporting in each
-        stage. ``on_triage_item_done`` / ``on_digest_item_done`` /
-        ``on_embed_item_done`` are forwarded to ``batch_triage_states`` /
-        ``batch_digest_states`` / ``batch_embed_and_search_node``;
+        stage. ``on_triage_item_done`` / ``on_embed_item_done`` are forwarded
+        to ``batch_triage_states`` / ``batch_embed_and_search_node``;
         ``on_genealogy_item_done`` fires inside the genealogy loop once per
         candidate; ``on_save_item_done`` fires once per state in the save
         loop (including invalid states that are skipped, so the bar reflects
@@ -322,15 +317,11 @@ async def run_batch_brain_pipeline(
         states, on_item_done=on_triage_item_done
     )
 
-    # ── Stage 1.5: batch digest (14B loaded once) ─────────────────────────
-    # ARG-173. Invalid states pass through untouched (no LLM call).
-    digested_states = await batch_digest_states(
-        triaged_states, on_item_done=on_digest_item_done
-    )
+    # ARG-308: 기사별 digest 단계(ARG-173 Stage 1.5)는 없앴다.
 
     # ── Stage 2: batch embed + similarity search ──────────────────────────
     embedded_states = await batch_embed_and_search_node(
-        digested_states, session, on_item_done=on_embed_item_done
+        triaged_states, session, on_item_done=on_embed_item_done
     )
 
     # ── Stage 2.5: batch name extraction (ARG-263) ────────────────────────

@@ -173,8 +173,8 @@ async def test_run_brain_pipeline_returns_early_when_triage_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_brain_pipeline_calls_digest_between_triage_and_embed(monkeypatch):
-    """digest_node가 triage 통과 후 embed 전에 호출되어 state에 digest를 남긴다."""
+async def test_run_brain_pipeline_goes_from_triage_straight_to_embed(monkeypatch):
+    """ARG-308: 기사별 digest를 더 만들지 않는다 — triage 다음이 바로 embed다."""
     import argos.brain.pipeline as pipe
 
     calls = []
@@ -182,10 +182,6 @@ async def test_run_brain_pipeline_calls_digest_between_triage_and_embed(monkeypa
     async def fake_triage(state):
         calls.append("triage")
         return {**state, "is_valid": True, "trust_score": 0.9, "category": None}
-
-    async def fake_digest(state):
-        calls.append("digest")
-        return {**state, "digest": "롱폼 본문"}
 
     async def fake_embed(state, session):
         calls.append("embed")
@@ -198,14 +194,14 @@ async def test_run_brain_pipeline_calls_digest_between_triage_and_embed(monkeypa
         return {**state, "saved": True}
 
     monkeypatch.setattr(pipe, "triage_node", fake_triage)
-    monkeypatch.setattr(pipe, "digest_node", fake_digest)
     monkeypatch.setattr(pipe, "embed_and_search_node", fake_embed)
     monkeypatch.setattr(pipe, "save_node", fake_save)
 
     await pipe.run_brain_pipeline("raw", "https://e.com", session=object())
 
-    assert calls == ["triage", "digest", "embed"]
-    assert saved["digest"] == "롱폼 본문"
+    assert calls == ["triage", "embed"]
+    assert not hasattr(pipe, "digest_node")
+    assert saved.get("digest") is None
 
 
 # ---------------------------------------------------------------------------
@@ -842,14 +838,12 @@ async def test_run_brain_pipeline_cold_start_assigns_before_saving(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_brain_pipeline_low_trust_assigns_before_saving(monkeypatch):
     """Low-trust (genealogy-skip) path: assign runs, then save sees its event_id."""
-    triaged = _triaged_state()
-    digested = _triaged_state(trust_score=0.1)
+    triaged = _triaged_state(trust_score=0.1)
     embedded = _triaged_state(trust_score=0.1)
     event_id = uuid.uuid4()
     call_order: list[str] = []
 
     monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
-    monkeypatch.setattr(brain_pipeline, "digest_node", AsyncMock(return_value=digested))
     monkeypatch.setattr(
         brain_pipeline, "embed_and_search_node", AsyncMock(return_value=embedded)
     )
@@ -1274,7 +1268,6 @@ async def test_single_pipeline_unloads_the_summary_model_after_naming(
     triaged = _triaged_state()
     cold = _triaged_state(genealogy_skipped=True)
     monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
-    monkeypatch.setattr(brain_pipeline, "digest_node", AsyncMock(side_effect=lambda s: s))
     monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock(return_value=cold))
     monkeypatch.setattr(
         brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
@@ -1301,7 +1294,6 @@ async def test_single_pipeline_does_not_unload_when_no_event_was_created(
 ):
     cold = _triaged_state(genealogy_skipped=True)
     monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=_triaged_state()))
-    monkeypatch.setattr(brain_pipeline, "digest_node", AsyncMock(side_effect=lambda s: s))
     monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock(return_value=cold))
     monkeypatch.setattr(
         brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
