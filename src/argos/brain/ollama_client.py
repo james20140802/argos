@@ -1,6 +1,10 @@
 from __future__ import annotations
 import asyncio
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 SMALL_MODEL = "qwen3:8b"
@@ -36,7 +40,7 @@ def _base_url() -> str:
     return OLLAMA_BASE_URL
 
 
-async def _generate(
+async def _generate_raw(
     model: str,
     prompt: str,
     keep_alive: str | int,
@@ -44,7 +48,8 @@ async def _generate(
     num_ctx: int = DEFAULT_NUM_CTX,
     think: bool | None = None,
     temperature: float | None = None,
-) -> str:
+) -> dict:
+    """POST /api/generate and return the whole JSON body (response + stats)."""
     payload: dict = {
         "model": model,
         "prompt": prompt,
@@ -62,7 +67,22 @@ async def _generate(
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10)) as client:
         resp = await client.post(f"{_base_url()}/api/generate", json=payload)
         resp.raise_for_status()
-        return resp.json()["response"]
+        return resp.json()
+
+
+async def _generate(
+    model: str,
+    prompt: str,
+    keep_alive: str | int,
+    timeout: float = DEFAULT_TIMEOUT,
+    num_ctx: int = DEFAULT_NUM_CTX,
+    think: bool | None = None,
+    temperature: float | None = None,
+) -> str:
+    body = await _generate_raw(
+        model, prompt, keep_alive, timeout, num_ctx, think, temperature
+    )
+    return body["response"]
 
 
 async def _unload(model: str) -> None:
@@ -96,6 +116,94 @@ async def query_ollama(
             # Ollama raises when it resets the socket mid-request under OOM/crash.
             # All are infra failures the pipeline must retain+retry, not drop. (ARG-190)
             raise OllamaInfraError(str(exc)) from exc
+
+
+async def loaded_models() -> list[str]:
+    """Names of the models Ollama currently holds in memory (``GET /api/ps``)."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{_base_url()}/api/ps")
+        resp.raise_for_status()
+        entries = resp.json().get("models") or []
+    names: list[str] = []
+    for entry in entries:
+        name = entry.get("name") or entry.get("model")
+        if name:
+            names.append(name)
+    return names
+
+
+async def query_exclusive(
+    model: str,
+    prompt: str,
+    keep_alive: str | int = "5m",
+    timeout: float = DEFAULT_TIMEOUT,
+    num_ctx: int = DEFAULT_NUM_CTX,
+    think: bool | None = None,
+    temperature: float | None = None,
+    stats_out: dict | None = None,
+    unload_after: bool = True,
+) -> str:
+    """Query `model` after unloading every OTHER loaded model (ARG-310).
+
+    Enforces the one-model-at-a-time VRAM invariant at call time: under a single
+    ``_MODEL_LOCK`` hold it asks ``/api/ps`` what is resident, unloads each model
+    other than `model`, then generates. No other in-process query can slip in
+    between the unload and the load.
+
+    Error handling matches ``query_ollama``: 5xx / transport failures raise
+    ``OllamaInfraError``. Fail closed: if ``/api/ps`` or unloading another
+    resident model fails, nothing is generated and ``OllamaInfraError`` is
+    raised -- loading `model` on top of an unknown/unremoved resident model
+    would break the one-model-at-a-time VRAM budget. Callers (event naming)
+    already turn that into a fallback title + stale flag.
+
+    ``unload_after`` (default True): `model` is unloaded before the lock is
+    released, so a concurrent Deep Dive (which only unloads its own "small"
+    role) cannot load its 32B next to a still-resident summary model. Trade-off:
+    multi-call batches reload the model per call; pass ``unload_after=False``
+    only from a process that unloads it itself when done. The unload also runs
+    when generation itself fails (e.g. a read timeout after the model loaded).
+    A failing post-unload is logged, not raised (the generated text is still valid).
+
+    The lock is per process; a different process (launchd brief, web Deep Dive)
+    can still load a model concurrently. The ``/api/ps`` check right before the
+    call removes the common overlap, not every race.
+
+    If `stats_out` is given it is filled with ``prompt_eval_count``,
+    ``eval_count`` and ``total_duration`` (ns) from the response, when present,
+    so callers can log token/time cost.
+    """
+    async with _MODEL_LOCK:
+        attempted = False  # 생성 요청을 보냈으면 실패했어도 모델이 올라갔을 수 있다
+        try:
+            resident = await loaded_models()
+            for other in resident:
+                if other != model:
+                    await _unload(other)
+            attempted = True
+            body = await _generate_raw(
+                model, prompt, keep_alive, timeout, num_ctx, think, temperature
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code >= 500:
+                raise OllamaInfraError(str(exc)) from exc
+            raise
+        except httpx.TransportError as exc:
+            raise OllamaInfraError(str(exc)) from exc
+        except (httpx.HTTPError, ValueError, KeyError, AttributeError) as exc:
+            raise OllamaInfraError(f"query_exclusive cleanup failed: {exc!r}") from exc
+        finally:
+            # 시간 초과 등으로 생성이 실패해도 잠금을 놓기 전에 내린다.
+            if unload_after and attempted:
+                try:
+                    await _unload(model)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("query_exclusive: unloading %s after use failed: %r", model, exc)
+    if stats_out is not None:
+        for key in ("prompt_eval_count", "eval_count", "total_duration"):
+            if key in body:
+                stats_out[key] = body[key]
+    return body["response"]
 
 
 async def unload_model(model: str) -> None:

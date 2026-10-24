@@ -17,7 +17,7 @@ from argos.brain.nodes.genealogist import genealogist_node
 from argos.brain.near_duplicate import simhash
 from argos.brain.nodes.assign_event import assign_event_node
 from argos.brain.nodes.save import save_node
-from argos.brain.llm_client import get_genealogist_llm_client
+from argos.brain.llm_client import get_event_summary_llm_client, get_genealogist_llm_client
 from argos.brain.titles import derive_title
 from argos.models.tech_item import CategoryType
 
@@ -76,6 +76,7 @@ async def _assign_then_save(
                         EvidenceDoc(
                             title=derive_title(saved.get("raw_text")),
                             summary=saved.get("summary") or saved.get("digest"),
+                            body=saved.get("raw_text"),
                         )
                     ],
                 )
@@ -85,6 +86,27 @@ async def _assign_then_save(
                 saved.get("source_url"),
                 exc,
             )
+    return saved
+
+
+async def _unload_event_summary_model() -> None:
+    """사건 요약 모델(ARG-310, 기본 gemma4:26b 18 GB)을 내린다.
+
+    명명이 keep_alive="5m"으로 올려 둔 채 두면 그 5분 안에 시작하는 다음
+    프로세스(Deep Dive 32B 등)와 VRAM이 겹친다. digest 노드가 14B를 끝나고
+    내리는 관례와 같다. 실패는 삼킨다 -- 저장 결과에 영향이 없다.
+    """
+    try:
+        await get_event_summary_llm_client().unload("large")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("event summary model unload failed: %r", exc)
+
+
+async def _save_and_release(state: BrainState, session: AsyncSession) -> BrainState:
+    """``_assign_then_save`` 뒤, 새 사건 명명이 있었으면 요약 모델을 내린다 (단건 경로)."""
+    saved = await _assign_then_save(state, session=session)
+    if saved.get("created_event_id") is not None:
+        await _unload_event_summary_model()
     return saved
 
 
@@ -181,7 +203,7 @@ async def run_brain_pipeline(
     embedded = await embed_and_search_node(digested, session=session)
     embedded = _attach_extracted_names([embedded])[0]
     if embedded.get("genealogy_skipped"):
-        return await _assign_then_save(embedded, session=session)
+        return await _save_and_release(embedded, session)
 
     trust_score = digested.get("trust_score")
     from argos.config import settings as _settings
@@ -192,7 +214,7 @@ async def run_brain_pipeline(
             "genealogy_skipped": True,
             "genealogy_skip_reason": "low_trust",
         }
-        return await _assign_then_save(skipped, session=session)
+        return await _save_and_release(skipped, session)
 
     prewarm_task = asyncio.create_task(get_genealogist_llm_client().prewarm("large"))
     try:
@@ -218,7 +240,7 @@ async def run_brain_pipeline(
     except Exception:  # noqa: BLE001
         pass
 
-    return await _assign_then_save(genealogized, session=session)
+    return await _save_and_release(genealogized, session)
 
 
 def _make_initial_state(item: dict) -> BrainState:
@@ -421,4 +443,7 @@ async def run_batch_brain_pipeline(
                         "run_batch_brain_pipeline on_save_item_done raised: %r",
                         exc,
                     )
+    # ARG-310: 배치 안에서 새 사건 명명이 한 번이라도 있었으면 요약 모델을 내린다.
+    if any(r.get("created_event_id") is not None for r in results):
+        await _unload_event_summary_model()
     return results

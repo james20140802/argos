@@ -524,3 +524,51 @@ async def test_preview_virtual_event_ids_are_deterministic(monkeypatch):
     assert [a.event_id for a in first.assignments] == [
         a.event_id for a in second.assignments
     ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_stale_events_carries_the_body_and_passes_the_cap():
+    """ARG-310: 본문이 EvidenceDoc.body로 실리고, SQL에 본문 상한이 바인딩된다."""
+    from types import SimpleNamespace
+
+    from argos.brain import event_backfill
+
+    event_id = uuid.uuid4()
+    rows = [
+        SimpleNamespace(
+            event_id=event_id, event_updated_at=AT, doc_title="t1", doc_summary="s1",
+            doc_body="body one",
+        ),
+        SimpleNamespace(
+            event_id=event_id, event_updated_at=AT, doc_title="t2", doc_summary=None,
+            doc_body=None,
+        ),
+    ]
+    result = MagicMock()
+    result.all.return_value = rows
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+
+    events = await event_backfill.fetch_stale_events(session)
+
+    assert [d.body for d in events[0].docs] == ["body one", None]
+    params = session.execute.await_args.args[1]
+    assert params["doc_max_chars"] == settings.user.event_summary.doc_max_chars
+    assert "doc_max_chars" in str(session.execute.await_args.args[0])
+
+
+@pytest.mark.asyncio
+async def test_rename_result_records_elapsed_seconds(monkeypatch):
+    from argos.brain import event_backfill
+    from argos.brain.event_naming import EvidenceDoc
+
+    monkeypatch.setattr(event_backfill, "apply_event_naming", AsyncMock(return_value=True))
+    session = _session_without_db_neighbours()
+    session.commit = AsyncMock()
+    events = [
+        event_backfill.StaleEvent(
+            event_id=uuid.uuid4(), docs=[EvidenceDoc(title="t", summary="s")]
+        )
+    ]
+    result = await event_backfill.rename_stale_events(session, events)
+    assert result.elapsed_seconds >= 0.0
