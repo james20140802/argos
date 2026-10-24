@@ -81,6 +81,11 @@ def _print_run_summary(summary, elapsed: float, failed: bool = False) -> None:
             table.add_row("일일 처리", queue_detail)
             if summary.preflight_filtered:
                 table.add_row("사전 필터 제거", f"{summary.preflight_filtered}개")
+            if summary.bodies_enriched or summary.bodies_missing:
+                table.add_row(
+                    "본문 보강",
+                    f"{summary.bodies_enriched}개 보강 / {summary.bodies_missing}개 본문 없음",
+                )
             table.add_row("트리아지 통과", f"{summary.triage_pass}개")
             table.add_row("신규 저장", f"{summary.saved_new}개")
             if summary.trust_skipped:
@@ -107,6 +112,8 @@ def _print_run_summary(summary, elapsed: float, failed: bool = False) -> None:
     print(f"일일 처리: {queue_detail}")
     if summary.preflight_filtered:
         print(f"사전 필터 제거: {summary.preflight_filtered}개")
+    if summary.bodies_enriched or summary.bodies_missing:
+        print(f"본문 보강: {summary.bodies_enriched}개 보강 / {summary.bodies_missing}개 본문 없음")
     print(f"트리아지 통과: {summary.triage_pass}개")
     print(f"신규 저장: {summary.saved_new}개")
     if summary.trust_skipped:
@@ -1575,6 +1582,185 @@ async def _alias_names(dry_run: bool = False, yes: bool = False, sample: int = 1
     return EXIT_OK
 
 
+def _build_body_stats_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos body-stats`` subcommand (ARG-309)."""
+    p = sub.add_parser(
+        "body-stats",
+        help="Show how many stored articles have no real body (< 500 chars)",
+        parents=[common],
+        description=(
+            "Read-only. Reports the share of stored articles whose body is shorter than\n"
+            "500 characters, the median body length and the number of garbled rows.\n"
+            "Use --by-host for a per-source table."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--by-host", action="store_true", help="Also print a per-host table")
+    p.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="With --by-host: show only the N largest hosts",
+    )
+
+
+def _cmd_body_stats(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _body_stats(
+            by_host=bool(getattr(args, "by_host", False)),
+            limit=getattr(args, "limit", None),
+        )
+    )
+
+
+async def _body_stats(by_host: bool = False, limit: int | None = None) -> int:
+    """본문 500자 미만 비율 집계 (읽기 전용)."""
+    from argos.crawler import body_backfill
+    from argos.crawler.body_quality import BODY_MIN_CHARS
+
+    async with AsyncSessionLocal() as session:
+        rows = await body_backfill.load_rows(session)
+    stats = body_backfill.compute_stats(rows)
+
+    print(f"전체 {stats.total}건")
+    print(
+        f"본문 {BODY_MIN_CHARS}자 미만 {stats.short}건 ({stats.short_pct:.1f}%)"
+        f" | 본문 길이 중앙값 {stats.median_len}자 | 문자 깨짐 {stats.mojibake}건"
+    )
+    if by_host:
+        hosts = stats.by_host[:limit] if limit else stats.by_host
+        print()
+        print(f"{'호스트':<32}{'건수':>7}{f'<{BODY_MIN_CHARS}자':>9}{'비율':>8}{'중앙값':>8}{'깨짐':>6}")
+        for h in hosts:
+            print(
+                f"{h.host[:31]:<32}{h.total:>7}{h.short:>9}{h.short_pct:>7.1f}%"
+                f"{h.median_len:>8}{h.mojibake:>6}"
+            )
+    return EXIT_OK
+
+
+def _build_refetch_bodies_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos refetch-bodies`` subcommand (ARG-309)."""
+    p = sub.add_parser(
+        "refetch-bodies",
+        help="Re-fetch stored articles with a thin or garbled body (preview, confirm, write)",
+        parents=[common],
+        description=(
+            "Re-download the article page for stored items whose body is shorter than 500\n"
+            "characters or contains garbled characters. Shows how many items will be\n"
+            "re-fetched first and writes only after confirmation. Updates raw_content and\n"
+            "simhash only (no LLM, no embeddings). A host that fails twice in a row is\n"
+            "skipped for the rest of the run."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--dry-run", action="store_true", help="Show the preview and exit without fetching or writing")
+    p.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    p.add_argument("--host", default=None, metavar="HOST", help="Only items from this host (e.g. huggingface.co)")
+    p.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Re-fetch at most N items",
+    )
+    p.add_argument(
+        "--no-archive",
+        action="store_true",
+        help=(
+            "Do not fall back to Internet Archive snapshots for openai.com articles "
+            "(the origin site blocks bots; the fallback runs only in this command, "
+            "at most 1 request/second)"
+        ),
+    )
+
+
+def _cmd_refetch_bodies(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _refetch_bodies(
+            dry_run=bool(getattr(args, "dry_run", False)),
+            yes=bool(getattr(args, "yes", False)),
+            host=getattr(args, "host", None),
+            limit=getattr(args, "limit", None),
+            use_archive=not bool(getattr(args, "no_archive", False)),
+        )
+    )
+
+
+async def _refetch_bodies(
+    dry_run: bool = False,
+    yes: bool = False,
+    host: str | None = None,
+    limit: int | None = None,
+    use_archive: bool = True,
+) -> int:
+    """미리보기 -> 확인 -> 다시 가져오기. 확인 없이는 네트워크도 DB 쓰기도 하지 않는다."""
+    from argos.crawler import body_backfill
+    from argos.crawler.archive_fallback import ArchiveFetcher, is_archive_eligible
+
+    async with AsyncSessionLocal() as session:
+        rows = await body_backfill.load_rows(session)
+        targets = body_backfill.select_targets(rows, host=host, limit=limit)
+        if not targets:
+            print("다시 가져올 기사가 없습니다.")
+            return EXIT_OK
+
+        by_host = body_backfill.count_by_host(targets)
+        shown = ", ".join(f"{h} {n}" for h, n in by_host[:8])
+        more = f" 외 {len(by_host) - 8}개 호스트" if len(by_host) > 8 else ""
+        print(f"다시 가져올 기사 {len(targets)}건 (호스트별: {shown}{more})")
+        archive_candidates = (
+            sum(1 for r in targets if is_archive_eligible(r.source_url)) if use_archive else 0
+        )
+        if archive_candidates:
+            print(
+                f"  openai.com 기사 {archive_candidates}건은 원 사이트가 막혀 있으면 Internet Archive "
+                f"보관본으로 시도합니다 (초당 1건 이하, 최대 약 {archive_candidates * 2 // 60 + 1}분). "
+                "끄려면 --no-archive."
+            )
+        if dry_run:
+            return EXIT_OK
+
+        if not yes:
+            reply = input("계속하시겠습니까? [y/N] ").strip().lower()
+            if reply not in ("y", "yes"):
+                print("취소되었습니다.")
+                return EXIT_GENERIC
+
+        def _progress(done: int, total: int) -> None:
+            print(f"  진행 {done}/{total}", flush=True)
+
+        archive_stopped = False
+        if archive_candidates:
+            async with ArchiveFetcher() as archive:
+                summary = await body_backfill.refetch_and_apply(
+                    session, targets, archive=archive, on_progress=_progress
+                )
+                archive_stopped = archive.disabled
+        else:
+            summary = await body_backfill.refetch_and_apply(
+                session, targets, on_progress=_progress
+            )
+    print(f"✅ 갱신 {summary.updated}건 / 그대로 {summary.unchanged}건(본문 없음)")
+    if summary.via_archive:
+        print(f"   그중 Internet Archive 보관본에서 가져옴 {summary.via_archive}건")
+    if archive_stopped:
+        print("   Internet Archive가 제한·오류로 응답하지 않아 중간에 보관본 조회를 멈췄습니다. 잠시 뒤 다시 실행하면 이어서 채웁니다.")
+    if summary.skipped:
+        print(
+            f"   차단으로 건너뜀 {summary.skipped}건 "
+            f"({', '.join(sorted(summary.skipped_hosts))})"
+        )
+    return EXIT_OK
+
+
 def _build_backfill_digests_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -2743,6 +2929,8 @@ def main(argv: list[str] | None = None) -> int:
     _build_backfill_images_parser(sub, common)
     _build_backfill_digests_parser(sub, common)
     _build_backfill_entities_parser(sub, common)
+    _build_body_stats_parser(sub, common)
+    _build_refetch_bodies_parser(sub, common)
     _build_backfill_trust_parser(sub, common)
     _build_backfill_events_parser(sub, common)
     _build_recluster_events_parser(sub, common)
@@ -2872,6 +3060,16 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_backfill_entities(args)
+    if args.command == "body-stats":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_body_stats(args)
+    if args.command == "refetch-bodies":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_refetch_bodies(args)
     if args.command == "backfill-trust":
         rc = _apply_config_override(args)
         if rc is not None:

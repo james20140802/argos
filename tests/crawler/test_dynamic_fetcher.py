@@ -813,3 +813,18 @@ async def test_fetch_dynamic_page_persists_favicon_fallback(monkeypatch):
     result = await dynamic_fetcher.fetch_dynamic_page("https://blog.example.com/x")
     assert result is not None
     assert result["image_url"] == "https://blog.example.com/favicon.ico"
+
+
+def test_extract_main_content_keeps_utf8_without_meta_charset():
+    """ARG-309: readability 요약 HTML에는 <meta charset>이 없어 UTF-8이 Latin-1로 깨졌다."""
+    html = (
+        "<html><head><title>T</title></head><body><article>"
+        "<p>we’re “here” café — 한글 본문입니다. " + "word " * 60 + "</p>"
+        "</article></body></html>"
+    )
+    _title, body = extract_main_content(html)
+    assert "we’re" in body
+    assert "“here”" in body
+    assert "café" in body
+    assert "한글" in body
+    assert "â€" not in body and "Ã©" not in body

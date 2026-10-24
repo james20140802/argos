@@ -277,6 +277,47 @@ async def test_fetch_item_detail_returns_digest() -> None:
         await engine.dispose()
 
 
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fetch_item_detail_has_body_follows_stored_length() -> None:
+    """ARG-309: raw_content 본문이 500자 미만이면 has_body=False."""
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.tech_item import CategoryType, TechItem
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    ids: list[uuid.UUID] = []
+    try:
+        async with Session() as session:
+            for title, body in (("arg309-thin", "short"), ("arg309-full", "w " * 400)):
+                item = TechItem(
+                    title=title,
+                    source_url=f"https://example.com/arg309/{uuid.uuid4()}",
+                    raw_content=f"{title}\n\n{body}",
+                    category=CategoryType.ALPHA,
+                    trust_score=0.7,
+                )
+                session.add(item)
+                await session.flush()
+                ids.append(item.id)
+            await session.commit()
+
+        async with Session() as session:
+            thin = await fetch_item_detail(session, ids[0])
+            full = await fetch_item_detail(session, ids[1])
+            assert thin is not None and thin.has_body is False
+            assert full is not None and full.has_body is True
+    finally:
+        async with Session() as session:
+            if ids:
+                await session.execute(sa_delete(TechItem).where(TechItem.id.in_(ids)))
+            await session.commit()
+        await engine.dispose()
+
+
 def test_similar_limit_default_is_five() -> None:
     from argos.web.services.detail import SIMILAR_LIMIT
 

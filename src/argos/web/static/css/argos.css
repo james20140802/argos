@@ -990,6 +990,12 @@ code { font: 500 0.92em/1 var(--font-mono); }
   color: color-mix(in srgb, var(--ink) 88%, var(--muted));
 }
 
+.detail-no-body {
+  margin: 0;
+  font: 400 14px/1.5 var(--font);
+  color: var(--muted);
+}
+
 .detail-source { margin: 0; }
 .detail-source__link,
 .not-found__link {

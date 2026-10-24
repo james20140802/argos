@@ -137,7 +137,10 @@ def extract_main_content(html: str) -> tuple[str, str]:
         if not candidate or not candidate.strip():
             continue
         try:
-            root = etree.fromstring(candidate.encode(), parser=etree.HTMLParser())
+            # encoding 미지정이면 UTF-8 바이트를 Latin-1로 읽어 문자가 깨진다 (ARG-309).
+            root = etree.fromstring(
+                candidate.encode("utf-8"), parser=etree.HTMLParser(encoding="utf-8")
+            )
         except (etree.XMLSyntaxError, ValueError, TypeError):
             continue
         if root is None:

@@ -341,6 +341,22 @@ requires_graph_libs = pytest.mark.skipif(
 """
 
 
+@pytest.fixture(autouse=True)
+def _no_live_body_enrichment(monkeypatch):
+    """ARG-309: run_full_pipeline이 실제 기사 페이지를 가져오지 않게 한다.
+
+    큐에서 꺼낸 짧은 항목은 네트워크로 보강되므로, 파이프라인을 도는 기존
+    테스트가 라이브 HTTP를 치지 않도록 기본은 아무것도 안 하는 가짜로 둔다.
+    보강 동작을 검증하는 테스트는 자기 monkeypatch로 다시 덮어쓴다.
+    """
+    from argos.crawler.body_enrich import EnrichReport
+
+    async def _noop(items, **_kwargs):
+        return EnrichReport()
+
+    monkeypatch.setattr("argos.crawler.pipeline.enrich_bodies", _noop)
+
+
 # --------------------------------------------------------------------- #
 # 실제 Ollama 차단 — 테스트는 로컬 Ollama(11434)에 닿지 않는다.
 #

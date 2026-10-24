@@ -864,3 +864,61 @@ async def test_fetch_url_content_dynamic_fallback_preserves_image_url() -> None:
     assert result is not None
     assert result["image_url"] == "https://cdn.example.com/spa.jpg"
 
+
+
+# ---------------------------------------------------------------------------
+# fetch_article: 첫 URL도 scheme + SSRF 검증 (ARG-309 리뷰)
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_article_refuses_unsafe_urls_without_any_request() -> None:
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    from argos.crawler.add_url import fetch_article
+
+    get_mock = AsyncMock()
+    dynamic_mock = AsyncMock()
+    checked: list[str | None] = []
+
+    async def _fake_is_safe(url: str) -> bool:
+        # DNS 없이 호스트 리터럴만 본다 — 실제 _is_safe_url과 같은 판정.
+        host = urlsplit(url).hostname
+        checked.append(host)
+        ip = ipaddress.ip_address(host)
+        return not (ip.is_private or ip.is_loopback or ip.is_link_local)
+
+    urls = [
+        "http://127.0.0.1/admin",
+        "http://10.0.0.5/x",
+        "https://192.168.1.10/feed",
+        "http://169.254.169.254/latest/meta-data",
+        "file:///etc/passwd",
+        "ftp://example.com/x",
+    ]
+    with (
+        patch("argos.crawler.add_url._is_safe_url", new=_fake_is_safe),
+        patch("argos.crawler.add_url._get_with_retry", new=get_mock),
+        patch("argos.crawler.add_url.fetch_dynamic_page", new=dynamic_mock),
+    ):
+        for url in urls:
+            assert await fetch_article(url) is None
+
+    get_mock.assert_not_called()
+    dynamic_mock.assert_not_called()
+    # 비 http(s) scheme은 SSRF 확인 전에 걸러진다.
+    assert checked == ["127.0.0.1", "10.0.0.5", "192.168.1.10", "169.254.169.254"]
+
+
+async def test_fetch_article_still_fetches_public_url() -> None:
+    from argos.crawler.add_url import fetch_article
+
+    inner = AsyncMock(return_value={"title": "t", "raw_content": "body"})
+    with (
+        _patch_safe_url(True),
+        patch("argos.crawler.add_url._fetch_url_content", new=inner),
+    ):
+        result = await fetch_article("https://example.com/post")
+
+    assert result == {"title": "t", "raw_content": "body"}
+    inner.assert_awaited_once_with("https://example.com/post")

@@ -17,6 +17,7 @@ from argos.brain.graph_state import BrainState
 from argos.brain.preflight import is_preflight_reject
 from argos.config import settings
 from argos.crawler.arxiv_fetcher import fetch_arxiv_recent
+from argos.crawler.body_enrich import enrich_bodies
 from argos.crawler.dynamic_fetcher import fetch_dynamic_page
 from argos.crawler.rss_fetcher import run_rss_fetchers
 from argos.crawler.spa_fetcher import run_spa_fetchers
@@ -53,6 +54,10 @@ class PipelineSummary:
     # default to keep existing test fixtures (PipelineSummary(crawled_total=…))
     # working without modification.
     succession_alerts: list[SuccessionAlert] = field(default_factory=list)
+    # ARG-309: 오늘 배치에서 본문을 기사 페이지로 보강한 건수 / 보강 뒤에도 본문이
+    # 없는 건수. 기본값 0이라 기존 PipelineSummary(...) 호출부는 그대로 동작한다.
+    bodies_enriched: int = 0
+    bodies_missing: int = 0
 
 
 async def run_static_pipeline(session: AsyncSession) -> list[dict]:
@@ -299,6 +304,20 @@ async def run_full_pipeline(
         for row in queue_rows
     ]
 
+    # ── Stage 3b: 본문이 짧은 항목은 기사 페이지에서 본문을 가져온다 (ARG-309) ──
+    # 크롤 단계가 아니라 꺼낸 배치에만 붙인다 — 네트워크 비용이 daily_limit로 묶이고,
+    # 대기 중이던 큐 항목도 처리되는 날 자동으로 보강된다. 실패해도 실행은 계속된다.
+    bodies_enriched = 0
+    bodies_missing = 0
+    try:
+        enrich_report = await enrich_bodies(selected_items, max_attempts=len(selected_items))
+        bodies_enriched = enrich_report.enriched
+        bodies_missing = enrich_report.missing
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("run_full_pipeline: body enrichment failed: %r", exc)
+
     # ── Stage 4: preflight filter ─────────────────────────────────────────
     preflight_filtered = 0
     if settings.user.triage.preflight_filter:
@@ -435,5 +454,7 @@ async def run_full_pipeline(
         duration_seconds=duration,
         queue_remaining=queue_remaining,
         succession_alerts=succession_alerts,
+        bodies_enriched=bodies_enriched,
+        bodies_missing=bodies_missing,
     )
     return results, summary

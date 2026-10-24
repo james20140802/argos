@@ -141,6 +141,9 @@ class ItemDetailView:
     # 기본값 None이라 기존 호출부/테스트는 무영향.
     trust_rubric: Optional[dict] = None
     corroboration_count: Optional[int] = None
+    # ARG-309: 저장된 본문이 500자 이상인가. False면 상세에 "본문 없음"을 표시한다.
+    # 기본값 True라 이 필드를 넘기지 않는 기존 호출부/테스트는 무영향.
+    has_body: bool = True
 
     @property
     def is_timeline_view(self) -> bool:
@@ -381,6 +384,7 @@ async def fetch_item_detail(
             TechItem.published_at,
             TechItem.trust_rubric,
             TechItem.corroboration_count,
+            TechItem.raw_content,
             UserAsset.id.label("asset_id"),
             UserAsset.status.label("status"),
         )
@@ -394,6 +398,10 @@ async def fetch_item_detail(
     row = (await session.execute(stmt)).first()
     if row is None:
         return None
+
+    # 지연 import: argos.crawler 패키지는 파이프라인·DB를 끌어와서, 모듈 최상단에서
+    # 가져오면 build_web_app()의 import 그래프(DB 없는 CI 보장)가 깨진다.
+    from argos.crawler.body_quality import has_body
 
     predecessors = await _fetch_predecessors(session, item_id)
     successors = await _fetch_successors(session, item_id)
@@ -436,4 +444,5 @@ async def fetch_item_detail(
         asset_id=row.asset_id,
         trust_rubric=row.trust_rubric,
         corroboration_count=row.corroboration_count,
+        has_body=has_body(row.raw_content, row.title),
     )
