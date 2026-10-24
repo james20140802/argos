@@ -10,7 +10,7 @@ from argos.slack.app import build_app
 
 async def main() -> None:
     app = build_app()
-    handler = AsyncSocketModeHandler(app, settings.secrets.SLACK_APP_TOKEN)
+    handler = AsyncSocketModeHandler(app, settings.secrets.SLACK_APP_TOKEN.get_secret_value())
     await handler.start_async()
 
 

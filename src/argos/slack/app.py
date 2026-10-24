@@ -12,9 +12,10 @@ from argos.slack.handlers.untrack import handle_untrack
 
 
 def build_app() -> AsyncApp:
-    if not settings.secrets.SLACK_BOT_TOKEN:
+    bot_token = settings.secrets.SLACK_BOT_TOKEN.get_secret_value()
+    if not bot_token:
         raise ValueError("SLACK_BOT_TOKEN is not set")
-    app = AsyncApp(token=settings.secrets.SLACK_BOT_TOKEN)
+    app = AsyncApp(token=bot_token)
     register_handlers(app)
     return app
 
