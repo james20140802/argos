@@ -145,7 +145,10 @@ class _Unload:
         self.models.append(model)
 
 
-def _run(tmp_path, scored, *, ask, docs=None, max_calls=None, unload=None, config=None):
+def _run(
+    tmp_path, scored, *, ask, docs=None, max_calls=None, unload=None, config=None,
+    other_models=(),
+):
     cache = PairVerdictCache.load(tmp_path / "pc.jsonl")
     docs = docs or [_doc(n) for n in range(1, 8)]
     return asyncio.run(
@@ -159,6 +162,7 @@ def _run(tmp_path, scored, *, ask, docs=None, max_calls=None, unload=None, confi
             load_texts=_texts,
             max_calls=max_calls,
             unload=unload or _Unload(),
+            other_models=other_models,
         )
     ), cache
 
@@ -267,3 +271,50 @@ def test_cross_source_pairs_are_not_asked_by_default(tmp_path):
 def test_cache_is_persisted_after_the_batch(tmp_path):
     _run(tmp_path, [_edge(1, 2, 0.6)], ask=_Ask(default="DIFFERENT 다른 글"))
     assert len(PairVerdictCache.load(tmp_path / "pc.jsonl")) == 1
+
+
+def test_other_models_are_unloaded_before_the_first_query_and_not_the_checker(tmp_path):
+    events: list[tuple[str, str]] = []
+
+    class _Rec:
+        async def __call__(self, model):
+            events.append(("unload", model))
+
+    class _AskRec(_Ask):
+        async def __call__(self, model, prompt):
+            events.append(("ask", model))
+            return await super().__call__(model, prompt)
+
+    _run(
+        tmp_path, BAND, ask=_AskRec(), unload=_Rec(),
+        other_models=["qwen3:32b", MODEL, "qwen3:8b"],
+    )
+    assert events[:2] == [("unload", "qwen3:32b"), ("unload", "qwen3:8b")]
+    assert [e for e in events if e[0] == "ask"] and events[2][0] == "ask"
+    assert events.count(("unload", "qwen3:32b")) == 1  # 배치당 한 번
+    assert events[-1] == ("unload", MODEL)  # 끝에서 검사 모델만 내린다
+    assert ("unload", MODEL) not in events[:-1]
+
+
+def test_nothing_to_ask_means_other_models_are_left_alone(tmp_path):
+    unload = _Unload()
+    _run(tmp_path, [_edge(1, 4, 0.9)], ask=_Ask(), unload=unload, other_models=["qwen3:32b"])
+    assert unload.models == []
+
+
+def test_unload_failure_of_other_models_does_not_block_the_check(tmp_path):
+    class _Boom:
+        async def __call__(self, model):
+            raise RuntimeError("boom")
+
+    ask = _Ask()
+    report, _ = _run(tmp_path, BAND, ask=ask, unload=_Boom(), other_models=["qwen3:32b"])
+    assert report.asked == 3 and len(ask.calls) == 3
+
+
+def test_default_other_models_come_from_settings_without_the_checker():
+    from argos.brain.pair_check import other_configured_models
+
+    others = other_configured_models(MODEL)
+    assert MODEL not in others and len(others) == len(set(others))
+    assert "qwen3:8b" in others and "qwen3:32b" in others

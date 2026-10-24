@@ -339,6 +339,26 @@ async def _unload_ollama(model: str) -> None:
     await unload_model(model)
 
 
+def other_configured_models(model: str) -> list[str]:
+    """설정에 있는 다른 LLM 모델들(중복 제거, `model` 제외) — 확인 전에 내릴 후보."""
+    from argos.config import settings
+
+    user = settings.user
+    candidates = [
+        user.ollama.model_triage,
+        user.ollama.model_deepdive,
+        user.genealogist.model,
+        user.digest.model,
+    ]
+    seen: set[str] = {model}
+    others: list[str] = []
+    for name in candidates:
+        if name and name not in seen:
+            seen.add(name)
+            others.append(name)
+    return others
+
+
 async def fetch_pair_texts(
     session, ids
 ) -> "dict[uuid.UUID, tuple[str, str | None, str | None]]":
@@ -376,13 +396,15 @@ async def check_ambiguous_pairs(
     load_texts=None,
     max_calls: int | None = None,
     unload=None,
+    other_models=None,
 ) -> PairCheckReport:
     """밴드 짝을 골라 캐시를 먼저 보고, 미스만 LLM에 묻는다.
 
     Ollama가 안 닿거나 응답이 이상해도 예외를 올리지 않는다 — 교정은 이 확인이 꺼진
     것과 같은 결과로 계속 진행돼야 한다(캐시에 이미 있는 거부는 그대로 적용).
     `ask(model, prompt) -> str`, `load_texts(session, ids)`, `unload(model)`은
-    테스트가 갈아 끼우는 자리다.
+    테스트가 갈아 끼우는 자리다. 첫 물음 직전에 `other_models`(기본: 설정의 다른 LLM
+    모델들)를 먼저 내려, 심층 분석 등으로 남은 모델과 VRAM에 동시에 올라가지 않게 한다.
     """
     started = time.monotonic()
     model = config.pair_check_model
@@ -408,6 +430,7 @@ async def check_ambiguous_pairs(
     verdicts: list[PairVerdict] = []
     asked = cache_hits = skipped = 0
     infra_down = False
+    others_unloaded = False
     reasons: list[str] = []
     over_cap = 0
 
@@ -442,6 +465,18 @@ async def check_ambiguous_pairs(
                 over_cap += 1
                 continue
             asked += 1
+            if not others_unloaded:
+                others_unloaded = True
+                targets = (
+                    other_configured_models(model)
+                    if other_models is None
+                    else [m for m in other_models if m != model]
+                )
+                for other in targets:
+                    try:
+                        await unload(other)
+                    except Exception as exc:  # noqa: BLE001 — best-effort
+                        logger.warning("pair_check: unload %s failed: %s", other, exc)
             try:
                 answer = await ask(model, build_prompt(left_text, right_text))
             except Exception as exc:  # noqa: BLE001 — 교정을 막지 않는다
