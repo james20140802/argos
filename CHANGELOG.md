@@ -10,6 +10,68 @@ This history was reconstructed retroactively from annotated release tags
 (`git tag -n99`) and their commit ranges; entries before this file existed may be
 less granular than future ones.
 
+## [0.5.0] — 2026-10-25
+
+Event summaries that read the article, fuller article bodies, an ambiguous-pair
+check in nightly correction, and the first pieces of the technology layer (role
+branches and name aliases). 53 commits since v0.4.2.
+
+**Upgrade note:** two new Alembic migrations (role branches, name aliases). Run
+`uv run alembic upgrade head` from a source checkout before starting the new
+version — `argos doctor` reports when the DB is behind. Event summaries and the
+pair check use `gemma4:26b` (`ollama pull gemma4:26b`; `argos doctor` warns when
+it is missing). Optional one-off steps, each with a preview first:
+`argos refetch-bodies --dry-run`, `argos taxonomy draft --seed` →
+`argos taxonomy apply`, `argos alias-names --dry-run`.
+
+### Added
+
+- **Event summaries read the article body** — event names and summaries are
+  written by `gemma4:26b` from the linked articles' bodies, split into chunks
+  and folded when they do not fit, and the model can be changed with
+  `event_summary.model`. The three largest real events finished in 17–24 s each.
+  (ARG-310)
+- **Fuller article bodies** — short items from RSS are completed from the
+  article page while crawling; `argos body-stats [--by-host]` shows how many
+  stored articles have no real body (< 500 chars) and `argos refetch-bodies`
+  re-downloads them after a preview, falling back to Internet Archive snapshots
+  for openai.com (at most 1 request/second). Articles that still have no body
+  are marked "본문 없음" on the detail page. On the author's corpus the share of
+  short bodies fell from 69.6% to 17.4%. (ARG-309)
+- **Ambiguous-pair check in nightly correction** — same-site pairs whose score
+  sits just above the grouping threshold are asked of a local LLM ("same
+  announcement?"); only pairs judged different are split. Answers are cached so
+  the same pair is never asked twice, and the correction preview marks pairs the
+  LLM split. Wrong groupings fell from 33.8% to 13.6% in the judgment set, at the
+  cost of keeping 30/45 correct groups intact instead of 36/45. (ARG-307)
+- **`argos taxonomy`** — draft the upper branches of the technology role tree
+  (`draft --seed` or LLM-suggested), rename / merge / split / delete branches in
+  the draft file, and confirm once with `apply`. Confirmed branches are not
+  changed by automatic processing. (ARG-311)
+- **`argos alias-names`** — merges different names of the same technology
+  (spacing / case variants and vendor prefixes such as "OpenAI Codex" → "Codex")
+  after a preview; names whose version numbers differ are never merged, and
+  `--show NAME` lists a name's other names. Stored names are not modified.
+  (ARG-312)
+
+### Changed
+
+- **One LLM at a time, everywhere** — event summaries, the pair check and the
+  taxonomy draft unload any other resident model before loading theirs and
+  unload their own model afterwards, even when generation fails.
+- **`argos doctor` / `argos init`** check for the summary and pair-check models.
+
+### Fixed
+
+- **Garbled characters in article bodies** — extraction no longer decodes UTF-8
+  pages as Latin-1 ("weâ\x80\x99re" → "we’re").
+
+### Security
+
+- **URL validation before fetching bodies** — body refetch validates the scheme
+  and blocks private-network targets before the first request, and robots.txt
+  is checked on every redirect hop of an archive fetch.
+
 ## [0.4.2] — 2026-10-22
 
 Nightly event-boundary correction: Argos can now re-check a period's events
