@@ -265,3 +265,65 @@ async def test_unloads_model_even_when_generation_times_out(monkeypatch):
         await query_exclusive("gemma4:26b", "p")
     assert unloaded == ["gemma4:26b"]
     assert not oc._MODEL_LOCK.locked()
+
+
+# --- ARG-308: structured output (``format``) ---
+
+
+@pytest.mark.asyncio
+async def test_format_schema_reaches_the_generate_payload():
+    schema = {"type": "object", "properties": {"title": {"type": "string"}}}
+    with respx.mock:
+        _ps([])
+        route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "{}"})
+        )
+        await query_exclusive("gemma4:26b", "p", format=schema)
+        bodies = _bodies(route)
+        assert bodies[0]["format"] == schema
+        assert "format" not in bodies[1]  # the post-unload call carries no format
+
+
+@pytest.mark.asyncio
+async def test_format_is_omitted_by_default():
+    with respx.mock:
+        _ps([])
+        route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "ok"})
+        )
+        await query_exclusive("gemma4:26b", "p")
+        assert "format" not in _bodies(route)[0]
+
+
+@pytest.mark.asyncio
+async def test_query_ollama_forwards_format():
+    from argos.brain.ollama_client import query_ollama
+
+    with respx.mock:
+        route = respx.post(f"{OLLAMA_BASE_URL}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "ok"})
+        )
+        await query_ollama("qwen3:8b", "p", format="json")
+        assert _bodies(route)[0]["format"] == "json"
+
+
+@pytest.mark.asyncio
+async def test_llm_client_routes_format_to_both_paths(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import argos.brain.llm_client as lc
+    from argos.config import UserConfig
+
+    class _S:
+        user = UserConfig(event_summary={"model": "custom:7b"})
+
+    monkeypatch.setattr(lc, "_get_settings", lambda: _S)
+    excl = AsyncMock(return_value="r")
+    plain = AsyncMock(return_value="p")
+    monkeypatch.setattr(lc, "query_exclusive", excl)
+    monkeypatch.setattr(lc, "query_ollama", plain)
+    client = lc.get_event_summary_llm_client()
+    await client.query("large", "x", exclusive=True, format={"type": "object"})
+    assert excl.await_args.kwargs["format"] == {"type": "object"}
+    await client.query("large", "x", format="json")
+    assert plain.await_args.kwargs["format"] == "json"

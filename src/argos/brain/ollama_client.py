@@ -48,8 +48,13 @@ async def _generate_raw(
     num_ctx: int = DEFAULT_NUM_CTX,
     think: bool | None = None,
     temperature: float | None = None,
+    format: str | dict | None = None,
 ) -> dict:
-    """POST /api/generate and return the whole JSON body (response + stats)."""
+    """POST /api/generate and return the whole JSON body (response + stats).
+
+    ``format`` (ARG-308) is Ollama's structured-output switch: ``"json"`` or a
+    JSON schema dict. Omitted from the payload when ``None``.
+    """
     payload: dict = {
         "model": model,
         "prompt": prompt,
@@ -59,6 +64,8 @@ async def _generate_raw(
     }
     if think is not None:
         payload["think"] = think
+    if format is not None:
+        payload["format"] = format
     if temperature is not None:
         # ARG-206: triage now extracts a deterministic rubric — temperature=0
         # keeps the 5-field JSON extraction as reproducible as an LLM call
@@ -78,9 +85,10 @@ async def _generate(
     num_ctx: int = DEFAULT_NUM_CTX,
     think: bool | None = None,
     temperature: float | None = None,
+    format: str | dict | None = None,
 ) -> str:
     body = await _generate_raw(
-        model, prompt, keep_alive, timeout, num_ctx, think, temperature
+        model, prompt, keep_alive, timeout, num_ctx, think, temperature, format=format
     )
     return body["response"]
 
@@ -100,10 +108,13 @@ async def query_ollama(
     num_ctx: int = DEFAULT_NUM_CTX,
     think: bool | None = None,
     temperature: float | None = None,
+    format: str | dict | None = None,
 ) -> str:
     async with _MODEL_LOCK:
         try:
-            return await _generate(model, prompt, keep_alive, timeout, num_ctx, think, temperature)
+            return await _generate(
+                model, prompt, keep_alive, timeout, num_ctx, think, temperature, format=format
+            )
         except httpx.HTTPStatusError as exc:
             # raise_for_status() failure: 5xx (incl. Ollama's 500 on VRAM OOM)
             # is infra; 4xx is a real request bug and must surface untouched.
@@ -142,6 +153,7 @@ async def query_exclusive(
     temperature: float | None = None,
     stats_out: dict | None = None,
     unload_after: bool = True,
+    format: str | dict | None = None,
 ) -> str:
     """Query `model` after unloading every OTHER loaded model (ARG-310).
 
@@ -182,7 +194,7 @@ async def query_exclusive(
                     await _unload(other)
             attempted = True
             body = await _generate_raw(
-                model, prompt, keep_alive, timeout, num_ctx, think, temperature
+                model, prompt, keep_alive, timeout, num_ctx, think, temperature, format=format
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code >= 500:
