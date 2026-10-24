@@ -369,3 +369,12 @@ def test_plan_recanonicalizes_when_the_best_name_changes():
 def test_plan_is_deterministic():
     inputs, _ = _inputs()
     assert ea.compute_alias_plan(inputs) == ea.compute_alias_plan(inputs)
+
+
+def test_thresholds_come_from_config():
+    from argos.config import AliasConfig, UserConfig
+
+    keys = ["openai", "openai codex", "codex", "openai sora", "sora", "openai gpt 6", "gpt 6"]
+    assert "openai" in ea.find_roots(keys)
+    assert "openai" not in ea.find_roots(keys, AliasConfig(min_root_followers=4))
+    assert UserConfig.model_validate({"aliases": {"min_literal_docs": 5}}).aliases.min_literal_docs == 5

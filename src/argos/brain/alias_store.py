@@ -24,6 +24,7 @@ from argos.brain.entity_aliases import (
     compute_alias_plan,
 )
 from argos.brain.entity_store import name_document_frequency
+from argos.config import settings
 from argos.models.entity import Entity
 from argos.models.entity_alias import AliasRule, EntityAlias
 from argos.models.tech_item import TechItem
@@ -74,7 +75,7 @@ async def load_inputs(session: AsyncSession) -> AliasInputs:
 
 async def plan_aliases(session: AsyncSession) -> AliasPlan:
     """별칭 계획을 만든다. SELECT만 실행한다."""
-    return compute_alias_plan(await load_inputs(session))
+    return compute_alias_plan(await load_inputs(session), settings.user.aliases)
 
 
 async def apply_aliases(session: AsyncSession, plan: AliasPlan) -> int:

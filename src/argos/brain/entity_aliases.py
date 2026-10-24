@@ -22,15 +22,12 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping, Sequence
 
+from argos.config import AliasConfig
 from argos.models.entity_alias import AliasRule
 
-# 문턱값 — 실측 사례(openai codex 9 / claude opus 5 18 / code 0.75 / agent 0.88 ...)로
-# 정했다. config가 아니라 모듈 상수로 둔다(ARG-311과 config.py 충돌을 피하려는 뜻도 있다).
-MIN_ROOT_FOLLOWERS = 3  # "V X"(X도 이름) 꼴이 이만큼 있어야 V가 접두어 뿌리다
-MAX_LOWERCASE_RATIO = 0.2  # B가 소문자로 쓰인 비율의 상한
-MIN_LITERAL_DOCS = 2  # "V B"를 그대로 쓴 문서 수의 하한
-COMPETITOR_MARGIN = 3  # 1위가 2위의 이 배수 이상이어야 한다
-MIN_SINGLE_WORD_LENGTH = 4  # 한 낱말 B의 최소 글자 수(숫자를 품으면 예외)
+# 문턱값은 config(``[aliases]``)에서 온다. 판정 함수는 순수 함수로 남기려고 값을
+# 인자로 받고, 안 넘기면 기본값(AliasConfig())을 쓴다.
+_DEFAULT = AliasConfig()
 
 
 @dataclass(frozen=True)
@@ -196,7 +193,7 @@ class VendorDecision:
     held: tuple[HeldPair, ...]
 
 
-def find_roots(keys: Iterable[str]) -> frozenset[str]:
+def find_roots(keys: Iterable[str], cfg: AliasConfig = _DEFAULT) -> frozenset[str]:
     """접두어 뿌리 — 자신이 이름이고, "뿌리 X" 꼴 이름 중 **X도 이름인 것**이 3개 이상인 이름.
 
     하드코딩 목록이 아니라 코퍼스에서 뽑는다. 낱말 경계로 센다(``open``은
@@ -220,7 +217,7 @@ def find_roots(keys: Iterable[str]) -> frozenset[str]:
     return frozenset(
         prefix
         for prefix, count in followers.items()
-        if prefix in key_set and count >= MIN_ROOT_FOLLOWERS
+        if prefix in key_set and count >= cfg.min_root_followers
     )
 
 
@@ -228,6 +225,7 @@ def trusted_vendors(
     roots: frozenset[str],
     doc_counts: Mapping[str, int],
     ratio_fn: RatioFn,
+    cfg: AliasConfig = _DEFAULT,
 ) -> frozenset[str]:
     """접두어 뿌리 중 **회사/제품 접두어로 믿을 만한** 것만 남긴다.
 
@@ -236,14 +234,14 @@ def trusted_vendors(
     ``adam harvey -> harvey`` 같은 오탐이 나와서 두 조건을 더 건다. 둘 다 "덜 합치는
     쪽"으로만 작용한다.
 
-    - 뿌리 자신이 ``MIN_LITERAL_DOCS`` 문서 이상에 이름으로 나왔다(한 문서짜리는 접두어로
+    - 뿌리 자신이 ``min_literal_docs`` 문서 이상에 이름으로 나왔다(한 문서짜리는 접두어로
       확립된 게 아니다).
-    - 뿌리가 본문에서 소문자로 쓰인 비율이 ``MAX_LOWERCASE_RATIO`` 이하다(일반 낱말 거름).
+    - 뿌리가 본문에서 소문자로 쓰인 비율이 ``max_lowercase_ratio`` 이하다(일반 낱말 거름).
       비율을 못 구하면 믿지 않는다.
     """
-    seen = frozenset(r for r in roots if doc_counts.get(r, 0) >= MIN_LITERAL_DOCS)
+    seen = frozenset(r for r in roots if doc_counts.get(r, 0) >= cfg.min_literal_docs)
     ratios = ratio_fn(seen) if seen else {}
-    return frozenset(r for r in seen if r in ratios and ratios[r] <= MAX_LOWERCASE_RATIO)
+    return frozenset(r for r in seen if r in ratios and ratios[r] <= cfg.max_lowercase_ratio)
 
 
 def vendor_candidates(keys: Iterable[str], roots: frozenset[str]) -> list[VendorCandidate]:
@@ -258,16 +256,18 @@ def vendor_candidates(keys: Iterable[str], roots: frozenset[str]) -> list[Vendor
     return found
 
 
-def _is_distinctive_length(base: str) -> bool:
+def _is_distinctive_length(base: str, cfg: AliasConfig = _DEFAULT) -> bool:
     """짧은 약어는 접두어를 떼면 다른 말과 부딪힌다(``api``, ``i o``). 낱말 사이 공백은
     글자 수에 세지 않는다 — ``i o``(I/O)가 두 낱말이라는 이유로 통과하면 안 된다."""
-    return len(base.replace(" ", "")) >= MIN_SINGLE_WORD_LENGTH or any(
+    return len(base.replace(" ", "")) >= cfg.min_single_word_length or any(
         ch.isdigit() for ch in base
     )
 
 
 def decide_vendor_prefix(
-    candidates: Sequence[VendorCandidate], stats: VendorStats
+    candidates: Sequence[VendorCandidate],
+    stats: VendorStats,
+    cfg: AliasConfig = _DEFAULT,
 ) -> VendorDecision:
     """후보마다 합칠지 정한다. 한 조건이라도 모자라면 합치지 않는다.
 
@@ -283,7 +283,7 @@ def decide_vendor_prefix(
         rivals.setdefault(cand.base, {})[cand.alias] = stats.doc_counts.get(cand.alias, 0)
 
     for cand in candidates:
-        reason = _cheap_hold_reason(cand, stats, rivals[cand.base])
+        reason = _cheap_hold_reason(cand, stats, rivals[cand.base], cfg)
         if reason is None:
             survivors.append(cand)
         else:
@@ -295,7 +295,7 @@ def decide_vendor_prefix(
         ratio = ratios.get(cand.base)
         if ratio is None:
             held.append(HeldPair(cand.alias, cand.base, HOLD_BASE_UNVERIFIED))
-        elif ratio > MAX_LOWERCASE_RATIO:
+        elif ratio > cfg.max_lowercase_ratio:
             held.append(HeldPair(cand.alias, cand.base, HOLD_BASE_LOWERCASE))
         else:
             others = [n for alias, n in rivals[cand.base].items() if alias != cand.alias]
@@ -319,7 +319,10 @@ def decide_vendor_prefix(
 
 
 def _cheap_hold_reason(
-    cand: VendorCandidate, stats: VendorStats, rivals: Mapping[str, int]
+    cand: VendorCandidate,
+    stats: VendorStats,
+    rivals: Mapping[str, int],
+    cfg: AliasConfig = _DEFAULT,
 ) -> str | None:
     base = cand.base
     if base not in stats.keys:
@@ -332,16 +335,16 @@ def _cheap_hold_reason(
         # 통과한다. 제품(codex, cuda, opus 5)도 자기 이름이 따르는 이름을 거느려 뿌리가
         # 되기 때문에, "B는 뿌리가 아니다"만으로는 가장 흔한 사례가 다 막힌다.
         return HOLD_BASE_IS_VENDOR
-    if not _is_distinctive_length(base):
+    if not _is_distinctive_length(base, cfg):
         return HOLD_BASE_TOO_SHORT
     # 읽기 시점 "흔한 이름"(문서 비율)은 거르지 않는다 — codex·claude처럼 흔한 건
     # 그만큼 많이 언급되는 제품이라서, 문서 비율만으로는 일반 낱말과 가를 수 없다.
     # 일반 낱말은 위의 길이 검사와 아래 소문자 비율 검사가 가른다.
     own = stats.doc_counts.get(cand.alias, 0)
-    if own < MIN_LITERAL_DOCS:
+    if own < cfg.min_literal_docs:
         return HOLD_FEW_LITERAL_DOCS
     others = [n for alias, n in rivals.items() if alias != cand.alias]
-    if others and own < COMPETITOR_MARGIN * max(others):
+    if others and own < cfg.competitor_margin * max(others):
         return HOLD_COMPETING_VENDOR
     return None
 
@@ -406,7 +409,7 @@ class AliasPlan:
         return dict(sorted(counts.items()))
 
 
-def compute_alias_plan(inputs: AliasInputs) -> AliasPlan:
+def compute_alias_plan(inputs: AliasInputs, cfg: AliasConfig = _DEFAULT) -> AliasPlan:
     """저장된 이름과 코퍼스 통계로 별칭을 다시 계산하고 기존 행과 견준다.
 
     ``Manual`` 행(신고 교정, ARG-317)은 건드리지 않는다 — 그 행에 걸린 이름은
@@ -421,7 +424,7 @@ def compute_alias_plan(inputs: AliasInputs) -> AliasPlan:
     entity_by_id = {e.id: e for e in inputs.entities}
     keys = frozenset(entity_by_key)
 
-    roots = find_roots(keys)
+    roots = find_roots(keys, cfg)
 
     def ratio_fn(names: frozenset[str]) -> Mapping[str, float]:
         return lowercase_ratios(inputs.texts, names)
@@ -432,8 +435,8 @@ def compute_alias_plan(inputs: AliasInputs) -> AliasPlan:
         doc_counts=inputs.doc_counts,
         lowercase_ratios=ratio_fn,
     )
-    vendors = trusted_vendors(roots, inputs.doc_counts, ratio_fn)
-    decision = decide_vendor_prefix(vendor_candidates(keys, vendors), stats)
+    vendors = trusted_vendors(roots, inputs.doc_counts, ratio_fn, cfg)
+    decision = decide_vendor_prefix(vendor_candidates(keys, vendors), stats, cfg)
     groups = build_alias_groups(
         [*spacing_edges(keys), *decision.edges],
         inputs.doc_counts,
