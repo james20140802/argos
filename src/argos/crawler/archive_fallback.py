@@ -50,7 +50,7 @@ _ARCHIVE_HOSTS = frozenset({"archive.org", "web.archive.org"})
 _MIN_INTERVAL_SECONDS = 1.0
 _MAX_HOPS = 5
 _TIMEOUT_SECONDS = 30.0
-_MAX_CONSECUTIVE_LOOKUP_ERRORS = 3
+_MAX_CONSECUTIVE_ERRORS = 3
 _REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
 _TIMESTAMP = re.compile(r"^\d{8,14}$")
 # readability가 엉뚱한 블록을 고른 것으로 볼 기준 (실측: 1,645자 vs <article> 10,955자).
@@ -118,8 +118,10 @@ class ArchiveFetcher:
     def __init__(self, *, throttle: RequestThrottle | None = None) -> None:
         self.throttle = throttle or RequestThrottle()
         self.fetched = 0  # 보관본에서 본문을 얻은 건수
-        self.disabled = False  # 가용성 API가 연달아 실패하면 이번 실행에서는 접는다
-        self._lookup_errors = 0
+        # 가용성 API나 스냅샷 받기가 연달아 실패하면 이번 실행에서는 접는다.
+        # 연속 기록은 스냅샷을 실제로 받아 왔을 때만 끊긴다(조회 성공만으로는 아니다).
+        self.disabled = False
+        self._errors = 0
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> "ArchiveFetcher":
@@ -180,16 +182,18 @@ class ArchiveFetcher:
             current = nxt
         return None
 
+    def _record_failure(self) -> None:
+        self._errors += 1
+        if self._errors >= _MAX_CONSECUTIVE_ERRORS and not self.disabled:
+            logger.warning("Wayback keeps failing (availability or snapshot); skipping archive for this run")
+            self.disabled = True
+
     async def lookup(self, url: str) -> str | None:
         """가장 가까운 200 스냅샷의 타임스탬프. 없으면 None."""
         response = await self._get(f"{_AVAILABILITY_ENDPOINT}?{urlencode({'url': url})}")
         if response is None:
-            self._lookup_errors += 1
-            if self._lookup_errors >= _MAX_CONSECUTIVE_LOOKUP_ERRORS:
-                logger.warning("Wayback availability API keeps failing; skipping archive for this run")
-                self.disabled = True
+            self._record_failure()
             return None
-        self._lookup_errors = 0
         try:
             closest = response.json()["archived_snapshots"]["closest"]
         except (ValueError, KeyError, TypeError):
@@ -210,7 +214,9 @@ class ArchiveFetcher:
             return None
         response = await self._get(snapshot_url(timestamp, url))
         if response is None:
+            self._record_failure()
             return None
+        self._errors = 0
         title, body = extract_article_text(response.text)
         body = body.strip()
         if not body:

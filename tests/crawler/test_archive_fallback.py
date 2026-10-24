@@ -194,6 +194,22 @@ async def test_archive_disabled_after_repeated_lookup_failures():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_archive_disabled_after_repeated_snapshot_failures():
+    respx.get("https://archive.org/wayback/available").mock(
+        return_value=httpx.Response(200, json=_availability())
+    )
+    respx.get(snapshot_url(TS, ARTICLE_URL)).mock(return_value=httpx.Response(503))
+    async with _fetcher() as archive:
+        for _ in range(3):
+            assert await archive.fetch(ARTICLE_URL) is None
+        assert archive.disabled  # 조회 성공이 연속 실패를 지우지 않는다
+        before = len(respx.calls)
+        assert await archive.fetch(ARTICLE_URL) is None
+        assert len(respx.calls) == before
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_429_disables_archive_immediately_without_retrying():
     route = respx.get("https://archive.org/wayback/available").mock(
         return_value=httpx.Response(429, headers={"retry-after": "60"})
