@@ -189,6 +189,15 @@ class DigestConfig(BaseModel):
     min_output_chars: int = Field(default=150, ge=0)
 
 
+class TaxonomyConfig(BaseModel):
+    # ARG-311 역할 갈래 초안 생성(`argos taxonomy draft`) 전용 모델. 다른 모델과
+    # 독립적으로 바꿀 수 있게 config 필드로 둔다(spike와 같은 기본값).
+    model: str = Field(default="gemma4:26b")
+    num_ctx: int = Field(default=16384, ge=512)
+    # 초안 입력으로 쓰는 상위 엔티티 수(문서 수 기준).
+    draft_limit: int = Field(default=60, ge=1, le=500)
+
+
 class RSSFeedConfig(BaseModel):
     url: str
     category: Literal["Mainstream", "Alpha"] = "Mainstream"
@@ -460,6 +469,7 @@ class UserConfig(BaseModel):
     triage: TriageConfig = TriageConfig()
     genealogist: GenealogistConfig = GenealogistConfig()
     digest: DigestConfig = DigestConfig()
+    taxonomy: TaxonomyConfig = Field(default_factory=TaxonomyConfig)
     rss: RSSConfig = Field(default_factory=RSSConfig)
     spa: SPAConfig = Field(default_factory=SPAConfig)
     web: WebConfig = Field(default_factory=WebConfig)

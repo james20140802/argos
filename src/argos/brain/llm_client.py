@@ -181,3 +181,12 @@ def get_digest_llm_client() -> OllamaClient:
     if backend == "ollama":
         return OllamaClient(settings=settings, large_model=settings.user.digest.model)
     raise ValueError(f"Unknown LLM backend: {backend!r}")
+
+
+def get_taxonomy_llm_client() -> OllamaClient:
+    """Return an OllamaClient whose large role resolves to taxonomy.model (ARG-311)."""
+    settings = _get_settings()
+    backend = settings.user.llm.backend
+    if backend == "ollama":
+        return OllamaClient(settings=settings, large_model=settings.user.taxonomy.model)
+    raise ValueError(f"Unknown LLM backend: {backend!r}")
