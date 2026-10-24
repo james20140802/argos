@@ -102,6 +102,7 @@ uv run argos stats [--days]                       # Collection-status dashboard
 uv run argos backfill-images [--refetch] [--upgrade-favicons]  # Fill missing image_url (favicon by default)
 uv run argos backfill-digests [--limit] [--dry-run]  # Generate longform digest for rows where NULL (LLM, slow)
 uv run argos backfill-entities [--dry-run] [--yes] [--sample N]  # Rewrite stored entity names for existing articles (preview → confirm → write)
+uv run argos alias-names [--dry-run] [--yes] [--sample N] [--show NAME]  # Merge different names of one technology into an alias layer (preview → confirm → write; stored names untouched)
 uv run argos correct-events [--from] [--to] [--dry-run]  # Apply event merge/split corrections for a period (--dry-run: read-only preview)
 uv run argos config {path,get,set,list,migrate-env}  # Read/update ~/.config/argos/config.toml
 uv run argos taxonomy draft [--seed] [--keep-top] [--limit] [--file]  # 역할 갈래 초안 → 파일(DB 미기록). --seed는 LLM 없음

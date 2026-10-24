@@ -459,6 +459,17 @@ MAX_TRACKING_LEIDEN_RESOLUTION = 0.99
 무는 구간은 join_threshold > 0.99뿐이다."""
 
 
+class AliasConfig(BaseModel):
+    # ARG-312 별칭 판정 문턱값(`argos alias-names`). 실측 사례(openai codex 9 /
+    # claude opus 5 18 / code 0.75 / agent 0.88 ...)로 정한 값이 기본값이다.
+    # 전부 "덜 합치는 쪽"으로 작용한다 — 올리면 덜 합치고 내리면 더 합친다.
+    min_root_followers: int = Field(default=3, ge=1)  # "V X"(X도 이름) 꼴이 이만큼 있어야 V가 접두어 뿌리
+    max_lowercase_ratio: float = Field(default=0.2, ge=0.0, le=1.0)  # B가 소문자로 쓰인 비율 상한
+    min_literal_docs: int = Field(default=2, ge=1)  # "V B"를 그대로 쓴 문서 수 하한
+    competitor_margin: float = Field(default=3.0, ge=1.0)  # 1위가 2위의 이 배수 이상
+    min_single_word_length: int = Field(default=4, ge=1)  # 한 낱말 B 최소 글자 수(숫자를 품으면 예외)
+
+
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
@@ -478,6 +489,7 @@ class UserConfig(BaseModel):
     feed_ranking: FeedRankingConfig = Field(default_factory=FeedRankingConfig)
     event_detection: EventDetectionConfig = Field(default_factory=EventDetectionConfig)
     correction: CorrectionConfig = Field(default_factory=CorrectionConfig)
+    aliases: AliasConfig = Field(default_factory=AliasConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:
