@@ -9,6 +9,8 @@ import pytest
 from argos.brain.event_scoring import DocumentFeatures
 from argos.brain.ollama_client import OllamaInfraError
 from argos.brain.pair_check import (
+    DIFFERENT,
+    SAME,
     PairVerdictCache,
     build_prompt,
     check_ambiguous_pairs,
@@ -318,3 +320,24 @@ def test_default_other_models_come_from_settings_without_the_checker():
     others = other_configured_models(MODEL)
     assert MODEL not in others and len(others) == len(set(others))
     assert "qwen3:8b" in others and "qwen3:32b" in others
+
+
+def test_concurrent_flushes_merge_instead_of_overwriting(tmp_path):
+    path = tmp_path / "pair_checks.jsonl"
+    a, b = PairVerdictCache.load(path), PairVerdictCache.load(path)
+    x, y, z = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    a.put(x, y, model="m", input_sha="s1", verdict=DIFFERENT, reason="a")
+    b.put(x, z, model="m", input_sha="s2", verdict=SAME, reason="b")
+    a.flush()
+    b.flush()
+    merged = PairVerdictCache.load(path)
+    assert merged.get(x, y, model="m", input_sha="s1").verdict == DIFFERENT
+    assert merged.get(x, z, model="m", input_sha="s2").verdict == SAME
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_checker_is_unloaded_even_when_the_first_call_fails(tmp_path):
+    unload = _Unload()
+    report, _ = _run(tmp_path, BAND, ask=_Ask(fail_after=0), unload=unload)
+    assert report.asked == 0
+    assert unload.models == [MODEL]  # 시간 초과 전에 이미 올라갔을 수 있다

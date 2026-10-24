@@ -15,11 +15,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import logging
 import os
 import re
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -71,6 +74,7 @@ class PairVerdictCache:
         self.path = path
         self._entries: dict[_CacheKey, CachedVerdict] = {}
         self._dirty = False
+        self._added: set[_CacheKey] = set()  # 이 인스턴스가 새로 받은 판정
 
     @classmethod
     def load(cls, path: Path) -> "PairVerdictCache":
@@ -133,39 +137,59 @@ class PairVerdictCache:
         reason: str,
         prompt_version: int = PROMPT_VERSION,
     ) -> None:
-        self._entries[_key(left, right, model, prompt_version, input_sha)] = (
-            CachedVerdict(
-                verdict=verdict,
-                reason=reason,
-                asked_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            )
+        key = _key(left, right, model, prompt_version, input_sha)
+        self._entries[key] = CachedVerdict(
+            verdict=verdict,
+            reason=reason,
+            asked_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
+        self._added.add(key)
         self._dirty = True
 
     def flush(self) -> None:
+        """새 판정을 파일에 합쳐 쓴다.
+
+        미리보기·평가 스크립트가 야간 교정과 겹치면 두 실행이 같은 파일을 읽고
+        각자 판정을 더한다. 통째로 덮어쓰면 나중에 쓴 쪽만 남으니, 프로세스 간
+        잠금 안에서 파일을 다시 읽고 이 실행이 새로 받은 판정만 얹어 쓴다.
+        """
         if not self._dirty:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        with tmp.open("w", encoding="utf-8") as handle:
-            for (low, high, model, pv, sha), value in sorted(self._entries.items()):
-                handle.write(
-                    json.dumps(
-                        {
-                            "l": low,
-                            "r": high,
-                            "model": model,
-                            "pv": pv,
-                            "sha": sha,
-                            "verdict": value.verdict,
-                            "reason": value.reason,
-                            "asked_at": value.asked_at,
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        os.replace(tmp, self.path)
+        lock_path = self.path.with_name(self.path.name + ".lock")
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            merged = dict(type(self).load(self.path)._entries)
+            merged.update({key: self._entries[key] for key in self._added})
+            fd, tmp_name = tempfile.mkstemp(
+                dir=self.path.parent, prefix=self.path.name + ".", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    for (low, high, model, pv, sha), value in sorted(merged.items()):
+                        handle.write(
+                            json.dumps(
+                                {
+                                    "l": low,
+                                    "r": high,
+                                    "model": model,
+                                    "pv": pv,
+                                    "sha": sha,
+                                    "verdict": value.verdict,
+                                    "reason": value.reason,
+                                    "asked_at": value.asked_at,
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+                os.replace(tmp_name, self.path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_name)
+                raise
+        self._entries.update(merged)
+        self._added.clear()
         self._dirty = False
 
 
@@ -506,7 +530,8 @@ async def check_ambiguous_pairs(
             cache.flush()
         except OSError as exc:
             logger.warning("pair_check: cache write failed: %s", exc)
-        if asked:
+        # 첫 호출이 실패해 asked가 0으로 돌아가도, 모델은 이미 올라갔을 수 있다.
+        if others_unloaded:
             try:
                 await unload(model)
             except Exception as exc:  # noqa: BLE001
