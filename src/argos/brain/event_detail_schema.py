@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Iterable, Sequence
 
 from argos.brain.titles import MAX_TITLE_CHARS
 
@@ -183,6 +184,57 @@ def parse_event_detail(raw: str) -> EventDetail | None:
         return None
     sections = tuple(Section(h, bodies[h]) for h in allowed if h in bodies)
     return EventDetail(title=title, summary=summary, event_type=event_type, sections=sections)
+
+
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+MAX_REQUIRED_NAMES = 3
+"""영어 원문 그대로 남아야 하는 이름 수 상한. 많이 걸수록 재생성이 잦아진다."""
+
+
+def required_names(
+    doc_names: Sequence[Iterable[str]],
+    evidence_text: str,
+    *,
+    titles: Sequence[str | None] = (),
+    limit: int = MAX_REQUIRED_NAMES,
+) -> list[str]:
+    """결과에 영어 원문 그대로 들어 있어야 하는 회사·제품 이름.
+
+    후보는 기사에서 뽑힌 이름 중 라틴 문자가 있고 2자 이상이며 **실제 프롬프트
+    근거 텍스트에 등장하는** 것. 기사 제목에 나오는 이름을 먼저, 그다음 등장
+    문서 수가 많은 순으로 상위 ``limit``개. 대소문자만 다른 이름은 처음 철자 하나로.
+    """
+    evidence = evidence_text.lower()
+    lowered_titles = [(title or "").lower() for title in titles]
+    counts: dict[str, int] = {}
+    spelling: dict[str, str] = {}
+    first_seen: dict[str, int] = {}
+    for names in doc_names:
+        seen_here: set[str] = set()
+        for name in names:
+            name = (name or "").strip()
+            key = name.lower()
+            if len(name) < 2 or not _LATIN_RE.search(name) or key not in evidence:
+                continue
+            if key in seen_here:
+                continue
+            seen_here.add(key)
+            spelling.setdefault(key, name)
+            first_seen.setdefault(key, len(first_seen))
+            counts[key] = counts.get(key, 0) + 1
+
+    def rank(key: str) -> tuple[bool, int, int]:
+        in_title = any(key in title for title in lowered_titles)
+        return (not in_title, -counts[key], first_seen[key])
+
+    return [spelling[key] for key in sorted(counts, key=rank)[:limit]]
+
+
+def missing_names(output_text: str, required: Sequence[str]) -> list[str]:
+    """``required`` 중 출력에 (대소문자 무시) 그대로 없는 이름. 음역되면 여기 걸린다."""
+    lowered = output_text.lower()
+    return [name for name in required if name.lower() not in lowered]
 
 
 def sections_from_json(value: object) -> tuple[Section, ...]:
