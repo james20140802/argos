@@ -58,6 +58,10 @@ argos/
   pipeline (daily-limit throttle, ARG-93)
 - **role_branches** — id(UUID PK), parent_id(FK→role_branches, CASCADE, NULL=위 갈래), name(unique), description, position, confirmed_at
   (확정된 역할 갈래 트리, ARG-311). 행이 있으면 사람이 확정한 것 — 쓰기 경로는 `argos taxonomy apply` 하나뿐
+- **technology_profiles** — id(UUID PK), entity_id(FK→entities, CASCADE, unique; 대표 이름), verdict(Technology|NotTechnology|Insufficient),
+  not_tech_reason, kind, description(한국어 한 줄), role_en, described_doc_count, described_at, model (ARG-313; entities.kind는 불변)
+- **role_assignments** — id(UUID PK), entity_id(FK→entities, CASCADE, unique), branch_id(FK→role_branches, CASCADE, NULL=미분류),
+  evidence(JSONB 배정 근거), unclassified_reason, source(Auto|Manual — 자동 배치는 Manual 행 미변경), assigned_at, run_id (ARG-313)
 
 All FK deletions use CASCADE, with exactly one exception: the merge-tombstone
 self-FK `tech_events.merged_into_id` uses **RESTRICT**. A merge is a tombstone,
@@ -109,14 +113,18 @@ uv run argos taxonomy draft [--seed] [--keep-top] [--limit] [--file]  # 역할 �
 uv run argos taxonomy {rename,merge,split,delete} ...  # 초안 파일 위 편집 (이름·합치기·나누기·지우기)
 uv run argos taxonomy apply [--dry-run] [--yes]        # 차이 미리보기 → y/N → role_branches 확정 (DB 쓰기는 이것뿐)
 uv run argos taxonomy {show,export}                     # 확정본 보기 / 확정본을 초안 파일로 내보내 다시 고치기
+uv run argos taxonomy assign [--all] [--limit N] [--dry-run] [--yes] [--sample N]  # 새 기술 → 아래 갈래 자동 배정 (LLM 계획 → 미리보기 → y/N → 같은 계획 기록). --all은 소급
+uv run argos taxonomy why NAME                          # 기술 하나의 설명·갈래·배정 근거
+uv run argos taxonomy eval [--truth F] [--tree confirmed|spike] [--assignments F]  # 정답 묶음 대비 쌍 일치도 (읽기 전용; spike는 LLM 사용)
 
 # launchd scheduler (macOS) — see src/argos/scheduler.py
 uv run argos schedule install                     # Render + bootstrap all plists from config
 uv run argos schedule status                      # Show loaded/not-loaded for all labels
-uv run argos schedule uninstall                   # Bootout all plists (idempotent; web/correct plists are also deleted)
-# Plists land at:  ~/Library/LaunchAgents/com.argos.{run,brief,correct}.plist
-# Logs land at:    ~/Library/Logs/argos/{run,brief,correct}.log
-# Times configured via:  briefing.time, briefing.weekdays, run.time, correction.time (daily `correct-events`; must differ from run/brief times)
+uv run argos schedule uninstall                   # Bootout all plists (idempotent; web/correct/classify plists are also deleted)
+# Plists land at:  ~/Library/LaunchAgents/com.argos.{run,brief,correct,classify}.plist
+# Logs land at:    ~/Library/Logs/argos/{run,brief,correct,classify}.log
+# Times configured via:  briefing.time, briefing.weekdays, run.time, correction.time (daily `correct-events`; must differ from run/brief times),
+#                        taxonomy.assign_time (daily `taxonomy assign --yes`, default 04:30; must differ from all of the above; taxonomy.assign_enabled=false to turn off)
 
 # Tests
 uv run pytest tests/ -q --tb=short                # Run all tests (-v는 특정 실패 파고들 때만 — tests/CLAUDE.md 참고)
