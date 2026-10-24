@@ -68,13 +68,46 @@ def test_openai_influence_report_scenario_requires_only_title_names():
     bodies = " ".join(
         f"{title}. A German-language network posted PDFs and memes via ChatGPT." for title in titles
     )
-    doc_names = [["OpenAI", "ChatGPT", "German-language", "PDFs"] for _ in titles]
+    bodies += " Russia was named in the report."
+    doc_names = [["OpenAI", "ChatGPT", "Russia", "German-language", "PDFs"] for _ in titles]
     required = required_names(doc_names, bodies, titles=titles)
     assert "German-language" not in required
     assert "PDFs" not in required
-    assert required == ["OpenAI", "ChatGPT"]
-    output = "OpenAI가 ChatGPT를 악용한 독일어 영향 공작을 차단했다."
+    # 재실측: Russia는 제목 1/7에만 나온다 — 나라 이름 번역('러시아')은 정당하다.
+    assert "Russia" not in required
+    # ChatGPT도 제목 2/7뿐이라 사건 중심 이름이 아니다. 과반(4/7 이상)은 OpenAI뿐.
+    assert required == ["OpenAI"]
+    output = "OpenAI가 러시아·중국 세력의 독일어 영향 공작을 차단했다."
     assert missing_names(output, required) == []
+
+
+def test_two_article_launch_keeps_the_product_named_in_both_titles():
+    """Claude Duet 시나리오: 두 제목 모두에 나오는 제품 이름은 필수로 남는다."""
+    titles = ["Anthropic launches Claude Duet", "Hands-on with Claude Duet"]
+    evidence = "\n".join(titles) + " Claude Duet pairs two models. Anthropic says it ships today."
+    required = required_names(
+        [["Anthropic", "Claude Duet"], ["Claude Duet"]], evidence, titles=titles
+    )
+    assert required == ["Claude Duet", "Anthropic"]  # 2/2, 1/2 — 둘 다 과반(ceil(2/2)=1)
+    assert missing_names("클라우드 둈트 출시", required) == ["Claude Duet", "Anthropic"]
+
+
+def test_single_article_event_requires_names_from_its_title():
+    required = required_names(
+        [["Scion", "Google", "Mononoke"]],
+        "Scion by Google. Critics compare it to Mononoke.",
+        titles=["Google unveils Scion"],
+    )
+    assert required == ["Scion", "Google"]
+
+
+def test_majority_is_counted_over_articles_that_have_a_title():
+    required = required_names(
+        [["Scion"], ["Scion"], ["Scion"]],
+        "Scion Scion",
+        titles=["Scion launch", None, ""],
+    )
+    assert required == ["Scion"]
 
 
 def test_ranks_by_document_count_and_caps_at_three():

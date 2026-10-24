@@ -211,9 +211,15 @@ def required_names(
     ``German-language``·``PDFs`` 같은 일반어가 섞여 있어, 본문에만 나온 이름까지
     필수로 걸면 모델이 자연스럽게 풀어 쓴 일반어 때문에 재시도·실패가 난다.
     제품·회사 이름은 대체로 제목에 나온다. '이름-소문자 접미' 꼴도 뺀다.
+
+    재실측에서 한 번 더 좁혔다: 기사 7건 중 1건 제목에만 나온 ``Russia``가 필수로
+    걸려 모델의 정당한 번역('러시아')이 실패로 처리됐다. 그래서 **사건 중심 이름**
+    — 제목이 있는 기사 중 과반(``ceil(n/2)``)의 제목에 나오는 이름 — 만 고른다.
+    기사가 한 건이면 그 제목에 나온 이름 그대로다.
     """
     evidence = evidence_text.lower()
-    lowered_titles = [(title or "").lower() for title in titles]
+    lowered_titles = [t for t in ((title or "").strip().lower() for title in titles) if t]
+    quorum = -(-len(lowered_titles) // 2)  # ceil(n/2)
     counts: dict[str, int] = {}
     spelling: dict[str, str] = {}
     first_seen: dict[str, int] = {}
@@ -226,7 +232,9 @@ def required_names(
                 continue
             if _LOWER_SUFFIX_RE.search(name):
                 continue
-            if not any(key in title for title in lowered_titles):
+            if not lowered_titles:
+                continue
+            if sum(key in title for title in lowered_titles) < quorum:
                 continue
             if key in seen_here:
                 continue
