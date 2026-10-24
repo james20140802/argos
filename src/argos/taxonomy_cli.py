@@ -138,6 +138,14 @@ def register(sub: argparse._SubParsersAction, common: argparse.ArgumentParser) -
         "--limit", type=_positive_int, default=None, metavar="N",
         help="이번에 볼 이름 수 (기본: taxonomy.max_per_run, --all이면 제한 없음)",
     )
+    asg.add_argument(
+        "--name", action="append", default=[], metavar="NAME",
+        help="이 이름(들)만 다시 배정 (반복 가능; 별칭은 대표로). 예: 평가 세트만 배정",
+    )
+    asg.add_argument(
+        "--names-from", type=Path, default=None, metavar="TRUTH_JSON",
+        help="정답 파일(groups)의 이름들만 다시 배정",
+    )
     asg.add_argument("--dry-run", action="store_true", help="미리보기만 보이고 종료 (DB 미기록)")
     asg.add_argument("--yes", action="store_true", help="확인 질문 생략 (스케줄 실행용)")
     asg.add_argument(
@@ -400,8 +408,24 @@ async def _assign(args: argparse.Namespace) -> int:
             )
             return EXIT_OK
         rows = await store.load_name_rows(session)
-        limit = args.limit or (None if args.all else cfg.max_per_run)
-        selected = store.select_targets(rows, cfg, all_names=args.all, limit=limit)
+        names = list(args.name)
+        if args.names_from is not None:
+            from argos.brain.taxonomy_eval import load_truth
+
+            names += list(load_truth(args.names_from))
+        if names:
+            wanted = set()
+            for name in names:
+                found = await store.resolve_canonical(session, name)
+                if found is None:
+                    print(f"⚠️  이름을 찾을 수 없습니다: {name!r}")
+                else:
+                    wanted.add(found[0])
+            subset = [r for r in rows if r.entity_id in wanted]
+            selected = store.select_targets(subset, cfg, all_names=True, limit=args.limit)
+        else:
+            limit = args.limit or (None if args.all else cfg.max_per_run)
+            selected = store.select_targets(rows, cfg, all_names=args.all, limit=limit)
         if not selected:
             print("새로 배정할 기술 없음")
             return EXIT_OK

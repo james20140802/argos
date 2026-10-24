@@ -143,6 +143,30 @@ def test_assign_yes_for_scheduler_and_all_flag(env, capsys):
     assert env["select"] == (False, 40)
 
 
+def test_assign_only_named_or_truth_file_names(env, capsys, monkeypatch):
+    rows = [SimpleNamespace(entity_id="e1"), SimpleNamespace(entity_id="e2")]
+    env["rows"] = rows
+    got = {}
+
+    def select_targets(subset, cfg, *, all_names=False, limit=None):
+        got["subset"] = [r.entity_id for r in subset]
+        got["all"] = all_names
+        return [(subset[0], True)] if subset else []
+
+    async def resolve(_s, name):
+        return {"codex": ("e2", "codex", "Codex")}.get(name.lower())
+
+    monkeypatch.setattr(store, "select_targets", select_targets)
+    monkeypatch.setattr(store, "resolve_canonical", resolve)
+    assert run("assign", "--dry-run", "--name", "Codex", "--name", "nope") == 0
+    assert got == {"subset": ["e2"], "all": True}
+    assert "이름을 찾을 수 없습니다: 'nope'" in capsys.readouterr().out
+
+    truth = ROOT / "evals" / "taxonomy_truth_arg313.json"
+    assert run("assign", "--dry-run", "--names-from", str(truth)) == 0
+    assert got["subset"] == ["e2"]  # 정답 33개 중 DB에 있는 것만
+
+
 def test_assign_with_nothing_new(env, capsys):
     env["rows"] = []
     assert run("assign", "--yes") == 0

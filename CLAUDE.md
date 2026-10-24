@@ -113,7 +113,7 @@ uv run argos taxonomy draft [--seed] [--keep-top] [--limit] [--file]  # 역할 �
 uv run argos taxonomy {rename,merge,split,delete} ...  # 초안 파일 위 편집 (이름·합치기·나누기·지우기)
 uv run argos taxonomy apply [--dry-run] [--yes]        # 차이 미리보기 → y/N → role_branches 확정 (DB 쓰기는 이것뿐)
 uv run argos taxonomy {show,export}                     # 확정본 보기 / 확정본을 초안 파일로 내보내 다시 고치기
-uv run argos taxonomy assign [--all] [--limit N] [--dry-run] [--yes] [--sample N]  # 새 기술 → 아래 갈래 자동 배정 (LLM 계획 → 미리보기 → y/N → 같은 계획 기록). --all은 소급
+uv run argos taxonomy assign [--all] [--name N]... [--names-from F] [--limit N] [--dry-run] [--yes] [--sample N]  # 새 기술 → 아래 갈래 자동 배정 (LLM 계획 → 미리보기 → y/N → 같은 계획 기록). --all은 소급
 uv run argos taxonomy why NAME                          # 기술 하나의 설명·갈래·배정 근거
 uv run argos taxonomy eval [--truth F] [--tree confirmed|spike] [--assignments F]  # 정답 묶음 대비 쌍 일치도 (읽기 전용; spike는 LLM 사용)
 
