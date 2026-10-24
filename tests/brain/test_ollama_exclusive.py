@@ -240,3 +240,28 @@ async def test_event_naming_keeps_fallback_when_cleanup_fails(failure):
         assert result is None
         assert all(b["model"] != "gemma4:26b" or b["keep_alive"] == 0 for b in _bodies(route))
         assert not any(b.get("prompt") for b in _bodies(route))  # nothing was generated
+
+
+@pytest.mark.asyncio
+async def test_unloads_model_even_when_generation_times_out(monkeypatch):
+    import argos.brain.ollama_client as oc
+
+    unloaded: list[str] = []
+
+    async def fake_ps():
+        return []
+
+    async def fake_unload(model):
+        unloaded.append(model)
+
+    async def fake_raw(*args, **kwargs):
+        raise httpx.ReadTimeout("slow")
+
+    monkeypatch.setattr(oc, "_MODEL_LOCK", asyncio.Lock())
+    monkeypatch.setattr(oc, "loaded_models", fake_ps)
+    monkeypatch.setattr(oc, "_unload", fake_unload)
+    monkeypatch.setattr(oc, "_generate_raw", fake_raw)
+    with pytest.raises(OllamaInfraError):
+        await query_exclusive("gemma4:26b", "p")
+    assert unloaded == ["gemma4:26b"]
+    assert not oc._MODEL_LOCK.locked()

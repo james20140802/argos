@@ -161,8 +161,9 @@ async def query_exclusive(
     released, so a concurrent Deep Dive (which only unloads its own "small"
     role) cannot load its 32B next to a still-resident summary model. Trade-off:
     multi-call batches reload the model per call; pass ``unload_after=False``
-    only from a process that unloads it itself when done. A failing post-unload
-    is logged, not raised (the generated text is still valid).
+    only from a process that unloads it itself when done. The unload also runs
+    when generation itself fails (e.g. a read timeout after the model loaded).
+    A failing post-unload is logged, not raised (the generated text is still valid).
 
     The lock is per process; a different process (launchd brief, web Deep Dive)
     can still load a model concurrently. The ``/api/ps`` check right before the
@@ -173,11 +174,13 @@ async def query_exclusive(
     so callers can log token/time cost.
     """
     async with _MODEL_LOCK:
+        attempted = False  # 생성 요청을 보냈으면 실패했어도 모델이 올라갔을 수 있다
         try:
             resident = await loaded_models()
             for other in resident:
                 if other != model:
                     await _unload(other)
+            attempted = True
             body = await _generate_raw(
                 model, prompt, keep_alive, timeout, num_ctx, think, temperature
             )
@@ -189,11 +192,13 @@ async def query_exclusive(
             raise OllamaInfraError(str(exc)) from exc
         except (httpx.HTTPError, ValueError, KeyError, AttributeError) as exc:
             raise OllamaInfraError(f"query_exclusive cleanup failed: {exc!r}") from exc
-        if unload_after:
-            try:
-                await _unload(model)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("query_exclusive: unloading %s after use failed: %r", model, exc)
+        finally:
+            # 시간 초과 등으로 생성이 실패해도 잠금을 놓기 전에 내린다.
+            if unload_after and attempted:
+                try:
+                    await _unload(model)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("query_exclusive: unloading %s after use failed: %r", model, exc)
     if stats_out is not None:
         for key in ("prompt_eval_count", "eval_count", "total_duration"):
             if key in body:
