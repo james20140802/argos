@@ -2,8 +2,10 @@ from argos.models.base import Base
 from argos.models.crawl_queue import CrawlQueue
 from argos.models.document_entity import DocumentEntity
 from argos.models.entity import Entity, EventEntity
+from argos.models.entity_alias import EntityAlias
 from argos.models.event_document import EventDocument
 from argos.models.feed_event import FeedEvent
+from argos.models.role_branch import RoleBranch
 from argos.models.tech_event import TechEvent
 from argos.models.tech_item import TechItem
 from argos.models.tech_succession import TechSuccession
@@ -15,9 +17,11 @@ __all__ = [
     "CrawlQueue",
     "DocumentEntity",
     "Entity",
+    "EntityAlias",
     "EventEntity",
     "EventDocument",
     "FeedEvent",
+    "RoleBranch",
     "TechEvent",
     "TechItem",
     "TechSuccession",

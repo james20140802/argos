@@ -34,11 +34,13 @@ class TestBaseMetadata:
             "entities",
             "event_entities",
             "document_entities",
+            "entity_aliases",
+            "role_branches",
         }
         assert expected == table_names
 
     def test_metadata_is_not_empty(self):
-        assert len(Base.metadata.tables) == 11
+        assert len(Base.metadata.tables) == 13
 
 
 # ──────────────────────────────────────────
@@ -593,3 +595,27 @@ class TestEventEntityModel:
             if isinstance(constraint, UniqueConstraint)
         }
         assert ("entity_id", "event_id") in unique_sets
+
+
+# ──────────────────────────────────────────
+# RoleBranch 모델 테스트 (ARG-311)
+# ──────────────────────────────────────────
+
+class TestRoleBranchModel:
+    def test_tablename_and_columns(self):
+        from argos.models import RoleBranch
+
+        assert RoleBranch.__tablename__ == "role_branches"
+        cols = {c.key for c in inspect(RoleBranch).mapper.column_attrs}
+        assert {"id", "parent_id", "name", "description", "position", "confirmed_at"} <= cols
+
+    def test_parent_fk_cascades_and_name_unique(self):
+        from argos.models import RoleBranch
+
+        table = RoleBranch.__table__
+        fk = next(iter(table.c.parent_id.foreign_keys))
+        assert fk.ondelete == "CASCADE"
+        assert fk.column.table.name == "role_branches"
+        assert table.c.name.unique is True
+        assert table.c.parent_id.nullable is True
+        assert table.c.description.nullable is False
