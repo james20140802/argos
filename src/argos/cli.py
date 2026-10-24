@@ -694,6 +694,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         check_ollama_models,
         check_postgres_reachable,
         check_python_version,
+        check_secret_file_modes,
         check_uv_installed,
         check_vram_headroom,
         print_doctor_table,
@@ -717,6 +718,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         check_postgres_reachable(),
         check_alembic_head(),
         check_vram_headroom(ollama_host=settings.user.ollama.host),
+        check_secret_file_modes(),
     ]
 
     print_doctor_table(rows)
