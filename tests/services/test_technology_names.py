@@ -74,6 +74,20 @@ def test_version_match_does_not_end_or_start_mid_number():
     assert tn.surface_pattern("5.5").search("v1.5.5") is None
 
 
+def test_internal_name_symbols_are_kept_in_compound_names():
+    display, aliases = tn.pick_display_names(
+        [("c++ cli", "C++/CLI")],
+        "c++ cli",
+        ["C++/CLI is .NET. C CLI is different. C CLI."],
+    )
+    assert display == "C++/CLI"
+    assert "C CLI" not in aliases
+    assert tn.surface_pattern("asp .net").search("ASP .NET Core")
+    assert not tn.surface_pattern("asp .net").search("ASP NET")
+    assert tn.surface_pattern("f# interactive").search("F# Interactive")
+    assert not tn.surface_pattern("f interactive").search("F# Interactive")
+
+
 def test_cli_show_prints_display_and_other_names(monkeypatch, capsys):
     session = MagicMock()
     ctx = MagicMock()
