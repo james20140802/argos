@@ -242,6 +242,19 @@ async def test_invalid_twice_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_body_only_generic_entity_does_not_trigger_a_retry():
+    """실측 bcac21ae: 본문에만 나온 'German-language'를 빠뜨려도 실패가 아니다."""
+    doc = EvidenceDoc(
+        title="OpenAI disrupts covert influence operations",
+        body="A German-language network used ChatGPT. OpenAI banned it.",
+        names=("OpenAI", "German-language"),
+    )
+    client = _client(_reply(title="OpenAI, 독일어 영향 공작 차단"))
+    assert await generate_event_naming([doc], client=client) is not None
+    assert client.query.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_names_not_in_the_evidence_are_not_required():
     doc = EvidenceDoc(title="a", body="nothing here", names=("Gemini",))
     client = _client(_reply(title="제목"))

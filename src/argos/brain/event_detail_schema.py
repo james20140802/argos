@@ -187,6 +187,8 @@ def parse_event_detail(raw: str) -> EventDetail | None:
 
 
 _LATIN_RE = re.compile(r"[A-Za-z]")
+_LOWER_SUFFIX_RE = re.compile(r"-[a-z]+$")
+"""``German-language``·``AI-powered`` 같은 '이름-소문자 접미' 꼴 — 형용사지 고유명이 아니다."""
 
 MAX_REQUIRED_NAMES = 3
 """영어 원문 그대로 남아야 하는 이름 수 상한. 많이 걸수록 재생성이 잦아진다."""
@@ -202,8 +204,13 @@ def required_names(
     """결과에 영어 원문 그대로 들어 있어야 하는 회사·제품 이름.
 
     후보는 기사에서 뽑힌 이름 중 라틴 문자가 있고 2자 이상이며 **실제 프롬프트
-    근거 텍스트에 등장하는** 것. 기사 제목에 나오는 이름을 먼저, 그다음 등장
-    문서 수가 많은 순으로 상위 ``limit``개. 대소문자만 다른 이름은 처음 철자 하나로.
+    근거 텍스트와 적어도 한 기사 제목에 등장하는** 것. 등장 문서 수가 많은 순으로
+    상위 ``limit``개. 대소문자만 다른 이름은 처음 철자 하나로.
+
+    제목 조건은 실측(ARG-308, gemma4:26b)에서 나왔다: ``document_entities``에는
+    ``German-language``·``PDFs`` 같은 일반어가 섞여 있어, 본문에만 나온 이름까지
+    필수로 걸면 모델이 자연스럽게 풀어 쓴 일반어 때문에 재시도·실패가 난다.
+    제품·회사 이름은 대체로 제목에 나온다. '이름-소문자 접미' 꼴도 뺀다.
     """
     evidence = evidence_text.lower()
     lowered_titles = [(title or "").lower() for title in titles]
@@ -217,6 +224,10 @@ def required_names(
             key = name.lower()
             if len(name) < 2 or not _LATIN_RE.search(name) or key not in evidence:
                 continue
+            if _LOWER_SUFFIX_RE.search(name):
+                continue
+            if not any(key in title for title in lowered_titles):
+                continue
             if key in seen_here:
                 continue
             seen_here.add(key)
@@ -224,9 +235,8 @@ def required_names(
             first_seen.setdefault(key, len(first_seen))
             counts[key] = counts.get(key, 0) + 1
 
-    def rank(key: str) -> tuple[bool, int, int]:
-        in_title = any(key in title for title in lowered_titles)
-        return (not in_title, -counts[key], first_seen[key])
+    def rank(key: str) -> tuple[int, int]:
+        return (-counts[key], first_seen[key])
 
     return [spelling[key] for key in sorted(counts, key=rank)[:limit]]
 
