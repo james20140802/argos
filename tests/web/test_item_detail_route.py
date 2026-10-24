@@ -14,7 +14,8 @@ from starlette.testclient import TestClient
 from argos.models.tech_item import CategoryType
 from argos.models.user_asset import AssetStatus
 from argos.web.app import _get_session, build_web_app
-from argos.web.services.detail import ItemDetailView
+from argos.web.services.detail import ItemDetailView, ItemEvent
+from argos.web.services.event_sections import EventSection
 
 
 def _view(
@@ -22,7 +23,7 @@ def _view(
     title: str = "GPT-5 launches with multimodal reasoning",
     image_url: str | None = None,
     summary: str | None = "It's the next milestone.",
-    digest: str | None = None,
+    event: ItemEvent | None = None,
     category: CategoryType | None = CategoryType.MAINSTREAM,
     trust_score: float | None = 0.82,
     source_url: str = "https://example.com/gpt5",
@@ -38,7 +39,7 @@ def _view(
         source_url=source_url,
         image_url=image_url,
         summary=summary,
-        digest=digest,
+        event=event,
         category=category,
         trust_score=trust_score,
         published_at=None,
@@ -171,30 +172,54 @@ def test_item_detail_returns_404_for_malformed_uuid(monkeypatch):
     assert capture == []
 
 
-def test_detail_renders_digest_paragraphs(monkeypatch):
-    view = _view(digest="첫 문단 내용입니다.\n\n둘째 문단 내용입니다.")
-    client = _client_with_detail(monkeypatch, view)
-    resp = client.get(f"/item/{view.id}")
+def _event(**overrides) -> ItemEvent:
+    values = dict(
+        id=uuid.uuid4(),
+        title="OpenAI가 GPT-5를 공개했다",
+        summary="사건 요약 한 단락.",
+        event_type_label="출시",
+        sections=(
+            EventSection("무엇이 새로운가", "멀티모달 추론을 한다."),
+            EventSection("쓸 수 있는 곳·시점", "오늘부터 API로 쓸 수 있다."),
+        ),
+    )
+    values.update(overrides)
+    return ItemEvent(**values)
+
+
+def test_detail_shows_the_event_sections_and_links_to_the_event(monkeypatch):
+    """ARG-308: 기사 상세는 digest 대신 그 기사가 속한 사건의 소제목 상세를 보여 준다."""
+    event = _event()
+    view = _view(event=event)
+    resp = _client_with_detail(monkeypatch, view).get(f"/item/{view.id}")
     assert resp.status_code == 200
-    assert "첫 문단 내용입니다." in resp.text
-    assert "둘째 문단 내용입니다." in resp.text
-    # 두 문단이 각각 별도 <p>로 렌더되는지 검증
-    assert "<p>첫 문단 내용입니다.</p>" in resp.text
-    assert "<p>둘째 문단 내용입니다.</p>" in resp.text
+    assert "이 기사가 속한 사건" in resp.text
+    assert f'href="/event/{event.id}"' in resp.text
+    assert "무엇이 새로운가" in resp.text and "멀티모달 추론을 한다." in resp.text
+    assert "쓸 수 있는 곳·시점" in resp.text
+    assert "출시" in resp.text
+    assert resp.text.index("무엇이 새로운가") < resp.text.index("쓸 수 있는 곳·시점")
+    assert "detail-digest" not in resp.text
 
 
-def test_detail_without_digest_shows_only_summary(monkeypatch):
-    view = _view(summary="한 줄 리드.", digest=None)
-    client = _client_with_detail(monkeypatch, view)
-    resp = client.get(f"/item/{view.id}")
+def test_detail_without_event_shows_no_event_block(monkeypatch):
+    view = _view(summary="한 줄 리드.", event=None)
+    resp = _client_with_detail(monkeypatch, view).get(f"/item/{view.id}")
     assert resp.status_code == 200
     assert "한 줄 리드." in resp.text
+    assert "이 기사가 속한 사건" not in resp.text
 
 
-def test_detail_digest_is_html_escaped(monkeypatch):
-    view = _view(digest="<script>alert(1)</script>" + "정상 본문 " * 20)
-    client = _client_with_detail(monkeypatch, view)
-    resp = client.get(f"/item/{view.id}")
+def test_detail_event_without_sections_falls_back_to_its_summary(monkeypatch):
+    view = _view(event=_event(sections=(), event_type_label=None))
+    resp = _client_with_detail(monkeypatch, view).get(f"/item/{view.id}")
+    assert "사건 요약 한 단락." in resp.text
+    assert "event-section__heading" not in resp.text
+
+
+def test_detail_event_sections_are_html_escaped(monkeypatch):
+    view = _view(event=_event(sections=(EventSection("방법", "<script>alert(1)</script>"),)))
+    resp = _client_with_detail(monkeypatch, view).get(f"/item/{view.id}")
     assert "<script>alert(1)</script>" not in resp.text
     assert "&lt;script&gt;" in resp.text
 

@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from argos.models.event_document import EventDocument
 from argos.models.tech_event import TechEvent
 from argos.models.tech_item import CategoryType, TechItem
+from argos.web.services.event_sections import EventSection, read_sections, type_label
 from argos.web.services.feed import _domain_of
 
 
@@ -47,6 +48,10 @@ class EventDetailView:
     category: Optional[CategoryType]
     trust_score: Optional[float]
     image_url: Optional[str]
+    # ARG-308: 사건 유형 이름표(출시·연구 등)와 유형별 소제목 상세. 아직 새 형식으로
+    # 요약되지 않은 사건은 None / 빈 튜플이라 화면이 요약 한 단락만 보인다.
+    event_type_label: Optional[str] = None
+    sections: tuple[EventSection, ...] = ()
 
     @property
     def source_count(self) -> int:
@@ -97,4 +102,6 @@ async def fetch_event_detail(
         category=rep.category if rep else None,
         trust_score=rep.trust_score if rep else None,
         image_url=cover,
+        event_type_label=type_label(event.event_type),
+        sections=read_sections(event.sections),
     )

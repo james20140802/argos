@@ -270,6 +270,56 @@ def test_event_page_lists_every_source_in_report_order_with_first_marked(monkeyp
     assert f'hx-post="/items/{rep}/keep?context=event"' in body
 
 
+def test_event_page_shows_summary_then_typed_sections_above_the_evidence(monkeypatch):
+    """ARG-308: 짧은 요약 아래 유형별 소제목 상세, 근거 목록은 그대로."""
+    from dataclasses import replace
+
+    from argos.web.services.event_sections import EventSection
+
+    eid, rep = uuid.uuid4(), uuid.uuid4()
+    view = replace(
+        _event_view(eid, rep),
+        event_type_label="출시",
+        sections=(
+            EventSection("무엇이 새로운가", "새 모델이 나왔다."),
+            EventSection("이전과 달라진 점", "코딩 성능이 올랐다."),
+        ),
+    )
+    body = _detail_client(monkeypatch, view=view).get(f"/event/{eid}").text
+    assert "출시" in body
+    positions = [
+        body.index(t)
+        for t in ("사건 요약", "무엇이 새로운가", "새 모델이 나왔다.", "이전과 달라진 점", "보도 3건")
+    ]
+    assert positions == sorted(positions)
+    assert body.count("최초 보도") == 1
+
+
+def test_event_page_without_sections_keeps_the_old_layout(monkeypatch):
+    eid, rep = uuid.uuid4(), uuid.uuid4()
+    body = _detail_client(monkeypatch, view=_event_view(eid, rep)).get(f"/event/{eid}").text
+    assert "사건 요약" in body
+    assert "event-sections" not in body
+
+
+def test_web_type_labels_match_the_brain_table():
+    """웹은 argos.brain을 import하지 않으려 이름표를 따로 두므로 같은지 지킨다."""
+    from argos.brain.event_detail_schema import EVENT_TYPE_LABELS as brain_labels
+    from argos.web.services.event_sections import EVENT_TYPE_LABELS as web_labels
+
+    assert web_labels == brain_labels
+
+
+def test_read_sections_drops_malformed_and_empty_rows():
+    from argos.web.services.event_sections import EventSection, read_sections
+
+    assert read_sections(None) == ()
+    assert read_sections({"heading": "x"}) == ()
+    assert read_sections(
+        [{"heading": "방법", "body": "b"}, {"heading": "결과", "body": "  "}, 3, {"heading": "한계"}]
+    ) == (EventSection("방법", "b"),)
+
+
 def test_old_link_to_merged_event_redirects_to_survivor(monkeypatch):
     old, survivor = uuid.uuid4(), uuid.uuid4()
     client = _detail_client(monkeypatch, resolve_to=survivor, view=None)

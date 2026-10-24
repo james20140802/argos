@@ -157,13 +157,3 @@ def test_response_schema_constrains_type_and_heading_vocabulary():
     heading_enum = props["sections"]["items"]["properties"]["heading"]["enum"]
     assert set(heading_enum) == {h for hs in HEADINGS.values() for h in hs}
     json.dumps(schema)  # Ollama payload로 그대로 직렬화돼야 한다
-
-
-def test_sections_from_json_skips_malformed_rows():
-    from argos.brain.event_detail_schema import sections_from_json
-
-    assert sections_from_json(None) == ()
-    assert sections_from_json("x") == ()
-    assert sections_from_json(
-        [{"heading": "방법", "body": "b"}, {"heading": "", "body": "b"}, 3, {"heading": "결과"}]
-    ) == (Section("방법", "b"),)

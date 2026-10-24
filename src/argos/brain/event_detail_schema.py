@@ -235,17 +235,3 @@ def missing_names(output_text: str, required: Sequence[str]) -> list[str]:
     """``required`` 중 출력에 (대소문자 무시) 그대로 없는 이름. 음역되면 여기 걸린다."""
     lowered = output_text.lower()
     return [name for name in required if name.lower() not in lowered]
-
-
-def sections_from_json(value: object) -> tuple[Section, ...]:
-    """DB JSONB 값을 화면용으로 되읽는다. 모양이 틀린 항목은 조용히 버린다."""
-    if not isinstance(value, list):
-        return ()
-    out: list[Section] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        heading, body = item.get("heading"), item.get("body")
-        if isinstance(heading, str) and isinstance(body, str) and heading and body:
-            out.append(Section(heading, body))
-    return tuple(out)
