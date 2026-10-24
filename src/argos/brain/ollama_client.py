@@ -141,6 +141,7 @@ async def query_exclusive(
     think: bool | None = None,
     temperature: float | None = None,
     stats_out: dict | None = None,
+    unload_after: bool = True,
 ) -> str:
     """Query `model` after unloading every OTHER loaded model (ARG-310).
 
@@ -150,8 +151,18 @@ async def query_exclusive(
     between the unload and the load.
 
     Error handling matches ``query_ollama``: 5xx / transport failures raise
-    ``OllamaInfraError``. A failing ``/api/ps`` or unload is logged and skipped
-    (availability first) -- the generate call then proceeds as it would have.
+    ``OllamaInfraError``. Fail closed: if ``/api/ps`` or unloading another
+    resident model fails, nothing is generated and ``OllamaInfraError`` is
+    raised -- loading `model` on top of an unknown/unremoved resident model
+    would break the one-model-at-a-time VRAM budget. Callers (event naming)
+    already turn that into a fallback title + stale flag.
+
+    ``unload_after`` (default True): `model` is unloaded before the lock is
+    released, so a concurrent Deep Dive (which only unloads its own "small"
+    role) cannot load its 32B next to a still-resident summary model. Trade-off:
+    multi-call batches reload the model per call; pass ``unload_after=False``
+    only from a process that unloads it itself when done. A failing post-unload
+    is logged, not raised (the generated text is still valid).
 
     The lock is per process; a different process (launchd brief, web Deep Dive)
     can still load a model concurrently. The ``/api/ps`` check right before the
@@ -163,18 +174,10 @@ async def query_exclusive(
     """
     async with _MODEL_LOCK:
         try:
-            try:
-                resident = await loaded_models()
-            except (httpx.HTTPError, ValueError, KeyError, AttributeError) as exc:
-                logger.warning("query_exclusive: /api/ps failed (%r) -- skipping unload", exc)
-                resident = []
+            resident = await loaded_models()
             for other in resident:
-                if other == model:
-                    continue
-                try:
+                if other != model:
                     await _unload(other)
-                except httpx.HTTPError as exc:
-                    logger.warning("query_exclusive: unloading %s failed: %r", other, exc)
             body = await _generate_raw(
                 model, prompt, keep_alive, timeout, num_ctx, think, temperature
             )
@@ -184,6 +187,13 @@ async def query_exclusive(
             raise
         except httpx.TransportError as exc:
             raise OllamaInfraError(str(exc)) from exc
+        except (httpx.HTTPError, ValueError, KeyError, AttributeError) as exc:
+            raise OllamaInfraError(f"query_exclusive cleanup failed: {exc!r}") from exc
+        if unload_after:
+            try:
+                await _unload(model)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("query_exclusive: unloading %s after use failed: %r", model, exc)
     if stats_out is not None:
         for key in ("prompt_eval_count", "eval_count", "total_duration"):
             if key in body:

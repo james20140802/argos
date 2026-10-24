@@ -42,6 +42,7 @@ class LLMClient(Protocol):
         temperature: float | None = None,
         exclusive: bool = False,
         stats_out: dict | None = None,
+        unload_after: bool = True,
     ) -> str: ...
 
     async def unload(self, model_role: Literal["small", "large"]) -> None: ...
@@ -93,6 +94,7 @@ class OllamaClient:
         temperature: float | None = None,
         exclusive: bool = False,
         stats_out: dict | None = None,
+        unload_after: bool = True,
     ) -> str:
         """Run a query.
 
@@ -110,6 +112,7 @@ class OllamaClient:
                 think=think,
                 temperature=temperature,
                 stats_out=stats_out,
+                unload_after=unload_after,
             )
         return await query_ollama(
             self._resolve(model_role),
