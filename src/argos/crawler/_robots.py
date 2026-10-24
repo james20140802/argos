@@ -35,6 +35,7 @@ class RobotsDisallowed(Exception):
 
 async def _fetch_robots_parser(
     origin: str,
+    event_hooks: dict | None = None,
 ) -> tuple[urllib.robotparser.RobotFileParser, bool]:
     """Return (parser, cacheable). Transient transport failures disallow-all
     but are marked non-cacheable so a single blip does not permanently block
@@ -46,6 +47,7 @@ async def _fetch_robots_parser(
             timeout=_ROBOTS_FETCH_TIMEOUT,
             follow_redirects=True,
             max_redirects=_ROBOTS_MAX_REDIRECTS,
+            event_hooks=event_hooks,
         ) as client:
             response = await client.get(robots_url)
     except httpx.HTTPError:
@@ -74,7 +76,14 @@ def _live_cached_parser(
     return parser
 
 
-async def is_robots_allowed(url: str, user_agent: str = _ROBOTS_USER_AGENT) -> bool:
+async def is_robots_allowed(
+    url: str,
+    user_agent: str = _ROBOTS_USER_AGENT,
+    *,
+    event_hooks: dict | None = None,
+) -> bool:
+    """``event_hooks``는 robots.txt를 새로 받을 때의 클라이언트에 붙는다(리다이렉트 포함).
+    요청 간격을 지켜야 하는 호출자(Archive 폴백)가 robots 요청도 같은 throttle에 태운다."""
     try:
         parts = urlsplit(url)
     except ValueError:
@@ -95,7 +104,7 @@ async def is_robots_allowed(url: str, user_agent: str = _ROBOTS_USER_AGENT) -> b
         async with origin_lock:
             parser = _live_cached_parser(origin)
             if parser is None:
-                parser, cacheable = await _fetch_robots_parser(origin)
+                parser, cacheable = await _fetch_robots_parser(origin, event_hooks)
                 if cacheable:
                     _robots_cache[origin] = (parser, time.monotonic())
 

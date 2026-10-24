@@ -26,6 +26,7 @@ from urllib.parse import urlencode, urljoin, urlsplit
 import httpx
 from bs4 import BeautifulSoup
 
+from argos.crawler._robots import is_robots_allowed
 from argos.crawler.body_enrich import host_of
 from argos.crawler.dynamic_fetcher import extract_main_content
 from argos.crawler.static_fetcher import _get_with_retry, _truncate_raw_content
@@ -142,6 +143,13 @@ class ArchiveFetcher:
         assert self._client is not None, "use ArchiveFetcher as an async context manager"
         current = url
         for _ in range(_MAX_HOPS + 1):
+            # robots.txt를 먼저 같은 throttle로 받아 둔다. _get_with_retry 안의 robots
+            # 확인은 별도 클라이언트라 훅이 없어, 캐시가 비면 초당 1건을 넘긴다.
+            if not await is_robots_allowed(
+                current, event_hooks={"request": [self._before_request]}
+            ):
+                logger.info("archive GET blocked by robots.txt: %s", current)
+                return None
             try:
                 # 재시도 없음: Archive가 느려졌을 때 우리가 요청을 더 쌓지 않는다.
                 response = await _get_with_retry(self._client, current, max_attempts=1)

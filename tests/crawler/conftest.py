@@ -16,3 +16,7 @@ def allow_robots_by_default(monkeypatch):
         "argos.crawler.static_fetcher.is_robots_allowed",
         AsyncMock(return_value=True),
     )
+    monkeypatch.setattr(
+        "argos.crawler.archive_fallback.is_robots_allowed",
+        AsyncMock(return_value=True),
+    )

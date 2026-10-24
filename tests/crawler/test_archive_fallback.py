@@ -209,7 +209,7 @@ async def test_429_disables_archive_immediately_without_retrying():
 @respx.mock
 async def test_robots_disallow_stops_the_request(monkeypatch):
     monkeypatch.setattr(
-        "argos.crawler.static_fetcher.is_robots_allowed", AsyncMock(return_value=False)
+        "argos.crawler.archive_fallback.is_robots_allowed", AsyncMock(return_value=False)
     )
     async with _fetcher() as archive:
         assert await archive.fetch(ARTICLE_URL) is None
@@ -258,6 +258,40 @@ async def test_every_archive_request_goes_through_the_throttle():
     async with ArchiveFetcher(throttle=throttle) as archive:
         await archive.fetch(ARTICLE_URL)
     assert waits == len(respx.calls) == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_cold_robots_fetches_also_go_through_the_throttle(monkeypatch):
+    from argos.crawler import _robots
+
+    monkeypatch.setattr(_robots, "_robots_cache", {})
+    monkeypatch.setattr(archive_fallback, "is_robots_allowed", _robots.is_robots_allowed)
+    monkeypatch.setattr(
+        "argos.crawler.static_fetcher.is_robots_allowed", _robots.is_robots_allowed
+    )
+    respx.get("https://archive.org/robots.txt").mock(return_value=httpx.Response(200, text=""))
+    respx.get("https://web.archive.org/robots.txt").mock(return_value=httpx.Response(200, text=""))
+    respx.get("https://archive.org/wayback/available").mock(
+        return_value=httpx.Response(200, json=_availability())
+    )
+    respx.get(snapshot_url(TS, ARTICLE_URL)).mock(
+        return_value=httpx.Response(200, html=_snapshot_html())
+    )
+    throttle = RequestThrottle(0)
+    waits = 0
+    original = throttle.wait
+
+    async def counting_wait():
+        nonlocal waits
+        waits += 1
+        await original()
+
+    throttle.wait = counting_wait  # type: ignore[method-assign]
+    async with ArchiveFetcher(throttle=throttle) as archive:
+        assert await archive.fetch(ARTICLE_URL) is not None
+    # robots 2건 + 가용성 API + 스냅샷, 모두 같은 throttle을 거친다.
+    assert waits == len(respx.calls) == 4
 
 
 # --- refetch-bodies 통합 ------------------------------------------------------
