@@ -236,43 +236,68 @@ async def test_fetch_similar_ranks_keep_assets_by_proximity_to_current_item() ->
 
 @pytestmark_db
 @pytest.mark.asyncio
-async def test_fetch_item_detail_returns_digest() -> None:
-    """ARG-182: fetch_item_detail exposes the digest column (ARG-173/Task 1)."""
+async def test_fetch_item_detail_returns_its_event_sections() -> None:
+    """ARG-308: 기사 상세는 digest 대신 그 기사가 속한 (툼스톤 아닌) 사건의 소제목 상세를 싣는다."""
+    from datetime import datetime, timezone
+
     from sqlalchemy import delete as sa_delete
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from sqlalchemy.pool import NullPool
 
+    from argos.models.event_document import EventDocument
+    from argos.models.tech_event import TechEvent
     from argos.models.tech_item import CategoryType, TechItem
 
     engine = create_async_engine(_DB_URL, poolclass=NullPool)
     Session = async_sessionmaker(bind=engine, expire_on_commit=False)
-    seeded_id: uuid.UUID | None = None
+    item_ids: list[uuid.UUID] = []
+    event_id: uuid.UUID | None = None
     try:
         async with Session() as session:
             item = TechItem(
-                title="arg182-digest",
-                source_url=f"https://example.com/arg182/{uuid.uuid4()}",
+                title="arg308-item",
+                source_url=f"https://example.com/arg308/{uuid.uuid4()}",
                 raw_content="x" * 2000,
                 summary="s",
-                digest="롱폼 본문",
                 category=CategoryType.ALPHA,
                 trust_score=0.7,
             )
-            session.add(item)
+            lonely = TechItem(
+                title="arg308-lonely",
+                source_url=f"https://example.com/arg308/{uuid.uuid4()}",
+                raw_content="x" * 2000,
+                summary="s",
+                category=CategoryType.ALPHA,
+                trust_score=0.7,
+            )
+            event = TechEvent(
+                title="arg308 사건",
+                summary="사건 요약",
+                event_type="Research",
+                sections=[{"heading": "방법", "body": "새 방법."}, {"heading": "결과", "body": "좋아졌다."}],
+                occurred_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+            )
+            session.add_all([item, lonely, event])
             await session.flush()
-            seeded_id = item.id
+            session.add(EventDocument(event_id=event.id, tech_item_id=item.id))
+            item_ids = [item.id, lonely.id]
+            event_id = event.id
             await session.commit()
 
         async with Session() as session:
-            view = await fetch_item_detail(session, seeded_id)
-            assert view is not None
-            assert view.digest == "롱폼 본문"
+            view = await fetch_item_detail(session, item_ids[0])
+            assert view is not None and view.event is not None
+            assert view.event.id == event_id
+            assert view.event.event_type_label == "연구"
+            assert [s.heading for s in view.event.sections] == ["방법", "결과"]
+            lonely_view = await fetch_item_detail(session, item_ids[1])
+            assert lonely_view is not None and lonely_view.event is None
     finally:
         async with Session() as session:
-            if seeded_id is not None:
-                await session.execute(
-                    sa_delete(TechItem).where(TechItem.id == seeded_id)
-                )
+            if event_id is not None:
+                await session.execute(sa_delete(TechEvent).where(TechEvent.id == event_id))
+            if item_ids:
+                await session.execute(sa_delete(TechItem).where(TechItem.id.in_(item_ids)))
             await session.commit()
         await engine.dispose()
 

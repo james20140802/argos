@@ -340,14 +340,14 @@ uv run argos backfill-images --refetch          # source_url 재크롤 후 og/bo
 uv run argos backfill-images --upgrade-favicons # 파비콘으로 남은 행만 재크롤해 실제 이미지로 승격 (--refetch 내포)
 ```
 
-### `argos backfill-digests` — 롱폼 다이제스트 백필
+### `argos resummarize-events` — 사건 요약·상세 소급
 
-`digest`가 NULL이고 `raw_content`가 있는 행에 대해 다이제스트 LLM(기본 `qwen3:14b`, config로 조정 가능)을 한 행씩 호출합니다. 느리고, 이미 값이 있는 행은 건드리지 않습니다.
+기사별 장문 요약(digest)은 더 만들지 않습니다(`backfill-digests`는 안내만 찍고 끝납니다). 대신 사건마다 묶인 기사 본문 전부로 짧은 요약(2~3문장)과 사건 유형(출시·연구·사고·논란·업데이트·도입)별 소제목 상세를 짓습니다. 이 명령은 기존 사건에 그 형식을 소급합니다. 몇 건을 바꿀지 먼저 보여 주고 확인을 받은 뒤에만 씁니다. 생성에 실패한 사건은 이전 이름·요약을 유지하고, 다시 실행하면 남은 것만 처리합니다.
 
 ```bash
-uv run argos backfill-digests --dry-run   # 처리 대상 행 수만 확인 (LLM 호출 없음)
-uv run argos backfill-digests --limit 50  # 최대 50행만 처리
-uv run argos backfill-digests             # 전체 처리
+uv run argos resummarize-events --dry-run   # 대상 수·근거 기사 수·예상 시간만 확인 (LLM 호출 없음)
+uv run argos resummarize-events --limit 20  # 최대 20건만 처리
+uv run argos resummarize-events --yes       # 확인 없이 전체 처리
 ```
 
 ## Testing

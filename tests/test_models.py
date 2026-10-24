@@ -405,6 +405,21 @@ class TestTechEventModel:
         }
         assert required.issubset(column_names)
 
+    def test_event_type_and_sections_are_nullable_with_a_pascal_case_check(self):
+        # ARG-308: NULL = 아직 새 형식으로 요약되지 않음.
+        from argos.brain.event_detail_schema import EVENT_TYPES
+        from argos.models import TechEvent
+
+        table = TechEvent.__table__
+        assert table.c.event_type.nullable is True
+        assert table.c.sections.nullable is True
+        checks = [
+            str(c.sqltext) for c in table.constraints if c.name == "ck_tech_events_event_type"
+        ]
+        assert len(checks) == 1
+        for event_type in EVENT_TYPES:
+            assert f"'{event_type}'" in checks[0]
+
     def test_no_embedding_column(self):
         # A1: 사건 임베딩은 이번 범위 밖이다.
         from argos.models import TechEvent

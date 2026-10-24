@@ -389,12 +389,52 @@ def test_stale_event_query_reads_the_row_version_for_the_guard():
     assert "updated_at" in str(_STALE_EVENTS_SQL).lower()
 
 
-def test_stale_event_query_falls_back_to_the_digest():
-    """summary가 비면 digest를 근거로 쓴다 — 온라인 명명과 같은 폴백."""
-    from argos.brain.event_backfill import _STALE_EVENTS_SQL
+@pytest.mark.parametrize("sql_name", ["_STALE_EVENTS_SQL", "_RESUMMARIZE_EVENTS_SQL"])
+def test_stale_event_query_reads_bodies_sources_and_names_not_item_summaries(sql_name):
+    """ARG-308: 근거는 본문 전부다 — 기사별 요약·digest는 읽지 않는다."""
+    from argos.brain import event_backfill
 
-    compiled = " ".join(str(_STALE_EVENTS_SQL).split()).lower()
-    assert "coalesce(nullif(i.summary, ''), i.digest) as doc_summary" in compiled
+    compiled = " ".join(str(getattr(event_backfill, sql_name)).split()).lower()
+    assert "i.summary" not in compiled
+    assert "digest" not in compiled
+    assert "left(i.raw_content, :doc_max_chars) as doc_body" in compiled
+    assert "i.source_url as doc_source" in compiled
+    assert "as doc_names" in compiled and "document_entities" in compiled
+
+
+def test_resummarize_query_also_targets_events_without_sections():
+    from argos.brain.event_backfill import _RESUMMARIZE_EVENTS_SQL, _STALE_EVENTS_SQL
+
+    assert "sections is null" in str(_RESUMMARIZE_EVENTS_SQL).lower()
+    assert "sections is null" not in str(_STALE_EVENTS_SQL).lower()
+    assert "merged_into_id is null" in str(_RESUMMARIZE_EVENTS_SQL).lower()
+
+
+@pytest.mark.asyncio
+async def test_fetch_stale_events_builds_docs_with_source_and_names():
+    from argos.brain import event_backfill
+
+    event_id = uuid.uuid4()
+    row = MagicMock(
+        event_id=event_id,
+        event_updated_at=None,
+        doc_title="Anthropic launches Claude Duet",
+        doc_source="https://anthropic.com/news/duet",
+        doc_body="body",
+        doc_names=["Anthropic", "Claude Duet"],
+    )
+    result = MagicMock()
+    result.all = MagicMock(return_value=[row])
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+
+    events = await event_backfill.fetch_stale_events(session, include_unsectioned=True)
+
+    assert session.execute.await_args.args[0] is event_backfill._RESUMMARIZE_EVENTS_SQL
+    (doc,) = events[0].docs
+    assert doc.source == "https://anthropic.com/news/duet"
+    assert doc.names == ("Anthropic", "Claude Duet")
+    assert doc.summary is None
 
 
 def test_stale_event_defaults_to_no_guard():
@@ -536,12 +576,12 @@ async def test_fetch_stale_events_carries_the_body_and_passes_the_cap():
     event_id = uuid.uuid4()
     rows = [
         SimpleNamespace(
-            event_id=event_id, event_updated_at=AT, doc_title="t1", doc_summary="s1",
-            doc_body="body one",
+            event_id=event_id, event_updated_at=AT, doc_title="t1", doc_source="https://a.com/1",
+            doc_body="body one", doc_names=["A1"],
         ),
         SimpleNamespace(
-            event_id=event_id, event_updated_at=AT, doc_title="t2", doc_summary=None,
-            doc_body=None,
+            event_id=event_id, event_updated_at=AT, doc_title="t2", doc_source=None,
+            doc_body=None, doc_names=None,
         ),
     ]
     result = MagicMock()

@@ -43,6 +43,7 @@ class LLMClient(Protocol):
         exclusive: bool = False,
         stats_out: dict | None = None,
         unload_after: bool = True,
+        format: str | dict | None = None,
     ) -> str: ...
 
     async def unload(self, model_role: Literal["small", "large"]) -> None: ...
@@ -95,12 +96,14 @@ class OllamaClient:
         exclusive: bool = False,
         stats_out: dict | None = None,
         unload_after: bool = True,
+        format: str | dict | None = None,
     ) -> str:
         """Run a query.
 
         ``exclusive=True`` first unloads every other resident model (ARG-310, see
         ``query_exclusive``); ``stats_out`` then receives the response's
-        token/duration counters (ignored when not exclusive).
+        token/duration counters (ignored when not exclusive). ``format`` is
+        Ollama's structured-output switch (ARG-308): ``"json"`` or a JSON schema.
         """
         if exclusive:
             return await query_exclusive(
@@ -113,6 +116,7 @@ class OllamaClient:
                 temperature=temperature,
                 stats_out=stats_out,
                 unload_after=unload_after,
+                format=format,
             )
         return await query_ollama(
             self._resolve(model_role),
@@ -122,6 +126,7 @@ class OllamaClient:
             num_ctx=num_ctx,
             think=think,
             temperature=temperature,
+            format=format,
         )
 
     async def unload(self, model_role: Literal["small", "large"]) -> None:
@@ -204,20 +209,6 @@ def get_event_summary_llm_client() -> OllamaClient:
     backend = settings.user.llm.backend
     if backend == "ollama":
         return OllamaClient(settings=settings, large_model=settings.user.event_summary.model)
-    raise ValueError(f"Unknown LLM backend: {backend!r}")
-
-
-def get_digest_llm_client() -> OllamaClient:
-    """Return an OllamaClient whose large role resolves to digest.model.
-
-    Reuses the "large" slot override pattern (like genealogist) so the digest
-    model is independently configurable and never collides with the 8B triage
-    "small" slot or the 32B deep-dive default.
-    """
-    settings = _get_settings()
-    backend = settings.user.llm.backend
-    if backend == "ollama":
-        return OllamaClient(settings=settings, large_model=settings.user.digest.model)
     raise ValueError(f"Unknown LLM backend: {backend!r}")
 
 

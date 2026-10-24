@@ -36,6 +36,22 @@ def budget_chars(
     return max(int(usable_tokens * chars_per_tok) - template_chars, _MIN_BUDGET_CHARS)
 
 
+PER_DOC_FLOOR_CHARS = 1500
+"""ARG-308: 기사 하나에 최소한 보장하는 본문 글자 수. 이만큼도 못 주면 맵리듀스로 접는다."""
+
+
+def per_doc_budget(*, budget: int, n_docs: int, floor: int, cap: int) -> int:
+    """기사 하나에 줄 본문 글자 수 — 예산을 기사 수로 나눠 ``[floor, cap]``에 맞춘다.
+
+    기사 전부가 한 프롬프트에 들어가도록 짧게 나눠 주되, ``floor`` 아래로는 안
+    깎는다(그때는 호출부가 맵리듀스로 넘어간다). ``cap``(``doc_max_chars``)이
+    ``floor``보다 작으면 ``cap``이 이긴다.
+    """
+    if n_docs <= 0:
+        return cap
+    return min(max(budget // n_docs, floor), cap)
+
+
 def joined_length(blocks: Sequence[str]) -> int:
     """``BLOCK_SEPARATOR``로 이어 붙였을 때의 길이."""
     if not blocks:
