@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover — py<3.11 fallback
 
 from pydantic import ValidationError
 
-from argos import backup, config_store
+from argos import backup, config_store, taxonomy_cli
 from argos.config import UserConfig, settings
 from argos.crawler.pipeline import run_full_pipeline
 from argos.database import AsyncSessionLocal
@@ -2661,6 +2661,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_recluster_events_parser(sub, common)
     _build_correct_events_parser(sub, common)
     _build_backup_parser(sub)
+    taxonomy_cli.register(sub, common)
     _build_restore_parser(sub)
     _build_config_parser(sub)
     _build_doctor_parser(sub)
@@ -2804,6 +2805,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_correct_events(args)
+    if args.command == "taxonomy":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return taxonomy_cli.run(args)
     if args.command == "backup":
         return _cmd_backup(args)
     if args.command == "restore":

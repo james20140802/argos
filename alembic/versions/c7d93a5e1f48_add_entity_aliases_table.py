@@ -14,12 +14,11 @@ ARG-312: "같은 기술의 다른 이름"을 하나로 잇는 별칭 층. ``enti
 왕복(upgrade -> downgrade -> upgrade)에서 기존 행이 보존된다. downgrade는 테이블과
 enum을 지운다.
 
-주의: ARG-311(갈래 저장)도 같은 head(62e3b680eb74)에서 리비전을 낸다. 311이 먼저
-머지되면 이 리비전을 main에 rebase하고 ``down_revision``을 311 리비전으로 고쳐
-``alembic heads``가 한 줄이 되게 한다(merge 리비전은 만들지 않는다).
+ARG-311(갈래 저장, 7c3d9a1e5b42) 뒤에 이어 붙인다 — 같은 head에서 갈라지지 않게
+merge 리비전 없이 ``down_revision``을 311 리비전으로 둔다.
 
 Revision ID: c7d93a5e1f48
-Revises: 62e3b680eb74
+Revises: 7c3d9a1e5b42
 Create Date: 2026-10-23 12:00:00.000000
 
 """
@@ -32,7 +31,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = 'c7d93a5e1f48'
-down_revision: Union[str, Sequence[str], None] = '62e3b680eb74'
+down_revision: Union[str, Sequence[str], None] = '7c3d9a1e5b42'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

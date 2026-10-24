@@ -37,11 +37,10 @@ _MIGRATION_DB_PREFIX = "argos_migration_test"
 # 실행마다 새 이름 — 같은 Postgres를 공유하는 다른 워크트리의 실행과 겹치지
 # 않게. 덕분에 이 모듈은 자기가 만든 DB만 드롭한다.
 _MIGRATION_DB_NAME = f"{_MIGRATION_DB_PREFIX}_{uuid.uuid4().hex[:12]}"
+# 이 리비전 바로 앞(ARG-258 event layer). "-1"로 쓰면 이후 head에 리비전이 쌓일 때
+# 엉뚱한 리비전을 내리므로 명시한다.
+_DOWN_REVISION = "855cb67b5096"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-# 이 테스트가 검증하는 리비전(62e3b680eb74)의 down_revision. 상대 경로 "-1" 대신
-# 절대 리비전으로 내려간다 — 그 위에 새 리비전(ARG-312 entity_aliases 등)이 쌓이면
-# "-1"은 head 하나만 되돌리고 document_entities는 그대로 남기기 때문이다.
-_DOCUMENT_ENTITIES_DOWN_REVISION = "855cb67b5096"
 
 
 def _assert_migration_db_is_disposable(
@@ -248,7 +247,7 @@ def test_document_entities_migration_round_trip():
             "upgrade head"
         )
 
-        _run_alembic("downgrade", _DOCUMENT_ENTITIES_DOWN_REVISION)
+        _run_alembic("downgrade", _DOWN_REVISION)
 
         assert asyncio.run(_document_entities_table_exists()) is False, (
             "downgrade -1 should drop document_entities"
