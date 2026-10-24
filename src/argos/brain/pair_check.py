@@ -32,8 +32,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = 1
-"""프롬프트를 바꾸면 올린다 — 캐시 키에 들어가 옛 답을 자연히 무효화한다."""
+PROMPT_VERSION = 2
+"""프롬프트를 바꾸면 올린다 — 캐시 키에 들어가 옛 답을 자연히 무효화한다.
+
+2: 발행일을 넣고, 한꺼번에 낸 묶음(보고서 속 사례들, 같은 날 낸 가이드 시리즈)을
+SAME으로 정의했다. v1은 이런 묶음을 "주제가 다르다"며 대부분 갈랐다(ARG-307 실측).
+"""
 
 SAME = "SAME"
 DIFFERENT = "DIFFERENT"
@@ -176,20 +180,33 @@ def default_cache_path() -> Path:
 SUMMARY_CHARS = 400
 
 _PROMPT = """\
-Two articles are shown. Decide whether they cover the SAME single announcement, \
-release, or event (for example the announcement post and its system card, or two \
-write-ups of the same launch), or DIFFERENT ones (for example the same company \
-announcing two separate partnerships, products, or customer stories).
+Two articles from the same website are shown with their publication dates. Decide \
+whether they belong to the SAME announcement or release, or to DIFFERENT ones.
+
+SAME when either holds:
+- they cover the same launch, announcement, or event (for example the announcement \
+post and its system card, or two write-ups of the same launch);
+- they are parts of one coordinated release published together as a package (for \
+example several case studies inside one threat report, or a series of guides \
+published on the same day). Covering different subtopics does NOT make them \
+DIFFERENT when they were released together as one package.
+
+DIFFERENT when they are separate announcements, for example the same company \
+announcing two unrelated partnerships, products, deals, or hiring posts, even if \
+the topic is similar.
 
 Examples:
 - "Intuit and OpenAI partner on ..." vs "Target and OpenAI partner on ..." -> DIFFERENT
 - "Introducing Codex" vs "o3 system card addendum: Codex" -> SAME
+- "Operation X: influence activity" vs "Operation Y: scam activity" (same report, same day) -> SAME
 
 Article 1
+Published: {date_1}
 Title: {title_1}
 Summary: {summary_1}
 
 Article 2
+Published: {date_2}
 Title: {title_2}
 Summary: {summary_2}
 
@@ -232,22 +249,28 @@ def _clip(summary: str | None) -> str:
     return _squash(summary)[:SUMMARY_CHARS]
 
 
-def build_prompt(
-    first: "tuple[str, str | None]", second: "tuple[str, str | None]"
-) -> str:
-    """각각 (제목, 요약). 요약은 `SUMMARY_CHARS`자로 자른다."""
+def _date(text: "tuple") -> str:
+    """세 번째 칸(발행일 `YYYY-MM-DD`)이 없거나 비면 unknown."""
+    return (text[2] if len(text) > 2 else None) or "unknown"
+
+
+def build_prompt(first: "tuple", second: "tuple") -> str:
+    """각각 (제목, 요약[, 발행일]). 요약은 `SUMMARY_CHARS`자로 자른다."""
     return _PROMPT.format(
         title_1=_squash(first[0]),
         summary_1=_clip(first[1]),
+        date_1=_date(first),
         title_2=_squash(second[0]),
         summary_2=_clip(second[1]),
+        date_2=_date(second),
     )
 
 
-def input_sha(first: "tuple[str, str | None]", second: "tuple[str, str | None]") -> str:
+def input_sha(first: "tuple", second: "tuple") -> str:
     """프롬프트에 들어가는 텍스트의 해시. 순서와 무관하다."""
     parts = sorted(
-        f"{_squash(title)}\x1f{_clip(summary)}" for title, summary in (first, second)
+        f"{_squash(text[0])}\x1f{_clip(text[1])}\x1f{_date(text)}"
+        for text in (first, second)
     )
     return hashlib.sha1("\x1e".join(parts).encode("utf-8")).hexdigest()
 
@@ -316,8 +339,10 @@ async def _unload_ollama(model: str) -> None:
     await unload_model(model)
 
 
-async def fetch_pair_texts(session, ids) -> "dict[uuid.UUID, tuple[str, str | None]]":
-    """밴드 짝에 걸린 문서만 제목·요약을 읽는다(읽기 전용)."""
+async def fetch_pair_texts(
+    session, ids
+) -> "dict[uuid.UUID, tuple[str, str | None, str | None]]":
+    """밴드 짝에 걸린 문서만 제목·요약·발행일을 읽는다(읽기 전용)."""
     from sqlalchemy import select
 
     from argos.models.tech_item import TechItem
@@ -326,11 +351,18 @@ async def fetch_pair_texts(session, ids) -> "dict[uuid.UUID, tuple[str, str | No
     if not id_list:
         return {}
     rows = await session.execute(
-        select(TechItem.id, TechItem.title, TechItem.summary).where(
-            TechItem.id.in_(id_list)
-        )
+        select(
+            TechItem.id, TechItem.title, TechItem.summary, TechItem.published_at
+        ).where(TechItem.id.in_(id_list))
     )
-    return {row.id: (row.title or "", row.summary) for row in rows}
+    return {
+        row.id: (
+            row.title or "",
+            row.summary,
+            row.published_at.date().isoformat() if row.published_at else None,
+        )
+        for row in rows
+    }
 
 
 async def check_ambiguous_pairs(
