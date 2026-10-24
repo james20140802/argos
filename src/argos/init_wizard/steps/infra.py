@@ -7,7 +7,7 @@ The step is broken into three sub-phases:
    something. Secrets are masked when re-displayed as defaults.
 2. ``docker compose up -d`` + poll ``pg_isready`` for up to 30 s, then run
    ``alembic upgrade head``.
-3. Diff ``ollama list`` against the three models Argos requires
+3. Diff ``ollama list`` against the models Argos requires
    (``qwen3:8b``, ``qwen3:32b``, ``nomic-embed-text``) and ``ollama pull``
    only the missing ones.
 """
@@ -21,6 +21,19 @@ from argos.init_wizard import WizardStepError, prompts, runners
 from argos.init_wizard.env_file import atomic_write_env, harden_env_file_mode, load_env, merge_env
 
 REQUIRED_OLLAMA_MODELS: tuple[str, ...] = ("qwen3:8b", "qwen3:32b", "nomic-embed-text")
+
+
+
+def required_ollama_models() -> tuple[str, ...]:
+    """Base models plus the pair-check model when that check is enabled (ARG-307)."""
+    from argos.config import settings
+
+    detection = settings.user.event_detection
+    models = list(REQUIRED_OLLAMA_MODELS)
+    if detection.pair_check_enabled and detection.pair_check_model not in models:
+        models.append(detection.pair_check_model)
+    return tuple(models)
+
 
 _PG_KEYS: tuple[str, ...] = (
     "POSTGRES_USER",
@@ -115,7 +128,7 @@ def _persist_env(env_path: Path, existing: dict[str, str], updates: dict[str, st
 def _ensure_ollama_models(host: str) -> list[str]:
     """Return the list of models that were actually pulled (possibly empty)."""
     installed = set(runners.ollama_list(host=host))
-    missing = [m for m in REQUIRED_OLLAMA_MODELS if m not in installed]
+    missing = [m for m in required_ollama_models() if m not in installed]
     pulled: list[str] = []
     for model in missing:
         print(f"  • pulling {model} (this may take several minutes)…")
@@ -185,4 +198,4 @@ def run_infra_step(
     _ensure_playwright_chromium()
 
 
-__all__ = ["REQUIRED_OLLAMA_MODELS", "run_infra_step"]
+__all__ = ["REQUIRED_OLLAMA_MODELS", "required_ollama_models", "run_infra_step"]

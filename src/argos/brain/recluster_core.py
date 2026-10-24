@@ -62,7 +62,7 @@ import heapq
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, AbstractSet, Sequence
 
 from argos.brain.event_scoring import EdgeWeights, edge_weight
 from argos.brain.graph_backend import require_graph_libs
@@ -139,11 +139,39 @@ def _scored_pairs(
     return tuple(sorted(scored, key=lambda edge: (edge.left_id, edge.right_id)))
 
 
+def score_pairs(
+    documents: Sequence["ReclusterDocument"],
+    pairs: Sequence["NeighborPair"],
+    *,
+    config: "EventDetectionConfig",
+) -> tuple[WeightedEdge, ...]:
+    """이웃 쌍 전부의 점수(τ 미만 포함). 애매한 짝을 고르는 쪽(`pair_check`)이 쓴다."""
+    return _scored_pairs(documents, pairs, config=config)
+
+
+def exclude_vetoed(
+    scored: Sequence[WeightedEdge],
+    vetoed_pairs: AbstractSet[tuple[uuid.UUID, uuid.UUID]],
+) -> tuple[WeightedEdge, ...]:
+    """거부된 짝을 점수 목록에서 뺀다. 짝의 id 순서는 상관없다(ARG-307).
+
+    빠진 짝은 Leiden 간선도, 출처 간 합치기 평균의 기여도 아니다(평균에서는 이웃이
+    아닌 짝처럼 0으로 친다).
+    """
+    if not vetoed_pairs:
+        return tuple(scored)
+    keys = {tuple(sorted(pair)) for pair in vetoed_pairs}
+    return tuple(
+        edge for edge in scored if (edge.left_id, edge.right_id) not in keys
+    )
+
+
 def detect_communities(
     documents: Sequence["ReclusterDocument"],
     pairs: Sequence["NeighborPair"],
     *,
     config: "EventDetectionConfig",
+    vetoed_pairs: AbstractSet[tuple[uuid.UUID, uuid.UUID]] = frozenset(),
 ) -> tuple[Community, ...]:
     """문서들을 Leiden으로 커뮤니티로 나눈다.
 
@@ -166,6 +194,11 @@ def detect_communities(
     400 → 37조각, 500 → 137조각). 그런 사건은 이웃이 꽉 찬 문서를 품으므로
     `ReclusterInput.capped_document_ids` → `SplitCandidate.capped`로 표시된다.
 
+    **거부된 짝 (ARG-307).** `vetoed_pairs`는 로컬 LLM이 "다른 발표"라 확인한 짝이다.
+    점수 함수는 그대로 두고 그 짝만 간선(과 합치기 평균)에서 뺀다 — 낮·밤이 같은
+    점수를 쓴다는 원칙(ARG-282)을 건드리지 않는다. 빈 집합이면 예전과 같다.
+    둘이 다른 문서를 거쳐 이어지면 그 경로로 여전히 같은 덩어리가 될 수 있다.
+
     Raises:
         GraphLibsUnavailable: python-igraph/leidenalg 미설치.
     """
@@ -179,7 +212,9 @@ def detect_communities(
     index_of = {node_id: index for index, node_id in enumerate(node_ids)}
 
     # 점수는 한 번만 매긴다 — τ 이상은 Leiden 간선, 전부는 출처 간 합치기 평균에.
-    scored = _scored_pairs(documents, pairs, config=config)
+    scored = exclude_vetoed(
+        _scored_pairs(documents, pairs, config=config), vetoed_pairs
+    )
     edges = tuple(edge for edge in scored if edge.weight >= config.join_threshold)
 
     graph = igraph.Graph(n=len(node_ids), directed=False)

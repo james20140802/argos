@@ -187,6 +187,67 @@ def platform_pairs_together(
     return sum(m * (m - 1) // 2 for m in per_group.values())
 
 
+@dataclass(frozen=True)
+class PartitionDiff:
+    """두 분할 사이에서 짝 단위로 달라진 것 중 **판정 밖** 짝 (ARG-307).
+
+    `newly_split`은 전에는 같은 그룹이었는데 이제 갈린 짝, `newly_joined`는 그 반대다.
+    목록은 `limit`건까지 id 오름차순으로 자르고, 개수는 전체를 센다.
+    """
+
+    newly_split: tuple[tuple[uuid.UUID, uuid.UUID], ...]
+    newly_split_total: int
+    newly_joined: tuple[tuple[uuid.UUID, uuid.UUID], ...]
+    newly_joined_total: int
+
+
+def _cross_pairs(
+    reference: Mapping[uuid.UUID, Hashable],
+    other: Mapping[uuid.UUID, Hashable],
+    shared: frozenset[uuid.UUID],
+):
+    """`reference`에서 같은 그룹인데 `other`에서는 다른 그룹인 짝 (정렬된 id 순)."""
+    groups: dict[Hashable, list[uuid.UUID]] = {}
+    for doc_id in sorted(shared):
+        groups.setdefault(reference[doc_id], []).append(doc_id)
+    for members in groups.values():
+        for index, left in enumerate(members):
+            for right in members[index + 1:]:
+                if other[left] != other[right]:
+                    yield (left, right)
+
+
+def diff_partitions(
+    before: Mapping[uuid.UUID, Hashable],
+    after: Mapping[uuid.UUID, Hashable],
+    *,
+    judged_ids: frozenset[uuid.UUID],
+    limit: int = 50,
+) -> PartitionDiff:
+    """전후 분할에서 달라진 짝 중 판정 파일 밖의 것. 두 문서가 모두 판정 문서인 짝은 뺀다.
+
+    판정 안 짝은 틀린 비율·엄격 유지가 이미 재고 있다. 이 목록은 그 숫자가 못 보는
+    "판정 밖에서 무엇이 바뀌었나"를 사람이 표본으로 열어 보게 하려는 것이다.
+    두 분할에 모두 있는 문서만 비교한다.
+    """
+    shared = frozenset(before) & frozenset(after)
+
+    def outside(pairs):
+        return sorted(
+            pair for pair in pairs
+            if not (pair[0] in judged_ids and pair[1] in judged_ids)
+        )
+
+    split = outside(_cross_pairs(before, after, shared))
+    joined = outside(_cross_pairs(after, before, shared))
+    return PartitionDiff(
+        newly_split=tuple(split[:limit]),
+        newly_split_total=len(split),
+        newly_joined=tuple(joined[:limit]),
+        newly_joined_total=len(joined),
+    )
+
+
 def _ratio(numerator: int, denominator: int) -> str:
     if not denominator:
         return f"{numerator}/{denominator} (—)"
