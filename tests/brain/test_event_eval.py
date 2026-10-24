@@ -12,6 +12,7 @@ from argos.brain.event_eval import (
     PLATFORM_DOMAINS,
     JudgedCluster,
     JudgmentSet,
+    diff_partitions,
     evaluate,
     format_report,
     load_judgments,
@@ -206,3 +207,47 @@ def test_split_for_tuning_is_odd_vs_even_and_covers_everything():
 def test_split_for_tuning_is_deterministic():
     judgments = load_judgments(DATA)
     assert split_for_tuning(judgments) == split_for_tuning(judgments)
+
+
+# --- ARG-307: 전후 분할의 판정 밖 짝 변화 ---------------------------------------
+
+
+def _u(n: int) -> uuid.UUID:
+    return uuid.UUID(int=n)
+
+
+def test_diff_lists_newly_split_and_newly_joined_pairs():
+    before = {_u(1): "a", _u(2): "a", _u(3): "a", _u(4): "b", _u(5): "c"}
+    after = {_u(1): "x", _u(2): "x", _u(3): "y", _u(4): "y", _u(5): "z"}
+    diff = diff_partitions(before, after, judged_ids=frozenset())
+    assert diff.newly_split == ((_u(1), _u(3)), (_u(2), _u(3)))
+    assert diff.newly_split_total == 2
+    assert diff.newly_joined == ((_u(3), _u(4)),)
+    assert diff.newly_joined_total == 1
+
+
+def test_diff_skips_pairs_where_both_docs_are_judged():
+    before = {_u(1): "a", _u(2): "a", _u(3): "a"}
+    after = {_u(1): "x", _u(2): "y", _u(3): "x"}
+    diff = diff_partitions(before, after, judged_ids=frozenset({_u(1), _u(2)}))
+    # (1,2)는 둘 다 판정 문서라 뺀다. (2,3)은 3이 판정 밖이라 남는다.
+    assert diff.newly_split == ((_u(2), _u(3)),)
+    assert diff.newly_split_total == 1
+
+
+def test_diff_truncates_the_list_but_counts_everything():
+    before = {_u(i): "a" for i in range(1, 6)}
+    after = {_u(i): i for i in range(1, 6)}
+    diff = diff_partitions(before, after, judged_ids=frozenset(), limit=3)
+    assert len(diff.newly_split) == 3 and diff.newly_split_total == 10
+
+
+def test_diff_ignores_docs_missing_from_either_partition():
+    diff = diff_partitions({_u(1): "a", _u(2): "a"}, {_u(1): "x"}, judged_ids=frozenset())
+    assert diff.newly_split_total == 0 and diff.newly_joined_total == 0
+
+
+def test_identical_partitions_have_no_diff():
+    part = {_u(1): "a", _u(2): "a", _u(3): "b"}
+    diff = diff_partitions(part, dict(part), judged_ids=frozenset())
+    assert diff.newly_split == () and diff.newly_joined == ()

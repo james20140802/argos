@@ -210,6 +210,15 @@ class EventSummaryConfig(BaseModel):
     temperature: float | None = Field(default=0.3)
 
 
+class TaxonomyConfig(BaseModel):
+    # ARG-311 역할 갈래 초안 생성(`argos taxonomy draft`) 전용 모델. 다른 모델과
+    # 독립적으로 바꿀 수 있게 config 필드로 둔다(spike와 같은 기본값).
+    model: str = Field(default="gemma4:26b")
+    num_ctx: int = Field(default=16384, ge=512)
+    # 초안 입력으로 쓰는 상위 엔티티 수(문서 수 기준).
+    draft_limit: int = Field(default=60, ge=1, le=500)
+
+
 class RSSFeedConfig(BaseModel):
     url: str
     category: Literal["Mainstream", "Alpha"] = "Mainstream"
@@ -417,6 +426,29 @@ class EventDetectionConfig(BaseModel):
     # 낮 배정은 문서를 하나씩 붙이므로 조각이 생기지 않는다. 끄면 예전 동작.
     cross_source_merge: bool = True
 
+    # ARG-307: 점수가 경계에 있는 같은 사이트 짝에 로컬 LLM으로 "같은 발표인가"를
+    # 묻는다(brain/pair_check). "다른 발표"라는 답만 간선을 지우고, "같은 발표"는
+    # 아무것도 바꾸지 않는다. 점수 함수는 그대로라 낮·밤 원칙(ARG-282)은 유지된다.
+    # 밤 교정(correct-events / recluster-events)에서만 돌고, 켜 둔 채 출하한다
+    # (AC가 운영 밤 교정의 효과를 요구한다). Ollama가 안 닿으면 건너뛰고 교정은
+    # 기능이 꺼진 것과 같게 진행한다.
+    pair_check_enabled: bool = True
+    # 물을 점수 구간은 [join_threshold, 이 값). 오병합 대부분(실측 20건 중 17건이
+    # 같은 사이트)이 이 구간에 있다. 하한을 τ로 고정한 건 τ 미만 짝을 승격시키지
+    # 않기 위해서다 — LLM은 간선을 지우기만 한다.
+    pair_check_upper: float = Field(default=0.65, gt=0.0, le=1.0)
+    # 같은 등록 도메인 짝만 묻는다. 다른 사이트의 짝(공식 발표 vs 벤치마크 분석,
+    # 예: Kimi K3 #21)은 "다른 글"로 답하기 쉬워 정당한 묶음을 깰 위험이 크다.
+    pair_check_same_source_only: bool = True
+    # 질의 모델. 사건 요약 모델과 같은 계열을 쓰되 think는 끄고 호출한다. 배치가
+    # 끝나면 내려(keep_alive 0) VRAM에 한 모델만 남기는 원칙을 지킨다.
+    pair_check_model: str = "gemma4:26b"
+    # 한 번 실행에서 LLM을 부르는 횟수 상한. 넘친 짝은 "미확인"으로 보고하고 다음
+    # 밤에 처리한다. 전 기간 첫 실행은 CLI의 --pair-check-max-calls로 올린다.
+    pair_check_max_calls: int = Field(default=300, ge=0)
+    # 판단 캐시(JSONL) 경로. 비우면 ${XDG_STATE_HOME:-~/.local/state}/argos/pair_checks.jsonl.
+    pair_check_cache_path: str = ""
+
     @property
     def effective_leiden_resolution(self) -> float:
         """실제로 CPM에 넘어가는 해상도 γ — 코어와 CLI 리포트의 **공용 한 자리**.
@@ -471,6 +503,17 @@ MAX_TRACKING_LEIDEN_RESOLUTION = 0.99
 무는 구간은 join_threshold > 0.99뿐이다."""
 
 
+class AliasConfig(BaseModel):
+    # ARG-312 별칭 판정 문턱값(`argos alias-names`). 실측 사례(openai codex 9 /
+    # claude opus 5 18 / code 0.75 / agent 0.88 ...)로 정한 값이 기본값이다.
+    # 전부 "덜 합치는 쪽"으로 작용한다 — 올리면 덜 합치고 내리면 더 합친다.
+    min_root_followers: int = Field(default=3, ge=1)  # "V X"(X도 이름) 꼴이 이만큼 있어야 V가 접두어 뿌리
+    max_lowercase_ratio: float = Field(default=0.2, ge=0.0, le=1.0)  # B가 소문자로 쓰인 비율 상한
+    min_literal_docs: int = Field(default=2, ge=1)  # "V B"를 그대로 쓴 문서 수 하한
+    competitor_margin: float = Field(default=3.0, ge=1.0)  # 1위가 2위의 이 배수 이상
+    min_single_word_length: int = Field(default=4, ge=1)  # 한 낱말 B 최소 글자 수(숫자를 품으면 예외)
+
+
 class UserConfig(BaseModel):
     slack: SlackConfig = SlackConfig()
     briefing: BriefingConfig = BriefingConfig()
@@ -482,6 +525,7 @@ class UserConfig(BaseModel):
     genealogist: GenealogistConfig = GenealogistConfig()
     digest: DigestConfig = DigestConfig()
     event_summary: EventSummaryConfig = Field(default_factory=EventSummaryConfig)
+    taxonomy: TaxonomyConfig = Field(default_factory=TaxonomyConfig)
     rss: RSSConfig = Field(default_factory=RSSConfig)
     spa: SPAConfig = Field(default_factory=SPAConfig)
     web: WebConfig = Field(default_factory=WebConfig)
@@ -490,6 +534,7 @@ class UserConfig(BaseModel):
     feed_ranking: FeedRankingConfig = Field(default_factory=FeedRankingConfig)
     event_detection: EventDetectionConfig = Field(default_factory=EventDetectionConfig)
     correction: CorrectionConfig = Field(default_factory=CorrectionConfig)
+    aliases: AliasConfig = Field(default_factory=AliasConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:

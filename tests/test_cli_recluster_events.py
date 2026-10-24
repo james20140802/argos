@@ -201,3 +201,108 @@ def test_the_help_text_covers_both_install_paths(capsys):
         main(["recluster-events", "--help"])
     assert exit_info.value.code == 0
     assert INSTALL_COMMANDS in capsys.readouterr().out
+
+
+# --- ARG-307: LLM 확인 표시 -----------------------------------------------------
+
+
+def _report(**overrides):
+    from argos.brain.pair_check import PairCheckReport, PairVerdict
+
+    verdicts = (
+        PairVerdict(D1, D2, "Intuit and OpenAI partner", "Target and OpenAI partner",
+                    "DIFFERENT", "서로 다른 고객 협업", cached=False),
+        PairVerdict(D1, D3, "Introducing Codex", "Codex system card",
+                    "SAME", "같은 출시", cached=True),
+    )
+    fields = dict(
+        model="gemma4:26b",
+        vetoed=frozenset({(D1, D2)}),
+        band_pairs=2,
+        asked=1,
+        cache_hits=1,
+        skipped=0,
+        elapsed_s=2.5,
+        verdicts=verdicts,
+    )
+    fields.update(overrides)
+    return PairCheckReport(**fields)
+
+
+def test_report_shows_pair_check_counts_and_the_pairs_it_changed(fake_recluster, capsys):
+    fake_recluster(ReclusterCandidates(merges=(), splits=(), pair_check=_report()))
+    main(["recluster-events", "--from", "2026-08-01", "--to", "2026-08-31"])
+    out = capsys.readouterr().out
+    assert "LLM 확인: 물음 1 · 재사용 1 · 건너뜀 0 · 소요 2.5초" in out
+    assert "LLM 확인으로 갈린 짝: 1건" in out
+    assert "Intuit and OpenAI partner" in out and "Target and OpenAI partner" in out
+    assert "서로 다른 고객 협업" in out
+    assert "Codex system card" not in out  # SAME 판단은 아무것도 바꾸지 않으므로 나열하지 않는다
+
+
+def test_report_shows_the_skip_reason(fake_recluster, capsys):
+    fake_recluster(
+        ReclusterCandidates(
+            merges=(), splits=(),
+            pair_check=_report(
+                vetoed=frozenset(), asked=0, cache_hits=0, skipped=4,
+                skipped_reason="Ollama 연결 실패", verdicts=(),
+            ),
+        )
+    )
+    main(["recluster-events", "--from", "2026-08-01", "--to", "2026-08-31"])
+    out = capsys.readouterr().out
+    assert "건너뜀 4(Ollama 연결 실패)" in out
+    assert "LLM 확인으로 갈린 짝: 0건" in out
+
+
+def test_no_pair_check_section_when_the_feature_is_off(fake_recluster, capsys):
+    fake_recluster(ReclusterCandidates(merges=(), splits=()))
+    main(["recluster-events", "--from", "2026-08-01", "--to", "2026-08-31"])
+    out = capsys.readouterr().out
+    assert "LLM 확인:" not in out and "LLM 확인으로 갈린 짝" not in out
+
+
+def test_header_records_the_pair_check_settings(fake_recluster, capsys):
+    fake_recluster(ReclusterCandidates(merges=(), splits=()))
+    main(["recluster-events", "--from", "2026-08-01", "--to", "2026-08-31"])
+    config = settings.user.event_detection
+    out = capsys.readouterr().out
+    assert f"pair_check: (enabled={config.pair_check_enabled}" in out
+    assert f"model={config.pair_check_model}" in out
+    assert f"upper={config.pair_check_upper}" in out
+
+
+def test_a_split_caused_by_a_veto_is_tagged(fake_recluster, capsys):
+    fake_recluster(
+        ReclusterCandidates(
+            merges=(),
+            splits=(
+                SplitCandidate(event_id=E1, groups=((D1,), (D2,))),  # 거부된 짝을 가른다
+                SplitCandidate(event_id=E2, groups=((D1,), (D3,))),  # 거부와 무관
+            ),
+            pair_check=_report(),
+        )
+    )
+    main(["recluster-events", "--from", "2026-08-01", "--to", "2026-08-31"])
+    lines = capsys.readouterr().out.splitlines()
+    tagged = next(line for line in lines if str(E1) in line and "조각" in line)
+    plain = next(line for line in lines if str(E2) in line and "조각" in line)
+    assert "(LLM 확인)" in tagged
+    assert "(LLM 확인)" not in plain
+
+
+def test_max_calls_flag_reaches_the_orchestration(monkeypatch, capsys):
+    import argos.cli as cli_module
+
+    seen = {}
+
+    async def _record(session, *, start, end, pair_check_max_calls=None):
+        seen["max_calls"] = pair_check_max_calls
+        return ReclusterCandidates(merges=(), splits=())
+
+    monkeypatch.setattr(cli_module, "_recluster_period_for_cli", _record)
+    main(["recluster-events", "--to", "2026-08-31", "--pair-check-max-calls", "2000"])
+    assert seen["max_calls"] == 2000
+    main(["recluster-events", "--to", "2026-08-31"])
+    assert seen["max_calls"] is None

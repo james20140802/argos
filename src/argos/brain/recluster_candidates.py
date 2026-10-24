@@ -24,11 +24,12 @@ ARG-245는 툼스톤을 병합 대상으로 받는 일이 없다.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 from typing import TYPE_CHECKING, AbstractSet, Mapping, Sequence
 
 if TYPE_CHECKING:
+    from argos.brain.pair_check import PairCheckReport
     from argos.brain.recluster_core import Community
 
 
@@ -70,6 +71,11 @@ class ReclusterCandidates:
 
     merges: tuple[MergeCandidate, ...]
     splits: tuple[SplitCandidate, ...]
+    pair_check: "PairCheckReport | None" = field(default=None, compare=False)
+    """애매한 짝 LLM 확인 결과(ARG-307). 꺼져 있으면 None. 후보 도출은 이 값을 보지
+    않는다 — 거부는 이미 커뮤니티 판정에 반영돼 있고, 이 필드는 미리보기가 그
+    사실을 보여 주려고 싣고 다니는 보고용이다. 소요 시간이 들어 있어 실행마다
+    달라지므로 동등 비교에서 뺀다(같은 입력 = 같은 후보)."""
 
     def is_empty(self) -> bool:
         return not self.merges and not self.splits

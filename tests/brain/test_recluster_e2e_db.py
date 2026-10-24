@@ -45,6 +45,18 @@ def _require_db():
         )
 
 
+@pytest.fixture(autouse=True)
+def _no_llm_pair_check(monkeypatch):
+    """ARG-307: 기본값이 켜짐이라, 끄지 않으면 이 테스트가 실제 Ollama를 부른다."""
+    config = settings.user.event_detection.model_copy(
+        update={"pair_check_enabled": False}
+    )
+    monkeypatch.setattr(
+        "argos.brain.recluster.settings",
+        type("S", (), {"user": type("U", (), {"event_detection": config})()})(),
+    )
+
+
 @pytest.fixture(scope="module")
 def session_factory():
     engine = create_async_engine(_DB_URL, poolclass=NullPool)
