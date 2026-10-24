@@ -146,15 +146,16 @@ def test_check_ollama_models_all_present(monkeypatch):
     """All three required models present (exact IDs) → three OK rows."""
     monkeypatch.setattr(
         "argos.init_wizard.runners.ollama_list",
-        lambda **kw: ["qwen3:8b", "qwen3:32b", "nomic-embed-text"],
+        lambda **kw: ["qwen3:8b", "qwen3:32b", "nomic-embed-text", "gemma4:26b"],
     )
     rows = doctor.check_ollama_models()
-    assert len(rows) == 3
+    assert len(rows) == 4
     assert all(status == "OK" for _, status, _ in rows)
     names = [name for name, _, _ in rows]
     assert "qwen3:8b" in names
     assert "qwen3:32b" in names
     assert "nomic-embed-text" in names
+    assert "gemma4:26b" in names  # pair-check model (ARG-307)
 
 
 def test_check_ollama_models_partial_missing(monkeypatch):
@@ -164,11 +165,12 @@ def test_check_ollama_models_partial_missing(monkeypatch):
         lambda **kw: ["qwen3:8b"],
     )
     rows = doctor.check_ollama_models()
-    assert len(rows) == 3
+    assert len(rows) == 4
     by_name = {name: status for name, status, _ in rows}
     assert by_name["qwen3:8b"] == "OK"
     assert by_name["qwen3:32b"] == "FAIL"
     assert by_name["nomic-embed-text"] == "FAIL"
+    assert by_name["gemma4:26b"] == "FAIL"
 
 
 def test_check_ollama_models_ollama_unreachable(monkeypatch):
@@ -178,7 +180,7 @@ def test_check_ollama_models_ollama_unreachable(monkeypatch):
 
     monkeypatch.setattr("argos.init_wizard.runners.ollama_list", _raise)
     rows = doctor.check_ollama_models()
-    assert len(rows) == 3
+    assert len(rows) == 4
     assert all(status == "FAIL" for _, status, _ in rows)
     assert all(detail for _, _, detail in rows)
 
