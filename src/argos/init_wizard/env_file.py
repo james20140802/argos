@@ -21,6 +21,8 @@ import os
 import stat
 from pathlib import Path
 
+from argos.private_files import ensure_private_dir
+
 logger = logging.getLogger(__name__)
 
 ENV_FILE_MODE = 0o600
@@ -92,7 +94,7 @@ def atomic_write_env(path: Path, data: dict[str, str]) -> None:
     first, then ``os.replace`` so a crash mid-write leaves the original
     file intact.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(path.parent)
     tmp = path.with_suffix(path.suffix + ".tmp")
     payload = _serialise(data)
     try:
