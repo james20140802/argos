@@ -196,3 +196,38 @@ def test_size_suggestion_only_suggests():
     assert len(out) == 1 and "코딩" in out[0] and "taxonomy split" in out[0]
     out = size_suggestions({"A > 코딩": 5, "A > 모델": 1, "B > x": 1}, TaxonomyConfig())
     assert out and "71%" in out[0]  # 전체의 30% 초과
+
+
+@pytest.mark.asyncio
+async def test_names_rejected_in_this_run_are_dropped_from_neighbor_evidence():
+    seen = []
+
+    def gpt(prompt):
+        seen.append(prompt)
+        return {"leaf_index": 0}
+
+    llm = FakeLLM(
+        describe={
+            "OpenAI": {**TECH, "is_technology": False, "not_tech_kind": "company"},
+            "GPT-6 Astra": TECH,
+        },
+        assign={"GPT-6 Astra": gpt},
+    )
+    targets = [
+        target("OpenAI"),
+        target("GPT-6 Astra", neighbors=[Neighbor("openai", 3, ()), Neighbor("opus 5.5", 3, ())]),
+    ]
+    plan = await build_plan(targets, LEAVES, llm, CFG)
+    assert "with openai" not in seen[0] and "with opus 5.5" in seen[0]
+    (a,) = plan.assignments
+    assert [n["name"] for n in a.evidence["neighbors"]] == ["opus 5.5"]
+
+
+def test_prefer_full_name_over_fragment():
+    from argos.brain.tech_classify_store import prefer_full_name
+
+    texts = ["GPT-6 Astra beats GPT-6 Astra mini. Also 6 Astra alone once."]
+    assert prefer_full_name("6 Astra", ["GPT-6 Astra"], texts) == "GPT-6 Astra"
+    # 긴 표기가 드물면(조각의 절반 미만) 바꾸지 않는다.
+    texts = ["Claude Code is great. Claude Code again. Claude Code CLI once. Claude Code more."]
+    assert prefer_full_name("Claude Code", ["Claude Code CLI"], texts) == "Claude Code"

@@ -229,6 +229,9 @@ class TaxonomyConfig(BaseModel):
     assign_rounds: int = Field(default=2, ge=1, le=3)  # 이웃 갈래가 바뀐 이름만 재질의
     # 일반어 거르기: 본문에서 소문자로 쓰인 비율이 이보다 크면 일반 낱말(agent 0.88, code 0.75).
     generic_lowercase_ratio: float = Field(default=0.6, ge=0.0, le=1.0)
+    # 흔한 이름(event_detection.entity_common_doc_ratio) 중 이 글자 수 이하만 LLM 없이 거른다
+    # (ai·api·llm). 긴 흔한 이름(codex·chatgpt)은 기술일 수 있어 LLM이 판정한다.
+    common_short_max_chars: int = Field(default=3, ge=0)
     ner_min_mentions: int = Field(default=3, ge=1)  # spaCy 다수결에 필요한 라벨 수
     # 갈래 크기 제안(쓰기 없음): 아래 갈래가 이 수를 넘거나 전체 배정의 이 비율을 넘으면.
     split_suggest_size: int = Field(default=15, ge=2)

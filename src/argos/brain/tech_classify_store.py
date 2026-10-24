@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
@@ -260,6 +261,9 @@ async def build_inputs(
         max_ratio=ed.entity_common_doc_ratio,
         min_documents=ed.entity_common_min_documents,
     )
+    # 패턴·이웃에서 뺄 흔한 이름은 짧은 것(ai·api·llm)만 — codex·chatgpt도 흔한 이름이지만
+    # 기술이라 나열 증거에 남아야 한다(screen과 같은 기준).
+    common_short = frozenset(k for k in common if len(k) <= cfg.common_short_max_chars)
     roots = find_roots(key_of.values(), alias_cfg)
     not_tech = {
         r.key for r in all_rows if r.profile and r.profile.verdict == TechVerdict.NOT_TECHNOLOGY
@@ -314,7 +318,7 @@ async def build_inputs(
             surfaces: dict[str, list[str]] = defaultdict(list)
             for eid in names_in_doc.get(did, ()):
                 ck = canon_key.get(eid)
-                if ck is None or ck in common:
+                if ck is None or ck in common_short:
                     continue
                 surfaces[ck].append(name_of[eid])
             if len(surfaces) >= 1:
@@ -325,7 +329,8 @@ async def build_inputs(
         texts = [body for _did, body in docs_by_target.get(row.entity_id, [])]
         member_ids = [row.entity_id, *members_of.get(row.entity_id, [])]
         members = [(key_of[m], name_of[m]) for m in member_ids if m in key_of]
-        display, _others = pick_display_names(members, row.key, texts) if members else (row.name, ())
+        display, others = pick_display_names(members, row.key, texts) if members else (row.name, ())
+        display = prefer_full_name(display, others, texts)
         sentences = extract_sentences(
             texts, display, limit=MAX_SENTENCES, max_chars=MAX_SENTENCE_CHARS
         )
@@ -340,10 +345,14 @@ async def build_inputs(
             lowercase_ratio=ratios.get(row.key),
             is_vendor_root=vendor,
             ner_labels=_ner_labels(sentences, [display, *(n for _k, n in members)]) if describe else {},
+            stored_name=row.name,
         )
+        # 이웃도 대상과 같은 문턱을 넘은 이름만(한 문서짜리 잡음 "pi 4714" 등을 뺀다).
         neighbors = tuple(
-            nb for nb in evidence.neighbors(row.key, limit=MAX_NEIGHBORS * 2)
-            if nb.key not in not_tech and nb.key not in common
+            nb for nb in evidence.neighbors(row.key, limit=MAX_NEIGHBORS * 4)
+            if nb.key not in not_tech
+            and nb.key not in common_short
+            and doc_counts.get(nb.key, 0) >= cfg.min_documents
         )[:MAX_NEIGHBORS]
         tags: tuple[str, ...] = ()
         if external is not None and describe:
@@ -371,6 +380,28 @@ async def build_inputs(
             )
         )
     return out
+
+
+def prefer_full_name(display: str, others: Sequence[str], texts: Sequence[str]) -> str:
+    """표시 이름이 다른 표기의 조각이면("6 Astra" ⊂ "GPT-6 Astra") 긴 표기를 쓴다.
+
+    ARG-312 별칭이 회사 접두어를 뗀 이름을 대표로 두면, 조각 표기는 긴 표기 안에서도
+    잡혀 늘 더 많이 세어진다. 긴 표기가 본문에서 조각의 절반 이상 쓰였으면 그쪽이 LLM에
+    넘길 이름으로 맞다. 순수 함수.
+    """
+    def count(name: str) -> int:
+        pat = re.compile(
+            rf"(?<![0-9A-Za-z]){re.escape(name)}(?![0-9A-Za-z])", re.IGNORECASE
+        )
+        return sum(len(pat.findall(t or "")) for t in texts)
+
+    base = count(display)
+    best = display
+    for other in others:
+        if len(other) > len(best) and display.casefold() in other.casefold():
+            if base and count(other) * 2 >= base:
+                best = other
+    return best
 
 
 # --------------------------------------------------------------------- #

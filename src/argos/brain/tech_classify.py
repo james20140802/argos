@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 
 from argos.brain.taxonomy import Tree, iter_branches
@@ -52,8 +52,12 @@ class ScreenSignals:
     display: str
     common: bool  # entity_frequency.common_names에 듦
     lowercase_ratio: float | None  # 본문에서 전부 소문자로 쓰인 비율(못 구하면 None)
-    is_vendor_root: bool  # entity_aliases.trusted_vendors에 듦(회사 접두어)
+    # entity_aliases.trusted_vendors에 듦(접두어 뿌리). **거르기에는 쓰지 않는다** — 운영 DB
+    # 실측에서 claude code·vllm·mcp·gemma 4 같은 제품 계열도 뿌리였다. LLM 설명 프롬프트에
+    # "회사일 수 있다"는 힌트로만 넘긴다.
+    is_vendor_root: bool
     ner_labels: Mapping[str, int] = field(default_factory=dict)  # spaCy 라벨 수(없으면 빈 dict)
+    stored_name: str = ""  # entities.name(첫 등장 표기, 예: "I'm") — 표시 이름과 다를 수 있다
 
 
 def majority_ner_label(labels: Mapping[str, int], *, min_mentions: int) -> str | None:
@@ -67,19 +71,23 @@ def majority_ner_label(labels: Mapping[str, int], *, min_mentions: int) -> str |
 
 def screen(signals: ScreenSignals, cfg: TaxonomyConfig) -> str | None:
     """기술이 아니면 ``NotTechReason`` 값, 통과면 ``None``. 덜 거르는 쪽으로 둔다 —
-    여기서 놓친 일반어는 LLM 설명 단계(``is_technology``)가 한 번 더 거른다."""
-    if signals.common:
+    여기서 놓친 일반어·회사 이름은 LLM 설명 단계(``is_technology``)가 한 번 더 거른다.
+
+    흔한 이름은 **짧은 것(3자 이하: ai, api, llm)만** 여기서 거른다. 운영 DB 실측에서
+    흔한 이름 목록에 codex·chatgpt·claude도 들어 있었다 — 자주 나온다고 기술이 아닌 게
+    아니므로 나머지는 LLM이 판정한다.
+    """
+    key = signals.key.strip()
+    if signals.common and len(key) <= cfg.common_short_max_chars:
         return NotTechReason.COMMON
-    display = signals.display.strip()
-    if len(signals.key.strip()) < 2 or _CONTRACTION.search(display):
+    names = [n.strip() for n in (signals.display, signals.stored_name) if n and n.strip()]
+    if len(key) < 2 or any(_CONTRACTION.search(n) for n in names):
         return NotTechReason.GENERIC
     if (
         signals.lowercase_ratio is not None
         and signals.lowercase_ratio > cfg.generic_lowercase_ratio
     ):
         return NotTechReason.GENERIC
-    if signals.is_vendor_root:
-        return NotTechReason.VENDOR
     label = majority_ner_label(signals.ner_labels, min_mentions=cfg.ner_min_mentions)
     if label in _PLACE_LABELS:
         return NotTechReason.PLACE
@@ -255,6 +263,10 @@ If the sentences are not enough, set "enough" to false instead of guessing.
 Sentences:
 {sents}"""
 
+VENDOR_HINT = """
+
+Note: "{name}" is often used in front of other product names in the corpus, so it may be a company or a product family. If it is a company, set "is_technology" to false and "not_tech_kind" to "company"."""
+
 ASSIGN_PROMPT = """Pick the single best leaf category for this technology.
 Technology: {name}
 LLM description (may be wrong if source sentences were thin): {one_liner} (kind: {kind})
@@ -351,6 +363,7 @@ async def build_plan(
     unclassified: list[AssignmentWrite] = []
 
     # --- 판정·설명
+    described: list[tuple[TargetInput, ProfileWrite, bool]] = []
     for t in targets:
         if not t.needs_describe and t.existing is not None:
             ex = t.existing
@@ -359,11 +372,17 @@ async def build_plan(
                 not_tech_reason=ex.not_tech_reason, kind=ex.kind, description=ex.description,
                 role_en=ex.role_en, described_doc_count=ex.described_doc_count,
             )
-            written = False
+            described.append((t, prof, False))
         else:
             prof, used_llm = await _describe(t, llm, cfg, model_name)
             calls += used_llm
-            written = True
+            described.append((t, prof, True))
+
+    # 이번 회에 기술이 아니라고 판정된 이름은 이웃 증거에서도 뺀다(OpenAI가 이웃이면 안 된다).
+    not_tech = {t.key for t, p, _w in described if p.verdict == TechVerdict.NOT_TECHNOLOGY}
+    for t, prof, written in described:
+        if not_tech and any(nb.key in not_tech for nb in t.neighbors):
+            t = replace(t, neighbors=tuple(nb for nb in t.neighbors if nb.key not in not_tech))
         if prof.verdict == TechVerdict.NOT_TECHNOLOGY:
             screened.append((t.display, prof.not_tech_reason or NotTechReason.LLM))
             unassign.append((t.entity_id, t.display))
@@ -437,6 +456,8 @@ async def _describe(
     prompt = DESCRIBE_PROMPT.format(
         name=t.display, sents="\n".join(f"- {s}" for s in t.sentences)
     )
+    if t.signals.is_vendor_root:
+        prompt += VENDOR_HINT.format(name=t.display)
     try:
         raw = await _query(llm, prompt, cfg)
     except Exception as exc:  # noqa: BLE001 — 한 이름 실패가 배치 전체를 막지 않게
