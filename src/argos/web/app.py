@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from argos.web.security import SecurityPolicy, install_security
 from argos.web.services.activity import fetch_activity
 from argos.web.services.detail import fetch_item_detail
 from argos.web.services.event_detail import fetch_event_detail
@@ -241,7 +242,11 @@ async def _load_item_successors(session, tech_id: uuid.UUID):
     return await _fetch_successors(session, tech_id)
 
 
-def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
+def build_web_app(
+    config_path: Optional[Path] = None,
+    *,
+    security: Optional[SecurityPolicy] = None,
+) -> FastAPI:
     """Build and return the Argos FastAPI app.
 
     The app mounts ``/static`` from ``src/argos/web/static/`` and stores
@@ -252,6 +257,9 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
     writes. ``_cmd_web`` passes the ``--config``-resolved path so the web UI
     edits the same file the running daemon / scheduled jobs use; when ``None``
     the settings service falls back to ``config_store.default_config_path()``.
+
+    ``security`` is the auth/CSRF policy (ARG-195, ``argos.web.security``);
+    ``None`` means "enforced, default token path", resolved per request.
     """
     app = FastAPI(
         title="Argos Web",
@@ -1388,4 +1396,6 @@ def build_web_app(config_path: Optional[Path] = None) -> FastAPI:
         # PRG: redirect so a refresh doesn't re-POST the form.
         return RedirectResponse("/settings?saved=1", status_code=303)
 
+    # Last, so the auth/CSRF gate is the outermost middleware (ARG-195).
+    install_security(app, security)
     return app
