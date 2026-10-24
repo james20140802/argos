@@ -512,6 +512,10 @@ class AliasConfig(BaseModel):
     min_literal_docs: int = Field(default=2, ge=1)  # "V B"를 그대로 쓴 문서 수 하한
     competitor_margin: float = Field(default=3.0, ge=1.0)  # 1위가 2위의 이 배수 이상
     min_single_word_length: int = Field(default=4, ge=1)  # 한 낱말 B 최소 글자 수(숫자를 품으면 예외)
+    # 숫자 없는 한 낱말 B가 이 글자 수보다 짧으면(omni, opus) 소문자 비율 상한을 더 낮춘다.
+    # 실측: omni 0.12(일반어, 막음) / opus 0.02 · duet 0.0(제품, 통과).
+    short_word_length: int = Field(default=5, ge=1)
+    max_short_word_lowercase_ratio: float = Field(default=0.05, ge=0.0, le=1.0)
 
 
 class UserConfig(BaseModel):

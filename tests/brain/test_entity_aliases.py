@@ -378,3 +378,107 @@ def test_thresholds_come_from_config():
     assert "openai" in ea.find_roots(keys)
     assert "openai" not in ea.find_roots(keys, AliasConfig(min_root_followers=4))
     assert UserConfig.model_validate({"aliases": {"min_literal_docs": 5}}).aliases.min_literal_docs == 5
+
+
+# ----- 운영 미리보기 오탐 3건 (2026-10-25) ------------------------------------ #
+# 운영 DB 실측 문서 수·소문자 비율을 그대로 옮긴 작은 코퍼스. 합쳐지면 안 되는 3건과
+# 같은 모양인데 합쳐져야 하는 정상 사례를 나란히 둔다.
+
+_PROD_KEYS = [
+    "openai", "anthropic", "codex", "claude", "claude code", "gemini", "kimi", "deepseek",
+    "openai anthropic", "anthropic openai", "openai codex",
+    "codex claude code",
+    "gemini omni", "omni",
+    "claude opus", "opus", "claude opus 5", "opus 5", "claude duet", "duet",
+    "kimi k2", "k2", "deepseek r1", "r1",
+    "hugging face", "huggingface",
+]
+_PROD_DOCS = {
+    "openai": 447, "anthropic": 56, "codex": 161, "claude": 96, "claude code": 72,
+    "gemini": 19, "kimi": 9, "deepseek": 18,
+    "openai anthropic": 2, "anthropic openai": 2, "openai codex": 8,
+    "codex claude code": 2,
+    "gemini omni": 3, "omni": 2,
+    "claude opus": 4, "opus": 8, "claude opus 5": 10, "opus 5": 12, "claude duet": 2, "duet": 1,
+    "kimi k2": 3, "k2": 2, "deepseek r1": 3, "r1": 4,
+    "hugging face": 46, "huggingface": 6,
+}
+_PROD_RATIOS = {
+    "anthropic": 0.105, "codex": 0.031, "claude code": 0.031, "openai": 0.038, "omni": 0.117,
+    "opus": 0.018, "opus 5": 0.024, "duet": 0.0, "k2": 0.091, "r1": 0.136,
+}
+_PROD_VENDORS = frozenset({"openai", "anthropic", "codex", "claude", "claude code", "gemini",
+                           "kimi", "deepseek", "opus 5"})
+
+
+def _decide_prod(cfg=None):
+    keys = frozenset(_PROD_KEYS)
+    stats = ea.VendorStats(
+        keys=keys,
+        roots=_PROD_VENDORS,
+        doc_counts=_PROD_DOCS,
+        lowercase_ratios=lambda bases: {b: _PROD_RATIOS[b] for b in bases if b in _PROD_RATIOS},
+        vendors=_PROD_VENDORS,
+    )
+    decision = ea.decide_vendor_prefix(
+        ea.vendor_candidates(keys, _PROD_VENDORS), stats, *([cfg] if cfg else [])
+    )
+    merged = {(e.a, e.b) for e in decision.edges}
+    held = {(h.alias, h.base): h.reason for h in decision.held}
+    return merged, held
+
+
+def test_names_written_side_by_side_in_both_orders_are_not_merged():
+    # openai anthropic -> anthropic: 접두어를 뗀 나머지가 다른 회사다
+    merged, held = _decide_prod()
+    assert ("openai anthropic", "anthropic") not in merged
+    assert held[("openai anthropic", "anthropic")] == ea.HOLD_REVERSED_PAIR
+    assert held[("anthropic openai", "openai")] == ea.HOLD_REVERSED_PAIR
+    # 같은 회사-제품 모양이어도 거꾸로 쓴 이름이 없으면 그대로 합친다
+    assert ("openai codex", "codex") in merged
+
+
+def test_base_that_belongs_to_another_vendor_is_not_merged():
+    # codex claude code -> claude code: claude code는 claude 쪽 제품이지 codex의 다른 이름이 아니다
+    merged, held = _decide_prod()
+    assert ("codex claude code", "claude code") not in merged
+    assert held[("codex claude code", "claude code")] == ea.HOLD_BASE_HAS_OTHER_VENDOR
+    # 나머지가 V 자신이 거느린 이름이면(opus 5는 접두어지만 claude 쪽) 통과한다
+    assert ("claude opus 5", "opus 5") in merged
+
+
+def test_short_plain_word_needs_stronger_proper_noun_evidence():
+    # omni -> gemini omni: 짧은 일반어(소문자 0.12)가 한 회사 제품으로 끌려가면 안 된다
+    merged, held = _decide_prod()
+    assert ("gemini omni", "omni") not in merged
+    assert held[("gemini omni", "omni")] == ea.HOLD_SHORT_BASE_LOWERCASE
+    # 같은 길이라도 거의 늘 대문자로 쓰이는 제품명은 합친다
+    assert ("claude opus", "opus") in merged
+    assert ("claude duet", "duet") in merged
+    # 숫자를 품은 짧은 이름은 이 검사 대상이 아니다
+    assert ("kimi k2", "k2") in merged
+    assert ("deepseek r1", "r1") in merged
+
+
+def test_short_word_thresholds_come_from_config():
+    from argos.config import AliasConfig
+
+    merged, _ = _decide_prod(AliasConfig(max_short_word_lowercase_ratio=0.2))
+    assert ("gemini omni", "omni") in merged
+    merged, held = _decide_prod(AliasConfig(short_word_length=4))
+    assert ("gemini omni", "omni") in merged  # 4글자는 더 이상 "짧은 낱말"이 아니다
+
+
+def test_plan_keeps_merging_spacing_variants_alongside_the_new_holds():
+    keys = _PROD_KEYS
+    ids = {key: uuid.uuid5(uuid.NAMESPACE_DNS, key) for key in keys}
+    inputs = ea.AliasInputs(
+        entities=tuple(ea.EntityRow(ids[k], k, k.title()) for k in keys),
+        doc_counts=_PROD_DOCS,
+        texts=["OpenAI, Anthropic, Codex, Claude, Claude Code, Gemini, Kimi, DeepSeek, Opus 5."] * 3,
+        existing=(),
+    )
+    plan = ea.compute_alias_plan(inputs)
+    added = {(link.alias_key, link.canonical_key) for link in plan.added}
+    assert ("huggingface", "hugging face") in added
+    assert not any(alias in {"openai anthropic", "codex claude code", "omni"} for alias, _ in added)

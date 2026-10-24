@@ -154,6 +154,9 @@ HOLD_FEW_LITERAL_DOCS = "few_literal_docs"
 HOLD_COMPETING_VENDOR = "competing_vendor"
 HOLD_BASE_LOWERCASE = "base_lowercase"
 HOLD_BASE_UNVERIFIED = "base_unverified"
+HOLD_REVERSED_PAIR = "reversed_pair"
+HOLD_BASE_HAS_OTHER_VENDOR = "base_has_other_vendor"
+HOLD_SHORT_BASE_LOWERCASE = "short_base_lowercase"
 
 # 살아남은 B 집합 -> 소문자 비율. 비율을 못 구한 B는 빠져도 된다(보류된다).
 RatioFn = Callable[[frozenset[str]], Mapping[str, float]]
@@ -185,6 +188,8 @@ class VendorStats:
     roots: frozenset[str]
     doc_counts: Mapping[str, int]
     lowercase_ratios: RatioFn
+    # 믿을 만한 접두어(trusted_vendors). B가 다른 접두어로 시작하는지 가를 때 쓴다.
+    vendors: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -264,6 +269,18 @@ def _is_distinctive_length(base: str, cfg: AliasConfig = _DEFAULT) -> bool:
     )
 
 
+def _is_short_plain_word(base: str, cfg: AliasConfig = _DEFAULT) -> bool:
+    """숫자 없는 한 낱말이고 ``short_word_length``보다 짧은가(``omni``, ``opus``, ``duet``).
+
+    이런 B는 일반 낱말과 겹치기 쉬워(``omni``-modal) 고유명이라는 증거를 더 세게 요구한다.
+    """
+    return (
+        " " not in base
+        and not any(ch.isdigit() for ch in base)
+        and len(base) < cfg.short_word_length
+    )
+
+
 def decide_vendor_prefix(
     candidates: Sequence[VendorCandidate],
     stats: VendorStats,
@@ -297,6 +314,9 @@ def decide_vendor_prefix(
             held.append(HeldPair(cand.alias, cand.base, HOLD_BASE_UNVERIFIED))
         elif ratio > cfg.max_lowercase_ratio:
             held.append(HeldPair(cand.alias, cand.base, HOLD_BASE_LOWERCASE))
+        elif _is_short_plain_word(cand.base, cfg) and ratio > cfg.max_short_word_lowercase_ratio:
+            # `gemini omni -> omni`(0.12)는 막고 `claude opus -> opus`(0.02)는 통과시킨다.
+            held.append(HeldPair(cand.alias, cand.base, HOLD_SHORT_BASE_LOWERCASE))
         else:
             others = [n for alias, n in rivals[cand.base].items() if alias != cand.alias]
             edges.append(
@@ -329,6 +349,18 @@ def _cheap_hold_reason(
         return HOLD_BASE_MISSING
     if version_signature(cand.alias) != version_signature(base):
         return HOLD_VERSION_MISMATCH
+    if f"{base} {cand.vendor}" in stats.keys:
+        # "V B"와 "B V"가 둘 다 이름이면 한쪽이 다른 쪽의 제품이 아니라 나란히 적힌
+        # 이름(`openai anthropic` / `anthropic openai`)이다.
+        return HOLD_REVERSED_PAIR
+    base_tokens = base.split()
+    if any(
+        " ".join(base_tokens[:cut]) in stats.vendors and " ".join(base_tokens[:cut]) != cand.vendor
+        for cut in range(1, len(base_tokens))
+    ):
+        # B가 이미 다른 접두어의 이름이다(`codex claude code`의 claude code는 claude 쪽).
+        # V를 떼면 남는 건 다른 회사·제품이지 V의 다른 이름이 아니다.
+        return HOLD_BASE_HAS_OTHER_VENDOR
     if base in stats.roots and stats.doc_counts.get(cand.vendor, 0) <= stats.doc_counts.get(base, 0):
         # B도 뿌리면 V가 B보다 확립된 이름(문서가 더 많음)일 때만 접두어로 본다.
         # `microsoft openai -> openai`는 막히고(openai가 더 크다) `openai codex -> codex`는
@@ -429,13 +461,14 @@ def compute_alias_plan(inputs: AliasInputs, cfg: AliasConfig = _DEFAULT) -> Alia
     def ratio_fn(names: frozenset[str]) -> Mapping[str, float]:
         return lowercase_ratios(inputs.texts, names)
 
+    vendors = trusted_vendors(roots, inputs.doc_counts, ratio_fn, cfg)
     stats = VendorStats(
         keys=keys,
         roots=roots,  # B가 뿌리인지 막는 검사는 믿을 만하지 않은 뿌리까지 전부 쓴다
         doc_counts=inputs.doc_counts,
         lowercase_ratios=ratio_fn,
+        vendors=vendors,
     )
-    vendors = trusted_vendors(roots, inputs.doc_counts, ratio_fn, cfg)
     decision = decide_vendor_prefix(vendor_candidates(keys, vendors), stats, cfg)
     groups = build_alias_groups(
         [*spacing_edges(keys), *decision.edges],
