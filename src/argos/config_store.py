@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover - Python <3.11
 from pydantic import BaseModel
 
 from argos.config import UserConfig
+from argos.private_files import write_private_bytes
 
 # Dotted keys that must never be settable via the CLI even if they ever land in
 # UserConfig. The pattern check below covers anything matching
@@ -98,22 +99,12 @@ def load_raw(path: Path) -> dict[str, Any]:
 def atomic_write(path: Path, data: dict[str, Any]) -> None:
     """Serialize ``data`` to TOML and write atomically via ``os.replace``.
 
-    Parent directories are created if missing. If the rename fails, the
-    on-disk file is untouched and the temp file is cleaned up.
+    The file is always ``0600`` (ARG-195 — config.toml sits next to secrets
+    and may hold user-identifying values); a newly created parent dir is
+    ``0700``. If the rename fails, the on-disk file is untouched and the temp
+    file is cleaned up.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    try:
-        with open(tmp, "wb") as f:
-            tomli_w.dump(data, f)
-        os.replace(tmp, path)
-    except Exception:
-        # Best-effort cleanup; don't shadow original error.
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
+    write_private_bytes(path, tomli_w.dumps(data).encode("utf-8"))
 
 
 # ---------------------------------------------------------------------------

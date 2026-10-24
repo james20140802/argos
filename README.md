@@ -172,6 +172,21 @@ ever opened on `0.0.0.0`.
    # → https://<machine>.<tailnet>.ts.net is now serving …
    ```
 
+### Login (one time per device)
+
+Reaching the port is not enough to change anything: every device logs in once
+with a local token, then stays logged in (HttpOnly cookie, ~400 days).
+State-changing requests from other sites are rejected (CSRF).
+
+```bash
+uv run argos web token                       # print the token (terminal only)
+uv run argos web token --url https://<machine>.<tailnet>.ts.net   # one-tap login link
+uv run argos web token --rotate              # new token — logs every device out
+```
+
+The token lives in `~/.config/argos/web_token` (0600; created on the first
+`argos web` start). `argos web` itself only logs the file path, never the token.
+
 ### iPad PWA install (Safari → 홈 화면에 추가)
 
 1. On the iPad (signed into the same tailnet), open Safari and visit
@@ -199,6 +214,8 @@ uv run uvicorn argos.web.app:build_web_app \
 
 This path bypasses `argos web`'s `127.0.0.1` binding — be deliberate about
 who can reach `<tailnet-ip>`.
+The login gate still applies; run `uv run argos web token` once first so the
+token file exists (without it every request is refused).
 
 ## Slack Bot
 
