@@ -96,11 +96,22 @@ def accept_replacement(
       (오류 페이지 같은 짧은 글로 덮어쓰지 않는다).
     - 기존보다 길거나, 기존이 깨져 있으면 교체한다.
     """
-    if not has_body(new_raw, title, min_chars) or is_mojibake(new_raw):
+    # 깨짐은 본문만 본다: 저장된 제목(예전 깨진 추출의 첫 줄)이 깨져 있어도
+    # 깨끗한 새 본문으로 고칠 수 있어야 한다. body_text는 공백을 접어 \x85 같은
+    # 깨짐 흔적까지 지우므로, 깨짐은 제목만 뗀 원문에서 본다.
+    if not has_body(new_raw, title, min_chars) or is_mojibake(_strip_title(new_raw, title)):
         return False
-    if is_mojibake(old_raw):
+    if is_mojibake(_strip_title(old_raw, title)):
         return True
     return len(body_text(new_raw, title)) > len(body_text(old_raw, title))
+
+
+def _strip_title(raw: str | None, title: str | None) -> str:
+    text = (raw or "").strip()
+    wanted = (title or "").strip()
+    if wanted and text.startswith(wanted):
+        return text[len(wanted):]
+    return text
 
 
 def _title_of(item: dict, fetched: dict | None) -> str:
