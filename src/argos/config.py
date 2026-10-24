@@ -205,7 +205,8 @@ class EventSummaryConfig(BaseModel):
     max_docs: int = Field(default=30, ge=1)
     # 토큰 수 추정(문자/토큰). 보수적으로 잡는다(실측 약 2.8).
     chars_per_tok: float = Field(default=2.5, gt=0)
-    output_reserve_tok: int = Field(default=1024, ge=128)
+    # ARG-308: 요약 + 소제목 상세(JSON)라 출력이 길어져 1024 -> 2048.
+    output_reserve_tok: int = Field(default=2048, ge=128)
     timeout: float = Field(default=600, gt=0)
     temperature: float | None = Field(default=0.3)
 
