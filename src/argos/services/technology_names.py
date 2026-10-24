@@ -48,14 +48,27 @@ def surface_pattern(key: str) -> re.Pattern[str]:
     ``+``·``#``·앞점은 이름의 일부라 키에 있으면 표기에도 있어야 하고, 키에 없으면
     뒤에 붙어 있는 표기(``C`` vs ``C++``)는 잡지 않는다.
     """
-    tokens = _WORD.findall(key)
-    if not tokens:
+    found = list(_WORD.finditer(key))
+    if not found:
         return re.compile(r"(?!)")
-    body = r"[\s\-_.]{0,2}".join(re.escape(t) for t in tokens)
+    tokens = [m.group(0) for m in found]
+    parts = [re.escape(tokens[0])]
+    for prev, cur in zip(found, found[1:]):
+        if prev.group(0).isdigit() and cur.group(0).isdigit():
+            # 숫자끼리는 버전이다: 키의 구분자를 그대로 지킨다(5.5 != 55, 5.5 != 5 5).
+            sep = key[prev.end() : cur.start()]
+            parts.append(r"\." if "." in sep else r"[\s\-_]{1,2}")
+        else:
+            parts.append(r"[\s\-_.]{0,2}")
+        parts.append(re.escape(cur.group(0)))
+    body = "".join(parts)
     lead = r"\." if key.startswith(".") else ""
     trail_match = re.search(r"[+#]+$", key)
     trail = re.escape(trail_match.group(0)) if trail_match else r"(?![+#])"
-    return re.compile(rf"(?<![^\W_]){lead}{body}{trail}(?![^\W_])", re.IGNORECASE)
+    # 숫자로 시작/끝나는 키는 버전 조각 안에서 끊기지 않게 한다(5.5 vs 5.55 / 5.5.1).
+    pre = r"(?<!\d\.)" if tokens[0][0].isdigit() and not lead else ""
+    post = r"(?!\.\d)" if tokens[-1][-1].isdigit() and not trail_match else ""
+    return re.compile(rf"{pre}(?<![^\W_]){lead}{body}{trail}(?![^\W_]){post}", re.IGNORECASE)
 
 
 def pick_display_names(

@@ -56,6 +56,24 @@ def test_surface_pattern_respects_word_boundaries_and_symbols():
     assert tn.surface_pattern("code").search("Barcode") is None
 
 
+def test_version_numbers_are_not_conflated_with_digit_runs():
+    texts = ["Opus 5.5 vs Opus 55. Opus 55 is unrelated. Opus 55."]
+    display, others = tn.pick_display_names([("opus 5.5", "Opus 5.5")], "opus 5.5", texts)
+    assert display == "Opus 5.5"
+    assert "Opus 55" not in others
+
+
+def test_version_match_does_not_end_or_start_mid_number():
+    pat = tn.surface_pattern("opus 5.5")
+    assert pat.search("Opus 5.5 is out")
+    assert pat.search("Opus 5.5.") and pat.search("Opus 5.5, ok")
+    assert pat.search("Opus 5.55") is None
+    assert pat.search("Opus 5.5.1") is None
+    assert pat.search("Opus 55") is None
+    assert tn.surface_pattern("gpt 6").search("GPT-6 ships")
+    assert tn.surface_pattern("5.5").search("v1.5.5") is None
+
+
 def test_cli_show_prints_display_and_other_names(monkeypatch, capsys):
     session = MagicMock()
     ctx = MagicMock()
