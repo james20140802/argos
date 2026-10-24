@@ -422,6 +422,7 @@ def _stale_events_sql(target: str):
     return text(
         f"""
     SELECT e.id AS event_id, e.updated_at AS event_updated_at,
+           e.title AS event_title,
            i.title AS doc_title,
            i.source_url AS doc_source,
            LEFT(i.raw_content, :doc_max_chars) AS doc_body,
@@ -500,6 +501,8 @@ class StaleEvent:
     event_id: uuid.UUID
     docs: list[EvidenceDoc]
     updated_at: datetime | None = None
+    title: str | None = None
+    """지금 붙어 있는 이름 — 미리보기 표시용(ARG-308)."""
 
 
 @dataclass(frozen=True)
@@ -538,11 +541,13 @@ async def fetch_stale_events(
 
     grouped: dict[uuid.UUID, list[EvidenceDoc]] = {}
     versions: dict[uuid.UUID, datetime | None] = {}
+    titles: dict[uuid.UUID, str | None] = {}
     order: list[uuid.UUID] = []
     for row in rows:
         if row.event_id not in grouped:
             grouped[row.event_id] = []
             versions[row.event_id] = row.event_updated_at
+            titles[row.event_id] = getattr(row, "event_title", None)
             order.append(row.event_id)
         grouped[row.event_id].append(
             EvidenceDoc(
@@ -557,9 +562,18 @@ async def fetch_stale_events(
             event_id=event_id,
             docs=grouped[event_id],
             updated_at=versions[event_id],
+            title=titles[event_id],
         )
         for event_id in order
     ]
+
+
+_LIVE_EVENTS_SQL = text("SELECT count(*) FROM tech_events WHERE merged_into_id IS NULL")
+
+
+async def count_live_events(session: AsyncSession) -> int:
+    """툼스톤이 아닌 사건 수 — ``resummarize-events`` 미리보기의 분모(ARG-308)."""
+    return int((await session.execute(_LIVE_EVENTS_SQL)).scalar_one())
 
 
 async def rename_stale_events(

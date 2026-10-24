@@ -1465,6 +1465,126 @@ async def _backfill_entities(dry_run: bool = False, yes: bool = False, sample: i
     return EXIT_OK
 
 
+RESUMMARIZE_SECONDS_PER_EVENT = 60
+"""미리보기의 예상 시간 어림(사건 1건당 초). 사건 요약 모델 실측 전 보수적 값(ARG-308)."""
+
+
+def _build_resummarize_events_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos resummarize-events`` subcommand (ARG-308)."""
+    p = sub.add_parser(
+        "resummarize-events",
+        help="Rebuild event summaries + per-type detail sections (preview, confirm, LLM write)",
+        parents=[common],
+        description=(
+            "Re-summarize existing events from every linked article body: a short summary "
+            "plus detail sections chosen by event type. Targets events that have no detail "
+            "sections yet or whose name is stale. Shows how many events will change first "
+            "and writes only after confirmation. Re-running picks up only what is left. "
+            "Exits 1 when any event was skipped (generation failed); its previous name and "
+            "summary are kept."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Re-summarize at most N events this run (default: all)",
+    )
+    p.add_argument("--dry-run", action="store_true", help="Show the preview and exit without writing")
+    p.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    p.add_argument(
+        "--sample",
+        type=_positive_int,
+        default=5,
+        metavar="N",
+        help="Number of target events to list in the preview (default: 5)",
+    )
+
+
+def _cmd_resummarize_events(args: argparse.Namespace) -> int:
+    return asyncio.run(
+        _resummarize_events(
+            limit=getattr(args, "limit", None),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            yes=bool(getattr(args, "yes", False)),
+            sample=getattr(args, "sample", 5),
+        )
+    )
+
+
+async def _resummarize_events(
+    limit: int | None = None,
+    dry_run: bool = False,
+    yes: bool = False,
+    sample: int = 5,
+    batch_size: int = 50,
+) -> int:
+    """미리보기 -> 확인 -> 다시 요약. 확인 없이는 DB에 아무것도 쓰지 않는다.
+
+    대상: 툼스톤이 아니고 소제목 상세가 없거나(``sections IS NULL``) 이름이 낡은
+    사건. 쓰기는 ``rename_stale_events``(= ``apply_event_naming``)를 그대로 쓴다 —
+    생성 실패한 사건은 아무것도 안 써서 이전 이름·요약이 남고, 다음 실행이 다시
+    집는다. 건너뛴 사건이 있으면 1로 끝난다(무인 실행이 거짓 성공을 내지 않게).
+    """
+    from argos.brain.event_backfill import (
+        count_live_events,
+        fetch_stale_events,
+        rename_stale_events,
+    )
+    from argos.brain.llm_client import get_event_summary_llm_client
+
+    async with AsyncSessionLocal() as session:
+        total = await count_live_events(session)
+        events = await fetch_stale_events(session, limit=limit, include_unsectioned=True)
+        doc_count = sum(len(event.docs) for event in events)
+        minutes = max(1, round(len(events) * RESUMMARIZE_SECONDS_PER_EVENT / 60)) if events else 0
+        print(
+            f"전체 {total}건 중 {len(events)}건 다시 요약 "
+            f"(근거 기사 {doc_count}건, 예상 ~{minutes}분)"
+        )
+        for event in events[:sample]:
+            label = event.title or "(무명)"
+            print(f"  - {label}  [기사 {len(event.docs)}건]")
+
+        if not events:
+            print("다시 요약할 사건이 없습니다.")
+            return EXIT_OK
+        if dry_run:
+            print("  (dry-run) DB에 아무것도 쓰지 않았습니다.")
+            return EXIT_OK
+        if not yes:
+            reply = input("계속하시겠습니까? [y/N] ").strip().lower()
+            if reply not in ("y", "yes"):
+                print("취소되었습니다.")
+                return EXIT_GENERIC
+
+        client = get_event_summary_llm_client()
+        # 요약 모델은 질의마다 exclusive=True라 다른 모델은 호출 직전에 내려간다.
+        # 끝나면 요약 모델도 내린다 (backfill-events --rename-stale과 같은 규약).
+        try:
+            result = await rename_stale_events(
+                session, events, batch_size=batch_size, client=client
+            )
+        finally:
+            try:
+                await client.unload("large")
+            except Exception:  # noqa: BLE001
+                pass
+    print(
+        f"✅ {result.renamed}건 다시 요약, 건너뜀 {result.skipped}건 "
+        f"({result.elapsed_seconds:.1f}s)"
+    )
+    if result.skipped:
+        print("건너뛴 사건은 이전 이름·요약을 유지합니다. 다시 실행하면 남은 것만 처리합니다.")
+        return 1
+    return EXIT_OK
+
+
 def _build_alias_names_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -2859,6 +2979,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_backfill_images_parser(sub, common)
     _build_backfill_digests_parser(sub, common)
     _build_backfill_entities_parser(sub, common)
+    _build_resummarize_events_parser(sub, common)
     _build_body_stats_parser(sub, common)
     _build_refetch_bodies_parser(sub, common)
     _build_backfill_trust_parser(sub, common)
@@ -2990,6 +3111,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_backfill_entities(args)
+    if args.command == "resummarize-events":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_resummarize_events(args)
     if args.command == "body-stats":
         rc = _apply_config_override(args)
         if rc is not None:
