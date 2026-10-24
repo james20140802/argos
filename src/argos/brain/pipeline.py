@@ -73,10 +73,16 @@ async def _assign_then_save(
                     session,
                     created_event_id,
                     [
+                        # ARG-308: 근거는 본문이다(기사별 요약은 넣지 않는다).
+                        # 뽑힌 이름은 결과에 원문 그대로 남았는지 보는 데 쓴다.
                         EvidenceDoc(
                             title=derive_title(saved.get("raw_text")),
-                            summary=saved.get("summary") or saved.get("digest"),
                             body=saved.get("raw_text"),
+                            source=saved.get("source_url"),
+                            names=tuple(
+                                name.surface
+                                for name in saved.get("entity_names_extracted") or ()
+                            ),
                         )
                     ],
                 )

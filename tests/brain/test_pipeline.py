@@ -1209,6 +1209,65 @@ async def test_assign_then_save_passes_the_body_as_evidence(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_assign_then_save_passes_source_and_extracted_names_not_the_item_summary(
+    monkeypatch,
+):
+    """ARG-308: 기사별 요약은 빼고, 출처와 뽑힌 이름 원문을 싣는다."""
+    from argos.brain.entity_extraction import ExtractedName
+
+    async def _save(state, session, flush=True):
+        return {**state, "saved": True, "created_event_id": uuid.uuid4()}
+
+    monkeypatch.setattr(
+        brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
+    )
+    monkeypatch.setattr(brain_pipeline, "save_node", _save)
+    naming = AsyncMock(return_value=True)
+    monkeypatch.setattr(brain_pipeline, "apply_event_naming", naming)
+
+    await brain_pipeline._assign_then_save(
+        {
+            "source_url": "https://anthropic.com/news/duet",
+            "raw_text": "Claude Duet\nbody",
+            "summary": "ITEM SUMMARY",
+            "digest": "ITEM DIGEST",
+            "entity_names_extracted": [
+                ExtractedName(canonical="claude duet", surface="Claude Duet"),
+                ExtractedName(canonical="anthropic", surface="Anthropic"),
+            ],
+        },
+        session=_begin_nested_session(),
+    )
+    doc = naming.await_args.args[2][0]
+    assert doc.summary is None
+    assert doc.source == "https://anthropic.com/news/duet"
+    assert doc.names == ("Claude Duet", "Anthropic")
+
+
+@pytest.mark.asyncio
+async def test_assign_then_save_keeps_the_save_when_naming_raises(monkeypatch):
+    """명명이 터져도 저장·배정 결과는 그대로다 (폴백 제목 유지)."""
+    event_id = uuid.uuid4()
+
+    async def _save(state, session, flush=True):
+        return {**state, "saved": True, "created_event_id": event_id, "event_id": event_id}
+
+    monkeypatch.setattr(
+        brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
+    )
+    monkeypatch.setattr(brain_pipeline, "save_node", _save)
+    monkeypatch.setattr(
+        brain_pipeline, "apply_event_naming", AsyncMock(side_effect=RuntimeError("boom"))
+    )
+
+    saved = await brain_pipeline._assign_then_save(
+        {"source_url": "u", "raw_text": "T\nbody"}, session=_begin_nested_session()
+    )
+    assert saved["saved"] is True
+    assert saved["event_id"] == event_id
+
+
+@pytest.mark.asyncio
 async def test_single_pipeline_unloads_the_summary_model_after_naming(
     monkeypatch, event_summary_unloads
 ):
