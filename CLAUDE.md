@@ -56,6 +56,8 @@ argos/
 - **track_history** — id(UUID PK), user_asset_id(FK→user_assets), changed_from, changed_to, changed_at
 - **crawl_queue** — staging table for freshly crawled items not yet processed by the brain
   pipeline (daily-limit throttle, ARG-93)
+- **role_branches** — id(UUID PK), parent_id(FK→role_branches, CASCADE, NULL=위 갈래), name(unique), description, position, confirmed_at
+  (확정된 역할 갈래 트리, ARG-311). 행이 있으면 사람이 확정한 것 — 쓰기 경로는 `argos taxonomy apply` 하나뿐
 
 All FK deletions use CASCADE, with exactly one exception: the merge-tombstone
 self-FK `tech_events.merged_into_id` uses **RESTRICT**. A merge is a tombstone,
@@ -100,8 +102,13 @@ uv run argos stats [--days]                       # Collection-status dashboard
 uv run argos backfill-images [--refetch] [--upgrade-favicons]  # Fill missing image_url (favicon by default)
 uv run argos backfill-digests [--limit] [--dry-run]  # Generate longform digest for rows where NULL (LLM, slow)
 uv run argos backfill-entities [--dry-run] [--yes] [--sample N]  # Rewrite stored entity names for existing articles (preview → confirm → write)
+uv run argos alias-names [--dry-run] [--yes] [--sample N] [--show NAME]  # Merge different names of one technology into an alias layer (preview → confirm → write; stored names untouched)
 uv run argos correct-events [--from] [--to] [--dry-run]  # Apply event merge/split corrections for a period (--dry-run: read-only preview)
 uv run argos config {path,get,set,list,migrate-env}  # Read/update ~/.config/argos/config.toml
+uv run argos taxonomy draft [--seed] [--keep-top] [--limit] [--file]  # 역할 갈래 초안 → 파일(DB 미기록). --seed는 LLM 없음
+uv run argos taxonomy {rename,merge,split,delete} ...  # 초안 파일 위 편집 (이름·합치기·나누기·지우기)
+uv run argos taxonomy apply [--dry-run] [--yes]        # 차이 미리보기 → y/N → role_branches 확정 (DB 쓰기는 이것뿐)
+uv run argos taxonomy {show,export}                     # 확정본 보기 / 확정본을 초안 파일로 내보내 다시 고치기
 
 # launchd scheduler (macOS) — see src/argos/scheduler.py
 uv run argos schedule install                     # Render + bootstrap all plists from config

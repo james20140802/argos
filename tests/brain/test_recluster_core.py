@@ -17,6 +17,7 @@ from argos.brain.recluster_core import (
     WeightedEdge,
     build_edges,
     detect_communities,
+    exclude_vetoed,
     merge_cross_source,
 )
 from argos.brain.recluster_input import NeighborPair, ReclusterDocument
@@ -526,3 +527,78 @@ def test_turning_the_merge_off_restores_the_cpm_only_partition(monkeypatch):
     pairs = [_pair(docs[0], docs[1]), _pair(docs[1], docs[2]), _pair(docs[0], docs[2])]
     communities = detect_communities(docs, pairs, config=config)
     assert _members(communities) == {frozenset(d.tech_item_id for d in docs)}
+
+
+# --- ARG-307: LLM이 "다른 발표"라 확인한 짝은 간선에서 빠진다 -----------------------
+
+
+def _identical_trio():
+    docs = [
+        _doc(i, theta=0.0, names={"x", "y", "z"}, keywords={"x", "y"})
+        for i in (1, 2, 3)
+    ]
+    pairs = [_pair(docs[0], docs[1]), _pair(docs[1], docs[2]), _pair(docs[0], docs[2])]
+    return docs, pairs
+
+
+@requires_graph_libs
+def test_a_vetoed_pair_is_split_even_above_the_threshold():
+    config = EventDetectionConfig()
+    a, b = _doc(1, names={"x"}, keywords={"x"}), _doc(2, names={"x"}, keywords={"x"})
+    pairs = [_pair(a, b)]
+    assert len(build_edges([a, b], pairs, config=config)) == 1  # 전제: τ 이상
+    together = detect_communities([a, b], pairs, config=config)
+    assert _members(together) == {frozenset({a.tech_item_id, b.tech_item_id})}
+
+    vetoed = {(a.tech_item_id, b.tech_item_id)}
+    apart = detect_communities([a, b], pairs, config=config, vetoed_pairs=vetoed)
+    assert _members(apart) == {frozenset({a.tech_item_id}), frozenset({b.tech_item_id})}
+
+
+@requires_graph_libs
+def test_veto_key_order_does_not_matter():
+    config = EventDetectionConfig()
+    a, b = _doc(1, names={"x"}, keywords={"x"}), _doc(2, names={"x"}, keywords={"x"})
+    reversed_key = {(b.tech_item_id, a.tech_item_id)}
+    got = detect_communities(
+        [a, b], [_pair(a, b)], config=config, vetoed_pairs=reversed_key
+    )
+    assert len(got) == 2
+
+
+@requires_graph_libs
+def test_an_empty_veto_set_is_identical_to_no_veto():
+    config = EventDetectionConfig()
+    docs, pairs = _identical_trio()
+    assert detect_communities(
+        docs, pairs, config=config, vetoed_pairs=frozenset()
+    ) == detect_communities(docs, pairs, config=config)
+
+
+@requires_graph_libs
+def test_veto_result_does_not_depend_on_input_order():
+    config = EventDetectionConfig()
+    docs, pairs = _identical_trio()
+    vetoed = {(docs[0].tech_item_id, docs[1].tech_item_id)}
+    expected = detect_communities(docs, pairs, config=config, vetoed_pairs=vetoed)
+    for seed in range(5):
+        shuffled_docs, shuffled_pairs = list(docs), list(pairs)
+        random.Random(seed).shuffle(shuffled_docs)
+        random.Random(seed).shuffle(shuffled_pairs)
+        got = detect_communities(
+            shuffled_docs, shuffled_pairs, config=config, vetoed_pairs=vetoed
+        )
+        assert got == expected
+
+
+def test_a_vetoed_pair_counts_as_zero_in_the_cross_source_average():
+    # 조각 {1}, {2}: 출처가 달라 합치기 후보이고 짝 점수 0.6 ≥ τ → 합쳐진다.
+    # 그 짝이 거부되면 평균이 0이라 합쳐지지 않는다.
+    sources = {_id(1): "a.com", _id(2): "b.com"}
+    communities = [_community(1), _community(2)]
+    scored = [WeightedEdge(_id(1), _id(2), 0.6)]
+    merged = merge_cross_source(communities, scored, sources=sources, threshold=0.55)
+    assert len(merged) == 1
+    kept = exclude_vetoed(scored, {(_id(2), _id(1))})
+    assert kept == ()
+    assert len(merge_cross_source(communities, kept, sources=sources, threshold=0.55)) == 2

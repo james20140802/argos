@@ -88,7 +88,7 @@ def check_ollama_models(ollama_host: str = "http://localhost:11434") -> list[Row
     """Probe all Ollama models required by Argos.
 
     Returns one ``Row`` per required model (``qwen3:8b``, ``qwen3:32b``,
-    ``nomic-embed-text``).  A single ``ollama list`` call is made; if Ollama is
+    ``nomic-embed-text``, plus the pair-check model when enabled).  A single ``ollama list`` call is made; if Ollama is
     unreachable all rows are marked FAIL with the same error detail.
 
     Args:
@@ -97,16 +97,17 @@ def check_ollama_models(ollama_host: str = "http://localhost:11434") -> list[Row
     """
     from argos.init_wizard import runners
     from argos.init_wizard import WizardStepError
-    from argos.init_wizard.steps.infra import REQUIRED_OLLAMA_MODELS
+    from argos.init_wizard.steps.infra import required_ollama_models
 
+    required = required_ollama_models()
     try:
         available = runners.ollama_list(host=ollama_host)
     except WizardStepError as exc:
         error_detail = str(exc).splitlines()[0]
-        return [(model, "FAIL", error_detail) for model in REQUIRED_OLLAMA_MODELS]
+        return [(model, "FAIL", error_detail) for model in required]
 
     rows: list[Row] = []
-    for model in REQUIRED_OLLAMA_MODELS:
+    for model in required:
         # Use exact match to align with the runtime pull check in infra.py
         # (_ensure_ollama_models), which also uses exact membership.  Prefix
         # matching was previously used here but caused false-OK results when a
@@ -117,6 +118,40 @@ def check_ollama_models(ollama_host: str = "http://localhost:11434") -> list[Row
         else:
             rows.append((model, "FAIL", f"model not found — run: ollama pull {model}"))
     return rows
+
+
+def check_event_summary_model(
+    ollama_host: str = "http://localhost:11434",
+    model: str = "gemma4:26b",
+) -> Row:
+    """Probe: the configured event-summary model (ARG-310) is pulled locally.
+
+    WARN, never FAIL: without it event names/summaries fall back to the derived
+    title and ``naming_stale`` stays set, but the feed keeps working. It is also
+    intentionally not in ``REQUIRED_OLLAMA_MODELS`` -- the default model is
+    ~18 GB, so ``argos init`` does not pull it automatically; this row only
+    tells the operator what to run.
+
+    Args:
+        ollama_host: Base URL for the Ollama API (``cfg.ollama.host``).
+        model: ``event_summary.model`` from the config.
+    """
+    from argos.init_wizard import runners
+    from argos.init_wizard import WizardStepError
+
+    name = f"Event summary model ({model})"
+    try:
+        available = runners.ollama_list(host=ollama_host)
+    except WizardStepError as exc:
+        return (name, "WARN", f"cannot check -- {str(exc).splitlines()[0]}")
+
+    if model in available:
+        return (name, "OK", "")
+    return (
+        name,
+        "WARN",
+        f"model not found -- event summaries will fall back to derived titles; run: ollama pull {model}",
+    )
 
 
 def check_uv_installed() -> Row:

@@ -46,7 +46,7 @@ def test_infra_uses_existing_env_defaults(tmp_path, monkeypatch):
         "POSTGRES_HOST=localhost\n"
         "POSTGRES_PORT=5432\n",
     )
-    _stub_runners(monkeypatch, installed_models=infra.REQUIRED_OLLAMA_MODELS)
+    _stub_runners(monkeypatch, installed_models=infra.required_ollama_models())
 
     infra.run_infra_step(tmp_path, env_path=env_path)
 
@@ -66,7 +66,7 @@ def test_infra_skips_env_write_when_nothing_changes(tmp_path, monkeypatch):
         "POSTGRES_PORT=5432\n",
     )
     original_mtime = env_path.stat().st_mtime_ns
-    _stub_runners(monkeypatch, installed_models=infra.REQUIRED_OLLAMA_MODELS)
+    _stub_runners(monkeypatch, installed_models=infra.required_ollama_models())
 
     infra.run_infra_step(tmp_path, env_path=env_path)
     # File wasn't rewritten — mtime unchanged.
@@ -83,8 +83,9 @@ def test_infra_pulls_only_missing_models(tmp_path, monkeypatch):
 
     infra.run_infra_step(tmp_path, env_path=env_path)
 
-    # qwen3:8b already present; qwen3:32b + nomic-embed-text must be pulled.
-    assert set(pulled) == {"qwen3:32b", "nomic-embed-text"}
+    # qwen3:8b already present; the rest (incl. the pair-check model) must be pulled.
+    assert set(pulled) == set(infra.required_ollama_models()) - {"qwen3:8b"}
+    assert {"qwen3:32b", "nomic-embed-text"} <= set(pulled)
 
 
 def test_infra_invalid_port_in_env_raises_step_error(tmp_path, monkeypatch):
@@ -94,7 +95,7 @@ def test_infra_invalid_port_in_env_raises_step_error(tmp_path, monkeypatch):
         "POSTGRES_USER=argos\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=argos\n"
         "POSTGRES_HOST=localhost\nPOSTGRES_PORT=5432 abc\n"
     )
-    _stub_runners(monkeypatch, installed_models=infra.REQUIRED_OLLAMA_MODELS)
+    _stub_runners(monkeypatch, installed_models=infra.required_ollama_models())
 
     with pytest.raises(WizardStepError) as excinfo:
         infra.run_infra_step(tmp_path, env_path=env_path)
@@ -109,7 +110,7 @@ def test_infra_out_of_range_port_raises_step_error(tmp_path, monkeypatch):
         "POSTGRES_USER=argos\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=argos\n"
         "POSTGRES_HOST=localhost\nPOSTGRES_PORT=70000\n"
     )
-    _stub_runners(monkeypatch, installed_models=infra.REQUIRED_OLLAMA_MODELS)
+    _stub_runners(monkeypatch, installed_models=infra.required_ollama_models())
 
     with pytest.raises(WizardStepError) as excinfo:
         infra.run_infra_step(tmp_path, env_path=env_path)
@@ -140,7 +141,7 @@ def test_infra_interactive_port_reprompts_on_invalid(tmp_path, monkeypatch):
         "POSTGRES_USER=argos\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=argos\n"
         "POSTGRES_HOST=localhost\nPOSTGRES_PORT=5432\n"
     )
-    _stub_runners(monkeypatch, installed_models=infra.REQUIRED_OLLAMA_MODELS)
+    _stub_runners(monkeypatch, installed_models=infra.required_ollama_models())
     monkeypatch.delenv("ARGOS_INIT_NONINTERACTIVE", raising=False)
 
     # Sequence of fake answers: typo "5432 abc", then valid "5433". Other prompts
@@ -202,7 +203,7 @@ def test_docker_compose_up_receives_env_path(tmp_path, monkeypatch):
     monkeypatch.setattr(infra.runners, "docker_compose_up", capture_compose)
     monkeypatch.setattr(infra.runners, "wait_pg_ready", lambda h, p, **kw: None)
     monkeypatch.setattr(infra.runners, "alembic_upgrade_head", lambda repo, env_path=None: None)
-    monkeypatch.setattr(infra.runners, "ollama_list", lambda host: list(infra.REQUIRED_OLLAMA_MODELS))
+    monkeypatch.setattr(infra.runners, "ollama_list", lambda host: list(infra.required_ollama_models()))
     monkeypatch.setattr(infra.runners, "ollama_pull", lambda m: None)
 
     infra.run_infra_step(tmp_path, env_path=env_path)
@@ -231,7 +232,7 @@ def test_infra_hardens_env_mode_on_noop_path(tmp_path, monkeypatch):
     env_path.chmod(0o644)
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o644  # precondition
 
-    _stub_runners(monkeypatch, installed_models=infra.REQUIRED_OLLAMA_MODELS)
+    _stub_runners(monkeypatch, installed_models=infra.required_ollama_models())
 
     infra.run_infra_step(tmp_path, env_path=env_path)
 
@@ -258,7 +259,7 @@ def test_chromium_absent_triggers_install(tmp_path, monkeypatch):
     env_path = _env_file(tmp_path)
     _, _, install_calls = _stub_runners(
         monkeypatch,
-        installed_models=infra.REQUIRED_OLLAMA_MODELS,
+        installed_models=infra.required_ollama_models(),
         chromium_installed=False,
     )
 
@@ -272,7 +273,7 @@ def test_chromium_present_skips_install(tmp_path, monkeypatch):
     env_path = _env_file(tmp_path)
     _, _, install_calls = _stub_runners(
         monkeypatch,
-        installed_models=infra.REQUIRED_OLLAMA_MODELS,
+        installed_models=infra.required_ollama_models(),
         chromium_installed=True,
     )
 
@@ -286,7 +287,7 @@ def test_chromium_install_failure_propagates_step_error(tmp_path, monkeypatch):
     env_path = _env_file(tmp_path)
     _stub_runners(
         monkeypatch,
-        installed_models=infra.REQUIRED_OLLAMA_MODELS,
+        installed_models=infra.required_ollama_models(),
         chromium_installed=False,
     )
 
@@ -303,3 +304,33 @@ def test_chromium_install_failure_propagates_step_error(tmp_path, monkeypatch):
     assert "playwright install chromium" in str(excinfo.value).lower()
     assert excinfo.value.hint is not None
     assert "playwright install chromium" in excinfo.value.hint
+
+
+def test_required_models_include_pair_check_model_when_enabled(monkeypatch):
+    from argos.config import settings
+
+    detection = settings.user.event_detection
+    monkeypatch.setattr(detection, "pair_check_enabled", True)
+    monkeypatch.setattr(detection, "pair_check_model", "gemma4:26b")
+    assert "gemma4:26b" in infra.required_ollama_models()
+    assert set(infra.REQUIRED_OLLAMA_MODELS) <= set(infra.required_ollama_models())
+
+
+def test_required_models_skip_pair_check_model_when_disabled(monkeypatch):
+    from argos.config import settings
+
+    detection = settings.user.event_detection
+    monkeypatch.setattr(detection, "pair_check_enabled", False)
+    assert infra.required_ollama_models() == infra.REQUIRED_OLLAMA_MODELS
+
+
+def test_ensure_pulls_missing_pair_check_model(monkeypatch):
+    from argos.config import settings
+
+    monkeypatch.setattr(settings.user.event_detection, "pair_check_enabled", True)
+    monkeypatch.setattr(settings.user.event_detection, "pair_check_model", "gemma4:26b")
+    pulled = []
+    monkeypatch.setattr(infra.runners, "ollama_list", lambda host: list(infra.REQUIRED_OLLAMA_MODELS))
+    monkeypatch.setattr(infra.runners, "ollama_pull", lambda m: pulled.append(m))
+    assert infra._ensure_ollama_models("http://localhost:11434") == ["gemma4:26b"]
+    assert pulled == ["gemma4:26b"]

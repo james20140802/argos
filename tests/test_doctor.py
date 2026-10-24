@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 import argos.doctor as doctor
 from argos.init_wizard import WizardStepError
 
@@ -146,15 +148,16 @@ def test_check_ollama_models_all_present(monkeypatch):
     """All three required models present (exact IDs) → three OK rows."""
     monkeypatch.setattr(
         "argos.init_wizard.runners.ollama_list",
-        lambda **kw: ["qwen3:8b", "qwen3:32b", "nomic-embed-text"],
+        lambda **kw: ["qwen3:8b", "qwen3:32b", "nomic-embed-text", "gemma4:26b"],
     )
     rows = doctor.check_ollama_models()
-    assert len(rows) == 3
+    assert len(rows) == 4
     assert all(status == "OK" for _, status, _ in rows)
     names = [name for name, _, _ in rows]
     assert "qwen3:8b" in names
     assert "qwen3:32b" in names
     assert "nomic-embed-text" in names
+    assert "gemma4:26b" in names  # pair-check model (ARG-307)
 
 
 def test_check_ollama_models_partial_missing(monkeypatch):
@@ -164,11 +167,12 @@ def test_check_ollama_models_partial_missing(monkeypatch):
         lambda **kw: ["qwen3:8b"],
     )
     rows = doctor.check_ollama_models()
-    assert len(rows) == 3
+    assert len(rows) == 4
     by_name = {name: status for name, status, _ in rows}
     assert by_name["qwen3:8b"] == "OK"
     assert by_name["qwen3:32b"] == "FAIL"
     assert by_name["nomic-embed-text"] == "FAIL"
+    assert by_name["gemma4:26b"] == "FAIL"
 
 
 def test_check_ollama_models_ollama_unreachable(monkeypatch):
@@ -178,7 +182,7 @@ def test_check_ollama_models_ollama_unreachable(monkeypatch):
 
     monkeypatch.setattr("argos.init_wizard.runners.ollama_list", _raise)
     rows = doctor.check_ollama_models()
-    assert len(rows) == 3
+    assert len(rows) == 4
     assert all(status == "FAIL" for _, status, _ in rows)
     assert all(detail for _, _, detail in rows)
 
@@ -313,6 +317,45 @@ def test_check_macos_version_non_macos(monkeypatch):
 # ---------------------------------------------------------------------------
 # Integration: cli.main(["doctor"]) exit code matches failure count
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _stub_event_summary_probe(request, monkeypatch):
+    """ARG-310: the CLI doctor tests must not reach a real Ollama through the
+    event-summary probe. Tests of the probe itself (name contains
+    ``check_event_summary_model``) keep the real function."""
+    if "check_event_summary_model" in request.node.name:
+        return
+    monkeypatch.setattr(
+        "argos.doctor.check_event_summary_model",
+        lambda **kw: ("Event summary model", "OK", ""),
+    )
+
+
+def test_doctor_missing_event_summary_model_warns_and_exits_zero(monkeypatch, capsys):
+    monkeypatch.setattr("argos.doctor.check_docker", lambda: ("Docker daemon", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_ollama_installed", lambda: ("Ollama installed", "OK", ""))
+    monkeypatch.setattr(
+        "argos.doctor.check_ollama_models",
+        lambda **kw: [("qwen3:8b", "OK", ""), ("qwen3:32b", "OK", ""), ("nomic-embed-text", "OK", "")],
+    )
+    monkeypatch.setattr(
+        "argos.doctor.check_event_summary_model",
+        lambda **kw: ("Event summary model (nope:1b)", "WARN", "model not found -- run: ollama pull nope:1b"),
+    )
+    monkeypatch.setattr("argos.doctor.check_python_version", lambda: ("Python version", "OK", "3.11.0"))
+    monkeypatch.setattr("argos.doctor.check_macos_version", lambda: ("macOS version", "OK", "13.0.0"))
+    monkeypatch.setattr("argos.doctor.check_uv_installed", lambda: ("uv installed", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_postgres_reachable", lambda: ("Postgres reachable", "OK", ""))
+    monkeypatch.setattr("argos.doctor.check_alembic_head", lambda: ("Alembic migrations", "OK", "abc123"))
+    monkeypatch.setattr(
+        "argos.doctor.check_vram_headroom", lambda **kw: ("VRAM headroom", "OK", "12.0 GiB free")
+    )
+
+    from argos.cli import main
+
+    assert main(["doctor"]) == 0
+    assert "ollama pull nope:1b" in capsys.readouterr().out
 
 
 def test_doctor_command_exits_zero_when_all_ok(monkeypatch, capsys):
@@ -549,3 +592,52 @@ def test_doctor_module_exposes_new_probes():
     assert hasattr(doctor, "check_vram_headroom")
     for name in ("check_postgres_reachable", "check_alembic_head", "check_vram_headroom"):
         assert name in doctor.__all__
+
+
+# ---------------------------------------------------------------------------
+# check_event_summary_model (ARG-310)
+# ---------------------------------------------------------------------------
+
+
+def test_check_event_summary_model_present(monkeypatch):
+    monkeypatch.setattr(
+        "argos.init_wizard.runners.ollama_list", lambda **kw: ["gemma4:26b", "qwen3:8b"]
+    )
+    name, status, detail = doctor.check_event_summary_model(model="gemma4:26b")
+    assert status == "OK"
+    assert "gemma4:26b" in name
+
+
+def test_check_event_summary_model_missing_is_a_warning_with_pull_hint(monkeypatch):
+    monkeypatch.setattr("argos.init_wizard.runners.ollama_list", lambda **kw: ["qwen3:8b"])
+    _, status, detail = doctor.check_event_summary_model(model="gemma4:26b")
+    assert status == "WARN"
+    assert "ollama pull gemma4:26b" in detail
+
+
+def test_check_event_summary_model_ollama_unreachable_is_a_warning(monkeypatch):
+    def _raise(**kw):
+        raise WizardStepError("could not reach Ollama at http://localhost:11434")
+
+    monkeypatch.setattr("argos.init_wizard.runners.ollama_list", _raise)
+    _, status, detail = doctor.check_event_summary_model()
+    assert status == "WARN"
+    assert detail
+
+
+def test_check_event_summary_model_forwards_host(monkeypatch):
+    captured: dict = {}
+
+    def _capture(**kw):
+        captured.update(kw)
+        return []
+
+    monkeypatch.setattr("argos.init_wizard.runners.ollama_list", _capture)
+    doctor.check_event_summary_model(ollama_host="http://example:1234")
+    assert captured["host"] == "http://example:1234"
+
+
+def test_event_summary_model_is_not_a_required_model():
+    from argos.init_wizard.steps.infra import REQUIRED_OLLAMA_MODELS
+
+    assert "gemma4:26b" not in REQUIRED_OLLAMA_MODELS

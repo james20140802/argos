@@ -355,3 +355,39 @@ def _no_live_body_enrichment(monkeypatch):
         return EnrichReport()
 
     monkeypatch.setattr("argos.crawler.pipeline.enrich_bodies", _noop)
+
+
+# --------------------------------------------------------------------- #
+# 실제 Ollama 차단 — 테스트는 로컬 Ollama(11434)에 닿지 않는다.
+#
+# mock이 빠진 경로(예: 새 사건 이름 짓기)가 개발 머신에서 실제 모델을 올려
+# VRAM을 차지하고 다른 LLM 작업과 충돌했다. 릴리스 CI에는 Ollama가 없으므로
+# 연결 단계에서 "연결 거부"를 내면 CI와 같은 결과가 된다. respx/MockTransport
+# 로 가로챈 요청은 소켓을 열지 않으므로 영향이 없다.
+# --------------------------------------------------------------------- #
+_OLLAMA_PORT = 11434
+
+
+def _is_ollama_target(host, port) -> bool:
+    return port is not None and int(port) == _OLLAMA_PORT
+
+
+@pytest.fixture(autouse=True)
+def _block_real_ollama(monkeypatch):
+    import asyncio.base_events
+
+    real_create_connection = asyncio.base_events.BaseEventLoop.create_connection
+    real_socket_create_connection = socket.create_connection
+
+    async def guarded_create_connection(self, protocol_factory, host=None, port=None, *args, **kwargs):
+        if _is_ollama_target(host, port):
+            raise ConnectionRefusedError(f"테스트 중 실제 Ollama 연결 차단 ({host}:{port})")
+        return await real_create_connection(self, protocol_factory, host, port, *args, **kwargs)
+
+    def guarded_socket_create_connection(address, *args, **kwargs):
+        if _is_ollama_target(*address[:2]):
+            raise ConnectionRefusedError(f"테스트 중 실제 Ollama 연결 차단 ({address[0]}:{address[1]})")
+        return real_socket_create_connection(address, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio.base_events.BaseEventLoop, "create_connection", guarded_create_connection)
+    monkeypatch.setattr(socket, "create_connection", guarded_socket_create_connection)

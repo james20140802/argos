@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -414,7 +415,8 @@ _STALE_EVENTS_SQL = text(
     """
     SELECT e.id AS event_id, e.updated_at AS event_updated_at,
            i.title AS doc_title,
-           COALESCE(NULLIF(i.summary, ''), i.digest) AS doc_summary
+           COALESCE(NULLIF(i.summary, ''), i.digest) AS doc_summary,
+           LEFT(i.raw_content, :doc_max_chars) AS doc_body
     FROM tech_events e
     JOIN event_documents ed ON ed.event_id = e.id
     JOIN tech_items i ON i.id = ed.tech_item_id
@@ -445,14 +447,15 @@ _STALE_EVENTS_SQL = text(
 ``summary`` NULL을 허용하고, 온라인 명명(``_assign_then_save``)과 백필 특징
 추출(``keyword_source``)이 이미 같은 폴백을 쓴다. 여기만 ``summary``를 고집하면
 digest만 있는 문서가 제목 한 줄로 프롬프트에 들어가, 있는 사실을 두고 헤드라인만
-보고 요약을 짓게 된다. 길이는 ``MAX_EVIDENCE_CHARS``가 자른다.
+보고 요약을 짓게 된다. 요약 길이는 ``MAX_EVIDENCE_CHARS``가, 본문(ARG-310)은 SQL의 ``LEFT``가
+``event_summary.doc_max_chars``로 자른다.
 
 ``updated_at``을 같이 읽는 것은 ARG-274의 낙관적 가드용이다 — 근거 스냅샷을
 뜬 시점의 행 버전을 들고 있어야, LLM이 도는 동안 사건이 바뀌었는지
 ``apply_event_naming``이 판정할 수 있다.
 
 사건 안의 근거는 **최근 링크 순**이다. ``generate_event_naming``이 앞에서부터
-``MAX_EVIDENCE_DOCS``개만 프롬프트에 넣기 때문에, 정렬이 곧 "무엇을 보고 이름을
+``event_summary.max_docs``개만 프롬프트에 넣기 때문에, 정렬이 곧 "무엇을 보고 이름을
 짓느냐"다. 문서 id 순(무작위 UUID)으로 두면 근거가 8건을 넘는 사건에서 방금
 붙어 ``naming_stale``을 세운 그 문서가 표본에서 빠질 수 있고, 그러면 옛 근거로
 지은 이름을 쓰면서 플래그만 내려 재명명이 의미를 잃는다. 링크 시각이 같을 때는
@@ -488,15 +491,23 @@ class RenameResult:
 
     renamed: int
     skipped: int
+    elapsed_seconds: float = 0.0
+    """배치 전체 소요 시간(ARG-310 관측)."""
 
 
 async def fetch_stale_events(
     session: AsyncSession, *, limit: int | None = None
 ) -> list[StaleEvent]:
     """``naming_stale``이 섰거나 아직 무명인 (툼스톤 아닌) 사건들을 읽는다."""
+    from argos.config import settings
+
     rows = (
         await session.execute(
-            _STALE_EVENTS_SQL, {"limit": limit if limit is not None else _NO_LIMIT}
+            _STALE_EVENTS_SQL,
+            {
+                "limit": limit if limit is not None else _NO_LIMIT,
+                "doc_max_chars": settings.user.event_summary.doc_max_chars,
+            },
         )
     ).all()
 
@@ -509,7 +520,9 @@ async def fetch_stale_events(
             versions[row.event_id] = row.event_updated_at
             order.append(row.event_id)
         grouped[row.event_id].append(
-            EvidenceDoc(title=row.doc_title, summary=row.doc_summary)
+            EvidenceDoc(
+                title=row.doc_title, summary=row.doc_summary, body=row.doc_body
+            )
         )
     return [
         StaleEvent(
@@ -543,6 +556,7 @@ async def rename_stale_events(
     renamed = 0
     skipped = 0
     pending = 0
+    started = time.monotonic()
 
     for event in events:
         try:
@@ -571,4 +585,6 @@ async def rename_stale_events(
     if pending:
         await session.commit()
 
-    return RenameResult(renamed=renamed, skipped=skipped)
+    return RenameResult(
+        renamed=renamed, skipped=skipped, elapsed_seconds=time.monotonic() - started
+    )

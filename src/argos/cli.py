@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover — py<3.11 fallback
 
 from pydantic import ValidationError
 
-from argos import backup, config_store
+from argos import backup, config_store, taxonomy_cli
 from argos.config import UserConfig, settings
 from argos.crawler.pipeline import run_full_pipeline
 from argos.database import AsyncSessionLocal
@@ -688,6 +688,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     from argos.doctor import (
         check_alembic_head,
         check_docker,
+        check_event_summary_model,
         check_macos_version,
         check_ollama_installed,
         check_ollama_models,
@@ -706,6 +707,10 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         check_docker(),
         check_ollama_installed(),
         *check_ollama_models(ollama_host=settings.user.ollama.host),
+        check_event_summary_model(
+            ollama_host=settings.user.ollama.host,
+            model=settings.user.event_summary.model,
+        ),
         check_python_version(),
         check_macos_version(),
         check_uv_installed(),
@@ -1460,6 +1465,123 @@ async def _backfill_entities(dry_run: bool = False, yes: bool = False, sample: i
     return EXIT_OK
 
 
+def _build_alias_names_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos alias-names`` subcommand (ARG-312)."""
+    p = sub.add_parser(
+        "alias-names",
+        help="Merge different names of the same technology into one (preview, confirm, write)",
+        parents=[common],
+        description=(
+            "Recompute name aliases (spacing variants and vendor-prefix variants such as "
+            "'OpenAI Codex' -> 'Codex') over the stored entity names. Shows a preview first "
+            "and writes only after confirmation. Names whose version numbers differ are "
+            "never merged. Stored names are not modified. Idempotent: a second run "
+            "reports no changes."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--dry-run", action="store_true", help="Show the preview and exit without writing")
+    p.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    p.add_argument(
+        "--sample",
+        type=_positive_int,
+        default=10,
+        metavar="N",
+        help="Number of merged / held pairs to show in the preview (default: 10)",
+    )
+    p.add_argument(
+        "--show",
+        metavar="NAME",
+        default=None,
+        help="Look up one name and print its display name and other names (read-only)",
+    )
+
+
+def _cmd_alias_names(args: argparse.Namespace) -> int:
+    show = getattr(args, "show", None)
+    if show is not None:
+        return asyncio.run(_alias_names_show(show))
+    return asyncio.run(
+        _alias_names(
+            dry_run=bool(getattr(args, "dry_run", False)),
+            yes=bool(getattr(args, "yes", False)),
+            sample=getattr(args, "sample", 10),
+        )
+    )
+
+
+async def _alias_names_show(name: str) -> int:
+    """이름 하나의 대표 표기와 다른 이름을 보여 준다. 읽기만 한다."""
+    from argos.brain import alias_store
+    from argos.services import technology_names
+
+    async with AsyncSessionLocal() as session:
+        if not await alias_store.alias_table_exists(session):
+            print(
+                "오류: entity_aliases 테이블이 없습니다 (`uv run alembic upgrade head` 필요).",
+                file=sys.stderr,
+            )
+            return EXIT_GENERIC
+        names = await technology_names.names_for(session, name)
+    if names is None:
+        print(f"저장된 이름에 없습니다: {name}", file=sys.stderr)
+        return EXIT_GENERIC
+    if names.aliases:
+        print(f"{names.display} — 다른 이름: {', '.join(names.aliases)}")
+    else:
+        print(f"{names.display} — 다른 이름 없음")
+    return EXIT_OK
+
+
+async def _alias_names(dry_run: bool = False, yes: bool = False, sample: int = 10) -> int:
+    """미리보기 -> 확인 -> 쓰기. 미리보기(--dry-run)는 SELECT만 실행한다."""
+    from argos.brain import alias_store
+
+    async with AsyncSessionLocal() as session:
+        table_ready = await alias_store.alias_table_exists(session)
+        plan = await alias_store.plan_aliases(session)
+
+        print(
+            f"별칭 묶음 {plan.groups}개 "
+            f"(별칭 +{len(plan.added)} / -{len(plan.removed)}, 유지 {plan.unchanged})"
+        )
+        for link in plan.added[:sample]:
+            print(f"  + {link.alias_key} → {link.canonical_key}  [{link.rule.value}]")
+        for link in plan.removed[:sample]:
+            print(f"  - {link.alias_key} → {link.canonical_key}  [{link.rule.value}]")
+        by_reason = plan.held_by_reason()
+        if by_reason:
+            summary = ", ".join(f"{reason} {count}" for reason, count in by_reason.items())
+            print(f"합치지 않고 따로 둠 {len(plan.held)}쌍: {summary}")
+            for pair in plan.held[:sample]:
+                print(f"  ↛ {pair.alias} / {pair.base}  ({pair.reason})")
+        if not table_ready:
+            print("참고: entity_aliases 테이블이 아직 없습니다 (`uv run alembic upgrade head` 필요).")
+
+        if not plan.changed:
+            print("변경 없음")
+            return EXIT_OK
+        if dry_run:
+            return EXIT_OK
+        if not table_ready:
+            print("오류: entity_aliases 테이블이 없어 쓸 수 없습니다.", file=sys.stderr)
+            return EXIT_GENERIC
+
+        if not yes:
+            reply = input("계속하시겠습니까? [y/N] ").strip().lower()
+            if reply not in ("y", "yes"):
+                print("취소되었습니다.")
+                return EXIT_GENERIC
+
+        changed = await alias_store.apply_aliases(session, plan)
+        await session.commit()
+    print(f"✅ 별칭 {changed}건을 반영했습니다.")
+    return EXIT_OK
+
+
 def _build_body_stats_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -1945,6 +2067,16 @@ def _period_date(value: str) -> datetime:
     return parsed.replace(tzinfo=timezone.utc)
 
 
+def _non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        parsed = -1
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"'{value}'는 0 이상의 정수가 아니다")
+    return parsed
+
+
 def _graph_install_commands() -> str:
     """`--help`와 런타임 예외가 같은 안내를 쓰게 한다 — 문구를 여기서 베끼면
     한쪽만 고치는 드리프트가 또 생긴다. import를 함수 안에 두는 건 파서 구성이
@@ -1972,6 +2104,18 @@ def _add_period_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="YYYY-MM-DD",
         help="Period end, inclusive (default: today)",
     )
+    parser.add_argument(
+        "--pair-check-max-calls",
+        dest="pair_check_max_calls",
+        type=_non_negative_int,
+        default=None,
+        metavar="N",
+        help=(
+            "Cap on local-LLM same-announcement checks for this run "
+            "(default: event_detection.pair_check_max_calls). Raise it for the "
+            "first full-history run; unchecked pairs are retried next time."
+        ),
+    )
 
 
 def _build_recluster_events_parser(sub, common) -> None:
@@ -1993,10 +2137,24 @@ def _build_recluster_events_parser(sub, common) -> None:
 
 # 테스트가 갈아 끼울 수 있도록 모듈 속성으로 둔다 — CLI 리포트만 따로 보려면
 # DB가 필요한 이 경로를 끊을 수 있어야 한다.
-async def _recluster_period_for_cli(session, *, start: datetime, end: datetime):
+async def _recluster_period_for_cli(
+    session,
+    *,
+    start: datetime,
+    end: datetime,
+    pair_check_max_calls: int | None = None,
+):
     from argos.brain.recluster import recluster_period
 
-    return await recluster_period(session, start=start, end=end)
+    return await recluster_period(
+        session, start=start, end=end, pair_check_max_calls=pair_check_max_calls
+    )
+
+
+def _recluster_kwargs(args: argparse.Namespace) -> dict[str, int]:
+    """플래그를 준 경우에만 넘긴다 — 안 준 실행은 호출 모양이 예전과 같다."""
+    value = getattr(args, "pair_check_max_calls", None)
+    return {} if value is None else {"pair_check_max_calls": value}
 
 
 def _resolve_period(args: argparse.Namespace) -> tuple[datetime, datetime]:
@@ -2019,6 +2177,42 @@ def _resolve_period(args: argparse.Namespace) -> tuple[datetime, datetime]:
         start = end - timedelta(days=span_days - 1)
     # 끝은 그 날 전체를 포함해야 한다 — 자정으로 자르면 --to 당일 기사가 빠진다.
     return start, end + timedelta(days=1) - timedelta(microseconds=1)
+
+
+def _print_pair_check_report(report) -> None:
+    """애매한 짝 LLM 확인 요약(ARG-307). 기능이 꺼져 있으면(None) 아무것도 찍지 않는다."""
+    if report is None:
+        return
+    skipped = f"건너뜀 {report.skipped}"
+    if report.skipped_reason:
+        skipped += f"({report.skipped_reason})"
+    print(
+        f"  LLM 확인: 물음 {report.asked} · 재사용 {report.cache_hits} · "
+        f"{skipped} · 소요 {report.elapsed_s:.1f}초 [{report.model}]"
+    )
+    changed = [v for v in report.verdicts if v.verdict == "DIFFERENT"]
+    print(f"  LLM 확인으로 갈린 짝: {len(changed)}건")
+    for verdict in changed:
+        reuse = " [재사용]" if verdict.cached else ""
+        print(f"    - {verdict.left_title} | {verdict.right_title}{reuse}")
+        print(f"      {verdict.left_id} / {verdict.right_id}")
+        if verdict.reason:
+            print(f"      근거: {verdict.reason}")
+
+
+def _split_follows_veto(split, report) -> bool:
+    """이 가를 후보가 LLM이 '다른 발표'라 한 짝을 서로 다른 조각에 놓았는가."""
+    if report is None or not report.vetoed:
+        return False
+    group_of = {
+        document_id: index
+        for index, group in enumerate(split.groups)
+        for document_id in group
+    }
+    return any(
+        left in group_of and right in group_of and group_of[left] != group_of[right]
+        for left, right in report.vetoed
+    )
 
 
 def _print_recluster_report(
@@ -2046,6 +2240,15 @@ def _print_recluster_report(
         f"seed={config.leiden_seed}, "
         f"cross_source_merge={config.cross_source_merge})"
     )
+    # 애매한 짝 LLM 확인 설정도 귀속용으로 찍는다 — 켠 실행과 끈 실행의 후보
+    # 목록이 다를 때 어느 설정 탓인지 알 수 있어야 한다(ARG-307).
+    print(
+        "  pair_check: "
+        f"(enabled={config.pair_check_enabled}, model={config.pair_check_model}, "
+        f"upper={config.pair_check_upper}, "
+        f"same_source_only={config.pair_check_same_source_only}, "
+        f"max_calls={config.pair_check_max_calls})"
+    )
     # 가중치도 함께 찍는다 — build_edges가 실제로 쓰는 값이라, 빠뜨리면
     # 가중치만 바꿔 돌린 두 출력이 글자 단위로 같아져서 나중에 어느 설정이
     # 만든 결과인지 귀속시킬 수 없다. backfill-events 리포트와 같은 형식이다.
@@ -2060,6 +2263,7 @@ def _print_recluster_report(
         "  주의: 판정은 이 기간 안 문서만 본다 — 사건의 문서가 기간 밖에도 "
         "있으면 그 문서는 아예 세지 않았다."
     )
+    _print_pair_check_report(getattr(candidates, "pair_check", None))
 
     if candidates.is_empty():
         print("  합칠 후보: 없음")
@@ -2080,6 +2284,8 @@ def _print_recluster_report(
         # 상한 표시는 숨기지 않고 붙인다 — 이웃이 candidate_k로 꽉 찬 문서가
         # 끼었다면 갈라짐이 내용이 아니라 상한 탓일 수 있다(ARG-283).
         note = " (이웃 상한에 닿음 — 상한 탓일 수 있음)" if split.capped else ""
+        if _split_follows_veto(split, getattr(candidates, "pair_check", None)):
+            note += " (LLM 확인)"
         print(f"    {split.event_id} → {len(split.groups)}조각{note}")
         for index, group in enumerate(split.groups, start=1):
             print(
@@ -2100,7 +2306,9 @@ def _cmd_recluster_events(args: argparse.Namespace) -> int:
 
     async def _run_once() -> int:
         async with AsyncSessionLocal() as session:
-            candidates = await _recluster_period_for_cli(session, start=start, end=end)
+            candidates = await _recluster_period_for_cli(
+                session, start=start, end=end, **_recluster_kwargs(args)
+            )
         _print_recluster_report(candidates, start=start, end=end)
         return 0
 
@@ -2174,7 +2382,9 @@ def _cmd_correct_events(args: argparse.Namespace) -> int:
     async def _run_once():
         """반영 결과를 돌려준다. dry-run 이면 리포트만 찍고 None."""
         async with AsyncSessionLocal() as session:
-            candidates = await _recluster_period_for_cli(session, start=start, end=end)
+            candidates = await _recluster_period_for_cli(
+                session, start=start, end=end, **_recluster_kwargs(args)
+            )
         if dry_run:
             _print_recluster_report(
                 candidates,
@@ -2183,6 +2393,8 @@ def _cmd_correct_events(args: argparse.Namespace) -> int:
                 title="correct-events --dry-run (read-only)",
             )
             return None
+        # 반영 실행에서도 LLM 확인이 돌았다면 요약을 남긴다(launchd 로그).
+        _print_pair_check_report(getattr(candidates, "pair_check", None))
         return await _apply_corrections_for_cli(candidates)
 
     logger = logging.getLogger(__name__)
@@ -2272,7 +2484,7 @@ async def _backfill_events(
     """
     if rename_stale:
         from argos.brain.event_backfill import fetch_stale_events, rename_stale_events
-        from argos.brain.llm_client import get_llm_client
+        from argos.brain.llm_client import get_event_summary_llm_client
 
         async with AsyncSessionLocal() as session:
             events = await fetch_stale_events(session, limit=limit)
@@ -2283,32 +2495,24 @@ async def _backfill_events(
                 _print_rename_dry_run(len(events))
                 return 0
             print(f"backfill-events: renaming {len(events)} event(s)...")
-            client = get_llm_client()
-            # Deep Dive는 32B를 keep_alive="5m"으로 올려 두고 내리지 않는다
-            # (slack/handlers/deep_dive.py의 unload_then_query). 그 5분 안에 이
-            # 배치가 시작되면 8B 명명 요청이 32B 위에 얹혀 VRAM 예산(한 번에 한
-            # 모델)을 깨고, 배치 전체가 OOM으로 skip될 수 있다. 이 클라이언트의
-            # "large"가 바로 그 ollama.model_deepdive라 여기서 내리면 정확히
-            # 그 모델이 내려간다. 실제로 안 떠 있으면 Ollama에는 값싼 no-op다.
-            #
-            # 다른 large 모델(genealogist·digest)은 여기서 안 건드린다 — 그쪽은
-            # 각자 배치 끝에 스스로 내리고(run_batch_brain_pipeline,
-            # batch_digest_states), 이 커맨드가 올리지도 않는 모델이다.
-            try:
-                await client.unload("large")
-            except Exception:  # noqa: BLE001
-                pass
+            client = get_event_summary_llm_client()
+            # ARG-310: 사건 요약 모델(기본 gemma4:26b)은 질의마다 exclusive=True로
+            # 부르므로, 적재돼 있는 다른 모델(Deep Dive의 32B, 8B 등)은 호출 직전에
+            # ``query_exclusive``가 내린다 -- 여기서 따로 사전 정리를 하지 않는다.
+            # 끝나면 요약 모델을 내린다: keep_alive 5분 동안 18 GB가 남아 다음
+            # 프로세스(Deep Dive 32B 등)와 겹치는 것을 막는다.
             try:
                 result = await rename_stale_events(
                     session, events, batch_size=batch_size, client=client
                 )
             finally:
                 try:
-                    await client.unload("small")
+                    await client.unload("large")
                 except Exception:  # noqa: BLE001
                     pass
         print(
-            f"backfill-events done: renamed={result.renamed}, skipped={result.skipped}"
+            f"backfill-events done: renamed={result.renamed}, skipped={result.skipped}, "
+            f"elapsed={result.elapsed_seconds:.1f}s"
         )
         # Same rule as the assign-mode branch below: every skip here is a
         # swallowed generation failure (see rename_stale_events's per-event
@@ -2721,6 +2925,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     _build_add_parser(sub, common)
+    _build_alias_names_parser(sub, common)
     _build_backfill_images_parser(sub, common)
     _build_backfill_digests_parser(sub, common)
     _build_backfill_entities_parser(sub, common)
@@ -2731,6 +2936,7 @@ def main(argv: list[str] | None = None) -> int:
     _build_recluster_events_parser(sub, common)
     _build_correct_events_parser(sub, common)
     _build_backup_parser(sub)
+    taxonomy_cli.register(sub, common)
     _build_restore_parser(sub)
     _build_config_parser(sub)
     _build_doctor_parser(sub)
@@ -2834,6 +3040,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"오류: --days 값은 양의 정수여야 합니다. (입력값: {args.days})", file=sys.stderr)
             return 1
         return asyncio.run(_stats(args.days))
+    if args.command == "alias-names":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_alias_names(args)
     if args.command == "backfill-images":
         rc = _apply_config_override(args)
         if rc is not None:
@@ -2879,6 +3090,11 @@ def main(argv: list[str] | None = None) -> int:
         if rc is not None:
             return rc
         return _cmd_correct_events(args)
+    if args.command == "taxonomy":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return taxonomy_cli.run(args)
     if args.command == "backup":
         return _cmd_backup(args)
     if args.command == "restore":

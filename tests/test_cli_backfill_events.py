@@ -194,7 +194,7 @@ def test_rename_dry_run_makes_no_llm_call_and_prints_the_target_count(capsys):
             "argos.brain.event_backfill.fetch_stale_events",
             AsyncMock(return_value=events),
         ),
-        patch("argos.brain.llm_client.get_llm_client", llm_spy),
+        patch("argos.brain.llm_client.get_event_summary_llm_client", llm_spy),
     ):
         rc = main(["backfill-events", "--rename-stale", "--dry-run"])
 
@@ -214,7 +214,7 @@ def test_rename_stale_with_no_targets_skips_the_llm_client(capsys):
             "argos.brain.event_backfill.fetch_stale_events",
             AsyncMock(return_value=[]),
         ),
-        patch("argos.brain.llm_client.get_llm_client", llm_spy),
+        patch("argos.brain.llm_client.get_event_summary_llm_client", llm_spy),
     ):
         rc = main(["backfill-events", "--rename-stale"])
 
@@ -239,7 +239,7 @@ def test_rename_stale_unloads_the_client_after_a_normal_run():
             "argos.brain.event_backfill.fetch_stale_events",
             AsyncMock(return_value=events),
         ),
-        patch("argos.brain.llm_client.get_llm_client", return_value=fake_llm),
+        patch("argos.brain.llm_client.get_event_summary_llm_client", return_value=fake_llm),
         patch(
             "argos.brain.event_backfill.rename_stale_events",
             AsyncMock(return_value=RenameResult(renamed=1, skipped=0)),
@@ -248,8 +248,8 @@ def test_rename_stale_unloads_the_client_after_a_normal_run():
         rc = main(["backfill-events", "--rename-stale"])
 
     assert rc == 0
-    # 배치 앞에서 large(=Deep Dive가 남긴 32B), 끝나고 small.
-    assert [c.args[0] for c in fake_llm.unload.await_args_list] == ["large", "small"]
+    # ARG-310: 사전 정리는 query_exclusive 몫. 끝나고 요약 모델(large 슬롯)만 내린다.
+    assert [c.args[0] for c in fake_llm.unload.await_args_list] == ["large"]
 
 
 def test_rename_stale_unloads_the_client_even_when_renaming_raises():
@@ -272,7 +272,7 @@ def test_rename_stale_unloads_the_client_even_when_renaming_raises():
             "argos.brain.event_backfill.fetch_stale_events",
             AsyncMock(return_value=events),
         ),
-        patch("argos.brain.llm_client.get_llm_client", return_value=fake_llm),
+        patch("argos.brain.llm_client.get_event_summary_llm_client", return_value=fake_llm),
         patch(
             "argos.brain.event_backfill.rename_stale_events",
             AsyncMock(side_effect=RuntimeError("boom")),
@@ -281,16 +281,12 @@ def test_rename_stale_unloads_the_client_even_when_renaming_raises():
         with pytest.raises(RuntimeError):
             main(["backfill-events", "--rename-stale"])
 
-    assert [c.args[0] for c in fake_llm.unload.await_args_list] == ["large", "small"]
+    assert [c.args[0] for c in fake_llm.unload.await_args_list] == ["large"]
 
 
-def test_rename_stale_unloads_the_large_model_before_the_first_naming_call():
-    """8B 명명은 32B가 내려간 뒤에 시작돼야 한다 (ARG-274 리뷰).
-
-    Deep Dive는 32B를 keep_alive="5m"으로 올려 두고 내리지 않으므로, 그 5분
-    안에 이 배치가 시작되면 두 모델이 겹친다. 순서가 뒤집히면 배치 전체가
-    OOM으로 skip될 수 있어 호출 순서 자체를 고정한다.
-    """
+def test_rename_stale_unloads_the_summary_model_only_after_the_batch():
+    """ARG-310: 사전 unload는 없다 -- 겹침 방지는 질의 시점의 ``exclusive``가 맡고,
+    배치가 끝나면 요약 모델(18 GB)을 내려 다음 프로세스와 겹치지 않게 한다."""
     from argos.brain.event_backfill import RenameResult, StaleEvent
     from argos.brain.event_naming import EvidenceDoc
 
@@ -315,12 +311,12 @@ def test_rename_stale_unloads_the_large_model_before_the_first_naming_call():
             "argos.brain.event_backfill.fetch_stale_events",
             AsyncMock(return_value=events),
         ),
-        patch("argos.brain.llm_client.get_llm_client", return_value=fake_llm),
+        patch("argos.brain.llm_client.get_event_summary_llm_client", return_value=fake_llm),
         patch("argos.brain.event_backfill.rename_stale_events", _rename),
     ):
         assert main(["backfill-events", "--rename-stale"]) == 0
 
-    assert calls == ["unload:large", "rename", "unload:small"]
+    assert calls == ["rename", "unload:large"]
 
 
 def test_rename_stale_runs_even_when_the_large_unload_fails():
@@ -340,7 +336,7 @@ def test_rename_stale_runs_even_when_the_large_unload_fails():
             "argos.brain.event_backfill.fetch_stale_events",
             AsyncMock(return_value=events),
         ),
-        patch("argos.brain.llm_client.get_llm_client", return_value=fake_llm),
+        patch("argos.brain.llm_client.get_event_summary_llm_client", return_value=fake_llm),
         patch(
             "argos.brain.event_backfill.rename_stale_events",
             AsyncMock(return_value=RenameResult(renamed=1, skipped=0)),
@@ -372,7 +368,7 @@ def test_rename_mode_exits_nonzero_when_any_event_is_skipped():
             "argos.brain.event_backfill.fetch_stale_events",
             AsyncMock(return_value=events),
         ),
-        patch("argos.brain.llm_client.get_llm_client", return_value=fake_llm),
+        patch("argos.brain.llm_client.get_event_summary_llm_client", return_value=fake_llm),
         patch(
             "argos.brain.event_backfill.rename_stale_events",
             AsyncMock(return_value=fake_result),
@@ -400,7 +396,7 @@ def test_rename_mode_exits_zero_when_nothing_is_skipped():
             "argos.brain.event_backfill.fetch_stale_events",
             AsyncMock(return_value=events),
         ),
-        patch("argos.brain.llm_client.get_llm_client", return_value=fake_llm),
+        patch("argos.brain.llm_client.get_event_summary_llm_client", return_value=fake_llm),
         patch(
             "argos.brain.event_backfill.rename_stale_events",
             AsyncMock(return_value=fake_result),

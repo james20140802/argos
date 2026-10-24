@@ -11,6 +11,10 @@
 `--fill-names`는 DB의 이름 링크 대신 크롤 날짜 배치로 그 자리에서 추출한 이름으로
 잰다(ARG-301). DB에는 쓰지 않는다.
 
+`--pair-check`는 밤 분할에 애매한 짝 LLM 확인(ARG-307)을 반영해 다시 재고, 확인 전후로
+판정 밖에서 갈리거나 묶인 짝을 찍는다. **실제 Ollama를 부르므로** 다른 모델이 VRAM을
+쓰는 동안에는 돌리지 않는다. 기본 실행(옵션 없음)은 LLM을 부르지 않는다.
+
 판정은 고르기 몫(홀수 번 묶음)과 채점 전용 몫(짝수 번 묶음)으로 나눠 따로 찍는다
 (ARG-299). 값은 고르기 몫만 보고 고르고, 채점 전용 몫은 그 값을 확인하는 데만 쓴다.
 """
@@ -121,7 +125,47 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="DB 이름 링크 대신 크롤 날짜 배치로 메모리에서 추출한 이름으로 잰다(DB 쓰기 없음)",
     )
+    parser.add_argument(
+        "--pair-check",
+        action="store_true",
+        help=(
+            "밤 분할을 애매한 짝 LLM 확인(ARG-307)을 반영해 한 번 더 재고, 확인 전후로 "
+            "판정 밖 짝이 어떻게 달라졌는지 찍는다. 실제 Ollama를 부른다(캐시 재사용). "
+            "DB는 읽기만 한다."
+        ),
+    )
+    parser.add_argument("--pair-check-upper", type=float, default=None)
+    parser.add_argument(
+        "--pair-check-cross-source",
+        action="store_true",
+        help="같은 사이트 짝만이 아니라 다른 사이트 짝도 묻는다(#21 위험 비교용)",
+    )
+    parser.add_argument("--pair-check-model", default=None)
+    parser.add_argument(
+        "--pair-check-max-calls",
+        type=int,
+        default=100000,
+        help="이번 측정의 LLM 호출 상한(기본: 사실상 무제한)",
+    )
+    parser.add_argument(
+        "--pair-check-cache",
+        type=Path,
+        default=None,
+        help="판단 캐시 JSONL 경로(기본: 운영과 같은 XDG state 파일)",
+    )
     args = parser.parse_args()
+    pair_check_options = (
+        args.pair_check_upper is not None
+        or args.pair_check_cross_source
+        or args.pair_check_model is not None
+        or args.pair_check_cache is not None
+    )
+    if pair_check_options and not args.pair_check:
+        parser.error("--pair-check-* 옵션은 --pair-check와 함께만 쓸 수 있다")
+    if args.pair_check and (args.sweep is not None or args.sweep_mismatch is not None):
+        parser.error("--pair-check는 스윕과 함께 쓸 수 없다")
+    if args.pair_check and args.mode == "day":
+        parser.error("--pair-check는 밤 분할에만 적용된다 (--mode night|both)")
     # 흔한 이름 필터 옵션은 메모리 채움에서만 읽는다. DB 이름 모드는 운영 설정
     # (names_for_documents)을 그대로 쓰므로, 조용히 무시하느니 거부한다.
     if not args.fill_names and (
@@ -181,6 +225,12 @@ def _overrides(args: argparse.Namespace) -> dict[str, float]:
         overrides["entity_common_doc_ratio"] = args.entity_common_doc_ratio
     if args.entity_common_min_documents is not None:
         overrides["entity_common_min_documents"] = args.entity_common_min_documents
+    if args.pair_check_upper is not None:
+        overrides["pair_check_upper"] = args.pair_check_upper
+    if args.pair_check_cross_source:
+        overrides["pair_check_same_source_only"] = False
+    if args.pair_check_model is not None:
+        overrides["pair_check_model"] = args.pair_check_model
     return overrides
 
 
@@ -205,8 +255,10 @@ def _platform_line(count: int) -> str:
     return f"  플랫폼 도메인(arxiv.org·github.com) 같은 그룹 쌍: {count}"
 
 
-def _night_partition(period, cfg) -> dict:
-    communities = detect_communities(period.documents, period.neighbor_pairs, config=cfg)
+def _night_partition(period, cfg, vetoed=frozenset()) -> dict:
+    communities = detect_communities(
+        period.documents, period.neighbor_pairs, config=cfg, vetoed_pairs=vetoed
+    )
     return {
         member: index
         for index, community in enumerate(communities)
@@ -256,6 +308,87 @@ def _print_report(judgments, partition, *, title: str, platform_pairs: int) -> N
     print(
         format_split_line(evaluate(holdout, partition), label="채점 전용 몫(짝수 번 묶음)")
     )
+
+
+def _judged_label_of_pair(judgments, left, right) -> str | None:
+    """두 문서가 같은 판정 묶음 안에 있으면 그 묶음의 라벨, 아니면 None(판정 밖)."""
+    for cluster in judgments.clusters:
+        if left in cluster.doc_ids and right in cluster.doc_ids:
+            return cluster.label
+    return None
+
+
+async def _report_pair_check(
+    session, period, cfg, args, judgments, before, night_sources
+) -> None:
+    """애매한 짝 LLM 확인을 반영한 밤 분할을 재고, 전후 판정 밖 변화를 찍는다 (ARG-307)."""
+    from argos.brain.event_eval import diff_partitions
+    from argos.brain.pair_check import (
+        PairVerdictCache,
+        check_ambiguous_pairs,
+        default_cache_path,
+        fetch_pair_texts,
+    )
+    from argos.brain.recluster_core import score_pairs
+
+    cache_path = args.pair_check_cache or default_cache_path()
+    print()
+    print(
+        f"LLM 확인: model={cfg.pair_check_model} 구간=[{cfg.join_threshold}, "
+        f"{cfg.pair_check_upper}) 같은 사이트만={cfg.pair_check_same_source_only} "
+        f"캐시={_display_path(cache_path)}"
+    )
+    report = await check_ambiguous_pairs(
+        session,
+        period.documents,
+        score_pairs(period.documents, period.neighbor_pairs, config=cfg),
+        config=cfg,
+        cache=PairVerdictCache.load(cache_path),
+        max_calls=args.pair_check_max_calls,
+    )
+    different = [v for v in report.verdicts if v.verdict == "DIFFERENT"]
+    skipped = f"건너뜀 {report.skipped}" + (
+        f"({report.skipped_reason})" if report.skipped_reason else ""
+    )
+    print(
+        f"  구간 안 짝 {report.band_pairs} · 물음 {report.asked} · 재사용 "
+        f"{report.cache_hits} · {skipped} · 소요 {report.elapsed_s:.1f}초 · "
+        f"다른 발표로 거부 {len(different)}"
+    )
+    tally: Counter[str] = Counter(
+        _judged_label_of_pair(judgments, v.left_id, v.right_id) or "판정 밖"
+        for v in different
+    )
+    print(
+        "  거부된 짝의 판정: "
+        f"틀린 묶음 안 {tally['bad']}(맞게 가름) · 맞는 묶음 안 {tally['ok']}(잘못 가름) · "
+        f"애매 안 {tally['maybe']} · 판정 밖 {tally['판정 밖']}"
+    )
+
+    after = _night_partition(period, cfg, report.vetoed)
+    _print_report(
+        judgments,
+        after,
+        title="night · 전 기간 재군집 + LLM 확인",
+        platform_pairs=platform_pairs_together(after, night_sources),
+    )
+
+    judged = frozenset(
+        doc_id for cluster in judgments.clusters for doc_id in cluster.doc_ids
+    )
+    diff = diff_partitions(before, after, judged_ids=judged)
+    shown = diff.newly_split[:20]
+    texts = await fetch_pair_texts(session, {i for pair in shown for i in pair})
+    print()
+    print(
+        f"판정 밖 새로 갈린 짝: {diff.newly_split_total}건 (처음 {len(shown)}건 표시) "
+        "— 표본으로 열어 맞음/틀림을 센다"
+    )
+    for left, right in shown:
+        print(f"  - {texts.get(left, ('?',))[0]} | {texts.get(right, ('?',))[0]}")
+    print(f"판정 밖 새로 묶인 짝: {diff.newly_joined_total}건 (LLM 확인은 묶지 않으므로 0이어야 한다)")
+    for left, right in diff.newly_joined[:20]:
+        print(f"  - {left} | {right}")
 
 
 async def main() -> None:
@@ -418,6 +551,10 @@ async def main() -> None:
                     title="night · 전 기간 재군집",
                     platform_pairs=platform_pairs_together(partition, night_sources),
                 )
+                if args.pair_check:
+                    await _report_pair_check(
+                        session, period, cfg, args, judgments, partition, night_sources
+                    )
 
         await session.rollback()
 
