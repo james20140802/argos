@@ -275,9 +275,24 @@ async def _fetch_url_content(url: str) -> dict | None:
     }
 
 
-# 다른 크롤러 모듈(본문 보강·refetch-bodies, ARG-309)이 같은 가져오기 경로를
-# 쓰도록 공개 이름을 하나 둔다. 동작은 _fetch_url_content와 같다.
-fetch_article = _fetch_url_content
+async def fetch_article(url: str) -> dict | None:
+    """본문 보강·refetch-bodies(ARG-309)가 쓰는 공개 가져오기 진입점.
+
+    ``_fetch_url_content``는 리다이렉트 hop만 검증하고 첫 URL은 ``add_url()``이
+    미리 거른다고 가정한다. RSS 등에서 온 URL은 그 관문을 지나지 않으므로 여기서
+    scheme(http/https)과 SSRF 안전성을 먼저 확인한다. 안전하지 않은 URL은 요청
+    없이 가져오기 실패(``None``)로 취급해 배치가 멈추지 않게 한다.
+    """
+    cleaned, reason = _parse_and_validate(url)
+    if cleaned is None:
+        logger.info("fetch_article skipping %s: %s", url, reason)
+        return None
+    if not await _is_safe_url(cleaned):
+        logger.warning(
+            "fetch_article skipping unsafe URL %s (failed SSRF safety check)", url
+        )
+        return None
+    return await _fetch_url_content(cleaned)
 
 
 # ---------------------------------------------------------------------------
