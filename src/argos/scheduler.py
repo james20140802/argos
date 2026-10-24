@@ -226,12 +226,16 @@ def _render_plist(
     config_path: Path | None,
     log_dir: Path | None,
     working_directory: Path | None,
+    tail_args: list[str] | None = None,
 ) -> str:
     hour, minute = _parse_hhmm(time)
     argos_bin = _resolve_argos_binary()
     program_args: list[str] = [str(argos_bin), subcommand]
     if config_path is not None:
         program_args.extend(["--config", str(config_path)])
+    # 중첩 하위 명령(`argos taxonomy --config X assign --yes`)은 --config 뒤에 붙는다 —
+    # --config는 바깥 하위 명령 파서가 받는다.
+    program_args.extend(tail_args or [])
     calendar = _calendar_intervals(hour, minute, weekdays)
     resolved_log_dir = log_dir if log_dir is not None else _DEFAULT_LOG_DIR
     resolved_cwd = (
@@ -301,6 +305,32 @@ def render_correct_plist(
         config_path=config_path,
         log_dir=log_dir,
         working_directory=working_directory,
+    )
+
+
+def render_classify_plist(
+    *,
+    time: str,
+    label: str = "com.argos.classify",
+    config_path: Path | None = None,
+    log_dir: Path | None = None,
+    working_directory: Path | None = None,
+) -> str:
+    """Render the daily ``argos taxonomy assign --yes`` plist (ARG-313).
+
+    새 기술을 확정된 아래 갈래에 자동 배정하는 하루 한 번 배치다. 갈래 확정본
+    (``taxonomy apply``)은 절대 스케줄하지 않는다 — 배정만 돈다. 로그는 ``classify.log``.
+    """
+    return _render_plist(
+        label=label,
+        subcommand="taxonomy",
+        log_basename="classify",
+        time=time,
+        weekdays=None,
+        config_path=config_path,
+        log_dir=log_dir,
+        working_directory=working_directory,
+        tail_args=["assign", "--yes"],
     )
 
 
@@ -582,6 +612,32 @@ def reload_schedule(
                     f"(또는 argos config set correction.enabled false)"
                 )
 
+    # ARG-313: daily auto role assignment. Absent ``.taxonomy`` (stripped
+    # namespaces in tests / legacy callers) means no classify job.
+    taxonomy = getattr(user_config, "taxonomy", None)
+    classify_enabled = taxonomy is not None and bool(getattr(taxonomy, "assign_enabled", False))
+    if classify_enabled:
+        try:
+            classify_hm = _parse_hhmm(taxonomy.assign_time)
+            others = {
+                "run.time": _parse_hhmm(run_time),
+                "briefing.time": _parse_hhmm(brief_time),
+            }
+            if weekly_enabled:
+                others["briefing.weekly_time"] = _parse_hhmm(weekly_time or brief_time)
+            if correction_enabled:
+                others["correction.time"] = _parse_hhmm(correction.time)
+        except ValueError as exc:
+            raise SchedulerError(f"invalid time format: {exc}") from exc
+        for key, hm in others.items():
+            if hm == classify_hm:
+                raise SchedulerError(
+                    f"taxonomy.assign_time {taxonomy.assign_time} overlaps {key} — "
+                    f"자동 갈래 배정은 다른 job과 다른 시각이어야 한다 — 바꾸려면: "
+                    f"argos config set taxonomy.assign_time HH:MM "
+                    f"(또는 argos config set taxonomy.assign_enabled false)"
+                )
+
     _DEFAULT_LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
     _DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -592,6 +648,7 @@ def reload_schedule(
     )
     web_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.web.plist"
     correct_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.correct.plist"
+    classify_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.classify.plist"
 
     # Capture cwd once so all plists agree on the same WorkingDirectory,
     # even if some caller mutates cwd between the render calls.
@@ -621,6 +678,13 @@ def reload_schedule(
         if correction_enabled:
             correct_xml = render_correct_plist(
                 time=correction.time,
+                config_path=config_path,
+                working_directory=install_cwd,
+            )
+        classify_xml: str | None = None
+        if classify_enabled:
+            classify_xml = render_classify_plist(
+                time=taxonomy.assign_time,
                 config_path=config_path,
                 working_directory=install_cwd,
             )
@@ -659,6 +723,19 @@ def reload_schedule(
         # 교정은 DB 에 쓰는 job 이라 plist 가 LaunchAgents 에 남아 있으면 다음
         # 로그인 때 다시 올라온다 (web opt-out 과 같은 이유). 파일도 지운다.
         correct_plist_path.unlink(missing_ok=True)
+
+    if classify_xml is not None:
+        install_plist(classify_plist_path, classify_xml)
+    elif taxonomy is not None:
+        # 배정 꺼짐 — DB 에 쓰는 job 이라 교정과 같이 bootout + 파일 삭제.
+        try:
+            bootout_plist("com.argos.classify")
+        except SchedulerError:
+            logger.warning(
+                "taxonomy assign disabled; bootout of com.argos.classify failed",
+                exc_info=True,
+            )
+        classify_plist_path.unlink(missing_ok=True)
 
     if web_enabled:
         web_xml = render_web_plist(
@@ -720,6 +797,15 @@ def reload_schedule(
                 f"(com.argos.correct) failed: {exc}. "
                 f"To clean up, run: argos schedule uninstall && argos schedule install"
             ) from exc
+    if classify_xml is not None:
+        try:
+            bootstrap_plist(classify_plist_path)
+        except SchedulerError as exc:
+            raise SchedulerError(
+                f"other jobs bootstrapped successfully but taxonomy assign job "
+                f"(com.argos.classify) failed: {exc}. "
+                f"To clean up, run: argos schedule uninstall && argos schedule install"
+            ) from exc
 
 
 __all__ = [
@@ -731,6 +817,7 @@ __all__ = [
     "reload_schedule",
     "render_brief_plist",
     "render_brief_weekly_plist",
+    "render_classify_plist",
     "render_correct_plist",
     "render_run_plist",
     "render_web_plist",

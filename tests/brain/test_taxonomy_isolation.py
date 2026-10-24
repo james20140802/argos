@@ -73,9 +73,41 @@ def test_cli_entrypoint_does_not_reach_apply_directly():
     assert not _mentions(tree, "apply_plan")
 
 
-def test_no_scheduled_job_runs_taxonomy():
+def test_scheduled_taxonomy_job_only_assigns_never_applies():
+    """ARG-313: 스케줄은 ``taxonomy assign``(배정)만 돌린다. 확정본을 바꾸는
+    ``apply``·편집 명령은 절대 스케줄하지 않는다 — 위쪽 갈래는 자동 처리로 안 바뀐다."""
     from argos import scheduler
 
-    source = (SRC / "scheduler.py").read_text(encoding="utf-8")
-    assert "taxonomy" not in source.lower()
+    tree = _modules()["scheduler.py"]
+    for forbidden in ("apply_plan", "RoleBranch", "taxonomy_store"):
+        assert not _mentions(tree, forbidden)
+    literals = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    for action in ("apply", "rename", "merge", "split", "delete", "draft"):
+        assert action not in literals, f"scheduler must not run `taxonomy {action}`"
+    assert "assign" in literals
     assert hasattr(scheduler, "__file__")
+
+
+AUTO_ASSIGN_MODULES = (
+    "brain/tech_classify.py",
+    "brain/tech_classify_store.py",
+    "brain/tech_evidence.py",
+    "brain/taxonomy_eval.py",
+    "crawler/tech_external.py",
+)
+
+
+def test_auto_assignment_modules_never_write_confirmed_branches():
+    """ARG-313 자동 배정은 갈래 확정본을 읽기만 한다. 아래 갈래가 커져도 나누기
+    **제안**만 출력하고 ``role_branches``는 바꾸지 않는다."""
+    modules = _modules()
+    for rel in AUTO_ASSIGN_MODULES:
+        tree = modules[rel]
+        for forbidden in ("apply_plan", "RoleBranch", "plan_apply"):
+            assert not _mentions(tree, forbidden), f"{rel} references {forbidden}"
+        source = (SRC / rel).read_text(encoding="utf-8")
+        assert "role_branches" not in source.replace("``role_branches``", ""), rel

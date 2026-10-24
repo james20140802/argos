@@ -2786,6 +2786,9 @@ def _cmd_schedule_install(args: argparse.Namespace) -> int:
     correction = getattr(user_config, "correction", None)
     if correction is not None and correction.enabled:
         scheduled += ", com.argos.correct"
+    taxonomy = getattr(user_config, "taxonomy", None)
+    if taxonomy is not None and taxonomy.assign_enabled:
+        scheduled += ", com.argos.classify"
     print(f"Scheduled: {scheduled}")
     return EXIT_OK
 
@@ -2797,6 +2800,7 @@ _SCHEDULE_LABELS: tuple[str, ...] = (
     "com.argos.brief-weekly",
     "com.argos.web",
     "com.argos.correct",
+    "com.argos.classify",
 )
 
 
@@ -2819,7 +2823,8 @@ def _cmd_schedule_uninstall(_args: argparse.Namespace) -> int:
     # writes to the DB and must not resurrect at login after an uninstall. The
     # other scheduled jobs (run/brief/brief-weekly) follow the existing
     # bootout-only convention.
-    for name in ("com.argos.web", "com.argos.correct"):
+    # com.argos.classify (ARG-313) also writes to the DB — same treatment.
+    for name in ("com.argos.web", "com.argos.correct", "com.argos.classify"):
         (scheduler._DEFAULT_LAUNCH_AGENTS / f"{name}.plist").unlink(missing_ok=True)
     return EXIT_GENERIC if failures else EXIT_OK
 
