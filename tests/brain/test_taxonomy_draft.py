@@ -46,6 +46,26 @@ def test_extract_sentences_dedups():
 
 
 # ---- build_draft ----
+
+
+@pytest.mark.asyncio
+async def test_build_draft_unloads_other_models_before_first_query(patched):
+    llm = _llm([_tree_json()])
+    seen_at_first_query: list[str] = []
+    inner = llm.query.side_effect
+
+    async def query(role, prompt, **kw):
+        if not seen_at_first_query:
+            seen_at_first_query.extend(patched)
+        return await inner(role, prompt, **kw)
+
+    llm.query.side_effect = query
+    await build_draft(None, llm, limit=3)
+    user = td.settings.user
+    assert user.ollama.model_deepdive in seen_at_first_query or (
+        user.ollama.model_deepdive == user.taxonomy.model
+    )
+    assert user.taxonomy.model not in seen_at_first_query
 def _cands(n):
     return [Candidate(name=f"Tool{i}", sentences=(f"Tool{i} does a thing.",)) for i in range(n)]
 
@@ -87,6 +107,13 @@ def patched(monkeypatch):
         return _cands(3)
 
     monkeypatch.setattr(td, "fetch_candidates", fake_fetch)
+    unloaded: list[str] = []
+
+    async def fake_unload(model):
+        unloaded.append(model)
+
+    monkeypatch.setattr("argos.brain.ollama_client.unload_model", fake_unload)
+    return unloaded
 
 
 @pytest.mark.asyncio

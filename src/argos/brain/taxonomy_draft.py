@@ -238,6 +238,29 @@ def _tree_from_llm(
     )
 
 
+async def _unload_resident_models() -> None:
+    """초안 모델을 올리기 전에 다른 설정 모델을 내린다(한 번에 한 LLM).
+
+    Deep Dive는 ``model_deepdive``를 keep_alive="5m"으로 남기고, 계보·다이제스트도
+    각자 모델을 잠시 얹어 둔다. 초안 모델 질의는 아무것도 내리지 않으니 여기서
+    먼저 비운다. 실패는 삼킨다 — 초안 자체를 막을 이유는 아니다.
+    """
+    from argos.brain.ollama_client import unload_model
+
+    user = settings.user
+    resident = {
+        user.ollama.model_triage,
+        user.ollama.model_deepdive,
+        user.genealogist.model,
+        user.digest.model,
+    } - {user.taxonomy.model}
+    for model in sorted(resident):
+        try:
+            await unload_model(model)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("taxonomy draft: unload %s failed: %r", model, exc)
+
+
 async def build_draft(
     session: AsyncSession,
     llm: Any,
@@ -251,6 +274,7 @@ async def build_draft(
     if not candidates:
         raise TaxonomyDraftError(["초안을 만들 이름이 없습니다 — 먼저 argos backfill-entities를 실행하세요"])
 
+    await _unload_resident_models()
     try:
         roles: list[tuple[str, str]] = []
         for cand in candidates:
