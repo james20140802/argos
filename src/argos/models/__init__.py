@@ -5,10 +5,12 @@ from argos.models.entity import Entity, EventEntity
 from argos.models.entity_alias import EntityAlias
 from argos.models.event_document import EventDocument
 from argos.models.feed_event import FeedEvent
+from argos.models.role_assignment import RoleAssignment
 from argos.models.role_branch import RoleBranch
 from argos.models.tech_event import TechEvent
 from argos.models.tech_item import TechItem
 from argos.models.tech_succession import TechSuccession
+from argos.models.technology_profile import TechnologyProfile
 from argos.models.user_asset import UserAsset
 from argos.models.track_history import TrackHistory
 
@@ -21,10 +23,12 @@ __all__ = [
     "EventEntity",
     "EventDocument",
     "FeedEvent",
+    "RoleAssignment",
     "RoleBranch",
     "TechEvent",
     "TechItem",
     "TechSuccession",
+    "TechnologyProfile",
     "UserAsset",
     "TrackHistory",
 ]

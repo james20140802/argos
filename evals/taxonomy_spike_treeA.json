@@ -1,0 +1,89 @@
+{
+  "tree": [
+    {
+      "id": null,
+      "name": "AI 모델 및 엔진",
+      "description": "Core models and the engines that run them.",
+      "children": [
+        {
+          "id": null,
+          "name": "기초 모델 (Foundation Models)",
+          "description": "Large-scale models, frontier models, and open-weight models that serve as the core reasoning engine."
+        },
+        {
+          "id": null,
+          "name": "추론 및 특화 모델 (Specialized & Reasoning Models)",
+          "description": "Models optimized for specific modalities (vision, audio) or specific tasks like reasoning and technical workflows."
+        },
+        {
+          "id": null,
+          "name": "모델 실행 및 서빙 (Inference & Model Serving)",
+          "description": "Engines, frameworks, and local runners used to deploy, serve, and execute AI models."
+        }
+      ]
+    },
+    {
+      "id": null,
+      "name": "AI 에이전트 및 어시스턴트",
+      "description": "Agents and assistants that do work on a person's behalf.",
+      "children": [
+        {
+          "id": null,
+          "name": "코딩 에이전트 (Coding Agents & Assistants)",
+          "description": "Tools and agents specifically designed to automate software development, coding, and technical engineering tasks."
+        },
+        {
+          "id": null,
+          "name": "범용 및 개인용 에이전트 (General & Personal Agents)",
+          "description": "AI agents designed for professional knowledge work, personal assistance, or general workflow management."
+        }
+      ]
+    },
+    {
+      "id": null,
+      "name": "에이전트 인프라 및 도구",
+      "description": "Infrastructure that lets agents run and connect to the outside world.",
+      "children": [
+        {
+          "id": null,
+          "name": "에이전트 오케스트레이션 (Agent Orchestration & Harnesses)",
+          "description": "Frameworks and harnesses that manage model execution, tool integration, and multi-agent coordination."
+        },
+        {
+          "id": null,
+          "name": "연결 및 게이트웨이 (Connectivity & Gateways)",
+          "description": "Protocols, APIs, and gateways that connect agents to external tools, servers, and model providers."
+        }
+      ]
+    },
+    {
+      "id": null,
+      "name": "데이터 및 개발 인프라",
+      "description": "General development infrastructure for storing data and managing or running code.",
+      "children": [
+        {
+          "id": null,
+          "name": "데이터베이스 및 저장소 (Databases & Storage)",
+          "description": "Analytical, relational, or single-file databases used for storing and querying data."
+        },
+        {
+          "id": null,
+          "name": "개발 및 실행 환경 (Development & Runtime Environments)",
+          "description": "Version control systems, serverless runtimes, and workspaces used for managing code and executing applications."
+        }
+      ]
+    },
+    {
+      "id": null,
+      "name": "평가 및 기타",
+      "description": "Methods and tools that measure and compare models and agents.",
+      "children": [
+        {
+          "id": null,
+          "name": "벤치마크 (Benchmarks)",
+          "description": "Standardized tools and metrics used to evaluate the performance of AI models and agents."
+        }
+      ]
+    }
+  ]
+}

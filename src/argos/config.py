@@ -221,6 +221,29 @@ class TaxonomyConfig(BaseModel):
     num_ctx: int = Field(default=16384, ge=512)
     # 초안 입력으로 쓰는 상위 엔티티 수(문서 수 기준).
     draft_limit: int = Field(default=60, ge=1, le=500)
+    # --- ARG-313 자동 갈래 배정 (`argos taxonomy assign`, 하루 한 번 배치) ---
+    assign_enabled: bool = True  # launchd com.argos.classify 등록 여부
+    assign_time: str = "04:30"  # run/brief/correction과 겹치면 schedule install이 거부
+    min_documents: int = Field(default=2, ge=1)  # 이보다 적은 문서에 나온 이름은 대상 아님
+    max_per_run: int = Field(default=40, ge=1)  # 한 번에 설명·배정할 이름 수(문서 많은 순)
+    min_sentences: int = Field(default=3, ge=1)  # 설명에 쓸 문장이 이보다 적으면 Insufficient
+    # 다시 설명할 기준: 문서 수가 설명 당시의 refine_ratio배 이상이거나 +refine_add 이상.
+    refine_ratio: float = Field(default=2.0, gt=1.0)
+    refine_add: int = Field(default=5, ge=1)
+    assign_rounds: int = Field(default=2, ge=1, le=3)  # 이웃 갈래가 바뀐 이름만 재질의
+    # 일반어 거르기: 본문에서 소문자로 쓰인 비율이 이보다 크면 일반 낱말(agent 0.88, code 0.75).
+    generic_lowercase_ratio: float = Field(default=0.6, ge=0.0, le=1.0)
+    # 흔한 이름(event_detection.entity_common_doc_ratio) 중 이 글자 수 이하만 LLM 없이 거른다
+    # (ai·api·llm). 긴 흔한 이름(codex·chatgpt)은 기술일 수 있어 LLM이 판정한다.
+    common_short_max_chars: int = Field(default=3, ge=0)
+    ner_min_mentions: int = Field(default=3, ge=1)  # spaCy 다수결에 필요한 라벨 수
+    # 갈래 크기 제안(쓰기 없음): 아래 갈래가 이 수를 넘거나 전체 배정의 이 비율을 넘으면.
+    split_suggest_size: int = Field(default=15, ge=2)
+    split_suggest_ratio: float = Field(default=0.3, gt=0.0, le=1.0)
+    # 기사에 걸린 github/huggingface 링크의 topic·pipeline_tag (이름 검색은 하지 않는다).
+    external_enabled: bool = True
+    external_max_requests: int = Field(default=40, ge=0)
+    external_cache_ttl_days: float = Field(default=7.0, gt=0)
 
 
 class RSSFeedConfig(BaseModel):

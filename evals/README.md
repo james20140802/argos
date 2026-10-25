@@ -712,3 +712,31 @@ qwen3:8b를 올려 두고 실행 중 `/api/ps`를 1초마다 찍었다.
   기록에서 두 모델이 함께 보인 순간은 없었고(qwen3:8b 1회 → gemma4:26b 13회 → 빈 상태), 끝난 뒤 `ollama ps`는
   비어 있다. 사건 1개 재명명 25.1초.
 - Ollama `/api/ps`가 gemma4:26b의 크기를 0.7GB로 보고해 VRAM 수치는 쓸 수 없었다(보고값 문제로 보인다).
+
+---
+
+# 역할 갈래 자동 배정 평가 (ARG-313)
+
+- `taxonomy_truth_arg313.json` — 정답 묶음 33개(시험판 2026-10-22 `truth.json` 그대로). 같은 묶음 =
+  서로 바꿔 쓸 수 있는 역할. **Claude 판정 기준(미검증).** 이름 기준이라 DB 리셋과 무관하다(별칭은
+  대표 이름으로 맞춰 읽는다).
+- `taxonomy_spike_treeA.json` — 시험판 A 단계가 만든 고정 트리(평가 전용, DB에 넣지 않는다). 시험판 이름을
+  그대로 둬서 확정용 이름 길이 규칙은 적용하지 않는다.
+
+## 지표
+
+쌍 일치도: 정답에 있는 이름의 모든 쌍에 대해 "정답에서 같은 묶음"과 "배정이 같은 아래 갈래"를 비교한
+정밀도·재현율·F1(`brain/taxonomy_eval.pair_f1`, 시험판 `cluster.py`와 같은 산식). 미분류와 DB에 없는
+이름은 **단독**으로 치고 따로 보고한다. 시험판 숫자: D 방식 0.81(P 0.82 / R 0.80), A 방식 0.59 —
+`tests/brain/test_taxonomy_eval.py`가 시험판 배정 파일로 같은 숫자를 재현한다.
+
+## 재현
+
+```bash
+# 시험판 D 결과 파일 채점(DB 없음) — 0.81이 나와야 지표가 같다
+uv run argos taxonomy eval --assignments tests/brain/fixtures/taxonomy_spike/assignD.json
+# AC 판정: 확정 트리 위에 실제로 저장된 배정으로 채점(읽기 전용)
+uv run argos taxonomy eval --tree confirmed
+# 참고값: 시험판 고정 트리로 정답 이름만 새로 배정해 채점(LLM 사용, DB 미기록)
+uv run argos taxonomy eval --tree spike
+```
