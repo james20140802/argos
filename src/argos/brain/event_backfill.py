@@ -411,28 +411,47 @@ async def execute_backfill(
     )
 
 
-_STALE_EVENTS_SQL = text(
-    """
+_STALE_TARGET = "(naming_stale IS TRUE OR title IS NULL)"
+"""``backfill-events --rename-stale`` 대상: 이름이 낡았거나 아직 무명인 사건."""
+
+_RESUMMARIZE_TARGET = "(naming_stale IS TRUE OR title IS NULL OR sections IS NULL)"
+"""ARG-308 ``resummarize-events`` 대상: 위에 더해 새 형식(소제목 상세)이 아직 없는 사건."""
+
+
+def _stale_events_sql(target: str):
+    return text(
+        f"""
     SELECT e.id AS event_id, e.updated_at AS event_updated_at,
+           e.title AS event_title,
            i.title AS doc_title,
-           COALESCE(NULLIF(i.summary, ''), i.digest) AS doc_summary,
-           LEFT(i.raw_content, :doc_max_chars) AS doc_body
+           i.source_url AS doc_source,
+           LEFT(i.raw_content, :doc_max_chars) AS doc_body,
+           ARRAY(
+               SELECT en.name
+               FROM document_entities de
+               JOIN entities en ON en.id = de.entity_id
+               WHERE de.tech_item_id = i.id
+               ORDER BY en.name
+           ) AS doc_names
     FROM tech_events e
     JOIN event_documents ed ON ed.event_id = e.id
     JOIN tech_items i ON i.id = ed.tech_item_id
     WHERE e.merged_into_id IS NULL
-      AND (e.naming_stale IS TRUE OR e.title IS NULL)
       AND e.id IN (
           SELECT id FROM tech_events
           WHERE merged_into_id IS NULL
-            AND (naming_stale IS TRUE OR title IS NULL)
+            AND {target}
           ORDER BY occurred_at ASC, id ASC
           LIMIT :limit
       )
     ORDER BY e.occurred_at ASC, e.id ASC,
              ed.created_at DESC, i.published_at DESC NULLS LAST, i.id ASC
     """
-)
+    )
+
+
+_STALE_EVENTS_SQL = _stale_events_sql(_STALE_TARGET)
+_RESUMMARIZE_EVENTS_SQL = _stale_events_sql(_RESUMMARIZE_TARGET)
 """재명명 대상과 그 근거 문서를 한 번에 읽는다.
 
 툼스톤(``merged_into_id``가 채워진 사건)은 제외한다 — 흡수돼 더 이상
@@ -443,12 +462,11 @@ _STALE_EVENTS_SQL = text(
 ``LIMIT``이 서브쿼리에 걸린 것은 의도적이다 — 바깥에 걸면 조인으로 늘어난
 행 수를 자르게 되어 사건 하나의 근거가 잘려 나간다.
 
-근거 본문은 ``summary``가 비면 ``digest``로 떨어진다 — triage 스키마도 DB도
-``summary`` NULL을 허용하고, 온라인 명명(``_assign_then_save``)과 백필 특징
-추출(``keyword_source``)이 이미 같은 폴백을 쓴다. 여기만 ``summary``를 고집하면
-digest만 있는 문서가 제목 한 줄로 프롬프트에 들어가, 있는 사실을 두고 헤드라인만
-보고 요약을 짓게 된다. 요약 길이는 ``MAX_EVIDENCE_CHARS``가, 본문(ARG-310)은 SQL의 ``LEFT``가
-``event_summary.doc_max_chars``로 자른다.
+ARG-308: 근거는 기사 **본문**(``raw_content``)이다 — 기사별 요약(``summary``)과
+장문 요약(``digest``)은 더 이상 읽지 않는다. 본문은 SQL의 ``LEFT``가
+``event_summary.doc_max_chars``로 먼저 자르고, 프롬프트에서 기사 수에 맞춰 한 번 더
+나눈다. 출처 URL(프롬프트엔 도메인만)과 그 기사에서 뽑힌 이름(``document_entities``
+-> ``entities.name``, 이름 원문 검증용)도 같은 쿼리로 읽는다.
 
 ``updated_at``을 같이 읽는 것은 ARG-274의 낙관적 가드용이다 — 근거 스냅샷을
 뜬 시점의 행 버전을 들고 있어야, LLM이 도는 동안 사건이 바뀌었는지
@@ -483,6 +501,8 @@ class StaleEvent:
     event_id: uuid.UUID
     docs: list[EvidenceDoc]
     updated_at: datetime | None = None
+    title: str | None = None
+    """지금 붙어 있는 이름 — 미리보기 표시용(ARG-308)."""
 
 
 @dataclass(frozen=True)
@@ -496,14 +516,22 @@ class RenameResult:
 
 
 async def fetch_stale_events(
-    session: AsyncSession, *, limit: int | None = None
+    session: AsyncSession,
+    *,
+    limit: int | None = None,
+    include_unsectioned: bool = False,
 ) -> list[StaleEvent]:
-    """``naming_stale``이 섰거나 아직 무명인 (툼스톤 아닌) 사건들을 읽는다."""
+    """``naming_stale``이 섰거나 아직 무명인 (툼스톤 아닌) 사건들을 읽는다.
+
+    ``include_unsectioned=True``(ARG-308 ``resummarize-events``)면 소제목 상세가
+    아직 없는(``sections IS NULL``) 사건까지 고른다.
+    """
     from argos.config import settings
 
+    sql = _RESUMMARIZE_EVENTS_SQL if include_unsectioned else _STALE_EVENTS_SQL
     rows = (
         await session.execute(
-            _STALE_EVENTS_SQL,
+            sql,
             {
                 "limit": limit if limit is not None else _NO_LIMIT,
                 "doc_max_chars": settings.user.event_summary.doc_max_chars,
@@ -513,15 +541,20 @@ async def fetch_stale_events(
 
     grouped: dict[uuid.UUID, list[EvidenceDoc]] = {}
     versions: dict[uuid.UUID, datetime | None] = {}
+    titles: dict[uuid.UUID, str | None] = {}
     order: list[uuid.UUID] = []
     for row in rows:
         if row.event_id not in grouped:
             grouped[row.event_id] = []
             versions[row.event_id] = row.event_updated_at
+            titles[row.event_id] = getattr(row, "event_title", None)
             order.append(row.event_id)
         grouped[row.event_id].append(
             EvidenceDoc(
-                title=row.doc_title, summary=row.doc_summary, body=row.doc_body
+                title=row.doc_title,
+                body=row.doc_body,
+                source=row.doc_source,
+                names=tuple(row.doc_names or ()),
             )
         )
     return [
@@ -529,9 +562,18 @@ async def fetch_stale_events(
             event_id=event_id,
             docs=grouped[event_id],
             updated_at=versions[event_id],
+            title=titles[event_id],
         )
         for event_id in order
     ]
+
+
+_LIVE_EVENTS_SQL = text("SELECT count(*) FROM tech_events WHERE merged_into_id IS NULL")
+
+
+async def count_live_events(session: AsyncSession) -> int:
+    """툼스톤이 아닌 사건 수 — ``resummarize-events`` 미리보기의 분모(ARG-308)."""
+    return int((await session.execute(_LIVE_EVENTS_SQL)).scalar_one())
 
 
 async def rename_stale_events(

@@ -27,10 +27,13 @@ from sqlalchemy import String, and_, cast, select, text
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from argos.models.event_document import EventDocument
+from argos.models.tech_event import TechEvent
 from argos.models.tech_item import CategoryType, TechItem
 from argos.models.tech_succession import RelationType, TechSuccession
 from argos.models.track_history import TrackHistory
 from argos.models.user_asset import AssetStatus, UserAsset
+from argos.web.services.event_sections import EventSection, read_sections, type_label
 from argos.web.services.timeline import TimelineEvent, fetch_timeline
 
 
@@ -111,6 +114,17 @@ class SignalAlert:
 
 
 @dataclass(frozen=True)
+class ItemEvent:
+    """기사 상세에 붙이는 "이 기사가 속한 사건" 묶음 (ARG-308)."""
+
+    id: uuid.UUID
+    title: Optional[str]
+    summary: Optional[str]
+    event_type_label: Optional[str]
+    sections: tuple[EventSection, ...] = ()
+
+
+@dataclass(frozen=True)
 class ItemDetailView:
     id: uuid.UUID
     title: str
@@ -130,8 +144,9 @@ class ItemDetailView:
     # replaces signal_alerts/related_history in the template for those items.
     # Default empty list keeps non-Keep/non-asset callers unaffected.
     timeline: list[TimelineEvent] = field(default_factory=list)
-    # ARG-173: 롱폼 다이제스트. 기본값 None이라 digest를 넘기지 않는 기존 호출부/테스트는 무영향.
-    digest: Optional[str] = None
+    # ARG-308: 기사별 장문 요약(digest) 대신, 이 기사가 속한 사건의 소제목 상세.
+    # 사건이 없으면 None이라 화면에 아무것도 안 그린다.
+    event: Optional[ItemEvent] = None
     # ARG-184: Keep/Pass/Untrack 액션 버튼을 상세 페이지에서 렌더링하기 위한
     # user_asset 상태 + id. 둘 다 기본값 None이라 기존 호출부/테스트는 무영향.
     status: Optional[AssetStatus] = None
@@ -366,6 +381,39 @@ async def _fetch_signal_alerts(
     ]
 
 
+async def _fetch_item_event(
+    session: AsyncSession, item_id: uuid.UUID
+) -> Optional[ItemEvent]:
+    """이 기사가 매달린 (툼스톤 아닌) 사건. 여럿이면 가장 최근에 매달린 것 하나."""
+    row = (
+        await session.execute(
+            select(
+                TechEvent.id,
+                TechEvent.title,
+                TechEvent.summary,
+                TechEvent.event_type,
+                TechEvent.sections,
+            )
+            .join(EventDocument, EventDocument.event_id == TechEvent.id)
+            .where(
+                EventDocument.tech_item_id == item_id,
+                TechEvent.merged_into_id.is_(None),
+            )
+            .order_by(EventDocument.created_at.desc(), TechEvent.id.asc())
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return None
+    return ItemEvent(
+        id=row.id,
+        title=row.title,
+        summary=row.summary,
+        event_type_label=type_label(row.event_type),
+        sections=read_sections(row.sections),
+    )
+
+
 async def fetch_item_detail(
     session: AsyncSession,
     item_id: uuid.UUID,
@@ -378,7 +426,6 @@ async def fetch_item_detail(
             TechItem.source_url,
             TechItem.image_url,
             TechItem.summary,
-            TechItem.digest,
             TechItem.category,
             TechItem.trust_score,
             TechItem.published_at,
@@ -430,7 +477,7 @@ async def fetch_item_detail(
         source_url=row.source_url,
         image_url=row.image_url,
         summary=row.summary,
-        digest=row.digest,
+        event=await _fetch_item_event(session, item_id),
         category=row.category,
         trust_score=row.trust_score,
         published_at=row.published_at,
