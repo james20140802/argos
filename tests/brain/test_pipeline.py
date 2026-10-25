@@ -173,8 +173,8 @@ async def test_run_brain_pipeline_returns_early_when_triage_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_brain_pipeline_calls_digest_between_triage_and_embed(monkeypatch):
-    """digest_node가 triage 통과 후 embed 전에 호출되어 state에 digest를 남긴다."""
+async def test_run_brain_pipeline_goes_from_triage_straight_to_embed(monkeypatch):
+    """ARG-308: 기사별 digest를 더 만들지 않는다 — triage 다음이 바로 embed다."""
     import argos.brain.pipeline as pipe
 
     calls = []
@@ -182,10 +182,6 @@ async def test_run_brain_pipeline_calls_digest_between_triage_and_embed(monkeypa
     async def fake_triage(state):
         calls.append("triage")
         return {**state, "is_valid": True, "trust_score": 0.9, "category": None}
-
-    async def fake_digest(state):
-        calls.append("digest")
-        return {**state, "digest": "롱폼 본문"}
 
     async def fake_embed(state, session):
         calls.append("embed")
@@ -198,14 +194,14 @@ async def test_run_brain_pipeline_calls_digest_between_triage_and_embed(monkeypa
         return {**state, "saved": True}
 
     monkeypatch.setattr(pipe, "triage_node", fake_triage)
-    monkeypatch.setattr(pipe, "digest_node", fake_digest)
     monkeypatch.setattr(pipe, "embed_and_search_node", fake_embed)
     monkeypatch.setattr(pipe, "save_node", fake_save)
 
     await pipe.run_brain_pipeline("raw", "https://e.com", session=object())
 
-    assert calls == ["triage", "digest", "embed"]
-    assert saved["digest"] == "롱폼 본문"
+    assert calls == ["triage", "embed"]
+    assert not hasattr(pipe, "digest_node")
+    assert saved.get("digest") is None
 
 
 # ---------------------------------------------------------------------------
@@ -842,14 +838,12 @@ async def test_run_brain_pipeline_cold_start_assigns_before_saving(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_brain_pipeline_low_trust_assigns_before_saving(monkeypatch):
     """Low-trust (genealogy-skip) path: assign runs, then save sees its event_id."""
-    triaged = _triaged_state()
-    digested = _triaged_state(trust_score=0.1)
+    triaged = _triaged_state(trust_score=0.1)
     embedded = _triaged_state(trust_score=0.1)
     event_id = uuid.uuid4()
     call_order: list[str] = []
 
     monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
-    monkeypatch.setattr(brain_pipeline, "digest_node", AsyncMock(return_value=digested))
     monkeypatch.setattr(
         brain_pipeline, "embed_and_search_node", AsyncMock(return_value=embedded)
     )
@@ -1209,13 +1203,71 @@ async def test_assign_then_save_passes_the_body_as_evidence(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_assign_then_save_passes_source_and_extracted_names_not_the_item_summary(
+    monkeypatch,
+):
+    """ARG-308: 기사별 요약은 빼고, 출처와 뽑힌 이름 원문을 싣는다."""
+    from argos.brain.entity_extraction import ExtractedName
+
+    async def _save(state, session, flush=True):
+        return {**state, "saved": True, "created_event_id": uuid.uuid4()}
+
+    monkeypatch.setattr(
+        brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
+    )
+    monkeypatch.setattr(brain_pipeline, "save_node", _save)
+    naming = AsyncMock(return_value=True)
+    monkeypatch.setattr(brain_pipeline, "apply_event_naming", naming)
+
+    await brain_pipeline._assign_then_save(
+        {
+            "source_url": "https://anthropic.com/news/duet",
+            "raw_text": "Claude Duet\nbody",
+            "summary": "ITEM SUMMARY",
+            "digest": "ITEM DIGEST",
+            "entity_names_extracted": [
+                ExtractedName(canonical="claude duet", surface="Claude Duet"),
+                ExtractedName(canonical="anthropic", surface="Anthropic"),
+            ],
+        },
+        session=_begin_nested_session(),
+    )
+    doc = naming.await_args.args[2][0]
+    assert doc.summary is None
+    assert doc.source == "https://anthropic.com/news/duet"
+    assert doc.names == ("Claude Duet", "Anthropic")
+
+
+@pytest.mark.asyncio
+async def test_assign_then_save_keeps_the_save_when_naming_raises(monkeypatch):
+    """명명이 터져도 저장·배정 결과는 그대로다 (폴백 제목 유지)."""
+    event_id = uuid.uuid4()
+
+    async def _save(state, session, flush=True):
+        return {**state, "saved": True, "created_event_id": event_id, "event_id": event_id}
+
+    monkeypatch.setattr(
+        brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
+    )
+    monkeypatch.setattr(brain_pipeline, "save_node", _save)
+    monkeypatch.setattr(
+        brain_pipeline, "apply_event_naming", AsyncMock(side_effect=RuntimeError("boom"))
+    )
+
+    saved = await brain_pipeline._assign_then_save(
+        {"source_url": "u", "raw_text": "T\nbody"}, session=_begin_nested_session()
+    )
+    assert saved["saved"] is True
+    assert saved["event_id"] == event_id
+
+
+@pytest.mark.asyncio
 async def test_single_pipeline_unloads_the_summary_model_after_naming(
     monkeypatch, event_summary_unloads
 ):
     triaged = _triaged_state()
     cold = _triaged_state(genealogy_skipped=True)
     monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=triaged))
-    monkeypatch.setattr(brain_pipeline, "digest_node", AsyncMock(side_effect=lambda s: s))
     monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock(return_value=cold))
     monkeypatch.setattr(
         brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)
@@ -1242,7 +1294,6 @@ async def test_single_pipeline_does_not_unload_when_no_event_was_created(
 ):
     cold = _triaged_state(genealogy_skipped=True)
     monkeypatch.setattr(brain_pipeline, "triage_node", AsyncMock(return_value=_triaged_state()))
-    monkeypatch.setattr(brain_pipeline, "digest_node", AsyncMock(side_effect=lambda s: s))
     monkeypatch.setattr(brain_pipeline, "embed_and_search_node", AsyncMock(return_value=cold))
     monkeypatch.setattr(
         brain_pipeline, "assign_event_node", AsyncMock(side_effect=lambda s, session: s)

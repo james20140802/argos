@@ -13,7 +13,7 @@ Argos is a local-first Slack bot that automatically tracks AI technology trends,
 | -------------------- | -------------------------------------------------- | --------------------------------------------------------- |
 | 1 - Local Infra      | Docker PostgreSQL + pgvector, ORM, migrations      | pgvector/pgvector:pg16, SQLAlchemy 2.0 async, Alembic     |
 | 2 - Crawler          | Static (GitHub/HN/arXiv/RSS) + Dynamic (Playwright/SPA) fetchers | httpx, Playwright, readability-lxml               |
-| 3 - Processing Brain | Triage → Embed → Genealogist → Digest → Save pipeline | Ollama (Qwen3-8B / 14B / 32B), LangGraph, nomic-embed-text |
+| 3 - Processing Brain | Triage → Embed → Genealogist → Assign event → Save pipeline; event summary + per-type detail sections from every article body | Ollama (Qwen3-8B / 32B, gemma4:26b for event summaries), LangGraph, nomic-embed-text |
 | 4 - Slack Interface  | Daily/weekly briefing, Keep/Pass/Deep Dive actions, signal & succession alerts | slack_bolt AsyncApp, Socket Mode, Block Kit |
 | 5 - Web (PWA)        | Local FastAPI web layer for browsing the feed/portfolio from other devices | FastAPI, uvicorn, Jinja2, HTMX, Tailscale (HTTPS transport) |
 
@@ -49,11 +49,13 @@ argos/
 ## Database Schema (ERD)
 
 - **tech_items** — id(UUID PK), title, source_url(unique), image_url, raw_content,
-  summary, digest, embedding(Vector 768), category(Mainstream|Alpha), trust_score,
+  summary, digest(legacy, no longer generated — ARG-308), embedding(Vector 768), category(Mainstream|Alpha), trust_score,
   published_at, briefed_at, created_at, updated_at
 - **tech_succession** — id(UUID PK), predecessor_id(FK→tech_items), successor_id(FK→tech_items), relation_type(Replace|Enhance|Fork), reasoning
 - **user_assets** — id(UUID PK), tech_id(FK→tech_items), status(Keep|Tracking|Archived), last_monitored_at
 - **track_history** — id(UUID PK), user_asset_id(FK→user_assets), changed_from, changed_to, changed_at
+- **tech_events** — id(UUID PK), title, summary(2~3 sentences), event_type(Launch|Research|Incident|Update|Adoption, NULL),
+  sections(JSONB `[{heading, body}]`, NULL = not yet re-summarized — ARG-308), occurred_at, naming_stale, merged_into_id(self-FK, RESTRICT)
 - **crawl_queue** — staging table for freshly crawled items not yet processed by the brain
   pipeline (daily-limit throttle, ARG-93)
 - **role_branches** — id(UUID PK), parent_id(FK→role_branches, CASCADE, NULL=위 갈래), name(unique), description, position, confirmed_at
@@ -100,11 +102,13 @@ uv run argos add <URL> [URL ...]                  # Manually inject URL(s) into 
 uv run argos slack                                # Start Slack bot in Socket Mode
 uv run argos brief [--channel CID] [--weekly]     # Dispatch today's (or weekly) briefing
 uv run argos web [--host] [--port]                # Start local FastAPI web app (PWA), binds 127.0.0.1 only
+uv run argos web token [--rotate] [--url BASE]   # Print/rotate the web login token (terminal only; 1 login per device)
 uv run argos search <query> [--limit] [--category] [--status]  # Semantic search over tech_items (pgvector)
 uv run argos portfolio [--category] [--sort]      # Display your Keep portfolio
 uv run argos stats [--days]                       # Collection-status dashboard
 uv run argos backfill-images [--refetch] [--upgrade-favicons]  # Fill missing image_url (favicon by default)
-uv run argos backfill-digests [--limit] [--dry-run]  # Generate longform digest for rows where NULL (LLM, slow)
+uv run argos backfill-digests                     # Retired (ARG-308): prints a notice pointing to resummarize-events
+uv run argos resummarize-events [--limit] [--dry-run] [--yes] [--sample N]  # Re-summarize events (summary + per-type sections) from every article body (preview → confirm → LLM write)
 uv run argos backfill-entities [--dry-run] [--yes] [--sample N]  # Rewrite stored entity names for existing articles (preview → confirm → write)
 uv run argos alias-names [--dry-run] [--yes] [--sample N] [--show NAME]  # Merge different names of one technology into an alias layer (preview → confirm → write; stored names untouched)
 uv run argos correct-events [--from] [--to] [--dry-run]  # Apply event merge/split corrections for a period (--dry-run: read-only preview)

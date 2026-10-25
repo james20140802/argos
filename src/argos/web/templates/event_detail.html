@@ -31,6 +31,7 @@
       {% if event.category %}
       <span class="tag {{ 'main' if event.category.value == 'Mainstream' else 'alpha' }}">{{ event.category.value }}</span>
       {% endif %}
+      {% if event.event_type_label %}<span class="tag event-type">{{ event.event_type_label }}</span>{% endif %}
       <span class="detail-meta__count">출처 {{ event.source_count }}곳</span>
     </div>
     <h1 class="detail-title">{{ event.title }}</h1>
@@ -43,6 +44,18 @@
   {% if event.summary %}
   <section class="detail-summary">
     <p>{{ event.summary }}</p>
+  </section>
+  {% endif %}
+
+  {% if event.sections %}
+  {# ARG-308: 사건 유형별 고정 소제목 상세. 빈 소제목은 저장 단계에서 이미 걸러진다. #}
+  <section class="event-sections" aria-label="사건 상세">
+    {% for section in event.sections %}
+    <div class="event-section">
+      <h2 class="event-section__heading">{{ section.heading }}</h2>
+      <p class="event-section__body">{{ section.body }}</p>
+    </div>
+    {% endfor %}
   </section>
   {% endif %}
 

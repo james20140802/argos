@@ -3,8 +3,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from typing import Any
+
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from argos.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -31,9 +33,21 @@ class TechEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """
 
     __tablename__ = "tech_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('Launch', 'Research', 'Incident', 'Update', 'Adoption')",
+            name="ck_tech_events_event_type",
+        ),
+    )
 
     title: Mapped[str | None] = mapped_column(String(500), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ARG-308: 사건 성격(출시·연구·사고·업데이트·도입). 소제목 목록을 고른다.
+    # 값은 brain/event_detail_schema.EVENT_TYPES와 같다.
+    event_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # ARG-308: 유형별 소제목 상세 ``[{"heading": ..., "body": ...}]``.
+    # NULL = 새 형식으로 아직 요약되지 않은 사건(``argos resummarize-events`` 대상).
+    sections: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

@@ -225,39 +225,75 @@ async def test_snapshot_carries_the_event_row_version(session_factory):
     assert ours[0].updated_at == row
 
 
-@pytest.mark.parametrize("summary", [None, ""], ids=["null-summary", "empty-summary"])
 @pytest.mark.asyncio
-async def test_evidence_falls_back_to_the_digest(session_factory, summary):
-    """summary가 없고 digest만 있는 문서도 본문을 근거로 싣는다.
+async def test_evidence_is_the_body_source_and_names_never_the_item_summary(session_factory):
+    """ARG-308: 근거는 본문·출처·뽑힌 이름이다. 기사별 요약·digest는 싣지 않는다."""
+    from argos.models.document_entity import DocumentEntity
+    from argos.models.entity import Entity
 
-    triage 스키마도 DB도 summary NULL을 허용하고, 온라인 명명과 백필 특징
-    추출이 이미 ``summary or digest`` 폴백을 쓴다. 여기서만 제목 한 줄이
-    나가면 있는 사실을 두고 헤드라인으로 요약을 짓게 된다.
-    """
     event_id = uuid.uuid4()
+    entity = Entity(id=uuid.uuid4(), name="Claude Duet", normalized_key=f"arg308-{uuid.uuid4()}")
+    try:
+        async with session_factory() as session:
+            session.add(TechEvent(id=event_id, occurred_at=NOW, naming_stale=True, title=None))
+            session.add(entity)
+            await session.flush()
+            item = _item(
+                "arg308-body", title="기사 제목", published_at=NOW,
+                summary="ITEM SUMMARY", digest="ITEM DIGEST",
+            )
+            session.add(item)
+            await session.flush()
+            session.add(EventDocument(id=uuid.uuid4(), event_id=event_id, tech_item_id=item.id))
+            session.add(DocumentEntity(tech_item_id=item.id, entity_id=entity.id))
+            await session.commit()
 
+        async with session_factory() as session:
+            stale = await fetch_stale_events(session)
+
+        (ours,) = [e for e in stale if e.event_id == event_id]
+        (doc,) = ours.docs
+        assert doc.summary is None
+        assert doc.body == "body arg308-body"
+        assert doc.source == f"{_URL_PREFIX}arg308-body"
+        assert doc.names == ("Claude Duet",)
+    finally:
+        async with session_factory() as session:
+            await session.execute(delete(Entity).where(Entity.id == entity.id))
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_resummarize_targets_events_without_sections_but_not_tombstones(session_factory):
+    """ARG-308: 소제목 상세가 없는 사건은 이름이 멀쩡해도 대상, 이미 있으면 제외."""
+    fresh, done, tomb = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     async with session_factory() as session:
-        session.add(
-            TechEvent(id=event_id, occurred_at=NOW, naming_stale=True, title=None)
-        )
+        session.add_all([
+            TechEvent(id=fresh, occurred_at=NOW, naming_stale=False, title="옛 요약"),
+            TechEvent(
+                id=done, occurred_at=NOW, naming_stale=False, title="새 요약",
+                event_type="Launch", sections=[{"heading": "무엇이 새로운가", "body": "b"}],
+            ),
+        ])
         await session.flush()
-        item = _item(
-            f"digest-{summary!r}",
-            title="기사 제목",
-            published_at=NOW,
-            summary=summary,
-            digest="본문 요약을 대신할 롱폼 다이제스트",
-        )
-        session.add(item)
+        session.add(TechEvent(id=tomb, occurred_at=NOW, title=None, merged_into_id=fresh))
         await session.flush()
-        session.add(
-            EventDocument(id=uuid.uuid4(), event_id=event_id, tech_item_id=item.id)
-        )
+        for suffix, event_id in (("fresh", fresh), ("done", done), ("tomb", tomb)):
+            item = _item(f"arg308-{suffix}", title=suffix, published_at=NOW)
+            session.add(item)
+            await session.flush()
+            session.add(EventDocument(id=uuid.uuid4(), event_id=event_id, tech_item_id=item.id))
         await session.commit()
 
     async with session_factory() as session:
-        stale = await fetch_stale_events(session)
+        targets = {e.event_id for e in await fetch_stale_events(session, include_unsectioned=True)}
+        renames = {e.event_id for e in await fetch_stale_events(session)}
+        # tombstone은 fixture 정리 순서(사건 삭제) 전에 풀어 둔다 — RESTRICT 때문.
+        await session.execute(
+            TechEvent.__table__.update().where(TechEvent.id == tomb).values(merged_into_id=None)
+        )
+        await session.commit()
 
-    ours = [e for e in stale if e.event_id == event_id]
-    assert len(ours) == 1
-    assert [d.summary for d in ours[0].docs] == ["본문 요약을 대신할 롱폼 다이제스트"]
+    assert fresh in targets
+    assert done not in targets and tomb not in targets
+    assert fresh not in renames  # --rename-stale 대상(이름 낡음/무명)은 그대로

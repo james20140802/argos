@@ -10,6 +10,28 @@ This history was reconstructed retroactively from annotated release tags
 (`git tag -n99`) and their commit ranges; entries before this file existed may be
 less granular than future ones.
 
+## [Unreleased]
+
+**Upgrade note:** the web app (PWA) now asks each device to log in **once**.
+After upgrading, run `argos web token` in a terminal on the Mac and paste the
+token on the login page (or open the link from
+`argos web token --url https://<machine>.<tailnet>.ts.net` on the device).
+`config.toml` is now rewritten with `0600` permissions.
+
+### Security
+
+- **Web login + CSRF** — the web app no longer trusts "can reach the port":
+  without a login cookie, pages show a login form (401), HTMX actions send the
+  browser to the login page, and Keep/Pass/Untrack/settings changes are refused.
+  POST requests coming from another site are rejected with 403. The token is a
+  local file (`~/.config/argos/web_token`, 0600); `argos web token [--rotate]
+  [--url]` shows or replaces it. The service worker never caches a login page.
+  (ARG-195)
+- **Secrets stay out of logs** — the DB password and Slack tokens are masked in
+  `repr`/tracebacks; `config.toml` is written `0600` and new config directories
+  `0700`; `argos doctor` warns (with a `chmod` hint) when `.env`, `config.toml`,
+  `web_token` or the config directory is readable by other users. (ARG-195)
+
 ## [0.5.0] — 2026-10-25
 
 Event summaries that read the article, fuller article bodies, an ambiguous-pair

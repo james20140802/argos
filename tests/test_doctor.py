@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 
 import pytest
@@ -641,3 +643,56 @@ def test_event_summary_model_is_not_a_required_model():
     from argos.init_wizard.steps.infra import REQUIRED_OLLAMA_MODELS
 
     assert "gemma4:26b" not in REQUIRED_OLLAMA_MODELS
+
+
+# ---------------------------------------------------------------------------
+# ARG-195: secret file permission probe (read-only)
+# ---------------------------------------------------------------------------
+
+
+def _secret_paths(tmp_path):
+    d = tmp_path / "argos"
+    d.mkdir()
+    os.chmod(d, 0o700)
+    env = d / ".env"
+    env.write_text("POSTGRES_PASSWORD=x\n")
+    os.chmod(env, 0o600)
+    tok = d / "web_token"
+    tok.write_text("t\n")
+    os.chmod(tok, 0o600)
+    return d, env, tok
+
+
+def test_secret_file_modes_ok_when_owner_only(tmp_path):
+    from argos.doctor import check_secret_file_modes
+
+    d, env, tok = _secret_paths(tmp_path)
+    name, status, detail = check_secret_file_modes([d, env, tok, d / "missing"])
+    assert status == "OK", detail
+
+
+def test_secret_file_modes_warns_on_644_without_changing_it(tmp_path):
+    from argos.doctor import check_secret_file_modes
+
+    d, env, tok = _secret_paths(tmp_path)
+    os.chmod(env, 0o644)
+    os.chmod(d, 0o755)
+    name, status, detail = check_secret_file_modes([d, env, tok])
+    assert status == "WARN"
+    assert f"chmod 600 {env}" in detail
+    assert f"chmod 700 {d}" in detail
+    assert str(tok) not in detail
+    # read-only: modes untouched
+    assert stat.S_IMODE(os.stat(env).st_mode) == 0o644
+    assert stat.S_IMODE(os.stat(d).st_mode) == 0o755
+
+
+def test_secret_file_modes_default_paths_cover_env_token_and_dir(tmp_path, monkeypatch):
+    from argos.doctor import secret_file_paths
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("ARGOS_WEB_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("ARGOS_ENV_FILE", raising=False)
+    paths = secret_file_paths()
+    assert tmp_path / "argos" in paths
+    assert tmp_path / "argos" / "web_token" in paths

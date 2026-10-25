@@ -66,11 +66,23 @@
   </section>
   {% endif %}
 
-  {% if item.digest %}
-  <section class="detail-digest">
-    {% for para in item.digest.split('\n\n') %}
-    {% if para.strip() %}<p>{{ para.strip() }}</p>{% endif %}
-    {% endfor %}
+  {% if item.event %}
+  {# ARG-308: 기사별 장문 요약 대신 이 기사가 속한 사건의 소제목 상세. #}
+  <section class="item-event" aria-labelledby="item-event-title">
+    <h2 class="detail-section__title" id="item-event-title">이 기사가 속한 사건{% if item.event.event_type_label %} <span class="detail-section__hint">{{ item.event.event_type_label }}</span>{% endif %}</h2>
+    <a class="item-event__link" href="/event/{{ item.event.id }}">{{ item.event.title or "사건 상세 보기" }} →</a>
+    {% if item.event.sections %}
+    <div class="event-sections">
+      {% for section in item.event.sections %}
+      <div class="event-section">
+        <h3 class="event-section__heading">{{ section.heading }}</h3>
+        <p class="event-section__body">{{ section.body }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% elif item.event.summary %}
+    <p class="event-section__body">{{ item.event.summary }}</p>
+    {% endif %}
   </section>
   {% endif %}
 
