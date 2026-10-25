@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # RSS feed defaults — 5 AI-company mainstream blogs + 2 Reddit subs (Alpha)
@@ -84,13 +84,16 @@ class Secrets(BaseSettings):
     )
 
     POSTGRES_USER: str = "argos"
-    POSTGRES_PASSWORD: str = "argos_dev_password"
+    # Secret fields are SecretStr so repr/str/model_dump/tracebacks show
+    # ``**********`` instead of the value. Call ``.get_secret_value()`` only at
+    # the exact point the raw value is handed to a driver/SDK.
+    POSTGRES_PASSWORD: SecretStr = SecretStr("argos_dev_password")
     POSTGRES_DB: str = "argos"
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
 
-    SLACK_BOT_TOKEN: str = ""
-    SLACK_APP_TOKEN: str = ""
+    SLACK_BOT_TOKEN: SecretStr = SecretStr("")
+    SLACK_APP_TOKEN: SecretStr = SecretStr("")
 
     def __init__(self, **kwargs: Any) -> None:
         # When the caller explicitly passes ``_env_file`` (including
@@ -596,13 +599,21 @@ class Settings:
         self.secrets = Secrets()
         self.user = UserConfig.load()
 
+    def __repr__(self) -> str:
+        # Never include secrets (``self.secrets`` repr is already masked, but
+        # keep this explicit so a future field can't leak via Settings repr).
+        return f"Settings(secrets={self.secrets!r}, user=<UserConfig>)"
+
+    __str__ = __repr__
+
     @property
     def database_url(self) -> str:
-        user = quote(self.secrets.POSTGRES_USER, safe="")
-        password = quote(self.secrets.POSTGRES_PASSWORD, safe="")
+        """SQLAlchemy URL including the DB password — never log this value."""
+        s = self.secrets
         return (
-            f"postgresql+asyncpg://{user}:{password}"
-            f"@{self.secrets.POSTGRES_HOST}:{self.secrets.POSTGRES_PORT}/{self.secrets.POSTGRES_DB}"
+            f"postgresql+asyncpg://{quote(s.POSTGRES_USER, safe='')}"
+            f":{quote(s.POSTGRES_PASSWORD.get_secret_value(), safe='')}"
+            f"@{s.POSTGRES_HOST}:{s.POSTGRES_PORT}/{s.POSTGRES_DB}"
         )
 
 

@@ -48,3 +48,82 @@ def test_web_cli_rejects_out_of_range_port(port):
     with patch("uvicorn.run"):
         with pytest.raises(SystemExit):
             main(["web", "--port", port])
+
+
+# ---------------------------------------------------------------------------
+# ARG-195: login token bootstrap + `argos web token`
+# ---------------------------------------------------------------------------
+
+
+def _token_file(tmp_path, monkeypatch):
+    from argos.web import auth
+
+    path = tmp_path / "cfg" / "argos" / "web_token"
+    monkeypatch.setenv(auth.TOKEN_FILE_ENV, str(path))
+    return path
+
+
+def test_web_creates_token_without_printing_it(tmp_path, monkeypatch, capsys):
+    import os
+    import stat
+
+    path = _token_file(tmp_path, monkeypatch)
+    with patch("uvicorn.run") as mock_run:
+        assert main(["web"]) == 0
+    token = path.read_text().strip()
+    assert token
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    out = capsys.readouterr()
+    # launchd captures stdout/stderr into ~/Library/Logs — never the token.
+    assert token not in out.out + out.err
+    assert str(path) in out.out + out.err
+    app = mock_run.call_args[0][0]
+    assert app.state.security_policy.enabled is True
+    assert app.state.security_policy.token_path == path
+
+
+def test_web_tightens_loose_token_file_and_warns(tmp_path, monkeypatch, capsys):
+    import os
+    import stat
+
+    path = _token_file(tmp_path, monkeypatch)
+    path.parent.mkdir(parents=True)
+    path.write_text("existing-token\n")
+    os.chmod(path, 0o644)
+    with patch("uvicorn.run"):
+        assert main(["web"]) == 0
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    out = capsys.readouterr()
+    assert "existing-token" not in out.out + out.err
+    assert "0600" in out.err
+
+
+def test_web_token_prints_token(tmp_path, monkeypatch, capsys):
+    path = _token_file(tmp_path, monkeypatch)
+    assert main(["web", "token"]) == 0
+    out = capsys.readouterr().out
+    assert path.read_text().strip() in out
+
+
+def test_web_token_rotate_changes_token(tmp_path, monkeypatch, capsys):
+    path = _token_file(tmp_path, monkeypatch)
+    main(["web", "token"])
+    old = path.read_text().strip()
+    capsys.readouterr()
+    assert main(["web", "token", "--rotate"]) == 0
+    new = path.read_text().strip()
+    assert new != old
+    out = capsys.readouterr().out
+    assert new in out and old not in out
+
+
+def test_web_token_url_prints_login_link(tmp_path, monkeypatch, capsys):
+    path = _token_file(tmp_path, monkeypatch)
+    assert main(["web", "token", "--url", "https://mac.tail1.ts.net/"]) == 0
+    token = path.read_text().strip()
+    assert f"https://mac.tail1.ts.net/login?token={token}" in capsys.readouterr().out
+
+
+def test_web_token_url_rejects_non_http(tmp_path, monkeypatch, capsys):
+    _token_file(tmp_path, monkeypatch)
+    assert main(["web", "token", "--url", "javascript:alert(1)"]) == 2

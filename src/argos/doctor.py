@@ -13,6 +13,7 @@ from __future__ import annotations
 import platform
 import subprocess
 import sys
+from pathlib import Path
 
 Row = tuple[str, str, str]  # (name, status, detail)
 
@@ -368,6 +369,48 @@ def check_vram_headroom(ollama_host: str = "http://localhost:11434") -> Row:
     return ("VRAM headroom", "OK", detail)
 
 
+def secret_file_paths() -> list[Path]:
+    """Files/dirs that can hold secrets: config dir, .env, config.toml, web_token."""
+    from argos.config import _resolve_env_file
+    from argos.config_store import default_config_path, default_env_path
+    from argos.web.auth import default_token_path
+
+    env_default = default_env_path()
+    candidates = [
+        env_default.parent,
+        env_default,
+        _resolve_env_file(),
+        default_config_path(),
+        default_token_path(),
+    ]
+    out: list[Path] = []
+    for p in candidates:
+        if p is not None and p not in out:
+            out.append(p)
+    return out
+
+
+def check_secret_file_modes(paths: list[Path] | None = None) -> Row:
+    """WARN (never FAIL, never chmod) when a secret file/dir is readable by others."""
+    from argos.private_files import file_mode
+
+    name = "Secret file permissions"
+    loose: list[str] = []
+    checked = 0
+    for p in secret_file_paths() if paths is None else paths:
+        try:
+            mode = file_mode(p)
+        except OSError:
+            continue  # missing / unreadable → nothing to report
+        checked += 1
+        if mode & 0o077:
+            want = "700" if p.is_dir() else "600"
+            loose.append(f"{p} is {oct(mode)} — run: chmod {want} {p}")
+    if loose:
+        return (name, "WARN", "; ".join(loose))
+    return (name, "OK", f"{checked} checked, owner-only")
+
+
 def print_doctor_table(rows: list[Row]) -> None:
     """Print a structured table of probe results to stdout."""
     if not rows:
@@ -399,7 +442,9 @@ __all__ = [
     "check_ollama_qwen3_8b",
     "check_postgres_reachable",
     "check_python_version",
+    "check_secret_file_modes",
     "check_uv_installed",
     "check_vram_headroom",
     "print_doctor_table",
+    "secret_file_paths",
 ]

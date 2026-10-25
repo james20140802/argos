@@ -57,7 +57,7 @@
         headers: { "HX-Request": "false" },
       })
         .then(function (res) {
-          if (!res || !res.ok) return false;
+          if (!res || !res.ok || res.redirected) return false;
           return res.text().then(function (html) {
             var doc = new DOMParser().parseFromString(html, "text/html");
             var freshEl = doc.querySelector(selector);

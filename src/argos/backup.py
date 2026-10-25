@@ -183,7 +183,7 @@ def create_backup(
                 stdout=tmp_file,
                 stderr=subprocess.PIPE,
                 check=False,
-                env=_env_with_pgpassword(secrets.POSTGRES_PASSWORD),
+                env=_env_with_pgpassword(secrets.POSTGRES_PASSWORD.get_secret_value()),
             )
     except OSError as exc:
         tmp_dest.unlink(missing_ok=True)
@@ -284,7 +284,7 @@ def restore_backup(
             capture_output=True,
             text=True,
             check=False,
-            env=_env_with_pgpassword(secrets.POSTGRES_PASSWORD),
+            env=_env_with_pgpassword(secrets.POSTGRES_PASSWORD.get_secret_value()),
         )
         if proc.returncode != 0:
             stderr = (proc.stderr or proc.stdout or "").strip()

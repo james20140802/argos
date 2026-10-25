@@ -52,14 +52,18 @@
  *     from APP_SHELL — so a first/offline load of the cached /feed shell could
  *     silently fail to fetch it and lose that session's events. Added to the
  *     precache; bumped so already-installed clients pick it up.
+ * v25: ARG-195 login gate. Before login every page answers 401 with an inline
+ *     login form, so the shell routes are precached best-effort (a 401 must
+ *     not abort install, and must never be stored as /feed) and nothing that
+ *     arrived via a redirect is ever written into the cache.
  */
-const CACHE_VERSION = 'argos-v24';
+const CACHE_VERSION = 'argos-v25';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
 const APP_SHELL_ROUTES = ['/feed', '/portfolio'];
-const APP_SHELL = [
-  ...APP_SHELL_ROUTES,
+// Static assets are reachable without login, so they're precached atomically.
+const PRECACHE_ASSETS = [
   '/static/css/argos.css',
   '/static/img/logo.svg',
   '/static/img/icons/icon-192.png',
@@ -74,12 +78,29 @@ const APP_SHELL = [
   '/static/js/instant-nav.js',
 ];
 
+// Only a real, final 200 may enter the cache — never an error page, a 401
+// login form, or the target of a redirect (ARG-195).
+function cacheable(res) {
+  return Boolean(res && res.ok && !res.redirected);
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     // cache: 'reload' — bypass the HTTP cache, or a heuristically cached old
     // argos.css would be copied straight into the new version's precache.
     caches.open(CACHE_VERSION).then((cache) =>
-      cache.addAll(APP_SHELL.map((u) => new Request(u, { cache: 'reload' }))),
+      Promise.all([
+        cache.addAll(
+          PRECACHE_ASSETS.map((u) => new Request(u, { cache: 'reload' })),
+        ),
+        // Shell HTML needs a login session: fetch each one and keep it only
+        // if it came back as a real page. Failure here never blocks install.
+        ...APP_SHELL_ROUTES.map((u) =>
+          fetch(new Request(u, { cache: 'reload' }))
+            .then((res) => (cacheable(res) ? cache.put(u, res) : undefined))
+            .catch(() => undefined),
+        ),
+      ]),
     ),
   );
   self.skipWaiting();
@@ -150,7 +171,7 @@ self.addEventListener('fetch', (event) => {
       caches.match(req).then((cached) => {
         const network = fetch(req)
           .then((res) => {
-            if (res && res.ok) {
+            if (cacheable(res)) {
               const copy = res.clone();
               caches.open(CACHE_VERSION).then((c) => c.put(req, copy));
             }
@@ -175,7 +196,7 @@ self.addEventListener('fetch', (event) => {
         if (cached) return cached;
         return fetch(req)
           .then((res) => {
-            if (res && res.ok) {
+            if (cacheable(res)) {
               const copy = res.clone();
               caches.open(CACHE_VERSION).then((c) => c.put(req, copy));
             }

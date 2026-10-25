@@ -15,9 +15,29 @@ def test_secrets_loads_from_env(monkeypatch):
     monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     s = Secrets()
     assert s.POSTGRES_USER == "testuser"
-    assert s.POSTGRES_PASSWORD == "testpass"
-    assert s.SLACK_BOT_TOKEN == "xoxb-test"
-    assert s.SLACK_APP_TOKEN == "xapp-test"
+    assert s.POSTGRES_PASSWORD.get_secret_value() == "testpass"
+    assert s.SLACK_BOT_TOKEN.get_secret_value() == "xoxb-test"
+    assert s.SLACK_APP_TOKEN.get_secret_value() == "xapp-test"
+
+
+def test_secrets_never_appear_in_repr_or_str(monkeypatch):
+    """Secret values must not leak through repr/str (logs, tracebacks)."""
+    monkeypatch.setenv("POSTGRES_PASSWORD", "pw-SHOULD-NOT-LEAK")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-SHOULD-NOT-LEAK")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-SHOULD-NOT-LEAK")
+    s = Secrets(_env_file=None)
+    for text in (repr(s), str(s), repr(s.model_dump()), f"{s.SLACK_BOT_TOKEN}"):
+        assert "SHOULD-NOT-LEAK" not in text
+
+
+def test_settings_repr_masks_secrets(monkeypatch):
+    monkeypatch.setenv("POSTGRES_PASSWORD", "pw-SHOULD-NOT-LEAK")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-SHOULD-NOT-LEAK")
+    st = Settings()
+    assert "SHOULD-NOT-LEAK" not in repr(st)
+    assert "SHOULD-NOT-LEAK" not in str(st)
+    # database_url still needs the real password for the DB driver.
+    assert "pw-SHOULD-NOT-LEAK" in st.database_url
 
 
 def test_secrets_defaults_without_env(monkeypatch):
@@ -25,7 +45,7 @@ def test_secrets_defaults_without_env(monkeypatch):
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     s = Secrets(_env_file=None)
     assert s.POSTGRES_USER == "argos"
-    assert s.SLACK_BOT_TOKEN == ""
+    assert s.SLACK_BOT_TOKEN.get_secret_value() == ""
 
 
 def test_user_config_loads_from_toml(tmp_path):
@@ -233,7 +253,7 @@ def test_secrets_reads_from_xdg_path_by_default(tmp_path, monkeypatch):
     # Secrets reads from the resolved file directly via _env_file kwarg.
     s = Secrets(_env_file=str(xdg_env))
     assert s.POSTGRES_USER == "xdguser"
-    assert s.POSTGRES_PASSWORD == "xdgpass"
+    assert s.POSTGRES_PASSWORD.get_secret_value() == "xdgpass"
 
 
 def test_secrets_honors_argos_env_file_override(tmp_path, monkeypatch):

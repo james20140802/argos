@@ -270,3 +270,27 @@ def test_run_reconfigure_slack_rebuilds_db_engine_from_env_path(tmp_path, monkey
     assert ":9999/" in url_str, (
         f"expected port 9999 in engine URL after run_reconfigure('slack'), got: {url_str}"
     )
+
+
+def test_run_full_summary_points_at_web_login_token(tmp_path, monkeypatch, capsys):
+    """ARG-195: the closing summary tells the user where the web token lives."""
+    from argos.web import auth
+
+    token_path = tmp_path / "argos" / "web_token"
+    monkeypatch.setenv(auth.TOKEN_FILE_ENV, str(token_path))
+    for name in ("run_precheck_step", "run_schedule_step"):
+        monkeypatch.setattr(wizard, name, lambda *a, **k: None)
+    for name in ("run_infra_step", "run_slack_step", "run_interests_step", "run_advanced_step"):
+        monkeypatch.setattr(wizard, name, lambda *a, **k: None)
+    monkeypatch.setattr(wizard, "run_healthcheck_step", lambda *a, **k: 0)
+    monkeypatch.setattr(wizard, "_user_config", lambda path=None: {})
+
+    rc = wizard.run_full(
+        repo_root=tmp_path, env_path=tmp_path / ".env", config_path=tmp_path / "config.toml"
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "argos web token" in out
+    assert str(token_path) in out
+    assert not token_path.exists()  # init only points at it; `argos web` creates it

@@ -127,6 +127,13 @@ def run_full(
         run_advanced_step(config_path=cfg_path)
 
         print("\n✓ argos init complete")
+        # ARG-195: the web app asks each device to log in once.
+        from argos.web.auth import default_token_path
+
+        print(
+            "  웹(PWA)은 기기마다 한 번 로그인이 필요합니다 — 토큰 보기: `argos web token`"
+            f" (저장 위치: {default_token_path()}, `argos web` 첫 실행 때 생성)"
+        )
         return 0
     except (WizardAbort, WizardStepError) as exc:
         return _handle(exc)

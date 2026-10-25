@@ -113,6 +113,26 @@ def test_sw_navigation_caching_gated_to_app_shell_routes(
     assert "req.mode === 'navigate' && APP_SHELL_ROUTES.includes(url.pathname)" in body
 
 
+def test_sw_never_caches_redirected_or_failed_shell(web_client: TestClient) -> None:
+    """ARG-195: a login page / redirect must never be stored as /feed."""
+    body = web_client.get("/sw.js").text
+    assert "res.ok && !res.redirected" in body
+    assert body.count("cacheable(res)") >= 3  # install + navigation + static
+    # Shell routes are precached best-effort (401 before login must not abort
+    # install), never via cache.addAll which would store whatever came back.
+    assert "cache.addAll(APP_SHELL_ROUTES" not in body
+    assert "PRECACHE_ASSETS" in body
+
+
+def test_refresh_js_ignores_redirected_responses() -> None:
+    from pathlib import Path
+
+    js = (
+        Path(__file__).resolve().parents[2] / "src/argos/web/static/js/refresh.js"
+    ).read_text(encoding="utf-8")
+    assert "!res.ok || res.redirected" in js
+
+
 # ---------------------------------------------------------------------------
 # Icon PNGs on disk + served via /static/
 # ---------------------------------------------------------------------------

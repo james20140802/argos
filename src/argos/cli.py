@@ -694,6 +694,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         check_ollama_models,
         check_postgres_reachable,
         check_python_version,
+        check_secret_file_modes,
         check_uv_installed,
         check_vram_headroom,
         print_doctor_table,
@@ -717,6 +718,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         check_postgres_reachable(),
         check_alembic_head(),
         check_vram_headroom(ollama_host=settings.user.ollama.host),
+        check_secret_file_modes(),
     ]
 
     print_doctor_table(rows)
@@ -890,22 +892,114 @@ def _build_web_parser(
         default=None,
         help="Override config [web].port",
     )
+    web_sub = web_p.add_subparsers(dest="web_command", metavar="{token}")
+    token_p = web_sub.add_parser(
+        "token",
+        help="Print (or rotate) the web login token — terminal only",
+        description=(
+            "Print the web login token stored in ~/.config/argos/web_token\n"
+            "(created on first use, 0600). Paste it on the web login page once\n"
+            "per device. --rotate issues a new token and logs every device out.\n"
+            "--url prints a one-tap login link for that base URL, e.g.\n"
+            "  argos web token --url https://my-mac.tailnet.ts.net"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[common],
+    )
+    token_p.add_argument(
+        "--rotate",
+        action="store_true",
+        help="Replace the token (every logged-in device must log in again)",
+    )
+    token_p.add_argument(
+        "--url",
+        default=None,
+        metavar="BASE_URL",
+        help="Also print a login link: BASE_URL/login?token=…",
+    )
+
+
+def _warn_loose_env_file() -> None:
+    """Warn (never chmod) when the user's .env is group/world-readable."""
+    from argos.config import _resolve_env_file
+    from argos.private_files import file_mode, is_group_or_world_accessible
+
+    env_path = _resolve_env_file()
+    if env_path is not None and env_path.exists() and is_group_or_world_accessible(env_path):
+        print(
+            f"warning: {env_path} is {oct(file_mode(env_path))} — it holds secrets; "
+            f"run: chmod 600 {env_path}",
+            file=sys.stderr,
+        )
+
+
+def _cmd_web_token(args: argparse.Namespace) -> int:
+    from urllib.parse import urlsplit
+
+    from argos.web import auth
+
+    base_url = None
+    if args.url is not None:
+        parts = urlsplit(args.url.strip())
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            print("error: --url must be an http(s) base URL, e.g. https://host.ts.net",
+                  file=sys.stderr)
+            return 2
+        base_url = f"{parts.scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+
+    path = auth.default_token_path()
+    if args.rotate:
+        token = auth.rotate_token(path)
+        print("새 토큰을 발급했습니다. 이미 로그인한 기기는 모두 다시 로그인해야 합니다.")
+    else:
+        token, created, _ = auth.ensure_token(path)
+        if created:
+            print(f"토큰을 새로 만들었습니다: {path}")
+    print(token)
+    if base_url:
+        print(f"로그인 링크 (이 기기 브라우저에서 한 번 열기): {base_url}/login?token={token}")
+    return 0
 
 
 def _cmd_web(args: argparse.Namespace) -> int:
+    if getattr(args, "web_command", None) == "token":
+        return _cmd_web_token(args)
+
     import uvicorn
+    from argos.web import auth
     from argos.web.app import build_web_app
+    from argos.web.security import SecurityPolicy
 
     rc = _apply_config_override(args)
     if rc is not None:
         return rc
+
+    # ARG-195: the web app requires a one-time login per device. Make sure the
+    # token exists (0600) before serving. stdout/stderr land in launchd logs,
+    # so only the *path* is ever printed here — never the token itself.
+    token_path = auth.default_token_path()
+    _, created, tightened = auth.ensure_token(token_path)
+    if created:
+        print(f"web: created login token at {token_path} — run `argos web token` to view it")
+    else:
+        print(f"web: login token at {token_path} (`argos web token` to view)")
+    if tightened:
+        print(
+            f"warning: {token_path} (or its directory) was readable by others; "
+            "fixed to 0600/0700",
+            file=sys.stderr,
+        )
+    _warn_loose_env_file()
 
     host = args.host or settings.user.web.host
     port = args.port if args.port is not None else settings.user.web.port
 
     # Thread the active config path (default or --config) into the app so the
     # settings page reads/writes the same file the running daemon uses.
-    app = build_web_app(config_path=_resolve_config_path(args))
+    app = build_web_app(
+        config_path=_resolve_config_path(args),
+        security=SecurityPolicy(enabled=True, token_path=token_path),
+    )
     uvicorn.run(app, host=host, port=port)
     return 0
 

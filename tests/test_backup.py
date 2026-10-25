@@ -178,7 +178,7 @@ def test_create_backup_keeps_password_out_of_argv(monkeypatch, tmp_path):
 
     assert "PGPASSWORD" in seen["cmd"]
     assert not any(arg.startswith("PGPASSWORD=") for arg in seen["cmd"])
-    assert seen["env"]["PGPASSWORD"] == backup.settings.secrets.POSTGRES_PASSWORD
+    assert seen["env"]["PGPASSWORD"] == backup.settings.secrets.POSTGRES_PASSWORD.get_secret_value()
 
 
 def test_create_backup_raises_and_cleans_up_on_pg_dump_failure(monkeypatch, tmp_path):
@@ -322,7 +322,7 @@ def test_restore_backup_keeps_password_out_of_argv(monkeypatch, tmp_path):
     restore_cmd, restore_env = calls[1]
     assert "PGPASSWORD" in restore_cmd
     assert not any(arg.startswith("PGPASSWORD=") for arg in restore_cmd)
-    assert restore_env["PGPASSWORD"] == backup.settings.secrets.POSTGRES_PASSWORD
+    assert restore_env["PGPASSWORD"] == backup.settings.secrets.POSTGRES_PASSWORD.get_secret_value()
 
 
 def test_restore_backup_no_clean_omits_clean_flags(monkeypatch, tmp_path):
