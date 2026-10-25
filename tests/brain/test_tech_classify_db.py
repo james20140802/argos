@@ -193,3 +193,37 @@ async def test_assign_round_trip_respects_manual_and_aliases(factory):
             .where(Entity.normalized_key.like(_KEY_LIKE))
         )).scalars())
         assert "zzclscode" not in left and "zzclsmanual" in left
+
+
+async def test_external_tags_are_collected_when_the_profile_is_reused(factory, monkeypatch):
+    """--all이 기존 프로필을 재사용(설명 안 함)해도 외부 태그 증거는 다시 모은다(Codex P2).
+    안 그러면 외부 태그로 배정됐던 문장 부족 기술이 다음 --all에서 근거 0 -> 미분류로 풀린다."""
+    from argos.crawler import tech_external
+
+    async with factory() as session:
+        await _seed(session)
+        await session.commit()
+
+    monkeypatch.setattr(
+        tech_external, "links_for",
+        lambda texts, name: (["acme/zzclscode"], []) if name.lower() == "zzclscode" else ([], []),
+    )
+
+    class External:
+        def __init__(self):
+            self.asked = []
+
+        async def tags_for(self, gh, hf):
+            self.asked.append(list(gh))
+            return ["gh:coding-agent"]
+
+    ext = External()
+    async with factory() as session:
+        rows = [r for r in await store.load_name_rows(session) if r.key == "zzclscode"]
+        inputs = await store.build_inputs(
+            session, [(rows[0], False)], CFG, all_rows=rows, external=ext,
+        )
+    (code,) = inputs
+    assert code.needs_describe is False
+    assert code.external_tags == ("gh:coding-agent",)
+    assert ext.asked == [["acme/zzclscode"]]
