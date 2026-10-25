@@ -231,7 +231,8 @@ class TaxonomyConfig(BaseModel):
     refine_ratio: float = Field(default=2.0, gt=1.0)
     refine_add: int = Field(default=5, ge=1)
     assign_rounds: int = Field(default=2, ge=1, le=3)  # 이웃 갈래가 바뀐 이름만 재질의
-    # 일반어 거르기: 본문에서 소문자로 쓰인 비율이 이보다 크면 일반 낱말(agent 0.88, code 0.75).
+    # 본문에서 소문자로 쓰인 비율이 이보다 크면 "일반 낱말일 수 있다"는 힌트를 설명 프롬프트에
+    # 붙인다(agent 0.88, code 0.75). 거르지는 않는다 — pgvector·uv처럼 소문자로 쓰는 기술도 있다.
     generic_lowercase_ratio: float = Field(default=0.6, ge=0.0, le=1.0)
     # 흔한 이름(event_detection.entity_common_doc_ratio) 중 이 글자 수 이하만 LLM 없이 거른다
     # (ai·api·llm). 긴 흔한 이름(codex·chatgpt)은 기술일 수 있어 LLM이 판정한다.

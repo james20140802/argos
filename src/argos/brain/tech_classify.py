@@ -61,6 +61,15 @@ class ScreenSignals:
     stored_name: str = ""  # entities.name(첫 등장 표기, 예: "I'm") — 표시 이름과 다를 수 있다
 
 
+_PLAIN_WORD = re.compile(r"[A-Za-z]+(?: [A-Za-z]+)*")
+
+
+def _looks_like_capitalized_word(name: str) -> bool:
+    """대문자가 섞인 순수 알파벳 낱말("Agent", "Code")인가. 소문자 이름(pgvector)이나
+    점·숫자·기호가 든 이름(Llama.cpp, GPT-6)은 아니다."""
+    return bool(_PLAIN_WORD.fullmatch(name)) and name != name.lower()
+
+
 def majority_ner_label(labels: Mapping[str, int], *, min_mentions: int) -> str | None:
     """라벨이 ``min_mentions`` 이상이고 한 라벨이 과반이면 그 라벨."""
     total = sum(labels.values())
@@ -77,6 +86,12 @@ def screen(signals: ScreenSignals, cfg: TaxonomyConfig) -> str | None:
     흔한 이름은 **짧은 것(3자 이하: ai, api, llm)만** 여기서 거른다. 운영 DB 실측에서
     흔한 이름 목록에 codex·chatgpt·claude도 들어 있었다 — 자주 나온다고 기술이 아닌 게
     아니므로 나머지는 LLM이 판정한다.
+
+    소문자 비율은 **이름이 대문자로 저장된 순수 낱말일 때만** 거르는 근거다 — "Agent"·"Code"는
+    문장 첫머리·제목에서 대문자로 뽑혔지만 본문에서는 주로 소문자로 쓰이는 일반 낱말이다.
+    pgvector·uv처럼 이름 자체가 소문자인 기술, llama.cpp처럼 점·숫자·기호가 든 이름은 비율이
+    1.0이어도 거르지 않고 설명 프롬프트에 힌트(``LOWERCASE_HINT``)로만 넘긴다. 실측(운영 DB
+    복제본, gemma4)에서 힌트만으로는 LLM이 Agent·Code를 코딩 에이전트로 판정했다.
     """
     key = signals.key.strip()
     if signals.common and len(key) <= cfg.common_short_max_chars:
@@ -87,6 +102,7 @@ def screen(signals: ScreenSignals, cfg: TaxonomyConfig) -> str | None:
     if (
         signals.lowercase_ratio is not None
         and signals.lowercase_ratio > cfg.generic_lowercase_ratio
+        and any(_looks_like_capitalized_word(n) for n in names)
     ):
         return NotTechReason.GENERIC
     label = majority_ner_label(signals.ner_labels, min_mentions=cfg.ner_min_mentions)
@@ -271,6 +287,10 @@ If the sentences are not enough, set "enough" to false instead of guessing.
 
 Sentences:
 {sents}"""
+
+LOWERCASE_HINT = """
+
+Note: "{name}" is mostly written in lowercase in the articles, so it may be an ordinary word (like "agent" or "code") rather than a name. Many real tools are spelled in lowercase too (pgvector, uv, llama.cpp), so decide from how the sentences use it: if they use it as an ordinary word, set "is_technology" to false and "not_tech_kind" to "generic"."""
 
 VENDOR_HINT = """
 
@@ -483,6 +503,9 @@ async def _describe(
     )
     if t.signals.is_vendor_root:
         prompt += VENDOR_HINT.format(name=t.display)
+    ratio = t.signals.lowercase_ratio
+    if ratio is not None and ratio > cfg.generic_lowercase_ratio:
+        prompt += LOWERCASE_HINT.format(name=t.display)
     try:
         raw = await _query(llm, prompt, cfg)
     except Exception as exc:  # noqa: BLE001 — 한 이름 실패가 배치 전체를 막지 않게
