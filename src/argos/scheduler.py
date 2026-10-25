@@ -29,6 +29,7 @@ import os
 import plistlib
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,19 @@ _DEFAULT_LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 # so the extra segments are harmless on machines where /opt/homebrew doesn't
 # exist.
 _DEFAULT_ENV_PATH = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
+
+# ``bootout`` returns before launchd has finished tearing the service down —
+# for a KeepAlive daemon (com.argos.web) an immediate ``bootstrap`` then fails
+# with exit 5 "Input/output error" (reproduced twice in a row on 2026-10-25).
+# We poll ``launchctl print`` until the label is gone, and retry a failed
+# bootstrap a couple of times after waiting again.
+_BOOTOUT_POLL_INTERVAL = 0.25  # seconds between ``launchctl print`` polls
+_BOOTOUT_POLL_ATTEMPTS = 40  # ~10s ceiling before we bootstrap anyway
+_BOOTSTRAP_ATTEMPTS = 3
+_BOOTSTRAP_RETRY_DELAY = 1.0  # seconds, multiplied by the attempt number
+
+# Indirection so tests can make the waits instant.
+_sleep = time.sleep
 
 # Fallback locations to search if `shutil.which("argos")` returns None.
 # Order matters: Argos's primary target is Apple Silicon (M1 Max), where
@@ -175,6 +189,28 @@ def _current_uid() -> int:
     return os.getuid()
 
 
+def _default_working_directory() -> Path:
+    """Return the ``WorkingDirectory`` baked into plists when none is given.
+
+    Secrets are read from ``${XDG_CONFIG_HOME:-~/.config}/argos/.env`` (or
+    ``ARGOS_ENV_FILE``) regardless of cwd, so the jobs don't need to run from
+    wherever ``argos schedule install`` happened to be invoked — and must
+    not: a Claude worktree baked in here breaks every job once the worktree
+    is removed. The home directory always exists, so it's the default.
+
+    The one exception is the deprecated repo-root ``./.env`` fallback
+    (:func:`argos.config._resolve_env_file` step 3): if that is the only
+    secrets file, the jobs still need the install cwd to find it, so we keep
+    it (and the resolver logs its migrate-env warning).
+    """
+    from argos.config import _resolve_env_file
+
+    env_file = _resolve_env_file()
+    if env_file is not None and not env_file.is_absolute():
+        return Path.cwd()
+    return Path.home()
+
+
 def _run_launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
     """Centralized ``launchctl`` invocation. Tests monkeypatch this symbol."""
     cmd = ["launchctl", *args]
@@ -198,10 +234,10 @@ def _build_plist_dict(
 ) -> dict[str, Any]:
     """Assemble the dict that :func:`plistlib.dumps` will serialize.
 
-    ``WorkingDirectory`` is required because pydantic-settings resolves
-    ``env_file=".env"`` against the process cwd — launchd otherwise runs
-    jobs from ``/`` and silently falls back to empty config, which surfaces
-    as DB auth failures at runtime.
+    ``WorkingDirectory`` pins the job's cwd (launchd otherwise uses ``/``).
+    Secrets no longer depend on it — they come from the XDG ``.env`` — except
+    for the deprecated repo-root ``.env`` fallback; see
+    :func:`_default_working_directory`.
     """
     return {
         "Label": label,
@@ -239,7 +275,9 @@ def _render_plist(
     calendar = _calendar_intervals(hour, minute, weekdays)
     resolved_log_dir = log_dir if log_dir is not None else _DEFAULT_LOG_DIR
     resolved_cwd = (
-        working_directory if working_directory is not None else Path.cwd()
+        working_directory
+        if working_directory is not None
+        else _default_working_directory()
     )
     payload = _build_plist_dict(
         label=label,
@@ -267,9 +305,8 @@ def render_run_plist(
 ) -> str:
     """Render the ``argos run`` plist as XML text.
 
-    ``working_directory`` is emitted as the plist's ``WorkingDirectory``
-    so pydantic-settings can find ``.env`` at runtime. Defaults to
-    ``Path.cwd()`` when not provided.
+    ``working_directory`` is emitted as the plist's ``WorkingDirectory``.
+    Defaults to :func:`_default_working_directory` (home) when not provided.
     """
     return _render_plist(
         label=label,
@@ -366,7 +403,9 @@ def render_brief_weekly_plist(
     ]
     resolved_log_dir = log_dir if log_dir is not None else _DEFAULT_LOG_DIR
     resolved_cwd = (
-        working_directory if working_directory is not None else Path.cwd()
+        working_directory
+        if working_directory is not None
+        else _default_working_directory()
     )
     payload = _build_plist_dict(
         label=label,
@@ -394,9 +433,8 @@ def render_brief_plist(
     :class:`argos.config.BriefingConfig.weekdays`. ``None`` or a full
     7-day list collapses to a daily-style ``StartCalendarInterval``.
 
-    ``working_directory`` is emitted as the plist's ``WorkingDirectory``
-    so pydantic-settings can find ``.env`` at runtime. Defaults to
-    ``Path.cwd()`` when not provided.
+    ``working_directory`` is emitted as the plist's ``WorkingDirectory``.
+    Defaults to :func:`_default_working_directory` (home) when not provided.
     """
     return _render_plist(
         label=label,
@@ -428,7 +466,9 @@ def render_web_plist(
         program_args.extend(["--config", str(config_path)])
     resolved_log_dir = log_dir if log_dir is not None else _DEFAULT_LOG_DIR
     resolved_cwd = (
-        working_directory if working_directory is not None else Path.cwd()
+        working_directory
+        if working_directory is not None
+        else _default_working_directory()
     )
     # Hand-build the payload so we can set RunAtLoad/KeepAlive=True and
     # omit StartCalendarInterval entirely — _build_plist_dict bakes a
@@ -502,11 +542,22 @@ def is_loaded(label: str) -> bool:
     return label in (result.stdout or "")
 
 
+def _wait_until_unloaded(label: str) -> bool:
+    """Poll until ``label`` is gone from the GUI domain. Returns False on timeout."""
+    for _ in range(_BOOTOUT_POLL_ATTEMPTS):
+        if not is_loaded(label):
+            return True
+        _sleep(_BOOTOUT_POLL_INTERVAL)
+    return not is_loaded(label)
+
+
 def bootstrap_plist(plist_path: Path) -> None:
     """Load the plist into the current GUI session, replacing any stale copy.
 
     Idempotent: if the label is already loaded we ``bootout`` first
-    (tolerating "not loaded" errors) and then re-``bootstrap``. Raises
+    (tolerating "not loaded" errors), wait until launchd has actually
+    dropped the service, and then re-``bootstrap``. A failed bootstrap is
+    retried up to ``_BOOTSTRAP_ATTEMPTS`` times. Raises
     :class:`SchedulerError` if the final bootstrap fails.
     """
     if not plist_path.exists():
@@ -516,14 +567,29 @@ def bootstrap_plist(plist_path: Path) -> None:
 
     # Best-effort bootout to clear stale state. Non-zero is fine here (e.g.
     # exit 36 / "Could not find specified service" when nothing is loaded).
-    _run_launchctl(["bootout", f"{domain}/{label}"])
-
-    result = _run_launchctl(["bootstrap", domain, str(plist_path)])
-    if result.returncode != 0:
-        raise SchedulerError(
-            f"launchctl bootstrap failed for {label} (exit {result.returncode}): "
-            f"{(result.stderr or result.stdout or '').strip()}"
+    bootout = _run_launchctl(["bootout", f"{domain}/{label}"])
+    if bootout.returncode == 0 and not _wait_until_unloaded(label):
+        logger.warning(
+            "%s still loaded after bootout; bootstrapping anyway", label
         )
+
+    for attempt in range(1, _BOOTSTRAP_ATTEMPTS + 1):
+        result = _run_launchctl(["bootstrap", domain, str(plist_path)])
+        if result.returncode == 0:
+            break
+        if attempt == _BOOTSTRAP_ATTEMPTS:
+            raise SchedulerError(
+                f"launchctl bootstrap failed for {label} "
+                f"(exit {result.returncode}, {attempt} attempts): "
+                f"{(result.stderr or result.stdout or '').strip()}"
+            )
+        logger.warning(
+            "launchctl bootstrap failed for %s (exit %s), retrying",
+            label,
+            result.returncode,
+        )
+        _sleep(_BOOTSTRAP_RETRY_DELAY * attempt)
+        _wait_until_unloaded(label)
     if not is_loaded(label):
         raise SchedulerError(
             f"launchctl bootstrap appeared to succeed but {label} is not loaded"
@@ -650,21 +716,21 @@ def reload_schedule(
     correct_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.correct.plist"
     classify_plist_path = _DEFAULT_LAUNCH_AGENTS / "com.argos.classify.plist"
 
-    # Capture cwd once so all plists agree on the same WorkingDirectory,
-    # even if some caller mutates cwd between the render calls.
-    install_cwd = Path.cwd()
+    # Resolve once so all plists agree on the same WorkingDirectory. This is
+    # deliberately NOT the install cwd (see _default_working_directory).
+    job_cwd = _default_working_directory()
 
     try:
         run_xml = render_run_plist(
             time=run_time,
             config_path=config_path,
-            working_directory=install_cwd,
+            working_directory=job_cwd,
         )
         brief_xml = render_brief_plist(
             time=brief_time,
             weekdays=brief_weekdays,
             config_path=config_path,
-            working_directory=install_cwd,
+            working_directory=job_cwd,
         )
         brief_weekly_xml: str | None = None
         if weekly_enabled:
@@ -672,21 +738,21 @@ def reload_schedule(
                 time=weekly_time,
                 weekday=weekly_weekday,
                 config_path=config_path,
-                working_directory=install_cwd,
+                working_directory=job_cwd,
             )
         correct_xml: str | None = None
         if correction_enabled:
             correct_xml = render_correct_plist(
                 time=correction.time,
                 config_path=config_path,
-                working_directory=install_cwd,
+                working_directory=job_cwd,
             )
         classify_xml: str | None = None
         if classify_enabled:
             classify_xml = render_classify_plist(
                 time=taxonomy.assign_time,
                 config_path=config_path,
-                working_directory=install_cwd,
+                working_directory=job_cwd,
             )
     except ValueError as exc:
         raise SchedulerError(f"invalid time format: {exc}") from exc
@@ -740,7 +806,7 @@ def reload_schedule(
     if web_enabled:
         web_xml = render_web_plist(
             config_path=config_path,
-            working_directory=install_cwd,
+            working_directory=job_cwd,
         )
         install_plist(web_plist_path, web_xml)
     else:
@@ -759,53 +825,42 @@ def reload_schedule(
         # whenever the operator opts back in.
         web_plist_path.unlink(missing_ok=True)
 
-    bootstrap_plist(run_plist_path)
-    try:
-        bootstrap_plist(brief_plist_path)
-    except SchedulerError as exc:
-        raise SchedulerError(
-            f"run job (com.argos.run) bootstrapped successfully but brief job "
-            f"(com.argos.brief) failed: {exc}. "
-            f"To clean up, run: argos schedule uninstall && argos schedule install"
-        ) from exc
+    # Load every job even if an earlier one fails — stopping at the first
+    # failure left the web daemon down and the later jobs on their old
+    # definitions (2026-10-25). Failures are reported together at the end.
+    # 교정·배정은 마지막에 올린다.
+    to_load: list[tuple[str, Path]] = [
+        ("com.argos.run", run_plist_path),
+        ("com.argos.brief", brief_plist_path),
+    ]
     if brief_weekly_xml is not None:
-        try:
-            bootstrap_plist(brief_weekly_plist_path)
-        except SchedulerError as exc:
-            raise SchedulerError(
-                f"run and brief jobs bootstrapped successfully but brief-weekly "
-                f"job (com.argos.brief-weekly) failed: {exc}. "
-                f"To clean up, run: argos schedule uninstall && argos schedule install"
-            ) from exc
+        to_load.append(("com.argos.brief-weekly", brief_weekly_plist_path))
     if web_enabled:
-        try:
-            bootstrap_plist(web_plist_path)
-        except SchedulerError as exc:
-            raise SchedulerError(
-                f"run/brief jobs bootstrapped successfully but web daemon "
-                f"(com.argos.web) failed: {exc}. "
-                f"To clean up, run: argos schedule uninstall && argos schedule install"
-            ) from exc
-    # 교정은 마지막에 올린다 — 교정 job 실패가 web 등 다른 job 의 bootstrap 을
-    # 막지 않게 한다.
+        to_load.append(("com.argos.web", web_plist_path))
     if correct_xml is not None:
-        try:
-            bootstrap_plist(correct_plist_path)
-        except SchedulerError as exc:
-            raise SchedulerError(
-                f"run/brief jobs bootstrapped successfully but correction job "
-                f"(com.argos.correct) failed: {exc}. "
-                f"To clean up, run: argos schedule uninstall && argos schedule install"
-            ) from exc
+        to_load.append(("com.argos.correct", correct_plist_path))
     if classify_xml is not None:
+        to_load.append(("com.argos.classify", classify_plist_path))
+
+    loaded: list[str] = []
+    failed: list[tuple[str, SchedulerError]] = []
+    for label, plist_path in to_load:
         try:
-            bootstrap_plist(classify_plist_path)
+            bootstrap_plist(plist_path)
         except SchedulerError as exc:
-            raise SchedulerError(
-                f"other jobs bootstrapped successfully but taxonomy assign job "
-                f"(com.argos.classify) failed: {exc}. "
-                f"To clean up, run: argos schedule uninstall && argos schedule install"
-            ) from exc
+            logger.error("failed to load %s: %s", label, exc)
+            failed.append((label, exc))
+        else:
+            loaded.append(label)
+
+    if failed:
+        details = "\n".join(f"  - {label}: {exc}" for label, exc in failed)
+        raise SchedulerError(
+            f"{len(failed)} of {len(to_load)} launchd jobs failed to load:\n"
+            f"{details}\n"
+            f"Loaded: {', '.join(loaded) or '(none)'}. "
+            f"Re-run `argos schedule install` to retry."
+        )
 
 
 __all__ = [

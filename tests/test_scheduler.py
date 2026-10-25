@@ -463,22 +463,54 @@ def test_render_run_plist_emits_working_directory(
     assert data["WorkingDirectory"] == str(repo)
 
 
-def test_render_run_plist_defaults_working_directory_to_cwd(
-    fake_argos_binary: Path, tmp_path: Path, monkeypatch
+@pytest.fixture
+def xdg_env_file(monkeypatch, tmp_path) -> Path:
+    """Secrets live in the XDG .env (the normal post-migrate-env setup)."""
+    xdg = tmp_path / "xdg"
+    (xdg / "argos").mkdir(parents=True)
+    (xdg / "argos" / ".env").write_text("POSTGRES_USER=argos\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.delenv("ARGOS_ENV_FILE", raising=False)
+    return xdg / "argos" / ".env"
+
+
+def test_render_run_plist_default_working_directory_ignores_cwd(
+    fake_argos_binary: Path, tmp_path: Path, monkeypatch, xdg_env_file: Path
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    # Installing from a Claude worktree must not bake that worktree in —
+    # once it's removed every job fails to start (2026-10-25).
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    monkeypatch.chdir(worktree)
     xml = render_run_plist(time="06:00", log_dir=tmp_path)
     data = plistlib.loads(xml.encode("utf-8"))
-    assert data["WorkingDirectory"] == str(tmp_path)
+    assert data["WorkingDirectory"] == str(Path.home())
+    assert data["WorkingDirectory"] != str(worktree)
 
 
-def test_render_brief_plist_defaults_working_directory_to_cwd(
-    fake_argos_binary: Path, tmp_path: Path, monkeypatch
+def test_render_brief_plist_default_working_directory_ignores_cwd(
+    fake_argos_binary: Path, tmp_path: Path, monkeypatch, xdg_env_file: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     xml = render_brief_plist(time="07:00", log_dir=tmp_path)
     data = plistlib.loads(xml.encode("utf-8"))
-    assert data["WorkingDirectory"] == str(tmp_path)
+    assert data["WorkingDirectory"] == str(Path.home())
+
+
+def test_default_working_directory_keeps_cwd_for_legacy_repo_env(
+    fake_argos_binary: Path, tmp_path: Path, monkeypatch
+) -> None:
+    # Only a deprecated repo-root .env exists: the job still needs the install
+    # cwd to find its secrets, so we must not silently switch to home.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty_xdg"))
+    monkeypatch.delenv("ARGOS_ENV_FILE", raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".env").write_text("POSTGRES_USER=argos\n")
+    monkeypatch.chdir(repo)
+    xml = render_run_plist(time="06:00", log_dir=tmp_path)
+    data = plistlib.loads(xml.encode("utf-8"))
+    assert data["WorkingDirectory"] == str(repo)
 
 
 # ---------------------------------------------------------------------------
@@ -735,23 +767,25 @@ def test_reload_schedule_writes_both_plists_and_bootstraps(
     assert str(brief_plist) in bootstrap_calls
 
 
-def test_reload_schedule_emits_install_cwd_as_working_directory(
+def test_reload_schedule_working_directory_independent_of_cwd(
     monkeypatch,
     fake_argos_binary: Path,
     fake_uid: int,
     isolated_paths: dict[str, Path],
     tmp_path: Path,
+    xdg_env_file: Path,
 ) -> None:
-    # `argos schedule install` is run from the repo root; both plists should
-    # bake that path into WorkingDirectory so launchd jobs can load .env.
+    # Secrets come from the XDG .env, so every plist gets the same stable
+    # WorkingDirectory no matter where `argos schedule install` is run from.
     user_config = SimpleNamespace(
         run=SimpleNamespace(time="06:00"),
         briefing=SimpleNamespace(
             time="07:00",
             weekdays=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
         ),
+        web=SimpleNamespace(launchd_enabled=True),
     )
-    install_cwd = tmp_path / "fake_repo"
+    install_cwd = tmp_path / "worktree"
     install_cwd.mkdir()
     monkeypatch.chdir(install_cwd)
 
@@ -768,11 +802,16 @@ def test_reload_schedule_emits_install_cwd_as_working_directory(
     monkeypatch.setattr(scheduler, "_run_launchctl", fake)
     reload_schedule(user_config)
 
-    for name in ("com.argos.run.plist", "com.argos.brief.plist"):
+    for name in (
+        "com.argos.run.plist",
+        "com.argos.brief.plist",
+        "com.argos.brief-weekly.plist",
+        "com.argos.web.plist",
+    ):
         data = plistlib.loads(
             (isolated_paths["launch_agents"] / name).read_bytes()
         )
-        assert data["WorkingDirectory"] == str(install_cwd)
+        assert data["WorkingDirectory"] == str(Path.home())
 
 
 # ---------------------------------------------------------------------------
@@ -1413,13 +1452,10 @@ def test_reload_schedule_partial_bootstrap_failure_reports_which_succeeded(
         ),
     )
 
-    bootstrap_call_count = {"n": 0}
-
     def fake(args: list[str]) -> subprocess.CompletedProcess[str]:
         if args[0] == "bootstrap":
-            bootstrap_call_count["n"] += 1
-            if bootstrap_call_count["n"] == 2:
-                # Second bootstrap (brief) fails.
+            if args[2].endswith("com.argos.brief.plist"):
+                # brief fails on every retry.
                 return subprocess.CompletedProcess(
                     ["launchctl", *args],
                     5,
