@@ -10,13 +10,70 @@ This history was reconstructed retroactively from annotated release tags
 (`git tag -n99`) and their commit ranges; entries before this file existed may be
 less granular than future ones.
 
-## [Unreleased]
+## [0.6.0] — 2026-10-25
 
-**Upgrade note:** the web app (PWA) now asks each device to log in **once**.
-After upgrading, run `argos web token` in a terminal on the Mac and paste the
-token on the login page (or open the link from
-`argos web token --url https://<machine>.<tailnet>.ts.net` on the device).
-`config.toml` is now rewritten with `0600` permissions.
+Event pages that explain the whole event under headings fit to what kind of
+event it is, technologies sorted into role branches automatically once a day,
+and a login in front of the web app. 40 commits since v0.5.0.
+
+**Upgrade note:**
+
+- Two new Alembic migrations (event type and detail sections on events;
+  technology profiles and role assignments). Run `uv run alembic upgrade head`
+  from a source checkout before starting the new version.
+- The web app (PWA) now asks each device to log in **once**. After upgrading,
+  run `argos web token` in a terminal on the Mac and paste the token on the
+  login page (or open the link from
+  `argos web token --url https://<machine>.<tailnet>.ts.net` on the device).
+  `config.toml` is now rewritten with `0600` permissions.
+- Re-run `argos schedule install` to add the daily role assignment job
+  (`com.argos.classify`, 04:30 by default; `taxonomy.assign_enabled`,
+  `taxonomy.assign_time`).
+- Optional one-off steps, each with a preview first (both use the local LLM and
+  can take hours): `argos resummarize-events` rewrites existing events in the
+  new format; `argos taxonomy assign --all` assigns every existing technology.
+
+### Added
+
+- **Event detail with headings** — opening an event shows a 2–3 sentence
+  summary and a detailed account under headings chosen from a fixed list for its
+  kind (launch / research / incident / update / adoption), written from the
+  bodies of **all** linked articles. Company and product names stay in their
+  original English; if a name central to the event is transliterated, the text
+  is regenerated once, and on a second failure the previous name and summary
+  are kept. Articles with opposing views are both covered, and very short
+  articles are summarized briefly instead of padded. Measured on 7 real events:
+  all succeeded on the first try, 7–39 s each. (ARG-308)
+- **`argos resummarize-events [--limit] [--dry-run] [--yes]`** — applies the new
+  event summary to existing events, showing how many will change before asking.
+  (ARG-308)
+- **Automatic role branches for technologies** — once a day, new technologies
+  are assigned to a role branch without approval, using an LLM description plus
+  evidence from articles (names listed side by side, "X is a …" phrases, GitHub
+  topics and Hugging Face tags of linked repositories). Generic words, places
+  and company names are not assigned; technologies with too little evidence stay
+  unclassified. `argos taxonomy assign [--all] [--name] [--dry-run]` previews and
+  applies, `argos taxonomy why NAME` shows the evidence, and
+  `argos taxonomy eval` scores a fixed 33-name answer set (pair F1 0.95 on a copy
+  of the real database). (ARG-313)
+
+### Changed
+
+- **Per-article long digests are no longer generated** — the event detail
+  replaces them. An article page now shows the detail of the event it belongs
+  to, with a link to the event. `argos backfill-digests` only prints a pointer to
+  `resummarize-events`. (ARG-308)
+
+### Fixed
+
+- Vendor-prefix aliases no longer merge different companies' products or short
+  generic words into one technology.
+- Technologies written in lowercase (pgvector, uv, llama.cpp) are no longer
+  dropped as generic words; capitalized plain words that the articles use in
+  lowercase ("Agent", "Code") still are. (ARG-313)
+- A temporary LLM outage during role assignment no longer stores "insufficient
+  evidence" or overwrites an existing assignment; the name is retried on the
+  next run. Re-running `--all` keeps external tag evidence. (ARG-313)
 
 ### Security
 
