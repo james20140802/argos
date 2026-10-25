@@ -13,7 +13,7 @@ ARG-313: 새 기술을 승인 없이 역할 아래 갈래에 자동 배정하는
 건드리지 않으므로 왕복에서 기존 행이 보존된다. downgrade는 테이블과 enum을 지운다.
 
 Revision ID: e3a9c4d17b20
-Revises: c7d93a5e1f48
+Revises: e3a8f15c2b07
 Create Date: 2026-10-25 12:00:00.000000
 
 """
@@ -26,7 +26,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = 'e3a9c4d17b20'
-down_revision: Union[str, Sequence[str], None] = 'c7d93a5e1f48'
+down_revision: Union[str, Sequence[str], None] = 'e3a8f15c2b07'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
