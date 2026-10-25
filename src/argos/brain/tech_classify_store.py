@@ -355,7 +355,9 @@ async def build_inputs(
             and doc_counts.get(nb.key, 0) >= cfg.min_documents
         )[:MAX_NEIGHBORS]
         tags: tuple[str, ...] = ()
-        if external is not None and describe:
+        # 설명을 재사용하는 회(--all)에도 모은다 — 외부 태그로 배정된 문장 부족 기술이
+        # 다음 회에 근거 0으로 미분류가 되면 안 된다. 캐시(TTL)가 있어 재요청은 싸다.
+        if external is not None:
             from argos.crawler.tech_external import links_for
 
             gh, hf = links_for(texts, display)
