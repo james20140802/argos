@@ -391,3 +391,15 @@ def _block_real_ollama(monkeypatch):
 
     monkeypatch.setattr(asyncio.base_events.BaseEventLoop, "create_connection", guarded_create_connection)
     monkeypatch.setattr(socket, "create_connection", guarded_socket_create_connection)
+
+
+@pytest.fixture(autouse=True)
+def _instant_launchctl_waits(monkeypatch):
+    """scheduler.bootstrap_plist 의 bootout 대기·재시도 sleep 을 즉시로 만든다.
+
+    가짜 launchctl 은 대개 ``print`` 에 항상 "loaded" 로 답해서, 실제 sleep 이면
+    job 하나마다 대기 상한(~10초)을 다 채운다.
+    """
+    from argos import scheduler
+
+    monkeypatch.setattr(scheduler, "_sleep", lambda _seconds: None)
