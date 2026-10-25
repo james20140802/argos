@@ -33,7 +33,8 @@ class UnclassifiedReason:
 
     INSUFFICIENT = "InsufficientEvidence"  # 설명할 문장도, LLM 없는 증거도 없음
     NO_FIT = "NoFittingBranch"  # LLM이 맞는 갈래가 없다고 함(-1)
-    LLM_ERROR = "LlmError"  # 응답을 읽지 못함
+    # LLM 인프라 실패(연결·타임아웃·응답 파싱 불가)는 미분류로 저장하지 않는다 —
+    # 계획에서 빼고(``AssignPlan.skipped``) 다음 실행에서 다시 대상이 된다.
 
 
 # --------------------------------------------------------------------- #
@@ -203,6 +204,8 @@ class AssignPlan:
     # 기술이 아니게 된 이름: 자동 배정 행을 지운다(Manual 행은 그대로).
     unassign: tuple[tuple[Any, str], ...] = ()  # (entity_id, display)
     screened: tuple[tuple[str, str], ...] = ()  # (display, NotTechReason)
+    # LLM 인프라 실패로 이번 계획에서 뺀 이름(아무것도 쓰지 않는다 → 다음 실행에서 다시 대상).
+    skipped: tuple[tuple[str, str], ...] = ()  # (display, "describe" | "assign")
     llm_calls: int = 0
 
     @property
@@ -242,6 +245,12 @@ class AssignPlan:
             lines.append(f"기존 자동 배정을 지울 이름 {len(self.unassign)}개:")
             for _eid, display in cut(list(self.unassign)):
                 lines.append(f"  - {display}")
+        if self.skipped:
+            lines.append(
+                f"LLM 실패로 건너뜀 {len(self.skipped)}개 (아무것도 쓰지 않음 — 다음 실행에서 다시 시도):"
+            )
+            for display, stage in cut(list(self.skipped)):
+                lines.append(f"  - {display} ({'설명' if stage == 'describe' else '배정'} 단계)")
         return lines
 
 
@@ -363,6 +372,7 @@ async def build_plan(
     unclassified: list[AssignmentWrite] = []
 
     # --- 판정·설명
+    skipped: list[tuple[str, str]] = []
     described: list[tuple[TargetInput, ProfileWrite, bool]] = []
     for t in targets:
         if not t.needs_describe and t.existing is not None:
@@ -374,9 +384,14 @@ async def build_plan(
             )
             described.append((t, prof, False))
         else:
-            prof, used_llm = await _describe(t, llm, cfg, model_name)
+            got, used_llm = await _describe(t, llm, cfg, model_name)
             calls += used_llm
-            described.append((t, prof, True))
+            if got is None:
+                # 인프라 실패: 프로필·배정을 쓰지 않는다. 기존 행(설명·described_doc_count)은
+                # 그대로 남아 다음 실행에서 다시 대상이 된다.
+                skipped.append((t.display, "describe"))
+                continue
+            described.append((t, got, True))
 
     # 이번 회에 기술이 아니라고 판정된 이름은 이웃 증거에서도 뺀다(OpenAI가 이웃이면 안 된다).
     not_tech = {t.key for t, p, _w in described if p.verdict == TechVerdict.NOT_TECHNOLOGY}
@@ -414,6 +429,10 @@ async def build_plan(
         for t, prof in pending:
             write, used = await _assign_one(t, prof, leaves, llm, cfg, cur, round_no)
             calls += used
+            if write is None:
+                # 인프라 실패: 앞 라운드 결과가 있으면 그것을 두고, 없으면 배정을 쓰지 않는다
+                # (기존 Auto 배정을 미분류로 덮어쓰지 않는다 — 아래에서 skipped로 보고).
+                continue
             results[t.key] = write
             new_cur[t.key] = write.leaf_path
             if cur.get(t.key) != write.leaf_path or t.key not in cur:
@@ -432,20 +451,26 @@ async def build_plan(
                 evidence=_evidence_dict(t, prof, cur, reason="no leaves", round_no=0),
             )
 
-    assignments = [results[t.key] for t, _p in to_assign] + unclassified
+    for t, _p in to_assign:
+        if t.key not in results:
+            skipped.append((t.display, "assign"))
+    assignments = [results[t.key] for t, _p in to_assign if t.key in results] + unclassified
     return AssignPlan(
         run_id=run_id or uuid.uuid4(),
         profiles=tuple(profiles),
         assignments=tuple(assignments),
         unassign=tuple(unassign),
         screened=tuple(screened),
+        skipped=tuple(skipped),
         llm_calls=calls,
     )
 
 
 async def _describe(
     t: TargetInput, llm: Any, cfg: TaxonomyConfig, model_name: str | None
-) -> tuple[ProfileWrite, int]:
+) -> tuple[ProfileWrite | None, int]:
+    """(프로필 | None=LLM 인프라 실패, LLM 호출 수). 문장 부족·LLM의 enough=false는
+    정상 Insufficient로 프로필을 만든다. 연결 오류·타임아웃·읽을 수 없는 응답은 None."""
     reason = screen(t.signals, cfg)
     base = dict(entity_id=t.entity_id, key=t.key, display=t.display, described_doc_count=t.doc_count)
     if reason is not None:
@@ -462,10 +487,11 @@ async def _describe(
         raw = await _query(llm, prompt, cfg)
     except Exception as exc:  # noqa: BLE001 — 한 이름 실패가 배치 전체를 막지 않게
         logger.warning("taxonomy assign: describe %s failed: %r", t.display, exc)
-        return ProfileWrite(verdict=TechVerdict.INSUFFICIENT, model=model_name, **base), 1
+        return None, 1
     data = describe_result(raw)
     if data is None:
-        return ProfileWrite(verdict=TechVerdict.INSUFFICIENT, model=model_name, **base), 1
+        logger.warning("taxonomy assign: describe %s returned unreadable JSON", t.display)
+        return None, 1
     kind = str(data.get("kind") or "").strip()[:120] or None
     desc = str(data.get("description_ko") or "").strip()[:200] or None
     role_en = str(data.get("one_liner") or "").strip()[:400] or None
@@ -528,7 +554,8 @@ async def _assign_one(
     cfg: TaxonomyConfig,
     cur: Mapping[str, str | None],
     round_no: int,
-) -> tuple[AssignmentWrite, int]:
+) -> tuple[AssignmentWrite | None, int]:
+    """(배정 | None=LLM 인프라 실패, 호출 수). -1(맞는 갈래 없음)은 정상 미분류다."""
     one_liner = prof.role_en or prof.description or "(not enough source sentences)"
     prompt = ASSIGN_PROMPT.format(
         name=t.display,
@@ -539,17 +566,20 @@ async def _assign_one(
     )
     try:
         raw = await _query(llm, prompt, cfg)
-        idx, reason, ok = parse_leaf_index(raw, len(leaves))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — 한 이름 실패가 배치 전체를 막지 않게
         logger.warning("taxonomy assign: assign %s failed: %r", t.display, exc)
-        idx, reason, ok = None, "", False
+        return None, 1
+    idx, reason, ok = parse_leaf_index(raw, len(leaves))
+    if not ok:
+        logger.warning("taxonomy assign: assign %s returned unreadable JSON", t.display)
+        return None, 1
     evidence = _evidence_dict(t, prof, cur, reason=reason, round_no=round_no)
     if idx is None:
         return (
             AssignmentWrite(
                 entity_id=t.entity_id, key=t.key, display=t.display, branch_id=None,
                 leaf_path=None,
-                unclassified_reason=UnclassifiedReason.NO_FIT if ok else UnclassifiedReason.LLM_ERROR,
+                unclassified_reason=UnclassifiedReason.NO_FIT,
                 evidence=evidence,
             ),
             1,

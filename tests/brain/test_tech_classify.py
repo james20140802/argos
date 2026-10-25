@@ -38,10 +38,15 @@ class FakeLLM:
         if prompt.startswith("Below are sentences"):
             name = prompt.split('mention "', 1)[1].split('"', 1)[0]
             self.calls.append(("describe", name))
-            return json.dumps(self.describe[name])
+            answer = self.describe[name]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer if isinstance(answer, str) else json.dumps(answer)
         name = prompt.split("Technology: ", 1)[1].split("\n", 1)[0]
         self.calls.append(("assign", name))
         answer = self.assign[name]
+        if isinstance(answer, Exception):
+            raise answer
         if callable(answer):
             answer = answer(prompt)
         return json.dumps(answer) if not isinstance(answer, str) else answer
@@ -103,6 +108,8 @@ async def test_too_few_sentences_skips_the_llm():
     llm = FakeLLM()
     plan = await build_plan([target("Scion", sentences=2)], LEAVES, llm, CFG)
     assert llm.calls == []
+    # 진짜 근거 부족은 인프라 실패와 달리 그대로 저장한다(문서가 늘면 다시 설명).
+    assert plan.profiles[0].verdict == TechVerdict.INSUFFICIENT and plan.skipped == ()
     assert plan.assignments[0].unclassified_reason == UnclassifiedReason.INSUFFICIENT
 
 
@@ -126,10 +133,58 @@ async def test_minus_one_means_unclassified():
 
 
 @pytest.mark.asyncio
-async def test_garbage_llm_answer_is_unclassified_not_a_crash():
-    llm = FakeLLM(describe={"Foo": TECH}, assign={"Foo": "not json"})
-    plan = await build_plan([target("Foo")], LEAVES, llm, CFG)
-    assert plan.assignments[0].unclassified_reason == UnclassifiedReason.LLM_ERROR
+@pytest.mark.parametrize("failure", [ConnectionError("ollama down"), TimeoutError(), "not json"])
+async def test_describe_infra_failure_writes_nothing_and_is_retried(failure):
+    """설명 LLM 일시 장애는 '근거 부족'이 아니다 — 프로필·배정을 쓰지 않아 기존 행이
+    보존되고(설명·described_doc_count 미전진) 다음 실행에서 다시 대상이 된다."""
+    from argos.brain.tech_classify_store import NameRow, select_targets
+
+    llm = FakeLLM(describe={"Foo": failure, "Bar": TECH}, assign={"Bar": {"leaf_index": 0}})
+    ex = ExistingProfile(TechVerdict.TECHNOLOGY, None, "agent", "기존 정상 설명", "Old role.", 4)
+    plan = await build_plan(
+        [target("Foo", existing=ex, needs=True), target("Bar")], LEAVES, llm, CFG
+    )
+    assert [p.key for p in plan.profiles] == ["bar"]  # Foo의 기존 설명을 덮어쓰지 않는다
+    assert [a.key for a in plan.assignments] == ["bar"]
+    assert plan.skipped == (("Foo", "describe"),)
+    assert "LLM 실패로 건너뜀 1개" in "\n".join(plan.preview_lines())
+    # 기존 행이 그대로면(문서 8 >= 4*2) 다음 선정에도 다시 들어간다.
+    row = NameRow("id-foo", "foo", "Foo", 8, ex, None)
+    assert [r.key for r, d in select_targets([row], CFG)] == ["foo"]
+    # 새 이름이면 프로필이 없으니 자연히 다시 고른다.
+    assert select_targets([NameRow("id-foo", "foo", "Foo", 3)], CFG)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [ConnectionError("ollama down"), "not json"])
+async def test_assign_infra_failure_does_not_overwrite_existing_assignment(failure):
+    llm = FakeLLM(describe={"Foo": TECH}, assign={"Foo": failure})
+    plan = await build_plan([target("Foo")], LEAVES, llm, CFG, current={"foo": CODING.path})
+    assert plan.assignments == ()  # 기존 Auto 배정을 미분류로 덮어쓰지 않는다
+    assert plan.skipped == (("Foo", "assign"),)
+    assert [p.key for p in plan.profiles] == ["foo"]  # 설명은 성공했으니 저장
+
+
+@pytest.mark.asyncio
+async def test_round_two_failure_keeps_round_one_result():
+    state = {"n": 0}
+
+    def codex(prompt):
+        state["n"] += 1
+        if state["n"] == 2:
+            raise TimeoutError()
+        return {"leaf_index": CODING.index}
+
+    llm = FakeLLM(
+        describe={"Codex": TECH, "Cursor": TECH},
+        assign={"Codex": codex, "Cursor": {"leaf_index": CODING.index}},
+    )
+    plan = await build_plan(
+        [target("Codex", neighbors=[Neighbor("cursor", 2, ())]), target("Cursor")], LEAVES, llm, CFG
+    )
+    by = {a.display: a for a in plan.assignments}
+    assert by["Codex"].leaf_path == CODING.path and by["Codex"].evidence["round"] == 1
+    assert plan.skipped == ()
 
 
 @pytest.mark.asyncio
