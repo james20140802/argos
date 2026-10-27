@@ -40,7 +40,11 @@ def _client(monkeypatch, **patches) -> TestClient:
     async def _no_successors(session, tech_id):
         return []
 
+    async def _no_chips(session, event_ids):
+        return {}
+
     monkeypatch.setattr("argos.web.app._load_item_successors", _no_successors)
+    monkeypatch.setattr("argos.web.app.fetch_event_tech_chips", _no_chips)
     for path, fn in patches.items():
         monkeypatch.setattr(path, fn)
     return TestClient(app, raise_server_exceptions=False)

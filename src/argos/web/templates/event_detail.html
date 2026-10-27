@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import tech_chips as render_tech_chips %}
 {% block title %}{{ event.title }} · ARGOS{% endblock %}
 {% block content %}
 {# 사건 상세 (ARG-243). Reached only through resolve_event(), so a link to an
@@ -83,5 +84,12 @@
     <p class="timeline-empty">이 사건에 연결된 기사가 아직 없습니다.</p>
     {% endif %}
   </section>
+
+  {% if tech_chips %}
+  <section class="detail-techs" aria-labelledby="techs-title">
+    <h2 class="detail-section__title" id="techs-title">등장한 기술</h2>
+    {{ render_tech_chips(tech_chips) }}
+  </section>
+  {% endif %}
 </article>
 {% endblock %}

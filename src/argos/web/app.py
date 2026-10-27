@@ -40,7 +40,11 @@ from argos.web.services.feed import (
     select_hero,
 )
 from argos.web.services.portfolio import fetch_portfolio
-from argos.web.services.technology import fetch_tech_page, resolve_canonical_id
+from argos.web.services.technology import (
+    fetch_event_tech_chips,
+    fetch_tech_page,
+    resolve_canonical_id,
+)
 from argos.web.services.settings import (
     EDITABLE_FIELDS,
     apply_settings,
@@ -563,6 +567,9 @@ def build_web_app(
             # is the genuinely newest story.
             if hero_id is None:
                 hero_id = items[0].id
+        # 기술 칩 (ARG-319): items/hero_id가 다 정해진 뒤 표시용으로만, 한 번에 조회한다.
+        event_ids = [i.id for i in items if getattr(i, "kind", "item") == "event"]
+        tech_chips = await fetch_event_tech_chips(session, event_ids)
         return request.app.state.templates.TemplateResponse(
             request,
             template_name,
@@ -575,6 +582,7 @@ def build_web_app(
                 "hero_id": hero_id,
                 "activity": activity,
                 "latest_cursor": latest_cursor,
+                "tech_chips": tech_chips,
             },
         )
 
@@ -890,6 +898,9 @@ def build_web_app(
                 "event": event,
                 "item": SimpleNamespace(**rep_item) if rep_item else None,
                 "action_context": "event",
+                "tech_chips": (await fetch_event_tech_chips(session, [parsed_id])).get(
+                    parsed_id, []
+                ),
             },
         )
 

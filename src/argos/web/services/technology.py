@@ -11,9 +11,9 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.models.document_entity import DocumentEntity
@@ -28,6 +28,9 @@ from argos.web.services.event_sections import type_label
 
 _UNTITLED_EVENT = "이름 없는 사건"
 
+# 피드 카드에 붙는 기술 칩 상한. 사건 상세는 자르지 않는다.
+CARD_CHIP_LIMIT = 3
+
 
 @dataclass(frozen=True)
 class BranchRef:
@@ -41,6 +44,17 @@ class TechEventRef:
     title: str
     occurred_at: datetime
     event_type_label: Optional[str]
+
+
+@dataclass(frozen=True)
+class TechChip:
+    entity_id: uuid.UUID
+    name: str
+    doc_count: int
+
+    @property
+    def href(self) -> str:
+        return f"/tech/{self.entity_id}"
 
 
 @dataclass(frozen=True)
@@ -160,3 +174,47 @@ async def fetch_tech_page(
             for e in events
         ),
     )
+
+
+async def fetch_event_tech_chips(
+    session: AsyncSession, event_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, list[TechChip]]:
+    """사건별 기술 칩 — 한 번의 쿼리로 모든 사건을 채운다 (N+1 없음).
+
+    언급은 별칭이면 대표로 접고(``entity_aliases``), 대표의 판정이
+    ``Technology``인 것만 남긴다. ``doc_count`` = 그 사건에서 대표·별칭 중
+    하나라도 언급한 서로 다른 기사 수. 정렬: doc_count 내림차순, 이름 오름차순.
+    기술 이름이 없는 사건은 키가 없다.
+    """
+    ids = list(event_ids)
+    if not ids:
+        return {}
+    canon_id = func.coalesce(EntityAlias.canonical_entity_id, DocumentEntity.entity_id)
+    canon = Entity.__table__.alias("canon_entity")
+    doc_count = func.count(func.distinct(EventDocument.tech_item_id))
+    rows = (
+        await session.execute(
+            select(
+                EventDocument.event_id,
+                canon_id.label("entity_id"),
+                canon.c.name,
+                doc_count.label("doc_count"),
+            )
+            .join(DocumentEntity, DocumentEntity.tech_item_id == EventDocument.tech_item_id)
+            .outerjoin(EntityAlias, EntityAlias.alias_entity_id == DocumentEntity.entity_id)
+            .join(canon, canon.c.id == canon_id)
+            .join(TechnologyProfile, TechnologyProfile.entity_id == canon_id)
+            .where(
+                EventDocument.event_id.in_(ids),
+                TechnologyProfile.verdict == TechVerdict.TECHNOLOGY,
+            )
+            .group_by(EventDocument.event_id, canon_id, canon.c.name)
+            .order_by(EventDocument.event_id, doc_count.desc(), canon.c.name.asc())
+        )
+    ).all()
+    chips: dict[uuid.UUID, list[TechChip]] = {}
+    for event_id, entity_id, name, count in rows:
+        chips.setdefault(event_id, []).append(
+            TechChip(entity_id=entity_id, name=name, doc_count=count)
+        )
+    return chips

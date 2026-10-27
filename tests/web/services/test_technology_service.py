@@ -9,6 +9,7 @@ import pytest
 
 from argos.config import settings
 from argos.web.services.technology import (
+    fetch_event_tech_chips,
     fetch_tech_page,
     is_technology,
     resolve_canonical_id,
@@ -192,3 +193,127 @@ async def test_fetch_tech_page_empty_description_stays_empty() -> None:
         async with Session() as s:
             page = await fetch_tech_page(s, ns.canon)
         assert page is not None and page.description is None
+
+
+# --------------------------------------------------------------------- #
+# ARG-319: 사건 기술 칩
+# --------------------------------------------------------------------- #
+
+
+async def test_event_chips_empty_input_returns_empty() -> None:
+    assert await fetch_event_tech_chips(None, []) == {}  # type: ignore[arg-type]
+
+
+@asynccontextmanager
+async def _chip_seed():
+    """사건 E1(대표 기사1 + 대표·별칭 같은 기사2 + 별칭만 기사3 + 회사), E2(기술 없음)."""
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.document_entity import DocumentEntity
+    from argos.models.entity import Entity
+    from argos.models.entity_alias import AliasRule, EntityAlias
+    from argos.models.event_document import EventDocument
+    from argos.models.tech_event import TechEvent
+    from argos.models.tech_item import CategoryType, TechItem
+    from argos.models.technology_profile import TechnologyProfile, TechVerdict
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    sfx = uuid.uuid4().hex[:8]
+    ns = type("NS", (), {})()
+    entity_ids: list[uuid.UUID] = []
+    item_ids: list[uuid.UUID] = []
+    event_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as s:
+            def ent(key: str, name: str) -> Entity:
+                e = Entity(name=name, normalized_key=f"{key} {sfx}")
+                s.add(e)
+                return e
+
+            big = ent("big", f"Zeta Big {sfx}")  # 대표, 사건 E1에서 기사 3건
+            alias = ent("bigalias", f"Big Alias {sfx}")
+            small = ent("small", f"Alpha Small {sfx}")  # 기사 1건
+            tie = ent("tie", f"Beta Tie {sfx}")  # 기사 1건 -> small과 동률, 이름순
+            company = ent("corp", f"Corp {sfx}")
+            await s.flush()
+            entity_ids += [big.id, alias.id, small.id, tie.id, company.id]
+            s.add(EntityAlias(alias_entity_id=alias.id, canonical_entity_id=big.id, rule=AliasRule.MANUAL))
+            for e in (big, small, tie):
+                s.add(TechnologyProfile(entity_id=e.id, verdict=TechVerdict.TECHNOLOGY))
+            s.add(TechnologyProfile(entity_id=company.id, verdict=TechVerdict.NOT_TECHNOLOGY))
+
+            async def item() -> TechItem:
+                it = TechItem(
+                    title=f"doc {uuid.uuid4().hex[:6]}",
+                    source_url=f"https://e.example/arg319/{uuid.uuid4()}",
+                    raw_content="x",
+                    category=CategoryType.MAINSTREAM,
+                )
+                s.add(it)
+                await s.flush()
+                item_ids.append(it.id)
+                return it
+
+            async def event(title: str) -> TechEvent:
+                ev = TechEvent(title=title, occurred_at=T0, event_type="Launch")
+                s.add(ev)
+                await s.flush()
+                event_ids.append(ev.id)
+                return ev
+
+            e1, e2 = await event("사건 1"), await event("사건 2")
+            d1, d2, d3, d4 = await item(), await item(), await item(), await item()
+            # d1: 대표 + 회사 / d2: 대표와 별칭이 같은 기사에 둘 다 / d3: 별칭만
+            for it, ents in ((d1, [big, company, small]), (d2, [big, alias, tie]), (d3, [alias])):
+                for e in ents:
+                    s.add(DocumentEntity(tech_item_id=it.id, entity_id=e.id))
+                s.add(EventDocument(event_id=e1.id, tech_item_id=it.id))
+            s.add(DocumentEntity(tech_item_id=d4.id, entity_id=company.id))
+            s.add(EventDocument(event_id=e2.id, tech_item_id=d4.id))
+            await s.commit()
+        ns.e1, ns.e2 = e1.id, e2.id
+        ns.big, ns.alias, ns.small, ns.tie, ns.company = big.id, alias.id, small.id, tie.id, company.id
+        yield Session, ns
+    finally:
+        async with Session() as s:
+            await s.execute(delete(TechEvent).where(TechEvent.id.in_(event_ids)))
+            await s.execute(delete(TechItem).where(TechItem.id.in_(item_ids)))
+            await s.execute(delete(Entity).where(Entity.id.in_(entity_ids)))
+            await s.commit()
+        await engine.dispose()
+
+
+async def test_event_chips_fold_alias_and_count_distinct_docs() -> None:
+    async with _chip_seed() as (Session, ns):
+        async with Session() as s:
+            chips = await fetch_event_tech_chips(s, [ns.e1, ns.e2])
+        top = chips[ns.e1][0]
+        assert top.entity_id == ns.big  # 별칭이 대표로 접힌다
+        assert top.doc_count == 3  # d1(대표) + d2(대표·별칭 둘 다 -> 1) + d3(별칭만)
+        assert top.href == f"/tech/{ns.big}"
+        assert all(c.entity_id != ns.alias for c in chips[ns.e1])
+
+
+async def test_event_chips_exclude_non_technology() -> None:
+    async with _chip_seed() as (Session, ns):
+        async with Session() as s:
+            chips = await fetch_event_tech_chips(s, [ns.e1])
+        assert ns.company not in {c.entity_id for c in chips[ns.e1]}
+
+
+async def test_event_chips_order_by_doc_count_then_name() -> None:
+    async with _chip_seed() as (Session, ns):
+        async with Session() as s:
+            chips = await fetch_event_tech_chips(s, [ns.e1])
+        assert [c.entity_id for c in chips[ns.e1]] == [ns.big, ns.small, ns.tie]
+        assert [c.doc_count for c in chips[ns.e1]] == [3, 1, 1]
+
+
+async def test_event_chips_event_without_tech_absent() -> None:
+    async with _chip_seed() as (Session, ns):
+        async with Session() as s:
+            chips = await fetch_event_tech_chips(s, [ns.e1, ns.e2])
+        assert ns.e2 not in chips and ns.e1 in chips
