@@ -21,6 +21,8 @@ ROLE_BRANCH_ALLOWED = {
     "models/role_branch.py",
     "models/__init__.py",
     "brain/taxonomy_store.py",
+    # ARG-318: 기술 페이지가 갈래 경로를 읽기만 한다.
+    "web/services/technology.py",
 }
 
 

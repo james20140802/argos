@@ -40,6 +40,7 @@ from argos.web.services.feed import (
     select_hero,
 )
 from argos.web.services.portfolio import fetch_portfolio
+from argos.web.services.technology import fetch_tech_page, resolve_canonical_id
 from argos.web.services.settings import (
     EDITABLE_FIELDS,
     apply_settings,
@@ -808,6 +809,31 @@ def build_web_app(
         # came from, so a cache must not hand one origin's page to the other.
         response.headers["Vary"] = "Referer"
         return response
+
+    @app.get("/tech/{entity_id}", response_class=HTMLResponse)
+    async def tech_detail(
+        request: Request,
+        entity_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        """기술 페이지 (ARG-318). 다른 이름으로 들어와도 대표 이름 주소로 옮긴다."""
+        try:
+            parsed_id = uuid.UUID(entity_id)
+        except ValueError:
+            return _render_not_found(request)
+
+        canonical_id = await resolve_canonical_id(session, parsed_id)
+        if canonical_id is None:
+            return _render_not_found(request)
+        if canonical_id != parsed_id:
+            return RedirectResponse(url=f"/tech/{canonical_id}", status_code=307)
+
+        tech = await fetch_tech_page(session, canonical_id)
+        if tech is None:
+            return _render_not_found(request)
+        return request.app.state.templates.TemplateResponse(
+            request, "tech_detail.html", {"tech": tech}
+        )
 
     @app.get("/event/{event_id}", response_class=HTMLResponse)
     async def event_detail(

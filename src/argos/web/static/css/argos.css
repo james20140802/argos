@@ -1462,7 +1462,24 @@ code { font: 500 0.92em/1 var(--font-mono); }
 ::view-transition-old(*),
 ::view-transition-new(*) { height: 100%; object-fit: cover; overflow: clip; }
 
+/* 기술 페이지 (ARG-318) — 375px에서도 가로 스크롤이 없도록 줄바꿈을 허용한다. */
+.tech-name { overflow-wrap: anywhere; }
+.tech-description { margin: 10px 0 0; font: 400 16px/1.5 var(--font); color: var(--muted); overflow-wrap: anywhere; }
+.tech-path { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin: 12px 0 0; font: 600 14px/1.4 var(--font); }
+.tech-path__branch { overflow-wrap: anywhere; }
+.tech-path__sep { color: var(--muted); }
+.tech-path--none .tech-path__branch { color: var(--muted); }
+.tech-aliases { margin: 10px 0 0; font: 400 14px/1.4 var(--font); color: var(--muted); overflow-wrap: anywhere; }
+.tech-events { margin-top: 24px; }
+.tech-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; flex-wrap: wrap; gap: 12px; }
+.tech-timeline__item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.tech-timeline__date { font: 600 13px/1.4 var(--font); color: var(--muted); }
+.tech-timeline__title { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.tech-empty { color: var(--muted); }
+
 /* === 9. Accessibility === */
+
+
 @media (prefers-reduced-motion: reduce) {
   /* Gentler, non-vestibular equivalents: fades stay, movement goes. */
   .rise, .feed-list > .card.rise:nth-child(n+7), .timeline-container.is-open .timeline__event {

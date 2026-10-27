@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ tech.name }} · ARGOS{% endblock %}
+{% block content %}
+{# 기술 페이지 (ARG-318). 대표 이름 하나가 한 페이지다. 갈래는 지금은 글자만 —
+   갈래 페이지가 생기면 링크로 바꾼다. #}
+<article class="detail detail--tech" data-entity-id="{{ tech.entity_id }}">
+  <a class="back-link" href="/feed">
+    <svg aria-hidden="true" viewBox="0 0 12 20" width="10" height="17"><path d="M10 2 2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    관측 피드
+  </a>
+
+  <header class="detail-head">
+    <h1 class="detail-title tech-name">{{ tech.name }}</h1>
+    {% if tech.description %}<p class="tech-description">{{ tech.description }}</p>{% endif %}
+    {% if tech.branch_path %}
+    <nav class="tech-path" aria-label="역할 갈래">
+      {% for branch in tech.branch_path %}
+      {% if not loop.first %}<span class="tech-path__sep" aria-hidden="true"> › </span>{% endif %}
+      <span class="tech-path__branch">{{ branch.name }}</span>
+      {% endfor %}
+    </nav>
+    {% else %}
+    <p class="tech-path tech-path--none"><span class="tech-path__branch">미분류</span></p>
+    {% endif %}
+    {% if tech.aliases %}
+    <p class="tech-aliases">다른 이름: {{ tech.aliases | join(", ") }}</p>
+    {% endif %}
+  </header>
+
+  <section class="tech-events" aria-label="사건 타임라인">
+    {% if tech.events %}
+    <ol class="tech-timeline">
+      {% for ev in tech.events %}
+      <li class="tech-timeline__item">
+        <time class="tech-timeline__date" datetime="{{ ev.occurred_at.date().isoformat() }}">{{ ev.occurred_at.strftime("%Y-%m-%d") }}</time>
+        {% if ev.event_type_label %}<span class="tag event-type">{{ ev.event_type_label }}</span>{% endif %}
+        <a class="tech-timeline__title" href="/event/{{ ev.id }}">{{ ev.title }}</a>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="tech-empty">아직 이 기술이 등장한 사건이 없습니다.</p>
+    {% endif %}
+  </section>
+</article>
+{% endblock %}
