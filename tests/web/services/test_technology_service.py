@@ -9,6 +9,7 @@ import pytest
 
 from argos.config import settings
 from argos.web.services.technology import (
+    fetch_branch_page,
     fetch_event_tech_chips,
     fetch_tech_page,
     is_technology,
@@ -317,3 +318,103 @@ async def test_event_chips_event_without_tech_absent() -> None:
         async with Session() as s:
             chips = await fetch_event_tech_chips(s, [ns.e1, ns.e2])
         assert ns.e2 not in chips and ns.e1 in chips
+
+
+# --------------------------------------------------------------------- #
+# ARG-320: 갈래 페이지
+# --------------------------------------------------------------------- #
+
+
+@asynccontextmanager
+async def _branch_seed():
+    """위 갈래 1 + 아래 갈래 둘(하나는 비어 있음). 기술 3개와 NotTechnology 배정 1개."""
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from argos.models.entity import Entity
+    from argos.models.role_assignment import RoleAssignment
+    from argos.models.role_branch import RoleBranch
+    from argos.models.technology_profile import TechnologyProfile, TechVerdict
+
+    engine = create_async_engine(_DB_URL, poolclass=NullPool)
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    sfx = uuid.uuid4().hex[:8]
+    ns = type("NS", (), {})()
+    entity_ids: list[uuid.UUID] = []
+    branch_ids: list[uuid.UUID] = []
+    try:
+        async with Session() as s:
+            top = RoleBranch(name=f"위 {sfx}", description="위 설명", position=0)
+            s.add(top)
+            await s.flush()
+            a = RoleBranch(name=f"A갈래 {sfx}", description="a", parent_id=top.id, position=0)
+            b = RoleBranch(name=f"B갈래 {sfx}", description="b", parent_id=top.id, position=1)
+            s.add_all([a, b])
+            await s.flush()
+            branch_ids += [top.id, a.id, b.id]
+
+            async def tech(name: str, branch, verdict=TechVerdict.TECHNOLOGY):
+                e = Entity(name=f"{name} {sfx}", normalized_key=f"{name.lower()} {sfx}")
+                s.add(e)
+                await s.flush()
+                entity_ids.append(e.id)
+                s.add(TechnologyProfile(entity_id=e.id, verdict=verdict))
+                s.add(RoleAssignment(entity_id=e.id, branch_id=branch.id))
+                return e
+
+            ns.zed = await tech("zed", a)
+            ns.alpha = await tech("Alpha", a)
+            ns.beta = await tech("beta", b, TechVerdict.TECHNOLOGY)
+            ns.company = await tech("acme", a, TechVerdict.NOT_TECHNOLOGY)
+            await s.commit()
+        ns.top, ns.a, ns.b, ns.sfx = top.id, a.id, b.id, sfx
+        yield Session, ns
+    finally:
+        async with Session() as s:
+            await s.execute(delete(RoleBranch).where(RoleBranch.id.in_(branch_ids)))
+            await s.execute(delete(Entity).where(Entity.id.in_(entity_ids)))
+            await s.commit()
+        await engine.dispose()
+
+
+async def test_leaf_branch_lists_its_technologies_by_name() -> None:
+    async with _branch_seed() as (Session, ns):
+        async with Session() as s:
+            page = await fetch_branch_page(s, ns.a)
+        assert page is not None
+        assert page.parent is not None and page.parent.id == ns.top
+        assert page.description == "a"
+        assert len(page.groups) == 1 and page.groups[0].branch.id == ns.a
+        assert [t.entity_id for t in page.groups[0].techs] == [ns.alpha.id, ns.zed.id]
+        assert page.groups[0].techs[0].href == f"/tech/{ns.alpha.id}"
+
+
+async def test_top_branch_groups_children() -> None:
+    async with _branch_seed() as (Session, ns):
+        async with Session() as s:
+            page = await fetch_branch_page(s, ns.top)
+        assert page is not None and page.parent is None
+        assert [g.branch.id for g in page.groups] == [ns.a, ns.b]
+        assert [t.entity_id for t in page.groups[0].techs] == [ns.alpha.id, ns.zed.id]
+        assert [t.entity_id for t in page.groups[1].techs] == [ns.beta.id]
+
+
+async def test_unknown_branch_returns_none() -> None:
+    async with _branch_seed() as (Session, ns):
+        async with Session() as s:
+            assert await fetch_branch_page(s, uuid.uuid4()) is None
+
+
+async def test_branch_with_no_technologies_has_empty_group() -> None:
+    from sqlalchemy import delete
+
+    from argos.models.role_assignment import RoleAssignment
+
+    async with _branch_seed() as (Session, ns):
+        async with Session() as s:
+            await s.execute(delete(RoleAssignment).where(RoleAssignment.branch_id == ns.b))
+            await s.commit()
+            page = await fetch_branch_page(s, ns.b)
+        assert page is not None
+        assert len(page.groups) == 1 and page.groups[0].techs == ()

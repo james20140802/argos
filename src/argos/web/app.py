@@ -41,6 +41,7 @@ from argos.web.services.feed import (
 )
 from argos.web.services.portfolio import fetch_portfolio
 from argos.web.services.technology import (
+    fetch_branch_page,
     fetch_event_tech_chips,
     fetch_tech_page,
     resolve_canonical_id,
@@ -841,6 +842,24 @@ def build_web_app(
             return _render_not_found(request)
         return request.app.state.templates.TemplateResponse(
             request, "tech_detail.html", {"tech": tech}
+        )
+
+    @app.get("/branch/{branch_id}", response_class=HTMLResponse)
+    async def branch_detail(
+        request: Request,
+        branch_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        """갈래 페이지 (ARG-320). 없는 갈래·잘못된 주소는 '없음' 화면."""
+        try:
+            parsed_id = uuid.UUID(branch_id)
+        except ValueError:
+            return _render_not_found(request)
+        branch_page = await fetch_branch_page(session, parsed_id)
+        if branch_page is None:
+            return _render_not_found(request)
+        return request.app.state.templates.TemplateResponse(
+            request, "branch_detail.html", {"branch_page": branch_page}
         )
 
     @app.get("/event/{event_id}", response_class=HTMLResponse)

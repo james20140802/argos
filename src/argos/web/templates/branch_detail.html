@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ branch_page.branch.name }} · ARGOS{% endblock %}
+{% block content %}
+{# 갈래 페이지 (ARG-320). 위 갈래는 아래 갈래별로 묶고, 아래 갈래는 자기 기술만. #}
+<article class="detail detail--branch" data-branch-id="{{ branch_page.branch.id }}">
+  <a class="back-link" href="/feed">
+    <svg aria-hidden="true" viewBox="0 0 12 20" width="10" height="17"><path d="M10 2 2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    관측 피드
+  </a>
+
+  <header class="detail-head">
+    <h1 class="detail-title tech-name">{{ branch_page.branch.name }}</h1>
+    {% if branch_page.parent %}
+    <p class="branch-parent"><a href="/branch/{{ branch_page.parent.id }}">{{ branch_page.parent.name }}</a> › {{ branch_page.branch.name }}</p>
+    {% endif %}
+    {% if branch_page.description %}<p class="branch-description">{{ branch_page.description }}</p>{% endif %}
+  </header>
+
+  <div class="branch-groups">
+    {% for group in branch_page.groups %}
+    <section class="branch-group" aria-label="{{ group.branch.name }}">
+      {% if not branch_page.parent %}
+      <h2 class="branch-group__name"><a href="/branch/{{ group.branch.id }}">{{ group.branch.name }}</a></h2>
+      {% endif %}
+      {% if group.techs %}
+      <ul class="branch-techs">
+        {% for t in group.techs %}
+        <li><a href="{{ t.href }}">{{ t.name }}</a></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="branch-empty">아직 이 갈래에 배정된 기술이 없습니다.</p>
+      {% endif %}
+    </section>
+    {% endfor %}
+  </div>
+</article>
+{% endblock %}

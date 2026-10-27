@@ -58,6 +58,31 @@ class TechChip:
 
 
 @dataclass(frozen=True)
+class TechRef:
+    entity_id: uuid.UUID
+    name: str
+
+    @property
+    def href(self) -> str:
+        return f"/tech/{self.entity_id}"
+
+
+@dataclass(frozen=True)
+class BranchGroup:
+    branch: BranchRef
+    techs: tuple[TechRef, ...]
+
+
+@dataclass(frozen=True)
+class BranchPageView:
+    branch: BranchRef
+    parent: Optional[BranchRef]
+    description: str
+    # 위 갈래면 아래 갈래별 그룹, 아래 갈래면 자기 자신 하나.
+    groups: tuple[BranchGroup, ...]
+
+
+@dataclass(frozen=True)
 class TechPageView:
     entity_id: uuid.UUID
     name: str
@@ -218,3 +243,64 @@ async def fetch_event_tech_chips(
             TechChip(entity_id=entity_id, name=name, doc_count=count)
         )
     return chips
+
+
+async def _branch_techs(
+    session: AsyncSession, branch_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, list[TechRef]]:
+    """갈래별 기술 — 배정이 그 갈래이고 대표의 판정이 ``Technology``인 것만, 이름순."""
+    rows = (
+        await session.execute(
+            select(RoleAssignment.branch_id, Entity.id, Entity.name)
+            .join(Entity, Entity.id == RoleAssignment.entity_id)
+            .join(TechnologyProfile, TechnologyProfile.entity_id == Entity.id)
+            .where(
+                RoleAssignment.branch_id.in_(list(branch_ids)),
+                TechnologyProfile.verdict == TechVerdict.TECHNOLOGY,
+                Entity.id.not_in(select(EntityAlias.alias_entity_id)),
+            )
+        )
+    ).all()
+    out: dict[uuid.UUID, list[TechRef]] = {b: [] for b in branch_ids}
+    for branch_id, entity_id, name in rows:
+        out[branch_id].append(TechRef(entity_id=entity_id, name=name))
+    for techs in out.values():
+        techs.sort(key=lambda t: (t.name.casefold(), str(t.entity_id)))
+    return out
+
+
+async def fetch_branch_page(
+    session: AsyncSession, branch_id: uuid.UUID
+) -> Optional[BranchPageView]:
+    """갈래 페이지 — 위 갈래는 아래 갈래별로 묶고, 아래 갈래는 자기 기술만. 없으면 ``None``."""
+    branch = await session.get(RoleBranch, branch_id)
+    if branch is None:
+        return None
+    parent = None
+    if branch.parent_id is not None:
+        p = await session.get(RoleBranch, branch.parent_id)
+        if p is not None:
+            parent = BranchRef(id=p.id, name=p.name)
+    if parent is None and branch.parent_id is None:
+        children = (
+            await session.execute(
+                select(RoleBranch)
+                .where(RoleBranch.parent_id == branch.id)
+                .order_by(RoleBranch.position, RoleBranch.name)
+            )
+        ).scalars().all()
+        targets = list(children)
+    else:
+        targets = [branch]
+    techs = await _branch_techs(session, [b.id for b in targets])
+    return BranchPageView(
+        branch=BranchRef(id=branch.id, name=branch.name),
+        parent=parent,
+        description=branch.description,
+        groups=tuple(
+            BranchGroup(
+                branch=BranchRef(id=b.id, name=b.name), techs=tuple(techs[b.id])
+            )
+            for b in targets
+        ),
+    )

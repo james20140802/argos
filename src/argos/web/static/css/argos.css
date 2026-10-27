@@ -1484,6 +1484,15 @@ code { font: 500 0.92em/1 var(--font-mono); }
 .tech-chip:hover, .tech-chip:focus-visible { text-decoration: underline; }
 .detail-techs { margin-top: 24px; }
 
+/* 갈래 페이지 (ARG-320) */
+.branch-parent { margin: 12px 0 0; font: 600 14px/1.4 var(--font); overflow-wrap: anywhere; }
+.branch-description { margin: 10px 0 0; font: 400 16px/1.5 var(--font); color: var(--muted); overflow-wrap: anywhere; }
+.branch-groups { margin-top: 24px; display: flex; flex-direction: column; flex-wrap: wrap; gap: 20px; }
+.branch-group__name { margin: 0 0 8px; font: 700 16px/1.4 var(--font); overflow-wrap: anywhere; }
+.branch-techs { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.branch-techs li { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.branch-empty { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+
 /* === 9. Accessibility === */
 
 
