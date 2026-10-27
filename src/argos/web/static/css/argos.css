@@ -1494,8 +1494,6 @@ code { font: 500 0.92em/1 var(--font-mono); }
 .branch-empty { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
 
 /* === 9. Accessibility === */
-
-
 @media (prefers-reduced-motion: reduce) {
   /* Gentler, non-vestibular equivalents: fades stay, movement goes. */
   .rise, .feed-list > .card.rise:nth-child(n+7), .timeline-container.is-open .timeline__event {

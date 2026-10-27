@@ -41,6 +41,7 @@ from argos.web.services.feed import (
 )
 from argos.web.services.portfolio import fetch_portfolio
 from argos.web.services.technology import (
+    CARD_CHIP_LIMIT,
     fetch_branch_page,
     fetch_event_tech_chips,
     fetch_tech_page,
@@ -571,7 +572,10 @@ def build_web_app(
         # 기술 칩 (ARG-319): items/hero_id가 다 정해진 뒤 표시용으로만, 한 번에 조회한다.
         event_ids = [i.id for i in items if getattr(i, "kind", "item") == "event"]
         try:
-            tech_chips = await fetch_event_tech_chips(session, event_ids)
+            tech_chips = {
+                event_id: chips[:CARD_CHIP_LIMIT]
+                for event_id, chips in (await fetch_event_tech_chips(session, event_ids)).items()
+            }
         except Exception:
             # 칩은 부가 표시 — 조회 실패가 피드 전체를 깨뜨리지 않게 한다.
             _log.exception("failed to fetch tech chips for feed")
@@ -900,6 +904,8 @@ def build_web_app(
         except Exception:
             _log.exception("failed to fetch tech chips for event %s", parsed_id)
             chips_by_event = {}
+            # 실패한 조회가 트랜잭션을 망가뜨려 아래 Click 기록까지 잃지 않게 한다.
+            await session.rollback()
 
         # Keep/Pass act on the representative document (decision 1), so the
         # action bar renders from its feed-card context like the item page.

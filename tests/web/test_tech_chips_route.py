@@ -245,10 +245,11 @@ def test_event_detail_survives_click_commit_failure(monkeypatch):
     """Click 기록 commit이 실패해도 롤백 후 칩과 함께 200 (ARG-319 최종 리뷰)."""
     rep_id = uuid.uuid4()
     view, chips = _detail_view(rep_id=rep_id), _chips(2)
-    state = {"rolled_back": False, "chips_before_commit": None}
+    state = {"rolled_back": False, "commit_failed": False}
 
-    class _BadSession(_FakeSession):
+    class _FailingCommitSession(_FakeSession):
         async def commit(self) -> None:
+            state["commit_failed"] = True
             raise RuntimeError("commit failed")
 
         async def rollback(self) -> None:
@@ -262,7 +263,7 @@ def test_event_detail_survives_click_commit_failure(monkeypatch):
 
     async def _chips_fn(session, event_ids):
         # 세션이 롤백 필요 상태(commit 실패 후, rollback 전)면 SQLAlchemy는 PendingRollbackError.
-        if not state["rolled_back"] and state.get("commit_failed"):
+        if not state["rolled_back"] and state["commit_failed"]:
             raise RuntimeError("PendingRollbackError")
         return {view.id: chips}
 
@@ -270,11 +271,6 @@ def test_event_detail_survives_click_commit_failure(monkeypatch):
         return {"id": tech_id, "title": "대표", "status": None, "category": None,
                 "image_url": None, "summary": None, "trust_score": None,
                 "source_url": "https://x", "asset_id": None}
-
-    class _Tracking(_BadSession):
-        async def commit(self) -> None:
-            state["commit_failed"] = True
-            raise RuntimeError("commit failed")
 
     client = _client(
         monkeypatch,
@@ -287,13 +283,59 @@ def test_event_detail_survives_click_commit_failure(monkeypatch):
     )
 
     async def _fake_session():
-        yield _Tracking()
+        yield _FailingCommitSession()
 
     client.app.dependency_overrides[_get_session] = _fake_session
     resp = client.get(f"/event/{view.id}")
     assert resp.status_code == 200
+    assert state["commit_failed"] and state["rolled_back"]
     for c in chips:
         assert c.name in resp.text
+
+
+def test_event_detail_chip_failure_rolls_back_before_click_log(monkeypatch):
+    """칩 조회가 실패하면 롤백해 이어지는 Click 기록이 망가진 트랜잭션에 걸리지 않게 한다."""
+    view = _detail_view(rep_id=uuid.uuid4())
+    calls: list[str] = []
+
+    class _OrderSession(_FakeSession):
+        def add(self, obj) -> None:
+            calls.append("add")
+
+        async def rollback(self) -> None:
+            calls.append("rollback")
+
+    async def _resolve(session, event_id):
+        return event_id
+
+    async def _fetch(session, event_id):
+        return view
+
+    async def _boom(session, event_ids):
+        raise RuntimeError("chip query failed")
+
+    async def _ctx(session, tech_id):
+        return {"id": tech_id, "title": "대표", "status": None, "category": None,
+                "image_url": None, "summary": None, "trust_score": None,
+                "source_url": "https://x", "asset_id": None}
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.resolve_event": _resolve,
+            "argos.web.app.fetch_event_detail": _fetch,
+            "argos.web.app.fetch_event_tech_chips": _boom,
+            "argos.web.app._load_feed_card_context": _ctx,
+        },
+    )
+
+    async def _fake_session():
+        yield _OrderSession()
+
+    client.app.dependency_overrides[_get_session] = _fake_session
+    resp = client.get(f"/event/{view.id}")
+    assert resp.status_code == 200
+    assert calls[:2] == ["rollback", "add"]
 
 
 def test_feed_survives_chip_fetch_failure(monkeypatch):

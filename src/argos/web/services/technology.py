@@ -249,6 +249,8 @@ async def _branch_techs(
     session: AsyncSession, branch_ids: Sequence[uuid.UUID]
 ) -> dict[uuid.UUID, list[TechRef]]:
     """갈래별 기술 — 배정이 그 갈래이고 대표의 판정이 ``Technology``인 것만, 이름순."""
+    if not branch_ids:
+        return {}
     rows = (
         await session.execute(
             select(RoleAssignment.branch_id, Entity.id, Entity.name)
@@ -281,7 +283,7 @@ async def fetch_branch_page(
         p = await session.get(RoleBranch, branch.parent_id)
         if p is not None:
             parent = BranchRef(id=p.id, name=p.name)
-    if parent is None and branch.parent_id is None:
+    if branch.parent_id is None:
         children = (
             await session.execute(
                 select(RoleBranch)
