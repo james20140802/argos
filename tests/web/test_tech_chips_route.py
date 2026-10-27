@@ -239,3 +239,71 @@ def test_chip_css_wraps_on_phone_width():
     assert chips_rule and "flex-wrap: wrap" in chips_rule.group(1)
     assert chip_rule and "max-width: 100%" in chip_rule.group(1)
     assert "overflow-wrap: anywhere" in chip_rule.group(1)
+
+
+def test_event_detail_survives_click_commit_failure(monkeypatch):
+    """Click 기록 commit이 실패해도 롤백 후 칩과 함께 200 (ARG-319 최종 리뷰)."""
+    rep_id = uuid.uuid4()
+    view, chips = _detail_view(rep_id=rep_id), _chips(2)
+    state = {"rolled_back": False, "chips_before_commit": None}
+
+    class _BadSession(_FakeSession):
+        async def commit(self) -> None:
+            raise RuntimeError("commit failed")
+
+        async def rollback(self) -> None:
+            state["rolled_back"] = True
+
+    async def _resolve(session, event_id):
+        return event_id
+
+    async def _fetch(session, event_id):
+        return view
+
+    async def _chips_fn(session, event_ids):
+        # 세션이 롤백 필요 상태(commit 실패 후, rollback 전)면 SQLAlchemy는 PendingRollbackError.
+        if not state["rolled_back"] and state.get("commit_failed"):
+            raise RuntimeError("PendingRollbackError")
+        return {view.id: chips}
+
+    async def _ctx(session, tech_id):
+        return {"id": tech_id, "title": "대표", "status": None, "category": None,
+                "image_url": None, "summary": None, "trust_score": None,
+                "source_url": "https://x", "asset_id": None}
+
+    class _Tracking(_BadSession):
+        async def commit(self) -> None:
+            state["commit_failed"] = True
+            raise RuntimeError("commit failed")
+
+    client = _client(
+        monkeypatch,
+        **{
+            "argos.web.app.resolve_event": _resolve,
+            "argos.web.app.fetch_event_detail": _fetch,
+            "argos.web.app.fetch_event_tech_chips": _chips_fn,
+            "argos.web.app._load_feed_card_context": _ctx,
+        },
+    )
+
+    async def _fake_session():
+        yield _Tracking()
+
+    client.app.dependency_overrides[_get_session] = _fake_session
+    resp = client.get(f"/event/{view.id}")
+    assert resp.status_code == 200
+    for c in chips:
+        assert c.name in resp.text
+
+
+def test_feed_survives_chip_fetch_failure(monkeypatch):
+    ev = _event_entry()
+    client = _feed_client(monkeypatch, [ev], {})
+
+    async def _boom(session, event_ids):
+        raise RuntimeError("chip query failed")
+
+    monkeypatch.setattr("argos.web.app.fetch_event_tech_chips", _boom)
+    resp = client.get("/feed")
+    assert resp.status_code == 200
+    assert 'class="tech-chips"' not in _card_html(resp.text, ev.id)

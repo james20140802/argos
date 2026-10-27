@@ -333,6 +333,7 @@ async def _branch_seed():
     from sqlalchemy.pool import NullPool
 
     from argos.models.entity import Entity
+    from argos.models.entity_alias import AliasRule, EntityAlias
     from argos.models.role_assignment import RoleAssignment
     from argos.models.role_branch import RoleBranch
     from argos.models.technology_profile import TechnologyProfile, TechVerdict
@@ -367,6 +368,15 @@ async def _branch_seed():
             ns.alpha = await tech("Alpha", a)
             ns.beta = await tech("beta", b, TechVerdict.TECHNOLOGY)
             ns.company = await tech("acme", a, TechVerdict.NOT_TECHNOLOGY)
+            ns.insufficient = await tech("thin", a, TechVerdict.INSUFFICIENT)
+            ns.alias = await tech("zedalias", a)  # zed의 별칭 — 목록에 나오면 안 된다
+            s.add(
+                EntityAlias(
+                    alias_entity_id=ns.alias.id,
+                    canonical_entity_id=ns.zed.id,
+                    rule=AliasRule.MANUAL,
+                )
+            )
             await s.commit()
         ns.top, ns.a, ns.b, ns.sfx = top.id, a.id, b.id, sfx
         yield Session, ns
@@ -418,3 +428,14 @@ async def test_branch_with_no_technologies_has_empty_group() -> None:
             page = await fetch_branch_page(s, ns.b)
         assert page is not None
         assert len(page.groups) == 1 and page.groups[0].techs == ()
+
+
+async def test_branch_excludes_alias_and_insufficient_entities() -> None:
+    async with _branch_seed() as (Session, ns):
+        async with Session() as s:
+            page = await fetch_branch_page(s, ns.a)
+        assert page is not None
+        ids = [t.entity_id for t in page.groups[0].techs]
+        assert ns.alias.id not in ids
+        assert ns.insufficient.id not in ids
+        assert ids == [ns.alpha.id, ns.zed.id]

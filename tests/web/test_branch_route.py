@@ -125,3 +125,11 @@ def test_branch_mobile_css():
         block = css[css.index(selector):]
         block = block[: block.index("}")]
         assert "overflow-wrap: anywhere" in block, selector
+
+
+def test_top_branch_without_children_shows_empty_message(monkeypatch):
+    top = BranchRef(id=uuid.uuid4(), name="위 갈래")
+    view = BranchPageView(branch=top, parent=None, description="설명", groups=())
+    resp = _client(monkeypatch, branch=view).get(f"/branch/{top.id}")
+    assert resp.status_code == 200
+    assert "아직 이 갈래에 속한 기술이 없습니다." in resp.text

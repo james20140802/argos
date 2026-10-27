@@ -570,7 +570,12 @@ def build_web_app(
                 hero_id = items[0].id
         # 기술 칩 (ARG-319): items/hero_id가 다 정해진 뒤 표시용으로만, 한 번에 조회한다.
         event_ids = [i.id for i in items if getattr(i, "kind", "item") == "event"]
-        tech_chips = await fetch_event_tech_chips(session, event_ids)
+        try:
+            tech_chips = await fetch_event_tech_chips(session, event_ids)
+        except Exception:
+            # 칩은 부가 표시 — 조회 실패가 피드 전체를 깨뜨리지 않게 한다.
+            _log.exception("failed to fetch tech chips for feed")
+            tech_chips = {}
         return request.app.state.templates.TemplateResponse(
             request,
             template_name,
@@ -888,6 +893,14 @@ def build_web_app(
         if event is None:
             return _render_not_found(request)
 
+        # 기술 칩(ARG-319): Click 기록 commit보다 먼저 조회한다 — commit이 실패해도
+        # 세션이 롤백 필요 상태가 되기 전에 읽는다. 칩 실패는 상세를 깨뜨리지 않는다.
+        try:
+            chips_by_event = await fetch_event_tech_chips(session, [parsed_id])
+        except Exception:
+            _log.exception("failed to fetch tech chips for event %s", parsed_id)
+            chips_by_event = {}
+
         # Keep/Pass act on the representative document (decision 1), so the
         # action bar renders from its feed-card context like the item page.
         rep_item = None
@@ -907,6 +920,10 @@ def build_web_app(
                 await session.commit()
             except Exception:
                 _log.exception("failed to record Click feed_event for event %s", parsed_id)
+                try:
+                    await session.rollback()
+                except Exception:
+                    _log.exception("rollback after Click feed_event failure also failed")
 
         from types import SimpleNamespace
 
@@ -917,9 +934,7 @@ def build_web_app(
                 "event": event,
                 "item": SimpleNamespace(**rep_item) if rep_item else None,
                 "action_context": "event",
-                "tech_chips": (await fetch_event_tech_chips(session, [parsed_id])).get(
-                    parsed_id, []
-                ),
+                "tech_chips": chips_by_event.get(parsed_id, []),
             },
         )
 
