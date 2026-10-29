@@ -288,7 +288,7 @@ def test_brief_parser_accepts_config_flag(tmp_path) -> None:
     with patch(
         "argos.slack.briefing.dispatch_daily_briefing",
         new=AsyncMock(return_value=None),
-    ):
+    ), patch("argos.cli._send_push_briefing", return_value=True):
         rc = main(["brief", "--config", str(cfg_file)])
 
     assert rc == 0
@@ -399,7 +399,7 @@ def test_plist_program_arguments_roundtrip_through_brief_parser(
     with patch(
         "argos.slack.briefing.dispatch_daily_briefing",
         new=AsyncMock(return_value=None),
-    ):
+    ), patch("argos.cli._send_push_briefing", return_value=True):
         rc = main(cli_argv)
 
     assert rc == 0
@@ -997,7 +997,7 @@ def test_brief_without_weekly_dispatches_daily() -> None:
 
     with patch("argos.slack.briefing.dispatch_daily_briefing", new=daily), patch(
         "argos.slack.briefing.dispatch_weekly_briefing", new=weekly
-    ):
+    ), patch("argos.cli._send_push_briefing", return_value=True):
         rc = main(["brief"])
 
     assert rc == 0
@@ -1018,3 +1018,68 @@ def test_brief_weekly_with_channel_override() -> None:
     weekly.assert_awaited_once()
     call_kwargs = weekly.await_args.kwargs
     assert call_kwargs.get("channel") == "C123"
+
+
+# ---------------------------------------------------------------------------
+# ARG-321: `argos brief` pushes the morning digest first, independently of Slack.
+# ---------------------------------------------------------------------------
+
+
+def test_brief_push_only_skips_slack() -> None:
+    slack = AsyncMock(return_value="1.0")
+    with patch("argos.slack.briefing.dispatch_daily_briefing", new=slack), patch(
+        "argos.cli._send_push_briefing", return_value=True
+    ) as push:
+        rc = main(["brief", "--push-only"])
+    assert rc == 0
+    push.assert_called_once()
+    slack.assert_not_called()
+
+
+def test_brief_push_only_reports_failure_exit_code() -> None:
+    with patch("argos.cli._send_push_briefing", return_value=False):
+        assert main(["brief", "--push-only"]) == 1
+
+
+def test_brief_push_crash_does_not_block_slack(capsys) -> None:
+    slack = AsyncMock(return_value="1.0")
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    with patch("argos.slack.briefing.dispatch_daily_briefing", new=slack), patch(
+        "argos.web.services.push_briefing.dispatch_push_briefing", new=boom
+    ), patch("argos.web.push.load_or_create_vapid", return_value=object()):
+        rc = main(["brief"])
+    assert rc == 0
+    slack.assert_awaited_once()
+    assert "Push briefing failed: RuntimeError: db down" in capsys.readouterr().out
+
+
+def test_brief_weekly_does_not_push() -> None:
+    with patch(
+        "argos.slack.briefing.dispatch_weekly_briefing", new=AsyncMock(return_value="1.0")
+    ), patch("argos.cli._send_push_briefing") as push:
+        assert main(["brief", "--weekly"]) == 0
+    push.assert_not_called()
+
+
+def test_push_briefing_releases_db_connections_before_slack() -> None:
+    """The push runs in its own asyncio.run(); its pooled connections must be
+    disposed so the Slack briefing's later asyncio.run() can't reuse one bound
+    to the closed loop."""
+    from argos import database
+    from argos.cli import _send_push_briefing
+    from datetime import datetime, timezone
+
+    from argos.web.services.push_briefing import PushBriefingResult
+
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock()
+    result = PushBriefingResult(window_start=datetime.now(timezone.utc), digest=None)
+    with patch.object(database, "engine", new=fake_engine), patch(
+        "argos.web.services.push_briefing.dispatch_push_briefing",
+        new=AsyncMock(return_value=result),
+    ), patch("argos.web.push.load_or_create_vapid", return_value=object()):
+        assert _send_push_briefing() is True
+    fake_engine.dispose.assert_awaited_once()
