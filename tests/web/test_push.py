@@ -183,6 +183,17 @@ def test_push_key_route_returns_public_key(client):
     assert resp.headers["cache-control"] == "no-store"
 
 
+def test_push_key_follows_key_file_rotation(client, _key_file):
+    first = client.get("/push/key").json()["publicKey"]
+    assert client.get("/push/key").json()["publicKey"] == first  # cached
+
+    _key_file.unlink()  # rotation: delete → regenerated on next use
+    second = client.get("/push/key").json()["publicKey"]
+    assert second != first
+    # The briefing process reads the same file, so both sides agree.
+    assert second == push.public_key_b64(push.load_or_create_vapid())
+
+
 def test_subscribe_upserts_with_device_label(client, monkeypatch):
     seen = {}
 

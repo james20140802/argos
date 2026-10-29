@@ -1406,10 +1406,21 @@ def build_web_app(
     def _vapid():
         from argos.web.push import default_key_path, load_or_create_vapid
 
+        # Keyed by path + mtime (like the web token): a rotated or deleted
+        # key file must not leave /push/key handing out a public key that no
+        # longer matches what `argos brief` signs with.
         path = default_key_path()
+
+        def _stamp():
+            try:
+                return path.stat().st_mtime_ns
+            except FileNotFoundError:
+                return None
+
         cached = _vapid_cache.get("key")
-        if cached is None or cached[0] != path:
-            cached = (path, load_or_create_vapid(path))
+        if cached is None or cached[0] != (path, _stamp()):
+            vapid = load_or_create_vapid(path)  # recreates a deleted file
+            cached = ((path, _stamp()), vapid)
             _vapid_cache["key"] = cached
         return cached[1]
 
