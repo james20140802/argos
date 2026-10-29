@@ -10,6 +10,19 @@ This history was reconstructed retroactively from annotated release tags
 (`git tag -n99`) and their commit ranges; entries before this file existed may be
 less granular than future ones.
 
+## [0.7.1] — 2026-10-29
+
+Re-summarizing old events no longer stalls on one-article events with English
+headline titles. 2 commits since v0.7.0.
+
+### Fixed
+- `argos resummarize-events` no longer skips one-article events whose title
+  pieces ("Build Datasets", "Letting Large Models Debate") were demanded
+  verbatim in the Korean summary. Real product and company names (ChatGPT,
+  GPT-4.1, Hugging Face) must still stay in English, including when the title is
+  the name itself. The check only gets narrower; no name that was optional
+  becomes required (ARG-326).
+
 ## [0.7.0] — 2026-10-29
 
 A morning push notification with today's events on each device that turns it
