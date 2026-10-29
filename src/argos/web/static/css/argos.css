@@ -1462,6 +1462,37 @@ code { font: 500 0.92em/1 var(--font-mono); }
 ::view-transition-old(*),
 ::view-transition-new(*) { height: 100%; object-fit: cover; overflow: clip; }
 
+/* 기술 페이지 (ARG-318) — 375px에서도 가로 스크롤이 없도록 줄바꿈을 허용한다. */
+.tech-name { overflow-wrap: anywhere; }
+.tech-description { margin: 10px 0 0; font: 400 16px/1.5 var(--font); color: var(--muted); overflow-wrap: anywhere; }
+.tech-path { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin: 12px 0 0; font: 600 14px/1.4 var(--font); }
+.tech-path__branch { overflow-wrap: anywhere; }
+.tech-path__sep { color: var(--muted); }
+.tech-path--none .tech-path__branch { color: var(--muted); }
+.tech-aliases { margin: 10px 0 0; font: 400 14px/1.4 var(--font); color: var(--muted); overflow-wrap: anywhere; }
+.tech-events { margin-top: 24px; }
+.tech-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; flex-wrap: wrap; gap: 12px; }
+.tech-timeline__item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.tech-timeline__date { font: 600 13px/1.4 var(--font); color: var(--muted); }
+.tech-timeline__title { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.tech-empty { color: var(--muted); }
+
+/* 기술 칩 (ARG-319) — 375px에서도 가로 스크롤이 없도록 줄바꿈하고 폭을 고정하지 않는다. */
+.tech-chips { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.tech-chips li { min-width: 0; max-width: 100%; }
+.tech-chip { display: inline-block; max-width: 100%; padding: 3px 10px; border-radius: 999px; background: var(--surface-2, rgba(127,127,127,.14)); color: inherit; font: 600 13px/1.4 var(--font); text-decoration: none; overflow-wrap: anywhere; }
+.tech-chip:hover, .tech-chip:focus-visible { text-decoration: underline; }
+.detail-techs { margin-top: 24px; }
+
+/* 갈래 페이지 (ARG-320) */
+.branch-parent { margin: 12px 0 0; font: 600 14px/1.4 var(--font); overflow-wrap: anywhere; }
+.branch-description { margin: 10px 0 0; font: 400 16px/1.5 var(--font); color: var(--muted); overflow-wrap: anywhere; }
+.branch-groups { margin-top: 24px; display: flex; flex-direction: column; flex-wrap: wrap; gap: 20px; }
+.branch-group__name { margin: 0 0 8px; font: 700 16px/1.4 var(--font); overflow-wrap: anywhere; }
+.branch-techs { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.branch-techs li { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.branch-empty { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+
 /* === 9. Accessibility === */
 @media (prefers-reduced-motion: reduce) {
   /* Gentler, non-vestibular equivalents: fades stay, movement goes. */

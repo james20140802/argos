@@ -1,4 +1,4 @@
-{% from "_macros.html" import cover, source_stack %}
+{% from "_macros.html" import cover, source_stack, tech_chips as render_tech_chips %}
 {# Single feed card — the source of truth for both the initial feed list
    (_feed_items.html loops + includes this) and the HTMX Keep/Pass action
    swaps returned by POST /items/{id}/keep|pass (ARG-136 / ARG-139).
@@ -61,6 +61,9 @@
     {% if item.summary %}
     <p class="summary">{{ item.summary }}</p>
     {% endif %}
+    {# 기술 칩 (ARG-319): 사건 카드만. 상한(CARD_CHIP_LIMIT)은 피드 라우트가 잘라 넘긴다.
+       Keep/Pass 재렌더에는 컨텍스트가 없다. #}
+    {% if is_event %}{{ render_tech_chips((tech_chips | default({})).get(item.id, [])) }}{% endif %}
     {% set is_kept = item.status and item.status.value == 'Keep' %}
     {% set is_passed = item.status and item.status.value == 'Archived' %}
     {# ``active=1`` tells the toggle route the button was rendered pressed, so a

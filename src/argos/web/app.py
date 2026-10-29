@@ -40,6 +40,13 @@ from argos.web.services.feed import (
     select_hero,
 )
 from argos.web.services.portfolio import fetch_portfolio
+from argos.web.services.technology import (
+    CARD_CHIP_LIMIT,
+    fetch_branch_page,
+    fetch_event_tech_chips,
+    fetch_tech_page,
+    resolve_canonical_id,
+)
 from argos.web.services.settings import (
     EDITABLE_FIELDS,
     apply_settings,
@@ -562,6 +569,17 @@ def build_web_app(
             # is the genuinely newest story.
             if hero_id is None:
                 hero_id = items[0].id
+        # 기술 칩 (ARG-319): items/hero_id가 다 정해진 뒤 표시용으로만, 한 번에 조회한다.
+        event_ids = [i.id for i in items if getattr(i, "kind", "item") == "event"]
+        try:
+            tech_chips = {
+                event_id: chips[:CARD_CHIP_LIMIT]
+                for event_id, chips in (await fetch_event_tech_chips(session, event_ids)).items()
+            }
+        except Exception:
+            # 칩은 부가 표시 — 조회 실패가 피드 전체를 깨뜨리지 않게 한다.
+            _log.exception("failed to fetch tech chips for feed")
+            tech_chips = {}
         return request.app.state.templates.TemplateResponse(
             request,
             template_name,
@@ -574,6 +592,7 @@ def build_web_app(
                 "hero_id": hero_id,
                 "activity": activity,
                 "latest_cursor": latest_cursor,
+                "tech_chips": tech_chips,
             },
         )
 
@@ -809,6 +828,49 @@ def build_web_app(
         response.headers["Vary"] = "Referer"
         return response
 
+    @app.get("/tech/{entity_id}", response_class=HTMLResponse)
+    async def tech_detail(
+        request: Request,
+        entity_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        """기술 페이지 (ARG-318). 다른 이름으로 들어와도 대표 이름 주소로 옮긴다."""
+        try:
+            parsed_id = uuid.UUID(entity_id)
+        except ValueError:
+            return _render_not_found(request)
+
+        canonical_id = await resolve_canonical_id(session, parsed_id)
+        if canonical_id is None:
+            return _render_not_found(request)
+        if canonical_id != parsed_id:
+            return RedirectResponse(url=f"/tech/{canonical_id}", status_code=307)
+
+        tech = await fetch_tech_page(session, canonical_id)
+        if tech is None:
+            return _render_not_found(request)
+        return request.app.state.templates.TemplateResponse(
+            request, "tech_detail.html", {"tech": tech}
+        )
+
+    @app.get("/branch/{branch_id}", response_class=HTMLResponse)
+    async def branch_detail(
+        request: Request,
+        branch_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        """갈래 페이지 (ARG-320). 없는 갈래·잘못된 주소는 '없음' 화면."""
+        try:
+            parsed_id = uuid.UUID(branch_id)
+        except ValueError:
+            return _render_not_found(request)
+        branch_page = await fetch_branch_page(session, parsed_id)
+        if branch_page is None:
+            return _render_not_found(request)
+        return request.app.state.templates.TemplateResponse(
+            request, "branch_detail.html", {"branch_page": branch_page}
+        )
+
     @app.get("/event/{event_id}", response_class=HTMLResponse)
     async def event_detail(
         request: Request,
@@ -835,6 +897,16 @@ def build_web_app(
         if event is None:
             return _render_not_found(request)
 
+        # 기술 칩(ARG-319): Click 기록 commit보다 먼저 조회한다 — commit이 실패해도
+        # 세션이 롤백 필요 상태가 되기 전에 읽는다. 칩 실패는 상세를 깨뜨리지 않는다.
+        try:
+            chips_by_event = await fetch_event_tech_chips(session, [parsed_id])
+        except Exception:
+            _log.exception("failed to fetch tech chips for event %s", parsed_id)
+            chips_by_event = {}
+            # 실패한 조회가 트랜잭션을 망가뜨려 아래 Click 기록까지 잃지 않게 한다.
+            await session.rollback()
+
         # Keep/Pass act on the representative document (decision 1), so the
         # action bar renders from its feed-card context like the item page.
         rep_item = None
@@ -854,6 +926,10 @@ def build_web_app(
                 await session.commit()
             except Exception:
                 _log.exception("failed to record Click feed_event for event %s", parsed_id)
+                try:
+                    await session.rollback()
+                except Exception:
+                    _log.exception("rollback after Click feed_event failure also failed")
 
         from types import SimpleNamespace
 
@@ -864,6 +940,7 @@ def build_web_app(
                 "event": event,
                 "item": SimpleNamespace(**rep_item) if rep_item else None,
                 "action_context": "event",
+                "tech_chips": chips_by_event.get(parsed_id, []),
             },
         )
 

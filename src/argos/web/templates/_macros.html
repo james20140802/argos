@@ -62,3 +62,16 @@
   <span class="source-stack__label">출처 {{ n }}곳{% if doc_count > n %}<span class="source-stack__docs"> 기사 {{ doc_count }}건</span>{% endif %}</span>
 </p>
 {%- endmacro %}
+
+
+{# 기술 칩 (ARG-319) — 사건에 등장한 기술. 칩이 없으면 아무것도 출력하지 않는다
+   (빈 영역도 남기지 않음). 칩은 /tech/<대표 id>로 간다. #}
+{% macro tech_chips(chips) %}
+{%- if chips -%}
+<ul class="tech-chips" aria-label="기술">
+  {%- for chip in chips %}
+  <li><a class="tech-chip" href="{{ chip.href }}">{{ chip.name }}</a></li>
+  {%- endfor %}
+</ul>
+{%- endif -%}
+{%- endmacro %}
