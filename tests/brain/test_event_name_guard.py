@@ -134,6 +134,86 @@ def test_no_names_or_no_titles_means_nothing_required():
     assert missing_names("anything", []) == []
 
 
+def test_headline_fragments_are_not_required():
+    """소급 실측(2026-10-29): 헤드라인 조각이 필수로 걸려 기사 1건 사건이 두 번 다 실패하던 것."""
+    title = "Letting Large Models Debate: The First Multilingual LLM Debate Competition"
+    body = "We let large models debate each other. Each LLM argues in turn; the debate is judged."
+    required = required_names(
+        [["Letting Large Models Debate", "Debate Competition", "LLM"]],
+        f"{title}\n{body}",
+        titles=[title],
+    )
+    assert required == ["LLM"]
+    assert missing_names("다국어 LLM 토론 대회가 열렸다", required) == []
+
+
+def test_marked_name_inside_a_fragment_is_kept_as_its_core():
+    title = "Personalize ChatGPT with custom instructions"
+    required = required_names(
+        [["Personalize ChatGPT", "ChatGPT"]],
+        f"{title}\nCustom instructions arrive for every plan.",
+        titles=[title],
+    )
+    assert required == ["ChatGPT"]
+
+
+def test_plain_name_needs_the_same_spelling_outside_the_title():
+    title = "Rearchitecting Hugging Face Uploads and Downloads"
+    body = "Hugging Face moved storage to Xet. Faster downloads for everyone."
+    required = required_names(
+        [["Rearchitecting Hugging Face Uploads", "Downloads", "Hugging Face"]],
+        f"{title}\n{body}",
+        titles=[title],
+    )
+    # 조각: 제목 밖에 없음 / Downloads: 소문자 꼴(downloads)이 본문에 있음 → 일반어
+    assert required == ["Hugging Face"]
+
+
+def test_title_that_is_itself_the_name_still_counts_body_mentions():
+    """Codex P2(PR #155): 제목이 곧 이름이면 제목을 지울 때 본문 언급까지 지워지면 안 된다."""
+    required = required_names(
+        [["Hugging Face"]],
+        "Hugging Face\nHugging Face released a new model.",
+        titles=["Hugging Face"],
+    )
+    assert required == ["Hugging Face"]
+    # 제목 사본뿐이면(본문 언급 없음) 여전히 조각과 같은 취급이다.
+    assert required_names([["Hugging Face"]], "Hugging Face\nA new model.", titles=["Hugging Face"]) == []
+
+
+def test_quantities_and_hyphen_words_are_not_proper_names():
+    title = "Train 400x faster Static Embedding Models with Long-context Retrieval"
+    body = "Static embedding models with long-context retrieval train 400x faster."
+    required = required_names(
+        [["Train 400x", "Long-context", "Long-context Retrieval"]],
+        f"{title}\n{body}",
+        titles=[title],
+    )
+    assert required == []
+
+
+def test_dotted_and_numbered_names_are_kept_even_with_a_short_body():
+    """본문이 짧아 이름이 제목에만 있어도, 철자로 드러나는 이름은 남는다."""
+    required = required_names(
+        [["Welcome Fireworks.ai", "GPT-4.1"]],
+        "Welcome Fireworks.ai serving GPT-4.1",
+        titles=["Welcome Fireworks.ai serving GPT-4.1"],
+    )
+    assert required == ["Fireworks.ai", "GPT-4.1"]
+
+
+def test_fragment_filter_never_promotes_a_name_that_was_not_required():
+    """조각이 빠진 자리를 상위 3개 밖 이름이 채우지 않는다 — 검증은 줄기만 한다."""
+    title = "Build Datasets A Better Way Execute Actions with Gradio"
+    body = "Gradio ships it. Gradio again."
+    required = required_names(
+        [["Build Datasets", "A Better Way", "Execute Actions", "Gradio"]],
+        f"{title}\n{body}",
+        titles=[title],
+    )
+    assert required == []
+
+
 def test_per_doc_budget_splits_and_clamps():
     assert per_doc_budget(budget=60_000, n_docs=4, floor=1500, cap=6000) == 6000
     assert per_doc_budget(budget=60_000, n_docs=20, floor=1500, cap=6000) == 3000

@@ -193,6 +193,90 @@ _LOWER_SUFFIX_RE = re.compile(r"-[a-z]+$")
 MAX_REQUIRED_NAMES = 3
 """영어 원문 그대로 남아야 하는 이름 수 상한. 많이 걸수록 재생성이 잦아진다."""
 
+_POSSESSIVE_RE = re.compile(r"[’']s$")
+_NUMBER_TOKEN_RE = re.compile(r"\d[\d.,]*[A-Za-z]{0,2}")
+"""``90``·``400x``·``4M``·``256M`` — 수량은 번역돼도 정당하다('400만')."""
+_INNER_UPPER_RE = re.compile(r"[A-Za-z0-9][A-Z]")
+"""낱말 안쪽 대문자. 하이픈 뒤 대문자(``Text-to-Image``·``Real-Time``)는 헤드라인 표기라 뺀다."""
+_DOTTED_RE = re.compile(r"[A-Za-z]\.[A-Za-z0-9]")
+
+
+def _is_marked_token(token: str) -> bool:
+    """철자만 봐도 고유명인 낱말: 안쪽 대문자(ChatGPT·TRL), 숫자(GPT-4.1·R1), 점(Fireworks.ai).
+
+    하이픈만으로는 아니다 — ``Long-context``·``Open-source``는 일반어다.
+    """
+    if not _LATIN_RE.search(token) or _NUMBER_TOKEN_RE.fullmatch(token):
+        return False
+    return bool(
+        _INNER_UPPER_RE.search(token) or any(c.isdigit() for c in token) or _DOTTED_RE.search(token)
+    )
+
+
+def _count_as_word(needle: str, haystack: str) -> int:
+    """낱말 단위로 대소문자 그대로 센다. ``openai.com``·``llm-course`` 같은 주소·식별자 속은 뺀다."""
+    pattern = rf"(?<![\w./@-]){re.escape(needle)}(?![\w-]|[./]\w)"
+    return len(re.findall(pattern, haystack))
+
+
+def _appears_as_word(needle: str, haystack: str) -> bool:
+    return _count_as_word(needle, haystack) > 0
+
+
+def _appears_outside_titles(name: str, evidence: str, titles: Sequence[str]) -> bool:
+    """제목 사본 몫을 빼고도 근거에 같은 철자로 남는가.
+
+    제목 문자열을 근거에서 지우면 제목이 곧 이름인 경우(``Hugging Face``) 본문의
+    같은 이름까지 다 지워진다(Codex P2, PR #155). 그래서 지우지 않고 센다: 근거 속
+    이름 수에서 (제목 사본 수 x 그 제목 속 이름 수)를 뺀다. 제목 사본은 제목이 한 줄을
+    통째로 차지한 경우만 — 근거 머리(``[1] 제목``)와 본문 첫 줄(``본문: 제목``)이다.
+    """
+    in_titles = sum(
+        len(
+            re.findall(
+                rf"^(?:\[\d+\] |본문: )?{re.escape(title)}[ \t]*$",
+                evidence,
+                flags=re.IGNORECASE | re.MULTILINE,
+            )
+        )
+        * _count_as_word(name, title)
+        for title in {title.lower(): title for title in titles}.values()
+    )
+    return _count_as_word(name, evidence) > in_titles
+
+
+def _name_core(name: str, evidence: str, titles: Sequence[str]) -> str | None:
+    """제목에서 뽑힌 이름의 '고유명 핵심'. 헤드라인 조각이면 ``None``.
+
+    영어 헤드라인은 낱말마다 대문자라 이름 추출이 ``Letting Large Models Debate``·
+    ``Build Datasets``·``Personalize ChatGPT`` 같은 조각을 이름으로 저장한다. 모델은
+    이런 조각을 한국어로 풀어 쓰므로 필수로 걸면 두 번 다 실패한다(2026-10-29 소급
+    실측: 기사 1건 사건 45건 중 41건). 그래서:
+
+    - 철자로 고유명이 드러나는 낱말이 있으면 그 첫 연속 구간만 남긴다
+      (``Personalize ChatGPT`` -> ``ChatGPT``, ``Welcome Fireworks.ai`` -> ``Fireworks.ai``).
+    - 그런 낱말이 없으면(``Hugging Face``·``Build Datasets``) 제목 밖 근거에 같은
+      철자로 나올 때만 남긴다 — 헤드라인 조각은 본문에 그대로 다시 나오지 않는다.
+      그래도 소문자 꼴이 근거에 따로 나오면 일반어다(``Downloads``·``Long-context``).
+      철자 표시가 있는 이름에는 이 검사를 걸지 않는다 — ``openai`` 같은 소문자 표기가
+      흔한 브랜드까지 빠진다.
+    """
+    tokens = [_POSSESSIVE_RE.sub("", token) for token in name.split()]
+    marked = [_is_marked_token(token) for token in tokens]
+    if any(marked):
+        start = marked.index(True)
+        end = start
+        while end + 1 < len(tokens) and marked[end + 1]:
+            end += 1
+        core = " ".join(tokens[start : end + 1])
+    else:
+        core = " ".join(tokens)
+        if not _appears_outside_titles(core, evidence, titles):
+            return None
+        if core != core.lower() and _appears_as_word(core.lower(), evidence):
+            return None
+    return core if len(core) >= 2 else None
+
 
 def required_names(
     doc_names: Sequence[Iterable[str]],
@@ -216,9 +300,13 @@ def required_names(
     걸려 모델의 정당한 번역('러시아')이 실패로 처리됐다. 그래서 **사건 중심 이름**
     — 제목이 있는 기사 중 과반(``ceil(n/2)``)의 제목에 나오는 이름 — 만 고른다.
     기사가 한 건이면 그 제목에 나온 이름 그대로다.
+
+    마지막으로 헤드라인 조각을 걸러 고유명 핵심만 남긴다(:func:`_name_core`).
+    이름을 늘리지 않고 줄이기만 한다 — 핵심은 원래 이름의 일부다.
     """
     evidence = evidence_text.lower()
-    lowered_titles = [t for t in ((title or "").strip().lower() for title in titles) if t]
+    raw_titles = [t for t in ((title or "").strip() for title in titles) if t]
+    lowered_titles = [t.lower() for t in raw_titles]
     quorum = -(-len(lowered_titles) // 2)  # ceil(n/2)
     counts: dict[str, int] = {}
     spelling: dict[str, str] = {}
@@ -246,7 +334,14 @@ def required_names(
     def rank(key: str) -> tuple[int, int]:
         return (-counts[key], first_seen[key])
 
-    return [spelling[key] for key in sorted(counts, key=rank)[:limit]]
+    # 핵심 거르기는 상위 ``limit``개를 고른 **뒤에** 한다. 먼저 거르면 조각이 비운
+    # 자리에 예전엔 필수가 아니던 이름이 올라와 검증이 오히려 넓어진다.
+    required: list[str] = []
+    for key in sorted(counts, key=rank)[:limit]:
+        core = _name_core(spelling[key], evidence_text, raw_titles)
+        if core is not None and core.lower() not in (name.lower() for name in required):
+            required.append(core)
+    return required
 
 
 def missing_names(output_text: str, required: Sequence[str]) -> list[str]:
