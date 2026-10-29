@@ -5,6 +5,7 @@ from argos.models.entity import Entity, EventEntity
 from argos.models.entity_alias import EntityAlias
 from argos.models.event_document import EventDocument
 from argos.models.feed_event import FeedEvent
+from argos.models.push import PushDispatch, PushSubscription
 from argos.models.role_assignment import RoleAssignment
 from argos.models.role_branch import RoleBranch
 from argos.models.tech_event import TechEvent
@@ -23,6 +24,8 @@ __all__ = [
     "EventEntity",
     "EventDocument",
     "FeedEvent",
+    "PushDispatch",
+    "PushSubscription",
     "RoleAssignment",
     "RoleBranch",
     "TechEvent",
