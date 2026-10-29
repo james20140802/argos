@@ -213,13 +213,39 @@ def _is_marked_token(token: str) -> bool:
     )
 
 
-def _appears_as_word(needle: str, haystack: str) -> bool:
-    """낱말 단위로 대소문자 그대로 찾는다. ``openai.com``·``llm-course`` 같은 주소·식별자 속은 뺀다."""
+def _count_as_word(needle: str, haystack: str) -> int:
+    """낱말 단위로 대소문자 그대로 센다. ``openai.com``·``llm-course`` 같은 주소·식별자 속은 뺀다."""
     pattern = rf"(?<![\w./@-]){re.escape(needle)}(?![\w-]|[./]\w)"
-    return re.search(pattern, haystack) is not None
+    return len(re.findall(pattern, haystack))
 
 
-def _name_core(name: str, evidence: str, outside_titles: str) -> str | None:
+def _appears_as_word(needle: str, haystack: str) -> bool:
+    return _count_as_word(needle, haystack) > 0
+
+
+def _appears_outside_titles(name: str, evidence: str, titles: Sequence[str]) -> bool:
+    """제목 사본 몫을 빼고도 근거에 같은 철자로 남는가.
+
+    제목 문자열을 근거에서 지우면 제목이 곧 이름인 경우(``Hugging Face``) 본문의
+    같은 이름까지 다 지워진다(Codex P2, PR #155). 그래서 지우지 않고 센다: 근거 속
+    이름 수에서 (제목 사본 수 x 그 제목 속 이름 수)를 뺀다. 제목 사본은 제목이 한 줄을
+    통째로 차지한 경우만 — 근거 머리(``[1] 제목``)와 본문 첫 줄(``본문: 제목``)이다.
+    """
+    in_titles = sum(
+        len(
+            re.findall(
+                rf"^(?:\[\d+\] |본문: )?{re.escape(title)}[ \t]*$",
+                evidence,
+                flags=re.IGNORECASE | re.MULTILINE,
+            )
+        )
+        * _count_as_word(name, title)
+        for title in {title.lower(): title for title in titles}.values()
+    )
+    return _count_as_word(name, evidence) > in_titles
+
+
+def _name_core(name: str, evidence: str, titles: Sequence[str]) -> str | None:
     """제목에서 뽑힌 이름의 '고유명 핵심'. 헤드라인 조각이면 ``None``.
 
     영어 헤드라인은 낱말마다 대문자라 이름 추출이 ``Letting Large Models Debate``·
@@ -245,7 +271,7 @@ def _name_core(name: str, evidence: str, outside_titles: str) -> str | None:
         core = " ".join(tokens[start : end + 1])
     else:
         core = " ".join(tokens)
-        if not _appears_as_word(core, outside_titles):
+        if not _appears_outside_titles(core, evidence, titles):
             return None
         if core != core.lower() and _appears_as_word(core.lower(), evidence):
             return None
@@ -281,9 +307,6 @@ def required_names(
     evidence = evidence_text.lower()
     raw_titles = [t for t in ((title or "").strip() for title in titles) if t]
     lowered_titles = [t.lower() for t in raw_titles]
-    outside_titles = evidence_text
-    for title in sorted(raw_titles, key=len, reverse=True):
-        outside_titles = re.sub(re.escape(title), " ", outside_titles, flags=re.IGNORECASE)
     quorum = -(-len(lowered_titles) // 2)  # ceil(n/2)
     counts: dict[str, int] = {}
     spelling: dict[str, str] = {}
@@ -315,7 +338,7 @@ def required_names(
     # 자리에 예전엔 필수가 아니던 이름이 올라와 검증이 오히려 넓어진다.
     required: list[str] = []
     for key in sorted(counts, key=rank)[:limit]:
-        core = _name_core(spelling[key], evidence_text, outside_titles)
+        core = _name_core(spelling[key], evidence_text, raw_titles)
         if core is not None and core.lower() not in (name.lower() for name in required):
             required.append(core)
     return required

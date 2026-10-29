@@ -169,6 +169,18 @@ def test_plain_name_needs_the_same_spelling_outside_the_title():
     assert required == ["Hugging Face"]
 
 
+def test_title_that_is_itself_the_name_still_counts_body_mentions():
+    """Codex P2(PR #155): 제목이 곧 이름이면 제목을 지울 때 본문 언급까지 지워지면 안 된다."""
+    required = required_names(
+        [["Hugging Face"]],
+        "Hugging Face\nHugging Face released a new model.",
+        titles=["Hugging Face"],
+    )
+    assert required == ["Hugging Face"]
+    # 제목 사본뿐이면(본문 언급 없음) 여전히 조각과 같은 취급이다.
+    assert required_names([["Hugging Face"]], "Hugging Face\nA new model.", titles=["Hugging Face"]) == []
+
+
 def test_quantities_and_hyphen_words_are_not_proper_names():
     title = "Train 400x faster Static Embedding Models with Long-context Retrieval"
     body = "Static embedding models with long-context retrieval train 400x faster."
