@@ -56,6 +56,10 @@ argos/
 - **track_history** — id(UUID PK), user_asset_id(FK→user_assets), changed_from, changed_to, changed_at
 - **tech_events** — id(UUID PK), title, summary(2~3 sentences), event_type(Launch|Research|Incident|Update|Adoption, NULL),
   sections(JSONB `[{heading, body}]`, NULL = not yet re-summarized — ARG-308), occurred_at, naming_stale, merged_into_id(self-FK, RESTRICT)
+- **push_subscriptions** — id(UUID PK), endpoint(unique), p256dh, auth, label(기기 이름), origin(VAPID sub), last_success_at, created_at, updated_at
+  (아침 브리핑 웹 푸시를 켠 기기, ARG-321). 푸시 서비스가 404/410이면 행 삭제
+- **push_dispatches** — id(UUID PK), sent_at, event_count, title, devices_ok/failed/expired, event_ids(UUID[])
+  (브리핑 발송 회차, 전부 실패한 회차도 devices_ok=0으로 기록, ARG-321). 한 기기라도 받은 회차의 event_ids는 다음 회차에서 제외 — 시각 워터마크가 아니라 id로 거른다(늦게 커밋된 사건 보존)
 - **crawl_queue** — staging table for freshly crawled items not yet processed by the brain
   pipeline (daily-limit throttle, ARG-93)
 - **role_branches** — id(UUID PK), parent_id(FK→role_branches, CASCADE, NULL=위 갈래), name(unique), description, position, confirmed_at
@@ -100,7 +104,7 @@ uv run argos init --reconfigure slack             # Re-run one section: infra/sl
 uv run argos run [--url URL]...                   # Crawl → brain → save pipeline
 uv run argos add <URL> [URL ...]                  # Manually inject URL(s) into the brain pipeline
 uv run argos slack                                # Start Slack bot in Socket Mode
-uv run argos brief [--channel CID] [--weekly]     # Dispatch today's (or weekly) briefing
+uv run argos brief [--channel CID] [--weekly] [--push-only]  # Morning web push to subscribed devices, then Slack (or weekly; --push-only skips Slack)
 uv run argos web [--host] [--port]                # Start local FastAPI web app (PWA), binds 127.0.0.1 only
 uv run argos web token [--rotate] [--url BASE]   # Print/rotate the web login token (terminal only; 1 login per device)
 uv run argos search <query> [--limit] [--category] [--status]  # Semantic search over tech_items (pgvector)

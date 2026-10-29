@@ -3027,6 +3027,40 @@ def _resolve_version() -> str:
         return "unknown"
 
 
+def _send_push_briefing() -> bool:
+    """Push today's event digest to every subscribed device (ARG-321).
+
+    Prints a one-line result into the brief log; returns ``False`` only when
+    the dispatch itself crashed (no DB, unreadable VAPID key, …).
+    """
+    from argos import database
+    from argos.web.push import load_or_create_vapid
+    from argos.web.services.push_briefing import dispatch_push_briefing
+
+    async def _run():
+        try:
+            async with database.AsyncSessionLocal() as session:
+                return await dispatch_push_briefing(
+                    session,
+                    vapid=load_or_create_vapid(),
+                    lookback_days=settings.user.briefing.lookback_days,
+                )
+        finally:
+            # The Slack briefing runs in a second asyncio.run() on the same
+            # shared engine; a pooled connection bound to this (closed) loop
+            # would break it with "attached to a different loop".
+            await database.engine.dispose()
+
+    try:
+        result = asyncio.run(_run())
+    except Exception as exc:  # never let the push take the Slack briefing down
+        logging.getLogger("argos.web.push").exception("push briefing failed")
+        print(f"Push briefing failed: {type(exc).__name__}: {exc}")
+        return False
+    print(result.summary())
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="argos")
     parser.add_argument(
@@ -3063,10 +3097,15 @@ def main(argv: list[str] | None = None) -> int:
 
     brief_p = sub.add_parser(
         "brief",
-        help="Dispatch today's briefing to Slack",
+        help="Dispatch today's briefing (web push to subscribed devices, then Slack)",
         parents=[common],
     )
     brief_p.add_argument("--channel", default=None, help="Override target Slack channel ID")
+    brief_p.add_argument(
+        "--push-only",
+        action="store_true",
+        help="Send only the morning web-push notification; skip Slack",
+    )
     brief_p.add_argument(
         "--weekly",
         action="store_true",
@@ -3141,6 +3180,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print("Weekly briefing dispatch returned no ts")
             return 0
+        # ARG-321: the web push goes first and on its own — a push failure is
+        # logged and never stops the Slack briefing, which stays unchanged
+        # until it is retired (ARG-322).
+        push_ok = _send_push_briefing()
+        if getattr(args, "push_only", False):
+            return 0 if push_ok else 1
         from argos.slack.briefing import dispatch_daily_briefing
 
         ts = asyncio.run(dispatch_daily_briefing(channel=args.channel))

@@ -38,11 +38,13 @@ class TestBaseMetadata:
             "role_branches",
             "technology_profiles",
             "role_assignments",
+            "push_subscriptions",
+            "push_dispatches",
         }
         assert expected == table_names
 
     def test_metadata_is_not_empty(self):
-        assert len(Base.metadata.tables) == 15
+        assert len(Base.metadata.tables) == 17
 
 
 # ──────────────────────────────────────────
