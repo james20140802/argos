@@ -10,6 +10,45 @@ This history was reconstructed retroactively from annotated release tags
 (`git tag -n99`) and their commit ranges; entries before this file existed may be
 less granular than future ones.
 
+## [0.7.0] — 2026-10-29
+
+A morning push notification with today's events on each device that turns it
+on, and a page per technology with its events in time order. 8 commits since
+v0.6.0.
+
+**Upgrade note:**
+
+- One new Alembic migration (push subscriptions and dispatch records). Run
+  `uv run alembic upgrade head` from a source checkout before starting the new
+  version, then restart the web app.
+- Turn notifications on per device in the web app's settings ("아침 브리핑
+  알림"). On iPhone this works only inside the web app added to the home
+  screen (iOS 16.4+), over the Tailscale HTTPS address.
+- No config or schedule change: the existing `argos brief` job sends the push
+  first, then the Slack briefing as before.
+
+### Added
+
+- **Morning briefing push** — at the briefing time and weekdays, every device
+  that turned notifications on gets one notification: the number of new events
+  and the title of the top one (e.g. "오늘의 관측 7 — … 외 6건"). Tapping it
+  opens the event feed. Nothing is sent when there are no new events. An event
+  is "new" until a push carrying it has reached at least one device, so a
+  morning when the Mac was asleep or offline is caught up on the next run, and
+  events saved while a briefing was going out are not skipped. Results are
+  logged to `brief.log`, and devices whose subscription expired are removed.
+  `argos brief --push-only` sends only the push. The Slack briefing is
+  unchanged. (ARG-321)
+- **Technology page** — tapping a technology chip on an event card opens a page
+  with its description, role branch path, other names and its events in time
+  order. Aliases redirect to the main name. (ARG-315)
+
+### Fixed
+
+- `argos schedule install` waits for each job to unload before loading it again
+  and keeps re-registering the remaining jobs if one fails (the always-on web
+  job used to fail with exit 5 and skip the rest).
+
 ## [0.6.0] — 2026-10-25
 
 Event pages that explain the whole event under headings fit to what kind of
