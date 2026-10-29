@@ -188,27 +188,89 @@ async def test_dispatch_sends_once_per_device_and_cleans_up_expired():
             assert len(send.calls) == 3
 
 
-async def test_dispatch_all_failed_is_not_recorded_so_next_run_retries():
+async def test_failed_first_dispatch_keeps_its_events_for_the_retry():
+    """Monday's very first push fails on every device; Tuesday's run must still
+    carry Monday's event (the window must not reset to "last 24h")."""
+    async with _db() as (Session, seed):
+        async with Session() as s:
+            await seed.event(s, title="Monday news", hours=1, scores=(0.5,))
+            await s.commit()
+            await upsert_subscription(
+                s,
+                endpoint="https://push.example/dev",
+                p256dh="k",
+                auth="a",
+                label="Mac",
+                origin="https://mac.example.ts.net",
+            )
+            monday = BASE + timedelta(hours=5)
+            tuesday = monday + timedelta(days=1)
+
+            down = _sender({"https://push.example/dev": "failed"})
+            first = await dispatch_push_briefing(
+                s, vapid=None, lookback_days=7, now=monday, sender=down
+            )
+            assert first.ok == 0 and first.failed == 1
+
+            # Window still opens 24h before the failed first attempt.
+            assert await window_start(s, now=tuesday, lookback_days=7) == monday - FIRST_WINDOW
+
+            up = _sender({"https://push.example/dev": "ok"})
+            retry = await dispatch_push_briefing(
+                s, vapid=None, lookback_days=7, now=tuesday, sender=up
+            )
+            assert retry.ok == 1
+            assert retry.digest is not None and retry.digest.top_title == "Monday news"
+            # Delivered: the window now starts at Tuesday's dispatch.
+            assert await window_start(s, now=tuesday, lookback_days=7) == tuesday
+
+
+async def test_failed_attempt_never_moves_window_after_a_delivery():
     async with _db() as (Session, seed):
         async with Session() as s:
             await seed.event(s, title="A", hours=1, scores=(0.5,))
             await s.commit()
             await upsert_subscription(
                 s,
-                endpoint="https://push.example/down",
+                endpoint="https://push.example/dev",
                 p256dh="k",
                 auth="a",
                 label="Mac",
                 origin="https://mac.example.ts.net",
             )
-            send = _sender({"https://push.example/down": "failed"})
-            now = BASE + timedelta(hours=5)
-            first = await window_start(s, now=now, lookback_days=1)
-            result = await dispatch_push_briefing(
-                s, vapid=None, lookback_days=100_000, now=now, sender=send
+            t0 = BASE - timedelta(hours=10)
+            await dispatch_push_briefing(
+                s, vapid=None, lookback_days=7, now=t0,
+                sender=_sender({"https://push.example/dev": "ok"}),
             )
-            assert result.ok == 0 and result.failed == 1
-            assert await window_start(s, now=now, lookback_days=1) == first
+            t1 = BASE + timedelta(hours=5)
+            await dispatch_push_briefing(
+                s, vapid=None, lookback_days=7, now=t1,
+                sender=_sender({"https://push.example/dev": "failed"}),
+            )
+            assert await window_start(s, now=t1 + timedelta(days=1), lookback_days=7) == t0
+
+
+async def test_window_is_capped_by_lookback():
+    async with _db() as (Session, seed):
+        async with Session() as s:
+            await seed.event(s, title="A", hours=1, scores=(0.5,))
+            await s.commit()
+            await upsert_subscription(
+                s,
+                endpoint="https://push.example/dev",
+                p256dh="k",
+                auth="a",
+                label="Mac",
+                origin="https://mac.example.ts.net",
+            )
+            t0 = BASE + timedelta(hours=5)
+            await dispatch_push_briefing(
+                s, vapid=None, lookback_days=7, now=t0,
+                sender=_sender({"https://push.example/dev": "failed"}),
+            )
+            later = t0 + timedelta(days=30)
+            assert await window_start(s, now=later, lookback_days=7) == later - timedelta(days=7)
 
 
 async def test_window_defaults_to_24h_without_a_previous_dispatch():

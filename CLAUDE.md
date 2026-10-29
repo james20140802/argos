@@ -59,7 +59,7 @@ argos/
 - **push_subscriptions** — id(UUID PK), endpoint(unique), p256dh, auth, label(기기 이름), origin(VAPID sub), last_success_at, created_at, updated_at
   (아침 브리핑 웹 푸시를 켠 기기, ARG-321). 푸시 서비스가 404/410이면 행 삭제
 - **push_dispatches** — id(UUID PK), sent_at, event_count, title, devices_ok/failed/expired
-  (한 기기 이상 받은 브리핑 회차, ARG-321). 다음 회차 "새 사건" 창은 마지막 sent_at부터
+  (브리핑 발송 회차, 전부 실패한 회차도 devices_ok=0으로 기록, ARG-321). 다음 회차 "새 사건" 창은 한 기기라도 받은 마지막 sent_at부터
 - **crawl_queue** — staging table for freshly crawled items not yet processed by the brain
   pipeline (daily-limit throttle, ARG-93)
 - **role_branches** — id(UUID PK), parent_id(FK→role_branches, CASCADE, NULL=위 갈래), name(unique), description, position, confirmed_at

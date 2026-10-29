@@ -3,8 +3,9 @@
 * ``push_subscriptions`` — 알림을 켠 기기(브라우저) 하나당 한 행. 브라우저가
   준 ``endpoint``가 기기를 구분하는 키다(UNIQUE). 푸시 서비스가 404/410을
   돌려주면 만료로 보고 행을 지운다.
-* ``push_dispatches`` — 아침 브리핑을 한 기기 이상에 보낸 회차마다 한 행.
-  다음 회차의 "새 사건" 창은 마지막 행의 ``sent_at``부터 시작한다.
+* ``push_dispatches`` — 아침 브리핑을 기기들에 보낸 회차마다 한 행(전부
+  실패한 회차도 ``devices_ok = 0``으로 남는다). 다음 회차의 "새 사건" 창은
+  한 기기라도 받은 마지막 행의 ``sent_at``부터 시작한다.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ class PushSubscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 
 class PushDispatch(UUIDPrimaryKeyMixin, Base):
-    """아침 브리핑 발송 한 회차 (한 기기 이상 성공한 회차만 남는다)."""
+    """아침 브리핑 발송 한 회차 (실패한 회차 포함, ``devices_ok``로 구분)."""
 
     __tablename__ = "push_dispatches"
 

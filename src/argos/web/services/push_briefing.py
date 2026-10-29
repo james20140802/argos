@@ -7,13 +7,15 @@ feed's recommended order (max evidence ``feed_score``, newest first on ties).
 Tapping it opens ``/feed``.
 
 * No new events → nothing is sent (and nothing is recorded).
-* The "new" window starts at the last recorded dispatch, capped at
-  ``briefing.lookback_days`` so a device that subscribes after a long gap
-  doesn't get a month in one line. With no dispatch yet it is the last 24h.
-* A dispatch is recorded only when at least one device received it. If every
-  device failed (Mac offline, push service down), the next run covers the same
-  window again instead of silently dropping it — so a run delayed by sleep
-  still delivers, just late.
+* The "new" window starts at the last *delivered* dispatch (one with at least
+  one device ok), capped at ``briefing.lookback_days`` so a device that
+  subscribes after a long gap doesn't get a month in one line. Before any
+  delivery it is 24h before the first attempt — or before now, with none.
+* Every attempt that reached devices is recorded, failed ones too
+  (``devices_ok = 0``). A failed attempt never moves the window, so if every
+  device failed (Mac offline, push service down) the next run covers the same
+  events again instead of silently dropping them — even when the very first
+  attempt is the one that failed.
 * 404/410 from a push service means the subscription is gone for good; its row
   is deleted. Other failures keep the row and are counted.
 """
@@ -95,10 +97,19 @@ class PushBriefingResult:
 async def window_start(
     session: AsyncSession, *, now: datetime, lookback_days: int
 ) -> datetime:
-    last = (await session.execute(select(func.max(PushDispatch.sent_at)))).scalar_one()
-    if last is None:
-        return now - FIRST_WINDOW
-    return max(last, now - timedelta(days=lookback_days))
+    floor = now - timedelta(days=lookback_days)
+    delivered = (
+        await session.execute(
+            select(func.max(PushDispatch.sent_at)).where(PushDispatch.devices_ok > 0)
+        )
+    ).scalar_one()
+    if delivered is not None:
+        return max(delivered, floor)
+    first_attempt = (
+        await session.execute(select(func.min(PushDispatch.sent_at)))
+    ).scalar_one()
+    start = (first_attempt or now) - FIRST_WINDOW
+    return max(start, floor)
 
 
 async def build_digest(
@@ -196,16 +207,16 @@ async def dispatch_push_briefing(
             .where(PushSubscription.id.in_(ok_ids))
             .values(last_success_at=now)
         )
-        session.add(
-            PushDispatch(
-                sent_at=now,
-                event_count=digest.event_count,
-                title=digest.body,
-                devices_ok=len(ok_ids),
-                devices_failed=failed,
-                devices_expired=len(expired_ids),
-            )
+    session.add(
+        PushDispatch(
+            sent_at=now,
+            event_count=digest.event_count,
+            title=digest.body,
+            devices_ok=len(ok_ids),
+            devices_failed=failed,
+            devices_expired=len(expired_ids),
         )
+    )
     await session.commit()
 
     result = PushBriefingResult(
