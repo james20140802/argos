@@ -692,7 +692,7 @@ async def test_preview_and_execute_break_a_tie_the_same_way(monkeypatch):
         [NeighborEdge((x_event,), 0.9), NeighborEdge((b_event,), 0.9)],
         event_sizes={x_event: 1, b_event: 1},
         join_threshold=config.join_threshold,
-        resolution=config.join_threshold,
+        resolution=config.assignment_resolution,
     )
     assert tie == b_event
 

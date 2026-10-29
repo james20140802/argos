@@ -187,7 +187,7 @@ async def link_document_to_event(
     created = False
     if event_id is None:
         event = TechEvent(
-            id=new_event_id or uuid.uuid4(),
+            id=new_event_id if new_event_id is not None else uuid.uuid4(),
             occurred_at=occurred_at,
             naming_stale=True,
         )
