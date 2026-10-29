@@ -1396,6 +1396,104 @@ def build_web_app(
         # PRG: redirect so a refresh doesn't re-POST the form.
         return RedirectResponse("/settings?saved=1", status_code=303)
 
+    # ---- Morning briefing push (ARG-321) -----------------------------------
+    # The settings page's push-settings.js subscribes this browser with the
+    # VAPID public key and registers the subscription here. Endpoints travel
+    # in POST bodies only — they are capability URLs and must not end up in
+    # access logs or history.
+    _vapid_cache: dict = {}
+
+    def _vapid():
+        from argos.web.push import default_key_path, load_or_create_vapid
+
+        path = default_key_path()
+        cached = _vapid_cache.get("key")
+        if cached is None or cached[0] != path:
+            cached = (path, load_or_create_vapid(path))
+            _vapid_cache["key"] = cached
+        return cached[1]
+
+    async def _push_body(request: Request) -> dict:
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid json") from None
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="invalid body")
+        return body
+
+    def _push_endpoint(body: dict) -> str:
+        endpoint = body.get("endpoint")
+        if (
+            not isinstance(endpoint, str)
+            or not endpoint.startswith("https://")
+            or len(endpoint) > 2048
+        ):
+            raise HTTPException(status_code=400, detail="invalid endpoint")
+        return endpoint
+
+    @app.get("/push/key")
+    async def push_key() -> JSONResponse:
+        from argos.web.push import public_key_b64
+
+        return JSONResponse(
+            {"publicKey": public_key_b64(_vapid())},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/push/subscribe")
+    async def push_subscribe(
+        request: Request, session=Depends(_get_session)
+    ) -> JSONResponse:
+        from argos.web.push import device_label, subject_origin
+        from argos.web.services.push_briefing import upsert_subscription
+
+        body = await _push_body(request)
+        endpoint = _push_endpoint(body)
+        keys = body.get("keys")
+        if not isinstance(keys, dict):
+            raise HTTPException(status_code=400, detail="invalid keys")
+        p256dh, auth_key = keys.get("p256dh"), keys.get("auth")
+        if not all(isinstance(k, str) and 0 < len(k) <= 255 for k in (p256dh, auth_key)):
+            raise HTTPException(status_code=400, detail="invalid keys")
+        label = device_label(request.headers.get("user-agent"))
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+        forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+        origin = subject_origin(
+            forwarded_proto or request.url.scheme,
+            forwarded_host or request.headers.get("host"),
+        )
+        await upsert_subscription(
+            session,
+            endpoint=endpoint,
+            p256dh=p256dh,
+            auth=auth_key,
+            label=label,
+            origin=origin,
+        )
+        return JSONResponse({"subscribed": True, "label": label})
+
+    @app.post("/push/unsubscribe")
+    async def push_unsubscribe(
+        request: Request, session=Depends(_get_session)
+    ) -> JSONResponse:
+        from argos.web.services.push_briefing import remove_subscription
+
+        endpoint = _push_endpoint(await _push_body(request))
+        await remove_subscription(session, endpoint=endpoint)
+        return JSONResponse({"subscribed": False})
+
+    @app.post("/push/status")
+    async def push_status(
+        request: Request, session=Depends(_get_session)
+    ) -> JSONResponse:
+        from argos.web.services.push_briefing import has_subscription
+
+        endpoint = _push_endpoint(await _push_body(request))
+        return JSONResponse(
+            {"subscribed": await has_subscription(session, endpoint=endpoint)}
+        )
+
     # Last, so the auth/CSRF gate is the outermost middleware (ARG-195).
     install_security(app, security)
     return app

@@ -33,6 +33,8 @@ def _web_security_policy(request, tmp_path, monkeypatch):
     monkeypatch.setattr(security, "_default_policy_override", policy)
     # Never fall back to the operator's real ~/.config/argos/web_token.
     monkeypatch.setenv(auth.TOKEN_FILE_ENV, str(tmp_path / "unused-web-token"))
+    # Same for the web-push VAPID key (ARG-321): never the operator's real one.
+    monkeypatch.setenv("ARGOS_WEB_PUSH_KEY_FILE", str(tmp_path / "unused-vapid.pem"))
     return {"policy": policy, "token": token, "token_path": token_path}
 
 

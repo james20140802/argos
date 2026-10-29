@@ -56,8 +56,11 @@
  *     login form, so the shell routes are precached best-effort (a 401 must
  *     not abort install, and must never be stored as /feed) and nothing that
  *     arrived via a redirect is ever written into the cache.
+ * v26: ARG-321 morning-briefing push — `push` / `notificationclick` handlers
+ *     below. No precached asset changed; bumped so the new worker activates
+ *     with a fresh cache generation alongside the new handlers.
  */
-const CACHE_VERSION = 'argos-v25';
+const CACHE_VERSION = 'argos-v26';
 // Navigations we treat as the cacheable app shell. Everything else (e.g.
 // /item/{id} detail pages) carries changing per-item state and must never be
 // served from a stale cache, so it stays network-only.
@@ -211,4 +214,47 @@ self.addEventListener('fetch', (event) => {
       }),
     );
   }
+});
+
+// ARG-321: morning briefing. The Mac pushes one JSON payload per device —
+// {title, body, url, tag} — composed from today's new events. Every push must
+// show a notification (userVisibleOnly), so a payload that fails to parse
+// still surfaces a generic one rather than nothing.
+const BRIEFING_URL = '/feed';
+
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (_) {
+    data = {};
+  }
+  const title = data.title || 'ARGOS';
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: data.body || '오늘의 관측이 도착했습니다.',
+      tag: data.tag || 'argos-morning-briefing',
+      icon: '/static/img/icons/icon-192.png',
+      badge: '/static/img/icons/icon-192.png',
+      data: { url: data.url || BRIEFING_URL },
+    }),
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  // Same-origin paths only — a payload can't send the tap anywhere else.
+  const raw = (event.notification.data && event.notification.data.url) || BRIEFING_URL;
+  const target = new URL(raw, self.location.origin);
+  const url = target.origin === self.location.origin ? target.href : new URL(BRIEFING_URL, self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
+      for (const win of wins) {
+        if (new URL(win.url).origin === self.location.origin && 'focus' in win) {
+          return win.focus().then((w) => (w && 'navigate' in w ? w.navigate(url) : w));
+        }
+      }
+      return self.clients.openWindow(url);
+    }),
+  );
 });

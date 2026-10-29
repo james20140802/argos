@@ -92,6 +92,25 @@
     </div>
   </form>
 
+  {# ARG-321: per-device morning-briefing notifications. State lives in the
+     browser (its push subscription) and on the server (push_subscriptions);
+     push-settings.js reconciles the two and drives the toggle. #}
+  <section class="settings-readonly settings-push" id="push-settings" aria-labelledby="push-heading">
+    <h2 id="push-heading" class="settings-readonly__title">아침 브리핑 알림</h2>
+    <p class="settings-readonly__note">
+      브리핑 시각(<code>briefing.time</code>·요일)에 오늘 새로 잡힌 사건 수와
+      대표 사건 하나를 이 기기로 알려 줍니다. 기기마다 따로 켜고 끕니다.
+    </p>
+    <p class="settings-hint" role="status">
+      이 기기: <strong id="push-state" data-push-state="loading">확인 중…</strong>
+    </p>
+    <p class="settings-hint" id="push-hint" hidden></p>
+    <div class="settings-form__actions">
+      <button type="button" class="settings-save" id="push-toggle" hidden>아침 브리핑 알림 받기</button>
+    </div>
+  </section>
+  <script src="/static/js/push-settings.js?v={{ asset_v | default('dev') }}" defer></script>
+
   <section class="settings-readonly" aria-labelledby="ro-heading">
     <h2 id="ro-heading" class="settings-readonly__title">읽기 전용</h2>
     <p class="settings-readonly__note">
