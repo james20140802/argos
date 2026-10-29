@@ -430,6 +430,7 @@ def test_dry_run_cli_path_never_calls_a_write_api(monkeypatch, capsys):
     session.flush = AsyncMock()
     session.commit = AsyncMock()
     session.execute = AsyncMock()
+    session.scalar = AsyncMock(return_value=None)  # new_event_id: 읽기만 한다
 
     @asynccontextmanager
     async def _session_factory():
