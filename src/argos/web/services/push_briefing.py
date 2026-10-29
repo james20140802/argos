@@ -7,15 +7,18 @@ feed's recommended order (max evidence ``feed_score``, newest first on ties).
 Tapping it opens ``/feed``.
 
 * No new events → nothing is sent (and nothing is recorded).
-* The "new" window starts at the last *delivered* dispatch (one with at least
-  one device ok), capped at ``briefing.lookback_days`` so a device that
-  subscribes after a long gap doesn't get a month in one line. Before any
-  delivery it is 24h before the first attempt — or before now, with none.
+* "New" means a live event not carried by any *delivered* dispatch (one with
+  at least one device ok). Dedup is by event id, never by a time watermark:
+  a crawl commits its whole batch at the end, so an event can become visible
+  after a dispatch while its ``created_at`` (the transaction start) is earlier
+  than that dispatch's ``sent_at``. A watermark would drop it forever.
+* Candidates are bounded below by 24h before the first attempt (or before now,
+  with none) and by ``briefing.lookback_days``, so a device that subscribes
+  after a long gap doesn't get a month in one line.
 * Every attempt that reached devices is recorded, failed ones too
-  (``devices_ok = 0``). A failed attempt never moves the window, so if every
-  device failed (Mac offline, push service down) the next run covers the same
-  events again instead of silently dropping them — even when the very first
-  attempt is the one that failed.
+  (``devices_ok = 0``), but only delivered ones exclude their events — if
+  every device failed (Mac offline, push service down) the next run carries
+  the same events again instead of silently dropping them.
 * 404/410 from a push service means the subscription is gone for good; its row
   is deleted. Other failures keep the row and are counted.
 """
@@ -23,6 +26,7 @@ Tapping it opens ``/feed``.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -48,6 +52,7 @@ NOTIFICATION_TAG = "argos-morning-briefing"
 class BriefingDigest:
     event_count: int
     top_title: str
+    event_ids: tuple[uuid.UUID, ...] = ()
 
     @property
     def title(self) -> str:
@@ -97,14 +102,12 @@ class PushBriefingResult:
 async def window_start(
     session: AsyncSession, *, now: datetime, lookback_days: int
 ) -> datetime:
+    """Oldest ``created_at`` a candidate may have (exclusive).
+
+    Fixed by the first attempt, not moved by later ones: which events were
+    already pushed is answered by ``delivered_event_ids``.
+    """
     floor = now - timedelta(days=lookback_days)
-    delivered = (
-        await session.execute(
-            select(func.max(PushDispatch.sent_at)).where(PushDispatch.devices_ok > 0)
-        )
-    ).scalar_one()
-    if delivered is not None:
-        return max(delivered, floor)
     first_attempt = (
         await session.execute(select(func.min(PushDispatch.sent_at)))
     ).scalar_one()
@@ -112,10 +115,21 @@ async def window_start(
     return max(start, floor)
 
 
+def delivered_event_ids(since: datetime):
+    """Subquery: events carried by a delivered dispatch sent after ``since``.
+
+    A dispatch sent before ``since`` can't have carried an event created
+    after it, so the scan stays within the lookback.
+    """
+    return select(func.unnest(PushDispatch.event_ids)).where(
+        PushDispatch.devices_ok > 0, PushDispatch.sent_at > since
+    )
+
+
 async def build_digest(
     session: AsyncSession, *, since: datetime
 ) -> Optional[BriefingDigest]:
-    """New live events created after ``since``; ``None`` when there are none.
+    """Live events created after ``since`` and not yet delivered; ``None`` when none.
 
     Only events with at least one evidence document count — the same rows the
     feed shows as event cards.
@@ -128,7 +142,11 @@ async def build_digest(
         )
         .join(EventDocument, EventDocument.event_id == TechEvent.id)
         .join(TechItem, TechItem.id == EventDocument.tech_item_id)
-        .where(TechEvent.merged_into_id.is_(None), TechEvent.created_at > since)
+        .where(
+            TechEvent.merged_into_id.is_(None),
+            TechEvent.created_at > since,
+            TechEvent.id.not_in(delivered_event_ids(since)),
+        )
         .group_by(TechEvent.id)
         .order_by(
             func.max(TechItem.feed_score).desc().nullslast(),
@@ -152,7 +170,9 @@ async def build_digest(
                 .limit(1)
             )
         ).scalar_one()
-    return BriefingDigest(event_count=len(rows), top_title=title)
+    return BriefingDigest(
+        event_count=len(rows), top_title=title, event_ids=tuple(r.id for r in rows)
+    )
 
 
 async def dispatch_push_briefing(
@@ -215,6 +235,7 @@ async def dispatch_push_briefing(
             devices_ok=len(ok_ids),
             devices_failed=failed,
             devices_expired=len(expired_ids),
+            event_ids=list(digest.event_ids),
         )
     )
     await session.commit()

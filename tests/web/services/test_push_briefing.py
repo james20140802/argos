@@ -179,8 +179,7 @@ async def test_dispatch_sends_once_per_device_and_cleans_up_expired():
             assert not await has_subscription(s, endpoint="https://push.example/gone")
             assert await has_subscription(s, endpoint="https://push.example/flaky")
 
-            # The recorded dispatch moves the window: nothing new → nothing sent.
-            assert await window_start(s, now=now, lookback_days=100_000) == now
+            # Delivered events are recorded and excluded: nothing new → nothing sent.
             again = await dispatch_push_briefing(
                 s, vapid=None, lookback_days=100_000, now=now + timedelta(days=1), sender=send
             )
@@ -221,11 +220,14 @@ async def test_failed_first_dispatch_keeps_its_events_for_the_retry():
             )
             assert retry.ok == 1
             assert retry.digest is not None and retry.digest.top_title == "Monday news"
-            # Delivered: the window now starts at Tuesday's dispatch.
-            assert await window_start(s, now=tuesday, lookback_days=7) == tuesday
+            # Delivered now: Wednesday has nothing new.
+            wednesday = await dispatch_push_briefing(
+                s, vapid=None, lookback_days=7, now=tuesday + timedelta(days=1), sender=up
+            )
+            assert wednesday.digest is None
 
 
-async def test_failed_attempt_never_moves_window_after_a_delivery():
+async def test_failed_attempt_never_marks_its_events_delivered():
     async with _db() as (Session, seed):
         async with Session() as s:
             await seed.event(s, title="A", hours=1, scores=(0.5,))
@@ -238,17 +240,55 @@ async def test_failed_attempt_never_moves_window_after_a_delivery():
                 label="Mac",
                 origin="https://mac.example.ts.net",
             )
-            t0 = BASE - timedelta(hours=10)
-            await dispatch_push_briefing(
-                s, vapid=None, lookback_days=7, now=t0,
-                sender=_sender({"https://push.example/dev": "ok"}),
+            ok = _sender({"https://push.example/dev": "ok"})
+            down = _sender({"https://push.example/dev": "failed"})
+            t0 = BASE + timedelta(hours=2)
+            await dispatch_push_briefing(s, vapid=None, lookback_days=7, now=t0, sender=ok)
+
+            await seed.event(s, title="B", hours=3, scores=(0.5,))
+            await s.commit()
+            t1 = t0 + timedelta(days=1)
+            failed = await dispatch_push_briefing(
+                s, vapid=None, lookback_days=7, now=t1, sender=down
             )
-            t1 = BASE + timedelta(hours=5)
-            await dispatch_push_briefing(
-                s, vapid=None, lookback_days=7, now=t1,
-                sender=_sender({"https://push.example/dev": "failed"}),
+            assert failed.ok == 0 and failed.digest.event_count == 1
+
+            retry = await dispatch_push_briefing(
+                s, vapid=None, lookback_days=7, now=t1 + timedelta(days=1), sender=ok
             )
-            assert await window_start(s, now=t1 + timedelta(days=1), lookback_days=7) == t0
+            assert retry.digest.event_count == 1 and retry.digest.top_title == "B"
+
+
+async def test_event_committed_after_a_dispatch_with_an_earlier_timestamp_is_still_sent():
+    """A crawl transaction that started before the briefing commits after it:
+    its event's ``created_at`` predates the dispatch, yet it was never sent."""
+    async with _db() as (Session, seed):
+        async with Session() as s:
+            await seed.event(s, title="Early", hours=1, scores=(0.5,))
+            await s.commit()
+            await upsert_subscription(
+                s,
+                endpoint="https://push.example/dev",
+                p256dh="k",
+                auth="a",
+                label="Mac",
+                origin="https://mac.example.ts.net",
+            )
+            ok = _sender({"https://push.example/dev": "ok"})
+            sent_at = BASE + timedelta(hours=5)
+            first = await dispatch_push_briefing(
+                s, vapid=None, lookback_days=7, now=sent_at, sender=ok
+            )
+            assert first.digest.top_title == "Early"
+
+            # Becomes visible only now, stamped 3h before that dispatch.
+            await seed.event(s, title="Late commit", hours=2, scores=(0.1,))
+            await s.commit()
+            nxt = await dispatch_push_briefing(
+                s, vapid=None, lookback_days=7, now=sent_at + timedelta(days=1), sender=ok
+            )
+            assert nxt.digest is not None
+            assert (nxt.digest.event_count, nxt.digest.top_title) == (1, "Late commit")
 
 
 async def test_window_is_capped_by_lookback():

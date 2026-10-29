@@ -4,15 +4,17 @@
   준 ``endpoint``가 기기를 구분하는 키다(UNIQUE). 푸시 서비스가 404/410을
   돌려주면 만료로 보고 행을 지운다.
 * ``push_dispatches`` — 아침 브리핑을 기기들에 보낸 회차마다 한 행(전부
-  실패한 회차도 ``devices_ok = 0``으로 남는다). 다음 회차의 "새 사건" 창은
-  한 기기라도 받은 마지막 행의 ``sent_at``부터 시작한다.
+  실패한 회차도 ``devices_ok = 0``으로 남는다). ``event_ids``는 그 회차에
+  담긴 사건들 — 한 기기라도 받은 회차의 사건은 다음 회차에서 빠진다.
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text, func
+from sqlalchemy import DateTime, Integer, String, Text, func, text
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from argos.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -51,6 +53,12 @@ class PushDispatch(UUIDPrimaryKeyMixin, Base):
     devices_ok: Mapped[int] = mapped_column(Integer, nullable=False)
     devices_failed: Mapped[int] = mapped_column(Integer, nullable=False)
     devices_expired: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Events this dispatch carried. Dedup is by id, not by ``sent_at``: an
+    # event committed after a dispatch can carry an earlier ``created_at``
+    # (the crawl transaction's start), so a time watermark would skip it.
+    event_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False, server_default=text("'{}'")
+    )
 
     def __repr__(self) -> str:
         return f"<PushDispatch(sent_at={self.sent_at}, events={self.event_count})>"

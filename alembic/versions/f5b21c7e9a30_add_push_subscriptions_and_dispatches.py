@@ -4,7 +4,7 @@ ARG-321: 아침 브리핑 웹 푸시의 저장 층.
 
 - ``push_subscriptions``: 알림을 켠 기기 하나당 한 행(``endpoint`` UNIQUE).
 - ``push_dispatches``: 기기들에 보낸 브리핑 회차마다 한 행(전부 실패한 회차 포함).
-  다음 회차의 "새 사건" 창은 한 기기라도 받은 마지막 ``sent_at``부터.
+  ``event_ids``에 그 회차가 담은 사건을 남겨, 한 기기라도 받은 사건은 다음 회차에서 뺀다.
 
 새 테이블만 만들고 기존 테이블·열은 건드리지 않는다. FK 없음.
 downgrade는 두 테이블을 지운다.
@@ -18,6 +18,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -60,6 +61,10 @@ def upgrade() -> None:
         sa.Column('devices_ok', sa.Integer(), nullable=False),
         sa.Column('devices_failed', sa.Integer(), nullable=False),
         sa.Column('devices_expired', sa.Integer(), nullable=False),
+        sa.Column(
+            'event_ids', postgresql.ARRAY(sa.UUID()),
+            server_default=sa.text("'{}'"), nullable=False,
+        ),
         sa.Column('id', sa.UUID(), nullable=False),
         sa.PrimaryKeyConstraint('id'),
     )
