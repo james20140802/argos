@@ -41,6 +41,8 @@ def _session_without_db_neighbours() -> MagicMock:
 
     session = MagicMock()
     session.begin_nested = MagicMock(side_effect=lambda: _nested())
+    # new_event_id가 "이 id의 사건이 이미 있나"를 묻는다 — 없음 = 첫 후보를 쓴다.
+    session.scalar = AsyncMock(return_value=None)
     return session
 
 
@@ -612,3 +614,136 @@ async def test_rename_result_records_elapsed_seconds(monkeypatch):
     ]
     result = await event_backfill.rename_stale_events(session, events)
     assert result.elapsed_seconds >= 0.0
+
+
+_NS = uuid.UUID("6f1c5b0e-2d4a-4e8b-9c3f-a1d2e3f4b5c6")
+
+
+@pytest.mark.asyncio
+async def test_new_event_id_is_uuid5_of_the_opening_document():
+    from argos.brain.event_backfill import new_event_id
+
+    item = uuid.uuid4()
+    session = _session_without_db_neighbours()
+    assert await new_event_id(session, item) == uuid.uuid5(_NS, str(item))
+
+
+@pytest.mark.asyncio
+async def test_new_event_id_skips_ids_that_already_exist():
+    from argos.brain.event_backfill import new_event_id
+
+    item = uuid.uuid4()
+    session = _session_without_db_neighbours()
+    session.scalar = AsyncMock(side_effect=[1, 1, None])
+    assert await new_event_id(session, item) == uuid.uuid5(_NS, f"{item}#2")
+    assert session.scalar.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_execute_passes_the_same_new_event_id_the_preview_uses(monkeypatch):
+    from argos.brain import event_backfill
+
+    monkeypatch.setattr(
+        event_backfill, "db_candidate_source", AsyncMock(return_value=[])
+    )
+    link = AsyncMock(
+        side_effect=lambda *a, **kw: event_backfill.LinkResult(
+            kw["new_event_id"], True
+        )
+    )
+    monkeypatch.setattr(event_backfill, "link_document_to_event", link)
+    docs = [_doc([1.0, 0.0], ["a"], AT + timedelta(days=i * 40)) for i in range(3)]
+    config = settings.user.event_detection
+
+    plan = await plan_backfill(_session_without_db_neighbours(), docs, config=config)
+    session = _session_without_db_neighbours()
+    session.commit = AsyncMock()
+    session.flush = AsyncMock()
+    await event_backfill.execute_backfill(session, docs, config=config)
+
+    passed = [call.kwargs["new_event_id"] for call in link.await_args_list]
+    assert passed == [a.event_id for a in plan.assignments]
+
+
+@pytest.mark.asyncio
+async def test_preview_and_execute_break_a_tie_the_same_way(monkeypatch):
+    """AC1: 이득이 정확히 같은 두 사건 사이에서 미리보기와 실행이 같은 쪽을 고른다.
+
+    기존 사건 X(문서 A)와, 이번 실행에서 B가 여는 새 사건이 C에게 똑같은
+    이득을 준다. 동점은 사건 id 문자열 순서로 갈리는데, 실행이 새 사건에
+    ``uuid4``를 쓰면 미리보기(uuid5)와 다른 id라 다른 쪽이 이길 수 있다.
+    """
+    from argos.brain import event_assignment, event_backfill
+    from argos.brain.event_scoring import NeighborEdge, choose_event
+
+    monkeypatch.setattr(event_assignment, "edge_weight", lambda *a, **kw: 0.9)
+    config = settings.user.event_detection
+
+    doc_a = _doc([1.0, 0.0], ["x"], AT)
+    doc_b = _doc([1.0, 0.0], ["x"], AT + timedelta(days=100))
+    doc_c = _doc([1.0, 0.0], ["x"], AT + timedelta(days=101))
+    b_event = uuid.uuid5(_NS, str(doc_b.tech_item_id))
+    # B의 새 사건 id보다 문자열상 딱 한 칸 큰 X — uuid5 규칙이면 B의 사건이 이긴다.
+    x_event = uuid.UUID(int=b_event.int + 1)
+    assert str(x_event) > str(b_event)
+
+    # 동점이 실제로 choose_event를 통과한다는 확인.
+    tie = choose_event(
+        [NeighborEdge((x_event,), 0.9), NeighborEdge((b_event,), 0.9)],
+        event_sizes={x_event: 1, b_event: 1},
+        join_threshold=config.join_threshold,
+        resolution=config.assignment_resolution,
+    )
+    assert tie == b_event
+
+    neighbour_of = {
+        doc_b.tech_item_id: [],  # B는 시간 창 밖이라 A가 후보가 아니다
+        doc_c.tech_item_id: [doc_a.tech_item_id, doc_b.tech_item_id],
+    }
+    docs_by_id = {d.tech_item_id: d for d in (doc_a, doc_b, doc_c)}
+
+    async def _run(mode: str) -> dict[uuid.UUID, uuid.UUID]:
+        linked: dict[uuid.UUID, uuid.UUID] = {doc_a.tech_item_id: x_event}
+
+        async def _source(session, *, embedding, at, config, exclude_id):
+            return [
+                CandidateNeighbor(
+                    tech_item_id=i,
+                    features=docs_by_id[i].features,
+                    event_ids=(linked[i],),
+                )
+                for i in neighbour_of[exclude_id]
+                if mode == "preview" and i == doc_a.tech_item_id
+                or mode == "execute" and i in linked
+            ]
+
+        async def _sizes(session, *, candidates, at, config, exclude_id):
+            sizes: dict[uuid.UUID, int] = {}
+            for i, e in linked.items():
+                if i != exclude_id and any(e in c.event_ids for c in candidates):
+                    sizes[e] = sizes.get(e, 0) + 1
+            return sizes
+
+        async def _link(session, *, tech_item_id, event_id, occurred_at, new_event_id=None):
+            created = event_id is None
+            event_id = event_id or new_event_id or uuid.uuid4()
+            linked[tech_item_id] = event_id
+            return event_backfill.LinkResult(event_id, created)
+
+        monkeypatch.setattr(event_backfill, "db_candidate_source", _source)
+        monkeypatch.setattr(event_backfill, "db_event_sizes", _sizes)
+        monkeypatch.setattr(event_backfill, "link_document_to_event", _link)
+        session = _session_without_db_neighbours()
+        session.commit = AsyncMock()
+        session.flush = AsyncMock()
+        if mode == "preview":
+            plan = await plan_backfill(session, [doc_b, doc_c], config=config)
+            return {a.doc.tech_item_id: a.event_id for a in plan.assignments}
+        await event_backfill.execute_backfill(session, [doc_b, doc_c], config=config)
+        return {i: e for i, e in linked.items() if i != doc_a.tech_item_id}
+
+    preview = await _run("preview")
+    execute = await _run("execute")
+
+    assert preview[doc_c.tech_item_id] == b_event
+    assert preview == execute

@@ -166,8 +166,12 @@ async def link_document_to_event(
     tech_item_id: uuid.UUID,
     event_id: uuid.UUID | None,
     occurred_at: datetime,
+    new_event_id: uuid.UUID | None = None,
 ) -> LinkResult:
     """문서를 사건에 매단다. ``event_id``가 ``None``이면 새 사건을 만든다.
+
+    새 사건의 id는 ``new_event_id``가 있으면 그것, 없으면 무작위다. 백필은
+    미리보기와 같은 id 규칙을 쓰려고 ``new_event_id``를 넘긴다.
 
     새 사건은 ``naming_stale=True``로 태어난다 — 아직 이름이 없으므로 명명
     경로가 주워야 한다. 기존 사건에 붙는 경우도 그 사건을
@@ -183,7 +187,7 @@ async def link_document_to_event(
     created = False
     if event_id is None:
         event = TechEvent(
-            id=uuid.uuid4(),
+            id=new_event_id if new_event_id is not None else uuid.uuid4(),
             occurred_at=occurred_at,
             naming_stale=True,
         )

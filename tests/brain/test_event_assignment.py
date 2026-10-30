@@ -130,6 +130,22 @@ async def test_link_creates_a_new_event_marked_naming_stale():
 
 
 @pytest.mark.asyncio
+async def test_link_uses_the_given_new_event_id():
+    session = _session()
+    fixed = uuid.uuid4()
+    result = await link_document_to_event(
+        session,
+        tech_item_id=uuid.uuid4(),
+        event_id=None,
+        occurred_at=AT,
+        new_event_id=fixed,
+    )
+    assert result.event_id == fixed
+    assert result.created is True
+    assert session.add.call_args.args[0].id == fixed
+
+
+@pytest.mark.asyncio
 async def test_link_to_an_existing_event_sets_naming_stale():
     session = _session()
     event_id = uuid.uuid4()

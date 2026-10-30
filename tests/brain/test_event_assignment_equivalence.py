@@ -66,6 +66,7 @@ def _session() -> MagicMock:
 
     session = MagicMock()
     session.begin_nested = MagicMock(side_effect=lambda: _cm())
+    session.scalar = AsyncMock(return_value=None)  # new_event_id: 빈 id
     return session
 
 

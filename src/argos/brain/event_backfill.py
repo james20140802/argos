@@ -252,8 +252,28 @@ def _cap_candidates(
     return ranked[:k]
 
 
-# 미리보기 가상 사건 id의 네임스페이스 — 값 자체에는 뜻이 없다.
-_PREVIEW_EVENT_NAMESPACE = uuid.UUID("6f1c5b0e-2d4a-4e8b-9c3f-a1d2e3f4b5c6")
+# 새 사건 id의 네임스페이스 — 값 자체에는 뜻이 없다.
+_NEW_EVENT_NAMESPACE = uuid.UUID("6f1c5b0e-2d4a-4e8b-9c3f-a1d2e3f4b5c6")
+
+
+async def new_event_id(session: AsyncSession, tech_item_id: uuid.UUID) -> uuid.UUID:
+    """새 사건을 여는 문서 id에서 결정적으로 만든 사건 id.
+
+    미리보기와 실행이 같은 규칙으로 id를 만든다 — 동점이면 ``choose_event``가
+    사건 id 순서로 고르므로, 한쪽만 무작위면 같은 입력에서도 두 모드가 다른
+    사건을 고를 수 있다. 첫 후보는 ``uuid5(문서 id)``이고, 그 id의 사건이 이미
+    DB에 있으면(재실행 등) ``#n``을 붙여 비어 있는 첫 후보를 돌려준다.
+    """
+    n = 0
+    while True:
+        seed = str(tech_item_id) if n == 0 else f"{tech_item_id}#{n}"
+        candidate = uuid.uuid5(_NEW_EVENT_NAMESPACE, seed)
+        taken = await session.scalar(
+            text("SELECT 1 FROM tech_events WHERE id = :id"), {"id": candidate}
+        )
+        if taken is None:
+            return candidate
+        n += 1
 
 
 async def plan_backfill(
@@ -264,10 +284,10 @@ async def plan_backfill(
 ) -> BackfillPlan:
     """DB에 아무것도 쓰지 않고 배정 결과만 계산한다 (미리보기).
 
-    가상 사건 id는 그 사건을 연 문서 id에서 ``uuid.uuid5``로 만든다 — 리포트
-    안에서 사건을 구분하는 용도일 뿐, 실행 모드가 만들 실제 id와는 무관하다.
-    무작위가 아니어야 하는 이유: 후보 사건의 이득이 같으면 ``choose_event``가
-    사건 id 순서로 고르므로, ``uuid4``면 같은 입력의 미리보기가 돌릴 때마다
+    가상 사건 id는 그 사건을 연 문서 id에서 ``new_event_id``로 만든다 — 실행
+    모드도 같은 규칙으로 실제 id를 만들어, 동점 규칙이 두 모드에서 같은 사건을
+    고르게 한다. 무작위가 아니어야 하는 이유: 후보 사건의 이득이 같으면
+    ``choose_event``가 사건 id 순서로 고르므로, ``uuid4``면 같은 입력의 미리보기가 돌릴 때마다
     다른 분할을 내고 보정 스윕의 차이가 노브가 아니라 난수 탓일 수 있다.
     """
     overlay = _PendingOverlay()
@@ -309,7 +329,7 @@ async def plan_backfill(
         )
         created = event_id is None
         if event_id is None:
-            event_id = uuid.uuid5(_PREVIEW_EVENT_NAMESPACE, str(doc.tech_item_id))
+            event_id = await new_event_id(session, doc.tech_item_id)
         overlay.add(doc, event_id, created=created)
         plan.assignments.append(Assignment(doc=doc, event_id=event_id, created=created))
     return plan
@@ -377,11 +397,19 @@ async def execute_backfill(
                 doc.features, candidates, event_sizes=event_sizes, config=config
             )
             async with session.begin_nested():
+                # 새 사건이면 미리보기와 같은 규칙의 id를 구해 넘긴다. 조회도
+                # 세이브포인트 안에 둬야 실패가 뒤 문서까지 오염시키지 않는다.
+                fresh_id = (
+                    await new_event_id(session, doc.tech_item_id)
+                    if event_id is None
+                    else None
+                )
                 link: LinkResult = await link_document_to_event(
                     session,
                     tech_item_id=doc.tech_item_id,
                     event_id=event_id,
                     occurred_at=at or datetime.now(timezone.utc),
+                    new_event_id=fresh_id,
                 )
                 # 다음 문서의 후보 조회가 이 링크를 보게 한다.
                 await session.flush()
