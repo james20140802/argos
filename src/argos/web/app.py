@@ -42,7 +42,9 @@ from argos.web.services.feed import (
 from argos.web.services.portfolio import fetch_portfolio
 from argos.web.services.similar import (
     MixedEventRef,
+    SimilarNews,
     SimilarTech,
+    fetch_event_similar_news,
     fetch_mixed_timeline,
     fetch_similar_techs,
 )
@@ -75,6 +77,21 @@ async def _similar_techs_or_empty(session, canonical_id: uuid.UUID) -> tuple[Sim
             await session.rollback()
         except Exception:
             _log.exception("rollback after similar techs failure also failed")
+        return ()
+
+
+async def _similar_news_or_empty(
+    session, event_id: uuid.UUID, chip_entity_ids
+) -> tuple[SimilarNews, ...]:
+    """사건 상세의 '비슷한 기술의 최근 소식'(ARG-329). 실패하면 영역만 빠진다."""
+    try:
+        return await fetch_event_similar_news(session, event_id, chip_entity_ids)
+    except Exception:
+        _log.exception("failed to fetch similar news for event %s", event_id)
+        try:
+            await session.rollback()
+        except Exception:
+            _log.exception("rollback after similar news failure also failed")
         return ()
 
 
@@ -994,6 +1011,18 @@ def build_web_app(
             chips_by_event = {}
             # 실패한 조회가 트랜잭션을 망가뜨려 아래 Click 기록까지 잃지 않게 한다.
             await session.rollback()
+            chips_failed = True
+        else:
+            chips_failed = False
+
+        # 비슷한 기술의 최근 소식(ARG-329): rep_item 로드 전에 — rollback은 ORM
+        # 객체를 만료시킨다. 칩 조회가 실패했으면 부르지 않는다.
+        tech_chips = chips_by_event.get(parsed_id, [])
+        similar_news: tuple[SimilarNews, ...] = ()
+        if tech_chips and not chips_failed:
+            similar_news = await _similar_news_or_empty(
+                session, parsed_id, [c.entity_id for c in tech_chips]
+            )
 
         # Keep/Pass act on the representative document (decision 1), so the
         # action bar renders from its feed-card context like the item page.
@@ -1028,7 +1057,8 @@ def build_web_app(
                 "event": event,
                 "item": SimpleNamespace(**rep_item) if rep_item else None,
                 "action_context": "event",
-                "tech_chips": chips_by_event.get(parsed_id, []),
+                "tech_chips": tech_chips,
+                "similar_news": similar_news,
             },
         )
 

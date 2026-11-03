@@ -1492,6 +1492,14 @@ code { font: 500 0.92em/1 var(--font-mono); }
 .tech-similar__branch, .tech-similar__why { font: 400 13px/1.4 var(--font); color: var(--muted); overflow-wrap: anywhere; }
 .tech-similar__quote { flex-basis: 100%; font: 400 13px/1.4 var(--font); color: var(--muted); overflow-wrap: anywhere; }
 
+/* 비슷한 기술의 최근 소식 (ARG-329) — 375px에서도 가로 스크롤이 없도록 줄바꿈한다. */
+.similar-news { margin-top: 24px; }
+.similar-news__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.similar-news__item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
+.similar-news__event { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.similar-news__tech { font-weight: 600; overflow-wrap: anywhere; }
+.similar-news__branch { font: 400 13px/1.4 var(--font); color: var(--muted); overflow-wrap: anywhere; }
+
 /* 기술 칩 (ARG-319) — 375px에서도 가로 스크롤이 없도록 줄바꿈하고 폭을 고정하지 않는다. */
 .tech-chips { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .tech-chips li { min-width: 0; max-width: 100%; }

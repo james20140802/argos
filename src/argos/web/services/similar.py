@@ -274,3 +274,50 @@ async def fetch_mixed_timeline(
         )
         for eid, (title, occurred_at, event_type, cids) in grouped.items()
     )
+
+
+SIMILAR_NEWS_LIMIT = 3
+
+
+@dataclass(frozen=True)
+class SimilarNews:
+    """사건 상세 '비슷한 기술의 최근 소식' 한 줄 — 비슷한 기술 하나와 그 최근 사건."""
+
+    entity_id: uuid.UUID
+    name: str
+    branch: BranchRef
+    event: TechEventRef
+
+    @property
+    def href(self) -> str:
+        return f"/tech/{self.entity_id}"
+
+
+async def fetch_event_similar_news(
+    session: AsyncSession, event_id: uuid.UUID, chip_entity_ids: Sequence[uuid.UUID]
+) -> tuple[SimilarNews, ...]:
+    """사건에 등장한 기술들의 '비슷한 기술'이 최근에 낸 사건 최대 ``SIMILAR_NEWS_LIMIT``건.
+
+    칩 기술 자체와 이 사건, 최근 사건이 없는 기술은 뺀다. 같은 비슷한 기술·같은
+    사건은 한 번만. 최신순(``occurred_at DESC, id DESC``).
+    """
+    if not chip_entity_ids:
+        return ()
+    chip_set = set(chip_entity_ids)
+    seen_techs: set[uuid.UUID] = set()
+    seen_events: set[uuid.UUID] = {event_id}
+    found: list[SimilarNews] = []
+    for chip_id in chip_entity_ids:
+        for tech in await fetch_similar_techs(session, chip_id):
+            if tech.entity_id in chip_set or tech.entity_id in seen_techs:
+                continue
+            ev = tech.latest_event
+            if ev is None or ev.id in seen_events:
+                continue
+            seen_techs.add(tech.entity_id)
+            seen_events.add(ev.id)
+            found.append(
+                SimilarNews(entity_id=tech.entity_id, name=tech.name, branch=tech.branch, event=ev)
+            )
+    found.sort(key=lambda n: (n.event.occurred_at, str(n.event.id)), reverse=True)
+    return tuple(found[:SIMILAR_NEWS_LIMIT])
