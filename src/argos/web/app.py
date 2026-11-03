@@ -40,6 +40,7 @@ from argos.web.services.feed import (
     select_hero,
 )
 from argos.web.services.portfolio import fetch_portfolio
+from argos.web.services.similar import SimilarTech, fetch_similar_techs
 from argos.web.services.technology import (
     CARD_CHIP_LIMIT,
     fetch_branch_page,
@@ -56,6 +57,19 @@ from argos.web.services.timeline import ReplaceSuccessor, fetch_timeline, replac
 
 _PACKAGE_DIR = Path(__file__).parent  # noqa: E402 — module-level lazy shims below
 _log = logging.getLogger("argos.web")
+
+
+async def _similar_techs_or_empty(session, canonical_id: uuid.UUID) -> tuple[SimilarTech, ...]:
+    """'비슷한 역할' 조회(ARG-327). 실패해도 기술 페이지는 영역만 빠지고 열린다."""
+    try:
+        return await fetch_similar_techs(session, canonical_id)
+    except Exception:
+        _log.exception("failed to fetch similar techs for %s", canonical_id)
+        try:
+            await session.rollback()
+        except Exception:
+            _log.exception("rollback after similar techs failure also failed")
+        return ()
 
 
 async def transition_asset(session, tech_id: uuid.UUID, target_status):
@@ -849,8 +863,9 @@ def build_web_app(
         tech = await fetch_tech_page(session, canonical_id)
         if tech is None:
             return _render_not_found(request)
+        similar = await _similar_techs_or_empty(session, canonical_id)
         return request.app.state.templates.TemplateResponse(
-            request, "tech_detail.html", {"tech": tech}
+            request, "tech_detail.html", {"tech": tech, "similar": similar}
         )
 
     @app.get("/branch/{branch_id}", response_class=HTMLResponse)

@@ -26,6 +26,26 @@
     {% endif %}
   </header>
 
+  {# 비슷한 역할 (ARG-327): 같은 아래 갈래의 다른 기술. 근거 없는 줄은 나열 문구를 달지 않는다. #}
+  {% if similar %}
+  <section class="tech-similar" aria-labelledby="similar-title">
+    <h2 class="tech-similar__title" id="similar-title">비슷한 역할</h2>
+    <ul class="tech-similar__list">
+      {% for s in similar %}
+      <li class="tech-similar__item">
+        <a class="tech-similar__name" href="{{ s.href }}">{{ s.name }}</a>
+        {% if s.latest_event %}<a class="tech-similar__event" href="/event/{{ s.latest_event.id }}">{{ s.latest_event.title }}</a>{% endif %}
+        <a class="tech-similar__branch" href="/branch/{{ s.branch.id }}">{{ s.branch.name }}</a>
+        {% if s.colisted_count %}
+        <span class="tech-similar__why"{% if s.colisted_example %} title="{{ s.colisted_example }}"{% endif %}>기사에서 함께 나열됨 {{ s.colisted_count }}회</span>
+        {% if s.colisted_example %}<q class="tech-similar__quote">{{ s.colisted_example }}</q>{% endif %}
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
   <section class="tech-events" aria-label="사건 타임라인">
     {% if tech.events %}
     <ol class="tech-timeline">
