@@ -35,9 +35,9 @@
       <li class="tech-similar__item">
         <a class="tech-similar__name" href="{{ s.href }}">{{ s.name }}</a>
         {% if s.latest_event %}<a class="tech-similar__event" href="/event/{{ s.latest_event.id }}">{{ s.latest_event.title }}</a>{% endif %}
-        <a class="tech-similar__branch" href="/branch/{{ s.branch.id }}">{{ s.branch.name }}</a>
+        <span class="tech-similar__branch">같은 갈래: <a href="/branch/{{ s.branch.id }}">{{ s.branch.name }}</a></span>
         {% if s.colisted_count %}
-        <span class="tech-similar__why"{% if s.colisted_example %} title="{{ s.colisted_example }}"{% endif %}>기사에서 함께 나열됨 {{ s.colisted_count }}회</span>
+        <span class="tech-similar__why">기사에서 함께 나열됨 {{ s.colisted_count }}회</span>
         {% if s.colisted_example %}<q class="tech-similar__quote">{{ s.colisted_example }}</q>{% endif %}
         {% endif %}
       </li>

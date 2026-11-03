@@ -1478,7 +1478,7 @@ code { font: 500 0.92em/1 var(--font-mono); }
 .tech-empty { color: var(--muted); }
 /* 비슷한 기술 포함 토글 (ARG-328) */
 .tech-toggle { display: inline-block; margin-bottom: 12px; padding: 4px 12px; border: 1px solid var(--hairline); border-radius: 999px; font: 600 13px/1.4 var(--font); color: var(--muted); text-decoration: none; }
-.tech-toggle[aria-checked="true"] { color: var(--ink); border-width: 2px; padding: 3px 11px; }
+.tech-toggle[aria-current="true"] { color: var(--ink); border-width: 2px; padding: 3px 11px; }
 .tech-timeline__techs { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 2px 10px; font: 400 13px/1.4 var(--font); color: var(--muted); }
 .tech-timeline__tech { overflow-wrap: anywhere; }
 

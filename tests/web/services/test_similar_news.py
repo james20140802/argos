@@ -1,6 +1,6 @@
 """ARG-329: 사건 상세의 '비슷한 기술의 최근 소식' 합치기 — DB 없이 돈다.
 
-``fetch_similar_techs``를 바꿔 끼우므로 세션은 쓰이지 않는다.
+칩별 조회(``_similar``)를 바꿔 끼우므로 세션은 쓰이지 않는다.
 """
 from __future__ import annotations
 
@@ -31,12 +31,17 @@ def _tech(name: str = "T", event: TechEventRef | None = None, eid=None) -> Simil
 
 
 def _patch(monkeypatch, mapping: dict, calls: list | None = None):
-    async def _fake(session, canonical_id):
+    async def _fake(lookup, canonical_id):
         if calls is not None:
             calls.append(canonical_id)
         return tuple(mapping.get(canonical_id, ()))
 
-    monkeypatch.setattr(similar_mod, "fetch_similar_techs", _fake)
+    async def _noop(self, ids):
+        return None
+
+    monkeypatch.setattr(similar_mod, "_similar", _fake)
+    monkeypatch.setattr(similar_mod._Lookup, "load_assignments", _noop)
+    monkeypatch.setattr(similar_mod._Lookup, "load_bundles", _noop)
 
 
 async def test_union_across_chips_counts_once(monkeypatch):

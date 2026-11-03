@@ -87,6 +87,8 @@ def test_area_shows_names_events_branch_and_colisted(monkeypatch):
     assert "Cursor" in body and f'href="/tech/{s.entity_id}"' in body
     assert "Cursor 3 출시" in body and f'href="/event/{s.latest_event.id}"' in body
     assert "코딩 에이전트" in body and f'href="/branch/{s.branch.id}"' in body
+    assert "같은 갈래: <a" in body
+    assert "title=" not in body.split('class="tech-similar__why"')[1].split(">")[0]
     assert "기사에서 함께 나열됨" in body and "4회" in body
     assert "Cursor와 Windsurf 비교" in body
 

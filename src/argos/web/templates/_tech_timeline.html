@@ -3,7 +3,7 @@
 {% set _next = "" if include_similar else "?similar=1" %}
 <section id="tech-timeline" class="tech-events" aria-label="사건 타임라인">
   {% if similar %}
-  <a class="tech-toggle" role="switch" aria-checked="{{ 'true' if include_similar else 'false' }}" href="{{ _base }}{{ _next }}" hx-get="{{ _base }}/timeline{{ _next }}" hx-target="#tech-timeline" hx-swap="outerHTML" hx-push-url="{{ _base }}{{ _next }}">비슷한 기술 포함</a>
+  <a class="tech-toggle" id="tech-toggle"{% if include_similar %} aria-current="true"{% endif %} href="{{ _base }}{{ _next }}" hx-get="{{ _base }}/timeline{{ _next }}" hx-target="#tech-timeline" hx-swap="outerHTML" hx-push-url="{{ _base }}{{ _next }}">비슷한 기술 포함</a>
   {% endif %}
   {% if include_similar %}
   {% if mixed_events %}

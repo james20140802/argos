@@ -97,10 +97,11 @@ def test_news_rendered_below_evidence(monkeypatch):
     client, _ = _client(monkeypatch, view, chips=_chips(), news=[n])
     body = client.get(f"/event/{view.id}").text
     assert "비슷한 기술의 최근 소식" in body
-    assert body.index("근거 기사") < body.index("비슷한 기술의 최근 소식") < body.index("등장한 기술")
+    assert body.index("evidence-item__reader") < body.index("비슷한 기술의 최근 소식") < body.index("등장한 기술")
     assert f'href="/event/{n.event.id}"' in body
     assert f'href="/tech/{n.entity_id}"' in body
     assert f'href="/branch/{n.branch.id}"' in body
+    assert "같은 갈래: <a" in body
 
 
 def test_news_shows_branch_not_colisted(monkeypatch):
@@ -117,10 +118,6 @@ def test_area_hidden_when_empty(monkeypatch):
     body = client.get(f"/event/{view.id}").text
     assert "비슷한 기술의 최근 소식" not in body
     assert 'class="similar-news"' not in body
-
-
-def _boom(*a, **k):
-    raise RuntimeError("boom")
 
 
 async def _raise(s, event_id, chip_ids):

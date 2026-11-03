@@ -148,53 +148,114 @@ async def _latest_events(
     }
 
 
-async def fetch_similar_techs(
-    session: AsyncSession, canonical_id: uuid.UUID
-) -> tuple[SimilarTech, ...]:
-    """같은 아래 갈래의 다른 기술 최대 ``SIMILAR_LIMIT``개.
+class _Lookup:
+    """한 번의 조회 안에서 갈래 단위 데이터를 공유하는 캐시.
 
-    미분류이거나 위 갈래에 배정된 기술은 '같은 역할'이 너무 넓어 ``()``.
-    정렬: 함께 나열된 근거가 있는 것 먼저 -> 최근 사건 새로운 순(없으면 뒤) -> 이름.
+    같은 아래 갈래의 칩들은 후보·이름 묶음·최근 사건을 한 번만 읽는다 — 쿼리
+    수가 칩 수가 아니라 서로 다른 갈래 수에 따라 늘도록.
     """
-    base = (
-        await session.execute(
-            select(RoleAssignment).where(RoleAssignment.entity_id == canonical_id)
-        )
-    ).scalar_one_or_none()
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.assignments: dict[uuid.UUID, Optional[RoleAssignment]] = {}
+        self.branches: dict[uuid.UUID, Optional[RoleBranch]] = {}
+        self.candidates: dict[uuid.UUID, list[tuple[uuid.UUID, str, Any]]] = {}
+        self.bundles: dict[uuid.UUID, set[str]] = {}
+        self.events: dict[uuid.UUID, TechEventRef] = {}
+        self._events_done: set[uuid.UUID] = set()
+
+    async def load_assignments(self, ids: Sequence[uuid.UUID]) -> None:
+        missing = [i for i in dict.fromkeys(ids) if i not in self.assignments]
+        if not missing:
+            return
+        found = {
+            ra.entity_id: ra
+            for ra in (
+                await self.session.execute(
+                    select(RoleAssignment).where(RoleAssignment.entity_id.in_(missing))
+                )
+            )
+            .scalars()
+            .all()
+        }
+        for i in missing:
+            self.assignments[i] = found.get(i)
+        need = {
+            ra.branch_id
+            for ra in found.values()
+            if ra.branch_id is not None and ra.branch_id not in self.branches
+        }
+        if need:
+            got = {
+                br.id: br
+                for br in (
+                    await self.session.execute(select(RoleBranch).where(RoleBranch.id.in_(need)))
+                )
+                .scalars()
+                .all()
+            }
+            for bid in need:
+                self.branches[bid] = got.get(bid)
+
+    async def load_candidates(self, branch_id: uuid.UUID) -> list[tuple[uuid.UUID, str, Any]]:
+        if branch_id not in self.candidates:
+            rows = (
+                await self.session.execute(
+                    select(Entity.id, Entity.name, RoleAssignment.evidence)
+                    .join(RoleAssignment, RoleAssignment.entity_id == Entity.id)
+                    .join(TechnologyProfile, TechnologyProfile.entity_id == Entity.id)
+                    .where(
+                        RoleAssignment.branch_id == branch_id,
+                        TechnologyProfile.verdict == TechVerdict.TECHNOLOGY,
+                        Entity.id.not_in(select(EntityAlias.alias_entity_id)),
+                    )
+                )
+            ).all()
+            self.candidates[branch_id] = [(r[0], r[1], r[2]) for r in rows]
+        return self.candidates[branch_id]
+
+    async def load_bundles(self, ids: Sequence[uuid.UUID]) -> None:
+        missing = [i for i in dict.fromkeys(ids) if i not in self.bundles]
+        if not missing:
+            return
+        got = await _key_bundles(self.session, missing)
+        for i in missing:
+            self.bundles[i] = got.get(i, set())
+
+    async def load_events(self, ids: Sequence[uuid.UUID]) -> None:
+        missing = [i for i in dict.fromkeys(ids) if i not in self._events_done]
+        if not missing:
+            return
+        self.events.update(await _latest_events(self.session, missing))
+        self._events_done.update(missing)
+
+
+async def _similar(lookup: _Lookup, canonical_id: uuid.UUID) -> tuple[SimilarTech, ...]:
+    await lookup.load_assignments([canonical_id])
+    base = lookup.assignments.get(canonical_id)
     if base is None or base.branch_id is None:
         return ()
-    branch = await session.get(RoleBranch, base.branch_id)
+    branch = lookup.branches.get(base.branch_id)
     if branch is None or branch.parent_id is None:
         return ()
 
-    rows = (
-        await session.execute(
-            select(Entity.id, Entity.name, RoleAssignment.evidence)
-            .join(RoleAssignment, RoleAssignment.entity_id == Entity.id)
-            .join(TechnologyProfile, TechnologyProfile.entity_id == Entity.id)
-            .where(
-                RoleAssignment.branch_id == base.branch_id,
-                TechnologyProfile.verdict == TechVerdict.TECHNOLOGY,
-                Entity.id.not_in(select(EntityAlias.alias_entity_id)),
-                Entity.id != canonical_id,
-            )
-        )
-    ).all()
+    rows = [r for r in await lookup.load_candidates(base.branch_id) if r[0] != canonical_id]
     if not rows:
         return ()
 
-    bundles = await _key_bundles(session, [canonical_id] + [r[0] for r in rows])
-    base_keys = bundles.get(canonical_id, set())
+    await lookup.load_bundles([canonical_id] + [r[0] for r in rows])
+    base_keys = lookup.bundles.get(canonical_id, set())
 
     kept = []
     for entity_id, name, evidence in rows:
-        cand_keys = bundles.get(entity_id, set())
+        cand_keys = lookup.bundles.get(entity_id, set())
         if any(_contained(a, b) for a in base_keys for b in cand_keys):
             continue
         count, example = _colisted(base_keys, base.evidence, cand_keys, evidence)
         kept.append((entity_id, name, count, example))
 
-    events = await _latest_events(session, [k[0] for k in kept])
+    await lookup.load_events([k[0] for k in kept])
+    events = lookup.events
     kept.sort(
         key=lambda k: (
             0 if k[2] > 0 else 1,
@@ -216,6 +277,17 @@ async def fetch_similar_techs(
         )
         for entity_id, name, count, example in kept[:SIMILAR_LIMIT]
     )
+
+
+async def fetch_similar_techs(
+    session: AsyncSession, canonical_id: uuid.UUID
+) -> tuple[SimilarTech, ...]:
+    """같은 아래 갈래의 다른 기술 최대 ``SIMILAR_LIMIT``개.
+
+    미분류이거나 위 갈래에 배정된 기술은 '같은 역할'이 너무 넓어 ``()``.
+    정렬: 함께 나열된 근거가 있는 것 먼저 -> 최근 사건 새로운 순(없으면 뒤) -> 이름.
+    """
+    return await _similar(_Lookup(session), canonical_id)
 
 
 @dataclass(frozen=True)
@@ -307,8 +379,11 @@ async def fetch_event_similar_news(
     seen_techs: set[uuid.UUID] = set()
     seen_events: set[uuid.UUID] = {event_id}
     found: list[SimilarNews] = []
+    lookup = _Lookup(session)
+    await lookup.load_assignments(chip_entity_ids)
+    await lookup.load_bundles(chip_entity_ids)
     for chip_id in chip_entity_ids:
-        for tech in await fetch_similar_techs(session, chip_id):
+        for tech in await _similar(lookup, chip_id):
             if tech.entity_id in chip_set or tech.entity_id in seen_techs:
                 continue
             ev = tech.latest_event

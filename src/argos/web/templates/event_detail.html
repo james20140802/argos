@@ -94,7 +94,7 @@
       <li class="similar-news__item">
         <a class="similar-news__event" href="/event/{{ n.event.id }}">{{ n.event.title }}</a>
         <a class="similar-news__tech" href="{{ n.href }}">{{ n.name }}</a>
-        <a class="similar-news__branch" href="/branch/{{ n.branch.id }}">{{ n.branch.name }}</a>
+        <span class="similar-news__branch">같은 갈래: <a href="/branch/{{ n.branch.id }}">{{ n.branch.name }}</a></span>
       </li>
       {% endfor %}
     </ul>

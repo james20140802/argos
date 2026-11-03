@@ -9,7 +9,14 @@ import pytest
 
 from argos.config import settings
 from argos.models.technology_profile import TechVerdict
-from argos.web.services.similar import SIMILAR_LIMIT, fetch_mixed_timeline, fetch_similar_techs
+from argos.web.services.similar import (
+    SIMILAR_LIMIT,
+    SIMILAR_NEWS_LIMIT,
+    SimilarNews,
+    fetch_event_similar_news,
+    fetch_mixed_timeline,
+    fetch_similar_techs,
+)
 from argos.web.services.technology import TechRef
 from tests.conftest import db_reachable as _db_reachable
 
@@ -210,12 +217,19 @@ async def test_alias_and_contained_name_excluded():
 
 async def test_limit_is_five():
     async with _world() as (Session, w):
+        techs = []
         for i in range(SIMILAR_LIMIT + 3):
-            await w.tech(f"tool{i}")
+            t = await w.tech(f"tool{i}")
+            await w.event(t, i)  # 클수록 최근 -> 위쪽 순위
+            techs.append(t)
         await w.s.commit()
         async with Session() as s:
             got = await fetch_similar_techs(s, w.base.id)
         assert len(got) == SIMILAR_LIMIT == 5
+        # 순위 위 다섯만 남고, 가장 낮은 순위들이 잘린다.
+        expected = [t.id for t in reversed(techs)][:SIMILAR_LIMIT]
+        assert [t.entity_id for t in got] == expected
+        assert techs[0].id not in {t.entity_id for t in got}
 
 
 async def test_order_evidence_then_recent():
@@ -383,3 +397,86 @@ async def test_mixed_folds_alias_and_skips_tombstone():
             got = await fetch_mixed_timeline(s, _ref(w.base), similar)
         assert [e.id for e in got] == [survivor.id, via_alias.id]
         assert [t.entity_id for t in got[1].techs] == [a.id]
+
+
+async def _per_chip_news(session, event_id, chip_ids):
+    """칩마다 ``fetch_similar_techs``를 따로 불러 같은 규칙으로 합친 기준 결과."""
+    chip_set = set(chip_ids)
+    seen_techs: set = set()
+    seen_events = {event_id}
+    found = []
+    for cid in chip_ids:
+        for t in await fetch_similar_techs(session, cid):
+            ev = t.latest_event
+            if t.entity_id in chip_set or t.entity_id in seen_techs:
+                continue
+            if ev is None or ev.id in seen_events:
+                continue
+            seen_techs.add(t.entity_id)
+            seen_events.add(ev.id)
+            found.append(SimilarNews(entity_id=t.entity_id, name=t.name, branch=t.branch, event=ev))
+    found.sort(key=lambda n: (n.event.occurred_at, str(n.event.id)), reverse=True)
+    return tuple(found[:SIMILAR_NEWS_LIMIT])
+
+
+async def _count_statements(Session, fn):
+    from sqlalchemy import event as sa_event
+
+    sync_engine = Session.kw["bind"].sync_engine
+    count = 0
+
+    def _before(conn, cursor, statement, parameters, context, executemany):
+        nonlocal count
+        count += 1
+
+    sa_event.listen(sync_engine, "before_cursor_execute", _before)
+    try:
+        async with Session() as s:
+            result = await fn(s)
+    finally:
+        sa_event.remove(sync_engine, "before_cursor_execute", _before)
+    return count, result
+
+
+async def test_event_news_statements_do_not_scale_with_chips_in_one_branch():
+    async with _world() as (Session, w):
+        for i in range(8):
+            cand = await w.tech(f"cand{i}")
+            await w.event(cand, i)
+        chips = [w.base] + [await w.tech(f"chip{i}") for i in range(5)]
+        await w.s.commit()
+        ids = [c.id for c in chips]
+        this_event = uuid.uuid4()
+
+        n2, _ = await _count_statements(
+            Session, lambda s: fetch_event_similar_news(s, this_event, ids[:2])
+        )
+        n6, _ = await _count_statements(
+            Session, lambda s: fetch_event_similar_news(s, this_event, ids)
+        )
+        assert n6 <= n2 + 1, (n2, n6)
+        # 칩마다 따로 부르던 때(칩 하나당 5쿼리 안팎)보다 훨씬 적다.
+        assert n6 < 6 * 3, n6
+
+
+async def test_event_news_equals_per_chip_lookup():
+    async with _world() as (Session, w):
+        listed = await w.tech("listed", evidence=_neighbor(f"claude duet {w.sfx}", 4))
+        await w.event(listed, 1)
+        for i in range(5):
+            c = await w.tech(f"cand{i}")
+            await w.event(c, 10 + i)
+        elsewhere = await w.tech("far", branch="other")
+        await w.event(elsewhere, 99)
+        other_chip = await w.tech("otherchip", branch="other")
+        chip_in_leaf = await w.tech("leafchip")
+        unclassified = await w.tech("unclass", branch="null")
+        await w.s.commit()
+        ids = [w.base.id, other_chip.id, chip_in_leaf.id, unclassified.id, uuid.uuid4()]
+        this_event = uuid.uuid4()
+        async with Session() as s:
+            merged = await fetch_event_similar_news(s, this_event, ids)
+        async with Session() as s:
+            expected = await _per_chip_news(s, this_event, ids)
+        assert merged == expected
+        assert merged  # 비어 있으면 동등성 검증이 무의미하다

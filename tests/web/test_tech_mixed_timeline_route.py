@@ -125,7 +125,8 @@ def test_similar_param_turns_on_mix(monkeypatch):
     assert "섞인 사건 제목" in body
     assert "내 사건 제목" not in body
     assert f'href="/tech/{ctx.similar[0].entity_id}"' in body.split('id="tech-timeline"')[1]
-    assert 'aria-checked="true"' in body
+    tag = body.split('id="tech-toggle"')[1].split(">")[0]
+    assert 'aria-current="true"' in tag and "role=" not in tag and "aria-checked" not in body
 
 
 def test_invalid_param_is_off(monkeypatch):
@@ -133,7 +134,7 @@ def test_invalid_param_is_off(monkeypatch):
     for value in ("0", "true", "", "2", "1 "):
         body = client.get(f"/tech/{ctx.view.entity_id}", params={"similar": value}).text
         assert "내 사건 제목" in body and "섞인 사건 제목" not in body
-        assert 'aria-checked="false"' in body
+        assert 'id="tech-toggle"' in body and 'aria-current' not in body.split('id="tech-toggle"')[1].split(">")[0]
     assert ctx.mixed_args == []
 
 
@@ -187,7 +188,8 @@ def test_mixed_query_failure_falls_back_to_own(monkeypatch):
     resp = client.get(f"/tech/{ctx.view.entity_id}?similar=1")
     assert resp.status_code == 200
     assert "내 사건 제목" in resp.text and "섞인 사건 제목" not in resp.text
-    assert 'aria-checked="false"' in resp.text
+    assert 'id="tech-toggle"' in resp.text
+    assert "aria-current" not in resp.text.split('id="tech-toggle"')[1].split(">")[0]
     assert ctx.session.rolled_back
 
 
