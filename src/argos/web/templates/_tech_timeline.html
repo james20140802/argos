@@ -1,0 +1,36 @@
+{# 기술 페이지 타임라인 조각 (ARG-328). 전체 페이지는 include, 토글은 이 조각만 바꿔 끼운다. #}
+{% set _base = "/tech/" ~ tech.entity_id %}
+{% set _next = "" if include_similar else "?similar=1" %}
+<section id="tech-timeline" class="tech-events" aria-label="사건 타임라인">
+  {% if similar %}
+  <a class="tech-toggle" role="switch" aria-checked="{{ 'true' if include_similar else 'false' }}" href="{{ _base }}{{ _next }}" hx-get="{{ _base }}/timeline{{ _next }}" hx-target="#tech-timeline" hx-swap="outerHTML" hx-push-url="{{ _base }}{{ _next }}">비슷한 기술 포함</a>
+  {% endif %}
+  {% if include_similar %}
+  {% if mixed_events %}
+  <ol class="tech-timeline">
+    {% for ev in mixed_events %}
+    <li class="tech-timeline__item">
+      <time class="tech-timeline__date" datetime="{{ ev.occurred_at.date().isoformat() }}">{{ ev.occurred_at.strftime("%Y-%m-%d") }}</time>
+      {% if ev.event_type_label %}<span class="tag event-type">{{ ev.event_type_label }}</span>{% endif %}
+      <a class="tech-timeline__title" href="/event/{{ ev.id }}">{{ ev.title }}</a>
+      <span class="tech-timeline__techs">{% for t in ev.techs %}<a class="tech-timeline__tech" href="{{ t.href }}">{{ t.name }}</a>{% endfor %}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="tech-empty">아직 이 기술이 등장한 사건이 없습니다.</p>
+  {% endif %}
+  {% elif tech.events %}
+  <ol class="tech-timeline">
+    {% for ev in tech.events %}
+    <li class="tech-timeline__item">
+      <time class="tech-timeline__date" datetime="{{ ev.occurred_at.date().isoformat() }}">{{ ev.occurred_at.strftime("%Y-%m-%d") }}</time>
+      {% if ev.event_type_label %}<span class="tag event-type">{{ ev.event_type_label }}</span>{% endif %}
+      <a class="tech-timeline__title" href="/event/{{ ev.id }}">{{ ev.title }}</a>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="tech-empty">아직 이 기술이 등장한 사건이 없습니다.</p>
+  {% endif %}
+</section>

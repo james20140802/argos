@@ -40,9 +40,15 @@ from argos.web.services.feed import (
     select_hero,
 )
 from argos.web.services.portfolio import fetch_portfolio
-from argos.web.services.similar import SimilarTech, fetch_similar_techs
+from argos.web.services.similar import (
+    MixedEventRef,
+    SimilarTech,
+    fetch_mixed_timeline,
+    fetch_similar_techs,
+)
 from argos.web.services.technology import (
     CARD_CHIP_LIMIT,
+    TechRef,
     fetch_branch_page,
     fetch_event_tech_chips,
     fetch_tech_page,
@@ -70,6 +76,61 @@ async def _similar_techs_or_empty(session, canonical_id: uuid.UUID) -> tuple[Sim
         except Exception:
             _log.exception("rollback after similar techs failure also failed")
         return ()
+
+
+async def _mixed_timeline_or_empty(
+    session, tech, similar: tuple[SimilarTech, ...]
+) -> Optional[tuple[MixedEventRef, ...]]:
+    """섞어 보기 조회(ARG-328). 실패하면 ``None`` — 호출자가 자기 사건으로 폴백한다."""
+    try:
+        return await fetch_mixed_timeline(
+            session, TechRef(entity_id=tech.entity_id, name=tech.name), similar
+        )
+    except Exception:
+        _log.exception("failed to fetch mixed timeline for %s", tech.entity_id)
+        try:
+            await session.rollback()
+        except Exception:
+            _log.exception("rollback after mixed timeline failure also failed")
+        return None
+
+
+async def _tech_page_context(
+    request: Request, session, parsed_id: uuid.UUID, suffix: str, not_found
+):
+    """전체 페이지와 타임라인 조각이 같은 값을 만들도록 모은 컨텍스트 (ARG-328).
+
+    다른 이름·없는 기술은 응답(Response)을 돌려준다(``not_found``는 없음 화면 렌더러). 다른 이름의 리다이렉트는
+    쿼리 문자열을 보존한다. ``?similar=1``은 정확히 "1"일 때만 켠다.
+    """
+    canonical_id = await resolve_canonical_id(session, parsed_id)
+    if canonical_id is None:
+        return not_found(request)
+    if canonical_id != parsed_id:
+        query = request.url.query
+        return RedirectResponse(
+            url=f"/tech/{canonical_id}{suffix}" + (f"?{query}" if query else ""),
+            status_code=307,
+        )
+
+    tech = await fetch_tech_page(session, canonical_id)
+    if tech is None:
+        return not_found(request)
+    similar = await _similar_techs_or_empty(session, canonical_id)
+    include_similar = bool(similar) and request.query_params.get("similar") == "1"
+    mixed_events: tuple[MixedEventRef, ...] = ()
+    if include_similar:
+        mixed = await _mixed_timeline_or_empty(session, tech, similar)
+        if mixed is None:
+            include_similar = False
+        else:
+            mixed_events = mixed
+    return {
+        "tech": tech,
+        "similar": similar,
+        "include_similar": include_similar,
+        "mixed_events": mixed_events,
+    }
 
 
 async def transition_asset(session, tech_id: uuid.UUID, target_status):
@@ -854,19 +915,31 @@ def build_web_app(
         except ValueError:
             return _render_not_found(request)
 
-        canonical_id = await resolve_canonical_id(session, parsed_id)
-        if canonical_id is None:
-            return _render_not_found(request)
-        if canonical_id != parsed_id:
-            return RedirectResponse(url=f"/tech/{canonical_id}", status_code=307)
-
-        tech = await fetch_tech_page(session, canonical_id)
-        if tech is None:
-            return _render_not_found(request)
-        similar = await _similar_techs_or_empty(session, canonical_id)
-        return request.app.state.templates.TemplateResponse(
-            request, "tech_detail.html", {"tech": tech, "similar": similar}
+        ctx = await _tech_page_context(
+            request, session, parsed_id, "", _render_not_found
         )
+        if isinstance(ctx, Response):
+            return ctx
+        return request.app.state.templates.TemplateResponse(request, "tech_detail.html", ctx)
+
+    @app.get("/tech/{entity_id}/timeline", response_class=HTMLResponse)
+    async def tech_timeline(
+        request: Request,
+        entity_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        """타임라인 조각 (ARG-328) — 토글이 이 영역만 바꿔 끼운다."""
+        try:
+            parsed_id = uuid.UUID(entity_id)
+        except ValueError:
+            return _render_not_found(request)
+
+        ctx = await _tech_page_context(
+            request, session, parsed_id, "/timeline", _render_not_found
+        )
+        if isinstance(ctx, Response):
+            return ctx
+        return request.app.state.templates.TemplateResponse(request, "_tech_timeline.html", ctx)
 
     @app.get("/branch/{branch_id}", response_class=HTMLResponse)
     async def branch_detail(

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Any, Optional
+from datetime import datetime
+from typing import Any, Optional, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +24,7 @@ from argos.models.role_branch import RoleBranch
 from argos.models.tech_event import TechEvent
 from argos.models.technology_profile import TechnologyProfile, TechVerdict
 from argos.web.services.event_sections import type_label
-from argos.web.services.technology import _UNTITLED_EVENT, BranchRef, TechEventRef
+from argos.web.services.technology import _UNTITLED_EVENT, BranchRef, TechEventRef, TechRef
 
 SIMILAR_LIMIT = 5
 
@@ -214,4 +215,62 @@ async def fetch_similar_techs(
             colisted_example=example,
         )
         for entity_id, name, count, example in kept[:SIMILAR_LIMIT]
+    )
+
+
+@dataclass(frozen=True)
+class MixedEventRef:
+    """섞어 보기 한 줄 — 사건 하나와 그 사건에 언급된 기술들."""
+
+    id: uuid.UUID
+    title: str
+    occurred_at: datetime
+    event_type_label: Optional[str]
+    techs: tuple[TechRef, ...]  # 이 기술 먼저, 그다음 similar 순서
+
+
+async def fetch_mixed_timeline(
+    session: AsyncSession, own: TechRef, similar: Sequence[SimilarTech]
+) -> tuple[MixedEventRef, ...]:
+    """이 기술과 비슷한 기술들의 사건을 시간순(최신 먼저)으로 한 목록에 섞는다.
+
+    한 쿼리로 가져온다. 별칭 언급은 대표로 접고 툼스톤은 뺀다. 두 기술이
+    같은 사건에 나오면 한 줄에 이름을 모아 둔다.
+    """
+    order = [own, *(TechRef(entity_id=s.entity_id, name=s.name) for s in similar)]
+    refs = {t.entity_id: t for t in order}
+    rank = {t.entity_id: i for i, t in enumerate(order)}
+    canon_id = func.coalesce(EntityAlias.canonical_entity_id, DocumentEntity.entity_id)
+    rows = (
+        await session.execute(
+            select(
+                canon_id.label("canon_id"),
+                TechEvent.id,
+                TechEvent.title,
+                TechEvent.occurred_at,
+                TechEvent.event_type,
+            )
+            .select_from(TechEvent)
+            .join(EventDocument, EventDocument.event_id == TechEvent.id)
+            .join(DocumentEntity, DocumentEntity.tech_item_id == EventDocument.tech_item_id)
+            .outerjoin(EntityAlias, EntityAlias.alias_entity_id == DocumentEntity.entity_id)
+            .where(canon_id.in_(list(refs)), TechEvent.merged_into_id.is_(None))
+            .distinct()
+            .order_by(TechEvent.occurred_at.desc(), TechEvent.id.desc())
+        )
+    ).all()
+    grouped: dict[uuid.UUID, tuple] = {}
+    for cid, eid, title, occurred_at, event_type in rows:
+        if eid not in grouped:
+            grouped[eid] = (title, occurred_at, event_type, set())
+        grouped[eid][3].add(cid)
+    return tuple(
+        MixedEventRef(
+            id=eid,
+            title=title or _UNTITLED_EVENT,
+            occurred_at=occurred_at,
+            event_type_label=type_label(event_type),
+            techs=tuple(refs[c] for c in sorted(cids, key=rank.__getitem__)),
+        )
+        for eid, (title, occurred_at, event_type, cids) in grouped.items()
     )
