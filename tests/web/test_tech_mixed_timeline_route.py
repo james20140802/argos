@@ -111,6 +111,13 @@ def test_toggle_off_empty_state_text_unchanged(monkeypatch):
     assert "아직 이 기술이 등장한 사건이 없습니다." in body
 
 
+def test_toggle_on_empty_state_mentions_similar_techs(monkeypatch):
+    client, ctx = _client(monkeypatch)
+    ctx.mixed = ()
+    body = client.get(f"/tech/{ctx.view.entity_id}?similar=1").text
+    assert "아직 이 기술과 비슷한 기술이 등장한 사건이 없습니다." in body
+
+
 def test_toggle_hidden_without_similar(monkeypatch):
     client, ctx = _client(monkeypatch, similar=())
     body = client.get(f"/tech/{ctx.view.entity_id}?similar=1").text

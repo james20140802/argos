@@ -67,16 +67,21 @@ _PACKAGE_DIR = Path(__file__).parent  # noqa: E402 — module-level lazy shims b
 _log = logging.getLogger("argos.web")
 
 
+async def _rollback_quietly(session, what: str) -> None:
+    """부가 조회 실패 뒤 트랜잭션을 되돌린다. rollback 실패가 페이지를 깨뜨리지 않게 한다."""
+    try:
+        await session.rollback()
+    except Exception:
+        _log.exception("rollback after %s failure also failed", what)
+
+
 async def _similar_techs_or_empty(session, canonical_id: uuid.UUID) -> tuple[SimilarTech, ...]:
     """'비슷한 역할' 조회(ARG-327). 실패해도 기술 페이지는 영역만 빠지고 열린다."""
     try:
         return await fetch_similar_techs(session, canonical_id)
     except Exception:
         _log.exception("failed to fetch similar techs for %s", canonical_id)
-        try:
-            await session.rollback()
-        except Exception:
-            _log.exception("rollback after similar techs failure also failed")
+        await _rollback_quietly(session, "similar techs")
         return ()
 
 
@@ -88,10 +93,7 @@ async def _similar_news_or_empty(
         return await fetch_event_similar_news(session, event_id, chip_entity_ids)
     except Exception:
         _log.exception("failed to fetch similar news for event %s", event_id)
-        try:
-            await session.rollback()
-        except Exception:
-            _log.exception("rollback after similar news failure also failed")
+        await _rollback_quietly(session, "similar news")
         return ()
 
 
@@ -105,10 +107,7 @@ async def _mixed_timeline_or_empty(
         )
     except Exception:
         _log.exception("failed to fetch mixed timeline for %s", tech.entity_id)
-        try:
-            await session.rollback()
-        except Exception:
-            _log.exception("rollback after mixed timeline failure also failed")
+        await _rollback_quietly(session, "mixed timeline")
         return None
 
 
@@ -1010,16 +1009,13 @@ def build_web_app(
             _log.exception("failed to fetch tech chips for event %s", parsed_id)
             chips_by_event = {}
             # 실패한 조회가 트랜잭션을 망가뜨려 아래 Click 기록까지 잃지 않게 한다.
-            await session.rollback()
-            chips_failed = True
-        else:
-            chips_failed = False
+            await _rollback_quietly(session, "tech chips")
 
         # 비슷한 기술의 최근 소식(ARG-329): rep_item 로드 전에 — rollback은 ORM
         # 객체를 만료시킨다. 칩 조회가 실패했으면 부르지 않는다.
         tech_chips = chips_by_event.get(parsed_id, [])
         similar_news: tuple[SimilarNews, ...] = ()
-        if tech_chips and not chips_failed:
+        if tech_chips:
             similar_news = await _similar_news_or_empty(
                 session, parsed_id, [c.entity_id for c in tech_chips]
             )

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.models.document_entity import DocumentEntity
@@ -112,29 +112,39 @@ async def _key_bundles(
     return bundles
 
 
+# 언급을 대표로 접은 id. 별칭 행이 없으면 언급된 엔티티 자신이다.
+_CANON_ID = func.coalesce(EntityAlias.canonical_entity_id, DocumentEntity.entity_id)
+
+
+def _mention_events(canonical_ids: Sequence[uuid.UUID]) -> Select:
+    """대표들이 언급된 사건 행 (대표 id, 사건 id, 제목, 시각, 유형). 툼스톤은 뺀다."""
+    return (
+        select(
+            _CANON_ID.label("canon_id"),
+            TechEvent.id,
+            TechEvent.title,
+            TechEvent.occurred_at,
+            TechEvent.event_type,
+        )
+        .select_from(TechEvent)
+        .join(EventDocument, EventDocument.event_id == TechEvent.id)
+        .join(DocumentEntity, DocumentEntity.tech_item_id == EventDocument.tech_item_id)
+        .outerjoin(EntityAlias, EntityAlias.alias_entity_id == DocumentEntity.entity_id)
+        .where(_CANON_ID.in_(canonical_ids), TechEvent.merged_into_id.is_(None))
+    )
+
+
 async def _latest_events(
     session: AsyncSession, canonical_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, TechEventRef]:
     """대표별 가장 최근 사건 — 한 쿼리로 모두 채운다. 별칭 언급은 대표로 접고 툼스톤은 뺀다."""
     if not canonical_ids:
         return {}
-    canon_id = func.coalesce(EntityAlias.canonical_entity_id, DocumentEntity.entity_id)
     rows = (
         await session.execute(
-            select(
-                canon_id.label("canon_id"),
-                TechEvent.id,
-                TechEvent.title,
-                TechEvent.occurred_at,
-                TechEvent.event_type,
-            )
-            .select_from(TechEvent)
-            .join(EventDocument, EventDocument.event_id == TechEvent.id)
-            .join(DocumentEntity, DocumentEntity.tech_item_id == EventDocument.tech_item_id)
-            .outerjoin(EntityAlias, EntityAlias.alias_entity_id == DocumentEntity.entity_id)
-            .where(canon_id.in_(canonical_ids), TechEvent.merged_into_id.is_(None))
-            .distinct(canon_id)
-            .order_by(canon_id, TechEvent.occurred_at.desc(), TechEvent.id.desc())
+            _mention_events(canonical_ids)
+            .distinct(_CANON_ID)
+            .order_by(_CANON_ID, TechEvent.occurred_at.desc(), TechEvent.id.desc())
         )
     ).all()
     return {
@@ -312,21 +322,9 @@ async def fetch_mixed_timeline(
     order = [own, *(TechRef(entity_id=s.entity_id, name=s.name) for s in similar)]
     refs = {t.entity_id: t for t in order}
     rank = {t.entity_id: i for i, t in enumerate(order)}
-    canon_id = func.coalesce(EntityAlias.canonical_entity_id, DocumentEntity.entity_id)
     rows = (
         await session.execute(
-            select(
-                canon_id.label("canon_id"),
-                TechEvent.id,
-                TechEvent.title,
-                TechEvent.occurred_at,
-                TechEvent.event_type,
-            )
-            .select_from(TechEvent)
-            .join(EventDocument, EventDocument.event_id == TechEvent.id)
-            .join(DocumentEntity, DocumentEntity.tech_item_id == EventDocument.tech_item_id)
-            .outerjoin(EntityAlias, EntityAlias.alias_entity_id == DocumentEntity.entity_id)
-            .where(canon_id.in_(list(refs)), TechEvent.merged_into_id.is_(None))
+            _mention_events(list(refs))
             .distinct()
             .order_by(TechEvent.occurred_at.desc(), TechEvent.id.desc())
         )

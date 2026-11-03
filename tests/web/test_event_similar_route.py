@@ -175,3 +175,16 @@ def test_chip_ids_passed_to_lookup(monkeypatch):
     client, _ = _client(monkeypatch, view, chips=chips, news_fn=_news)
     client.get(f"/event/{view.id}")
     assert calls == [(view.id, [chips[0].entity_id])]
+
+
+def test_chip_failure_with_rollback_failure_still_renders(monkeypatch):
+    view = _view()
+
+    async def _chips_boom(s, event_ids):
+        raise RuntimeError("chips boom")
+
+    client, session = _client(
+        monkeypatch, view, chips_fn=_chips_boom, session=_FakeSession(rollback_fails=True)
+    )
+    assert client.get(f"/event/{view.id}").status_code == 200
+    assert session.rollbacks == 1
