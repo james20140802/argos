@@ -10,6 +10,27 @@ This history was reconstructed retroactively from annotated release tags
 (`git tag -n99`) and their commit ranges; entries before this file existed may be
 less granular than future ones.
 
+## [0.8.0] — 2026-11-06
+
+From a technology or an event you can now move on to the technologies that do
+the same job and see what they did lately. 9 commits since v0.7.1.
+
+### Added
+- A technology page lists up to five technologies in the same role branch, each
+  with its latest event and why it counts as similar: the branch name and, when
+  there is one, an article that listed them together (ARG-316).
+- A "비슷한 기술 포함" toggle on the technology timeline mixes those technologies'
+  events in time order and survives a reload (ARG-316).
+- An event page shows up to three recent items from similar technologies below
+  its source articles (ARG-316).
+
+### Fixed
+- The event backfill's preview and real run now give new events the same ids, so
+  a tie can no longer send an article to a different event than the preview
+  showed (ARG-276).
+- The test suite no longer downloads Chromium during the `argos init` infra test,
+  which failed on runners Playwright does not support.
+
 ## [0.7.1] — 2026-10-29
 
 Re-summarizing old events no longer stalls on one-article events with English
