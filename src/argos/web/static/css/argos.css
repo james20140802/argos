@@ -1476,6 +1476,29 @@ code { font: 500 0.92em/1 var(--font-mono); }
 .tech-timeline__date { font: 600 13px/1.4 var(--font); color: var(--muted); }
 .tech-timeline__title { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
 .tech-empty { color: var(--muted); }
+/* 비슷한 기술 포함 토글 (ARG-328) */
+.tech-toggle { display: inline-block; margin-bottom: 12px; padding: 4px 12px; border: 1px solid var(--hairline); border-radius: 999px; font: 600 13px/1.4 var(--font); color: var(--muted); text-decoration: none; }
+.tech-toggle[aria-current="true"] { color: var(--ink); border-width: 2px; padding: 3px 11px; }
+.tech-timeline__techs { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 2px 10px; font: 400 13px/1.4 var(--font); color: var(--muted); }
+.tech-timeline__tech { overflow-wrap: anywhere; }
+
+/* 비슷한 역할 (ARG-327) — 375px에서도 가로 스크롤이 없도록 줄바꿈한다. */
+.tech-similar { margin-top: 24px; }
+.tech-similar__title { margin: 0 0 8px; font: 700 16px/1.4 var(--font); }
+.tech-similar__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.tech-similar__item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
+.tech-similar__name { font-weight: 600; overflow-wrap: anywhere; }
+.tech-similar__event { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.tech-similar__branch, .tech-similar__why { font: 400 13px/1.4 var(--font); color: var(--muted); overflow-wrap: anywhere; }
+.tech-similar__quote { flex-basis: 100%; font: 400 13px/1.4 var(--font); color: var(--muted); overflow-wrap: anywhere; }
+
+/* 비슷한 기술의 최근 소식 (ARG-329) — 375px에서도 가로 스크롤이 없도록 줄바꿈한다. */
+.similar-news { margin-top: 24px; }
+.similar-news__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.similar-news__item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
+.similar-news__event { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.similar-news__tech { font-weight: 600; overflow-wrap: anywhere; }
+.similar-news__branch { font: 400 13px/1.4 var(--font); color: var(--muted); overflow-wrap: anywhere; }
 
 /* 기술 칩 (ARG-319) — 375px에서도 가로 스크롤이 없도록 줄바꿈하고 폭을 고정하지 않는다. */
 .tech-chips { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }

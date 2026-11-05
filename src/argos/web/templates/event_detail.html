@@ -85,6 +85,22 @@
     {% endif %}
   </section>
 
+  {# ARG-329: 근거 기사 아래 — 사건의 주인공은 근거다. '함께 나열됨'은 여기 보이지 않는다. #}
+  {% if similar_news %}
+  <section class="similar-news" aria-labelledby="similar-news-title">
+    <h2 class="detail-section__title" id="similar-news-title">비슷한 기술의 최근 소식</h2>
+    <ul class="similar-news__list">
+      {% for n in similar_news %}
+      <li class="similar-news__item">
+        <a class="similar-news__event" href="/event/{{ n.event.id }}">{{ n.event.title }}</a>
+        <a class="similar-news__tech" href="{{ n.href }}">{{ n.name }}</a>
+        <span class="similar-news__branch">같은 갈래: <a href="/branch/{{ n.branch.id }}">{{ n.branch.name }}</a></span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
   {% if tech_chips %}
   <section class="detail-techs" aria-labelledby="techs-title">
     <h2 class="detail-section__title" id="techs-title">등장한 기술</h2>

@@ -23,6 +23,8 @@ ROLE_BRANCH_ALLOWED = {
     "brain/taxonomy_store.py",
     # ARG-318: 기술 페이지가 갈래 경로를 읽기만 한다.
     "web/services/technology.py",
+    # ARG-327: 비슷한 역할 조회가 갈래를 읽기만 한다.
+    "web/services/similar.py",
 }
 
 

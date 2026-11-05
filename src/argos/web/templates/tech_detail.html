@@ -26,20 +26,26 @@
     {% endif %}
   </header>
 
-  <section class="tech-events" aria-label="사건 타임라인">
-    {% if tech.events %}
-    <ol class="tech-timeline">
-      {% for ev in tech.events %}
-      <li class="tech-timeline__item">
-        <time class="tech-timeline__date" datetime="{{ ev.occurred_at.date().isoformat() }}">{{ ev.occurred_at.strftime("%Y-%m-%d") }}</time>
-        {% if ev.event_type_label %}<span class="tag event-type">{{ ev.event_type_label }}</span>{% endif %}
-        <a class="tech-timeline__title" href="/event/{{ ev.id }}">{{ ev.title }}</a>
+  {# 비슷한 역할 (ARG-327): 같은 아래 갈래의 다른 기술. 근거 없는 줄은 나열 문구를 달지 않는다. #}
+  {% if similar %}
+  <section class="tech-similar" aria-labelledby="similar-title">
+    <h2 class="tech-similar__title" id="similar-title">비슷한 역할</h2>
+    <ul class="tech-similar__list">
+      {% for s in similar %}
+      <li class="tech-similar__item">
+        <a class="tech-similar__name" href="{{ s.href }}">{{ s.name }}</a>
+        {% if s.latest_event %}<a class="tech-similar__event" href="/event/{{ s.latest_event.id }}">{{ s.latest_event.title }}</a>{% endif %}
+        <span class="tech-similar__branch">같은 갈래: <a href="/branch/{{ s.branch.id }}">{{ s.branch.name }}</a></span>
+        {% if s.colisted_count %}
+        <span class="tech-similar__why">기사에서 함께 나열됨 {{ s.colisted_count }}회</span>
+        {% if s.colisted_example %}<q class="tech-similar__quote">{{ s.colisted_example }}</q>{% endif %}
+        {% endif %}
       </li>
       {% endfor %}
-    </ol>
-    {% else %}
-    <p class="tech-empty">아직 이 기술이 등장한 사건이 없습니다.</p>
-    {% endif %}
+    </ul>
   </section>
+  {% endif %}
+
+  {% include "_tech_timeline.html" %}
 </article>
 {% endblock %}
