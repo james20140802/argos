@@ -42,6 +42,7 @@ def _patch(monkeypatch, mapping: dict, calls: list | None = None):
     monkeypatch.setattr(similar_mod, "_similar", _fake)
     monkeypatch.setattr(similar_mod._Lookup, "load_assignments", _noop)
     monkeypatch.setattr(similar_mod._Lookup, "load_bundles", _noop)
+    monkeypatch.setattr(similar_mod._Lookup, "load_events", _noop)
 
 
 async def test_union_across_chips_counts_once(monkeypatch):

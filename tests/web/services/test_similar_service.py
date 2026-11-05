@@ -247,6 +247,150 @@ async def test_order_evidence_then_recent():
         assert [t.entity_id for t in got] == [listed.id, fresh.id, older.id, silent.id]
 
 
+async def _also_mention(w, ev, tech):
+    """이미 있는 사건의 기사에 기술 하나를 더 언급시킨다."""
+    from sqlalchemy import select
+
+    from argos.models.document_entity import DocumentEntity
+    from argos.models.event_document import EventDocument
+
+    item_id = (
+        await w.s.execute(select(EventDocument.tech_item_id).where(EventDocument.event_id == ev.id))
+    ).scalar_one()
+    w.s.add(DocumentEntity(tech_item_id=item_id, entity_id=tech.id))
+    await w.s.flush()
+
+
+async def test_one_row_per_latest_event():
+    """한 사건에 함께 나온 이름들이 목록을 채우지 않는다 — 순위가 위인 하나만 남는다."""
+    async with _world() as (Session, w):
+        alpha = await w.tech("alpha")
+        beta = await w.tech("beta")
+        ev = await w.event(alpha, 9, title="함께 나온 사건")
+        await _also_mention(w, ev, beta)
+        solo = await w.tech("solo")
+        await w.event(solo, 1)
+        await w.s.commit()
+        async with Session() as s:
+            got = await fetch_similar_techs(s, w.base.id)
+        assert [t.entity_id for t in got] == [alpha.id, solo.id]
+
+
+async def test_dropped_repeats_open_slots_for_lower_candidates():
+    """같은 사건으로 빠진 자리는 다음 후보가 채운다 — 상한은 뺀 뒤에 적용한다."""
+    async with _world() as (Session, w):
+        crowd = [await w.tech(f"crowd{i}") for i in range(SIMILAR_LIMIT)]
+        ev = await w.event(crowd[0], 50)
+        for t in crowd[1:]:
+            await _also_mention(w, ev, t)
+        rest = []
+        for i in range(SIMILAR_LIMIT):
+            t = await w.tech(f"rest{i}")
+            await w.event(t, i)
+            rest.append(t)
+        await w.s.commit()
+        async with Session() as s:
+            got = await fetch_similar_techs(s, w.base.id)
+        assert len(got) == SIMILAR_LIMIT
+        assert len({t.latest_event.id for t in got}) == SIMILAR_LIMIT
+
+
+async def test_candidates_without_event_are_not_collapsed():
+    async with _world() as (Session, w):
+        a = await w.tech("silent a")
+        b = await w.tech("silent b")
+        await w.s.commit()
+        async with Session() as s:
+            got = await fetch_similar_techs(s, w.base.id)
+        assert {t.entity_id for t in got} == {a.id, b.id}
+
+
+async def test_no_evidence_prefers_mentions_over_recency():
+    async with _world() as (Session, w):
+        fresh = await w.tech("fresh")
+        await w.event(fresh, 50)
+        popular = await w.tech("popular")
+        for day in (1, 2, 3):
+            await w.event(popular, day)
+        await w.s.commit()
+        async with Session() as s:
+            got = await fetch_similar_techs(s, w.base.id)
+        assert [t.entity_id for t in got] == [popular.id, fresh.id]
+
+
+async def test_no_evidence_prefers_events_shared_with_base():
+    """같은 갈래라도 기준 기술마다 목록이 달라지는 신호 — 언급 수보다 먼저 본다."""
+    async with _world() as (Session, w):
+        popular = await w.tech("popular")
+        for day in (1, 2, 3, 4):
+            await w.event(popular, day)
+        partner = await w.tech("partner")
+        shared = await w.event(partner, 5)
+        await _also_mention(w, shared, w.base)
+        await w.s.commit()
+        async with Session() as s:
+            got = await fetch_similar_techs(s, w.base.id)
+        assert [t.entity_id for t in got] == [partner.id, popular.id]
+
+
+async def test_same_branch_techs_get_different_lists_from_shared_events():
+    async with _world() as (Session, w):
+        other_base = await w.tech("other base")
+        for_base = await w.tech("for base")
+        await _also_mention(w, await w.event(for_base, 1), w.base)
+        for_other = await w.tech("for other")
+        await _also_mention(w, await w.event(for_other, 2), other_base)
+        await w.s.commit()
+        async with Session() as s:
+            mine = await fetch_similar_techs(s, w.base.id)
+        async with Session() as s:
+            theirs = await fetch_similar_techs(s, other_base.id)
+        assert mine[0].entity_id == for_base.id
+        assert theirs[0].entity_id == for_other.id
+
+
+async def test_evidence_candidates_stay_ahead_and_ordered_by_recency():
+    """근거 있는 후보는 언급이 적어도 먼저이고, 그 안에서는 여전히 최근 순이다."""
+    async with _world() as (Session, w):
+        key = f"claude duet {w.sfx}"
+        popular = await w.tech("popular")
+        for day in (1, 2, 3, 4):
+            await w.event(popular, day)
+        many = await w.tech("many", evidence=_neighbor(key, 2))
+        for day in (5, 6, 7):
+            await w.event(many, day)
+        recent = await w.tech("recent", evidence=_neighbor(key, 2))
+        await w.event(recent, 8)
+        await w.s.commit()
+        async with Session() as s:
+            got = await fetch_similar_techs(s, w.base.id)
+        assert [t.entity_id for t in got] == [recent.id, many.id, popular.id]
+
+
+async def test_mentions_count_events_folds_alias_and_skips_tombstone():
+    """언급 수는 사건 수다 — 같은 사건의 기사 여러 건은 1, 별칭은 대표로, 툼스톤은 제외."""
+    async with _world() as (Session, w):
+        fresh = await w.tech("fresh")
+        await w.event(fresh, 50)
+        await w.event(fresh, 49)
+
+        folded = await w.tech("folded")
+        alias = await w.alias_of(folded, "folded nick")
+        await w.event(folded, 1)
+        await w.event(alias, 2)
+        await w.event(alias, 3)
+
+        ghost = await w.tech("ghost")
+        survivor = await w.event(ghost, 4)
+        await w.event(ghost, 5, merged_into=survivor.id)
+        await w.event(ghost, 6, merged_into=survivor.id)
+        await w.s.commit()
+        async with Session() as s:
+            got = await fetch_similar_techs(s, w.base.id)
+        # folded 3건 > fresh 2건 > ghost 1건(툼스톤 2건 제외)
+        assert [t.entity_id for t in got] == [folded.id, fresh.id, ghost.id]
+
+
 async def test_latest_event_skips_tombstone_and_follows_alias():
     async with _world() as (Session, w):
         cand = await w.tech("candidate")

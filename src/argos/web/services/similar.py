@@ -158,6 +158,20 @@ async def _latest_events(
     }
 
 
+async def _mentioned_event_ids(
+    session: AsyncSession, canonical_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, set[uuid.UUID]]:
+    """대표별 언급된 사건 id 묶음. 별칭은 대표로 접고 툼스톤은 뺀다."""
+    if not canonical_ids:
+        return {}
+    mentions = _mention_events(canonical_ids).subquery()
+    rows = await session.execute(select(mentions.c.canon_id, mentions.c.id).distinct())
+    out: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for cid, event_id in rows.all():
+        out.setdefault(cid, set()).add(event_id)
+    return out
+
+
 class _Lookup:
     """한 번의 조회 안에서 갈래 단위 데이터를 공유하는 캐시.
 
@@ -172,6 +186,7 @@ class _Lookup:
         self.candidates: dict[uuid.UUID, list[tuple[uuid.UUID, str, Any]]] = {}
         self.bundles: dict[uuid.UUID, set[str]] = {}
         self.events: dict[uuid.UUID, TechEventRef] = {}
+        self.mentions: dict[uuid.UUID, set[uuid.UUID]] = {}
         self._events_done: set[uuid.UUID] = set()
 
     async def load_assignments(self, ids: Sequence[uuid.UUID]) -> None:
@@ -237,6 +252,7 @@ class _Lookup:
         if not missing:
             return
         self.events.update(await _latest_events(self.session, missing))
+        self.mentions.update(await _mentioned_event_ids(self.session, missing))
         self._events_done.update(missing)
 
 
@@ -249,7 +265,8 @@ async def _similar(lookup: _Lookup, canonical_id: uuid.UUID) -> tuple[SimilarTec
     if branch is None or branch.parent_id is None:
         return ()
 
-    rows = [r for r in await lookup.load_candidates(base.branch_id) if r[0] != canonical_id]
+    all_rows = await lookup.load_candidates(base.branch_id)
+    rows = [r for r in all_rows if r[0] != canonical_id]
     if not rows:
         return ()
 
@@ -264,17 +281,38 @@ async def _similar(lookup: _Lookup, canonical_id: uuid.UUID) -> tuple[SimilarTec
         count, example = _colisted(base_keys, base.evidence, cand_keys, evidence)
         kept.append((entity_id, name, count, example))
 
-    await lookup.load_events([k[0] for k in kept])
+    # 갈래 전체를 한 번에 읽어, 같은 갈래의 다음 칩이 쿼리를 더 쓰지 않게 한다.
+    await lookup.load_events([canonical_id] + [r[0] for r in all_rows])
     events = lookup.events
+    mentions = lookup.mentions
+    base_events = mentions.get(canonical_id, set())
+    no_events: set[uuid.UUID] = set()
     kept.sort(
         key=lambda k: (
             0 if k[2] > 0 else 1,
             1 if k[0] not in events else 0,
+            # 근거가 있으면 최근 순. 없으면 기준 기술과 같은 사건 수 -> 언급된 사건 수가
+            # 먼저다. 같은 사건 수가 없으면 같은 갈래의 목록이 페이지마다 똑같아진다.
+            0 if k[2] > 0 else -len(base_events & mentions.get(k[0], no_events)),
+            0 if k[2] > 0 else -len(mentions.get(k[0], no_events)),
             -events[k[0]].occurred_at.timestamp() if k[0] in events else 0.0,
             k[1].casefold(),
             str(k[0]),
         )
     )
+    # 한 사건에 함께 나온 이름들이 목록을 채우지 않게 사건 하나당 한 행만 남긴다.
+    # 상한은 그 뒤에 적용해, 빠진 자리는 다음 후보가 채운다.
+    chosen = []
+    seen_events: set[uuid.UUID] = set()
+    for k in kept:
+        ev = events.get(k[0])
+        if ev is not None:
+            if ev.id in seen_events:
+                continue
+            seen_events.add(ev.id)
+        chosen.append(k)
+        if len(chosen) == SIMILAR_LIMIT:
+            break
     ref = BranchRef(id=branch.id, name=branch.name)
     return tuple(
         SimilarTech(
@@ -285,7 +323,7 @@ async def _similar(lookup: _Lookup, canonical_id: uuid.UUID) -> tuple[SimilarTec
             colisted_count=count,
             colisted_example=example,
         )
-        for entity_id, name, count, example in kept[:SIMILAR_LIMIT]
+        for entity_id, name, count, example in chosen
     )
 
 
@@ -295,7 +333,9 @@ async def fetch_similar_techs(
     """같은 아래 갈래의 다른 기술 최대 ``SIMILAR_LIMIT``개.
 
     미분류이거나 위 갈래에 배정된 기술은 '같은 역할'이 너무 넓어 ``()``.
-    정렬: 함께 나열된 근거가 있는 것 먼저 -> 최근 사건 새로운 순(없으면 뒤) -> 이름.
+    정렬: 함께 나열된 근거가 있는 것 먼저 -> 사건 있는 것 먼저 -> 근거 없는 후보는
+    이 기술과 같은 사건 수 -> 언급된 사건 수 많은 순 -> 최근 사건 새로운 순 -> 이름.
+    최근 사건이 같은 후보는 순위가 위인 하나만 남긴다.
     """
     return await _similar(_Lookup(session), canonical_id)
 
@@ -380,6 +420,7 @@ async def fetch_event_similar_news(
     lookup = _Lookup(session)
     await lookup.load_assignments(chip_entity_ids)
     await lookup.load_bundles(chip_entity_ids)
+    await lookup.load_events(chip_entity_ids)
     for chip_id in chip_entity_ids:
         for tech in await _similar(lookup, chip_id):
             if tech.entity_id in chip_set or tech.entity_id in seen_techs:
