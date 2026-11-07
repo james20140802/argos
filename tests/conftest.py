@@ -29,6 +29,7 @@ dev DB에는 이 conftest에서 절대 쓰기(CREATE/DROP/INSERT/...)를 하지 
 
 from __future__ import annotations
 
+import builtins
 import functools
 import os
 import socket
@@ -484,6 +485,37 @@ def _guard_real_launchd(monkeypatch):
             return guarded
 
         monkeypatch.setattr(os, os_name, make())
+
+    # 실제 설치 경로(scheduler.install_plist)는 내장 open(tmp, "w") → os.replace 로
+    # 쓴다. Path 메서드만 감싸면 이 경로가 조용히 통과하므로 함께 막는다.
+    for os_name in ("rename", "replace"):
+        orig_os = getattr(os, os_name)
+
+        def make_two(orig_os=orig_os, os_name=os_name):
+            @functools.wraps(orig_os)
+            def guarded(src, dst, *args, **kwargs):
+                for t in (src, dst):
+                    if _is_real_launch_agents_path(t):
+                        violate(f"os.{os_name}", t)
+                return orig_os(src, dst, *args, **kwargs)
+
+            return guarded
+
+        monkeypatch.setattr(os, os_name, make_two())
+
+    orig_builtin_open = builtins.open
+
+    @functools.wraps(orig_builtin_open)
+    def guarded_builtin_open(file, mode="r", *args, **kwargs):
+        if (
+            isinstance(mode, str)
+            and any(c in mode for c in "wax+")
+            and _is_real_launch_agents_path(file)
+        ):
+            violate(f"open({mode!r})", file)
+        return orig_builtin_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", guarded_builtin_open)
 
     def guarded_launchctl(args):
         pytest.fail(
