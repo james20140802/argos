@@ -1713,7 +1713,7 @@ def test_cli_schedule_status_includes_weekly(
 
 
 def test_cli_schedule_uninstall_removes_weekly_idempotent(
-    monkeypatch, capsys, fake_uid: int
+    monkeypatch, capsys, fake_uid: int, isolated_paths: dict[str, Path]
 ) -> None:
     """uninstall must boot out the weekly label too, tolerating not-loaded."""
     from argos.cli import main
