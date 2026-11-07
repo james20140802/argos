@@ -29,6 +29,7 @@ dev DB에는 이 conftest에서 절대 쓰기(CREATE/DROP/INSERT/...)를 하지 
 
 from __future__ import annotations
 
+import builtins
 import functools
 import os
 import socket
@@ -403,3 +404,124 @@ def _instant_launchctl_waits(monkeypatch):
     from argos import scheduler
 
     monkeypatch.setattr(scheduler, "_sleep", lambda _seconds: None)
+
+
+# --------------------------------------------------------------------- #
+# ARG-332: 실제 LaunchAgents / launchctl 보호
+# --------------------------------------------------------------------- #
+# ``scheduler._DEFAULT_LAUNCH_AGENTS`` 는 import 시점에 ``Path.home()`` 으로 한 번
+# 계산된다. 그래서 테스트에서 HOME 을 바꿔도 이미 굳어진 실제 경로는 안 바뀐다.
+# ``isolated_paths`` 없이 ``main(["schedule", "uninstall"])`` 을 부른 테스트 하나가
+# 운영 맥의 실제 plist(web/correct/classify)를 pytest 때마다 지웠다.
+_REAL_LAUNCH_AGENTS = (Path.home() / "Library" / "LaunchAgents").resolve()
+
+
+def _is_real_launch_agents_path(path) -> bool:
+    """``path`` 가 실제 LaunchAgents 디렉터리이거나 그 하위인지."""
+    try:
+        p = Path(os.fspath(path)).absolute()
+        p = p.parent.resolve(strict=False) / p.name
+    except (TypeError, ValueError):
+        return False
+    return p == _REAL_LAUNCH_AGENTS or _REAL_LAUNCH_AGENTS in p.parents
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_launchd(monkeypatch):
+    """테스트가 실제 ``~/Library/LaunchAgents`` 를 쓰거나 지우거나 실제 launchctl 을
+    부르면 즉시 실패시킨다 (ARG-332).
+
+    경로를 임시 폴더로 돌리는 게 아니라 **막고 시끄럽게 실패**한다 — 격리를
+    빠뜨린 테스트가 조용히 통과하지 못하게 하려는 것이다. 읽기는 막지 않는다.
+    테스트는 ``isolated_paths`` 로 경로를, 가짜 ``_run_launchctl`` 로 launchctl 을
+    직접 대체해야 한다(그 monkeypatch 가 이 가드를 덮어쓴다).
+    """
+    from argos import scheduler
+
+    def violate(op: str, path) -> None:
+        pytest.fail(
+            f"테스트가 실제 LaunchAgents 경로를 건드리려 함: {op} {path} — "
+            "isolated_paths 픽스처로 scheduler._DEFAULT_LAUNCH_AGENTS 를 임시 경로로 돌릴 것",
+            pytrace=False,
+        )
+
+    def wrap_path_method(name: str, targets=lambda self, *a, **k: [self]):
+        orig = getattr(Path, name)
+
+        @functools.wraps(orig)
+        def wrapper(self, *args, **kwargs):
+            for t in targets(self, *args, **kwargs):
+                if _is_real_launch_agents_path(t):
+                    violate(f"Path.{name}", t)
+            return orig(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, name, wrapper)
+
+    for name in ("unlink", "write_bytes", "write_text", "touch"):
+        wrap_path_method(name)
+    for name in ("rename", "replace"):
+        wrap_path_method(name, lambda self, target, *a, **k: [self, target])
+
+    orig_open = Path.open
+
+    @functools.wraps(orig_open)
+    def guarded_open(self, mode="r", *args, **kwargs):
+        if any(c in mode for c in "wax+") and _is_real_launch_agents_path(self):
+            violate(f"Path.open({mode!r})", self)
+        return orig_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+
+    for os_name in ("unlink", "remove"):
+        orig_os = getattr(os, os_name)
+
+        def make(orig_os=orig_os, os_name=os_name):
+            @functools.wraps(orig_os)
+            def guarded(path, *args, **kwargs):
+                if _is_real_launch_agents_path(path):
+                    violate(f"os.{os_name}", path)
+                return orig_os(path, *args, **kwargs)
+
+            return guarded
+
+        monkeypatch.setattr(os, os_name, make())
+
+    # 실제 설치 경로(scheduler.install_plist)는 내장 open(tmp, "w") → os.replace 로
+    # 쓴다. Path 메서드만 감싸면 이 경로가 조용히 통과하므로 함께 막는다.
+    for os_name in ("rename", "replace"):
+        orig_os = getattr(os, os_name)
+
+        def make_two(orig_os=orig_os, os_name=os_name):
+            @functools.wraps(orig_os)
+            def guarded(src, dst, *args, **kwargs):
+                for t in (src, dst):
+                    if _is_real_launch_agents_path(t):
+                        violate(f"os.{os_name}", t)
+                return orig_os(src, dst, *args, **kwargs)
+
+            return guarded
+
+        monkeypatch.setattr(os, os_name, make_two())
+
+    orig_builtin_open = builtins.open
+
+    @functools.wraps(orig_builtin_open)
+    def guarded_builtin_open(file, mode="r", *args, **kwargs):
+        if (
+            isinstance(mode, str)
+            and any(c in mode for c in "wax+")
+            and _is_real_launch_agents_path(file)
+        ):
+            violate(f"open({mode!r})", file)
+        return orig_builtin_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", guarded_builtin_open)
+
+    def guarded_launchctl(args):
+        pytest.fail(
+            f"테스트가 실제 launchctl을 부르려 함: launchctl {' '.join(args)} — "
+            "scheduler._run_launchctl 을 가짜로 대체할 것",
+            pytrace=False,
+        )
+
+    monkeypatch.setattr(scheduler, "_run_launchctl", guarded_launchctl)
