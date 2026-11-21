@@ -525,3 +525,44 @@ def _guard_real_launchd(monkeypatch):
         )
 
     monkeypatch.setattr(scheduler, "_run_launchctl", guarded_launchctl)
+
+
+# --------------------------------------------------------------------- #
+# ARG-334: 실제 모델 순번 잠금 보호
+# --------------------------------------------------------------------- #
+# 모델 순번(``brain/model_turn``)은 운영 맥의 실제 잠금 파일을 프로세스 간에
+# 공유한다. 테스트가 그걸 쥐면 돌고 있는 실제 작업을 막거나 기다리게 된다.
+def _real_turn_lock_paths() -> set[Path]:
+    paths = {Path.home() / ".local" / "state" / "argos" / "model_turn.lock"}
+    xdg = os.environ.get("XDG_STATE_HOME")
+    if xdg:
+        paths.add(Path(xdg) / "argos" / "model_turn.lock")
+    return {p.absolute() for p in paths}
+
+
+_REAL_TURN_LOCKS = _real_turn_lock_paths()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_model_turn(monkeypatch, tmp_path):
+    """매 테스트의 순번 잠금 파일을 ``tmp_path`` 아래로 돌리고, 실제 기본 경로를
+    열려 하면 즉시 실패시킨다 (ARG-334).
+
+    env 를 돌리는 것만으로는 부족하다 — ``delenv`` 하거나 격리를 빠뜨린 테스트가
+    조용히 실제 경로를 쓰지 못하게 열기 지점에서 막는다.
+    """
+    from argos.brain import model_turn
+
+    monkeypatch.setenv(model_turn.LOCK_ENV, str(tmp_path / "model_turn.lock"))
+    real_open = model_turn._open_lock
+
+    def guarded_open(path):
+        if Path(os.fspath(path)).absolute() in _REAL_TURN_LOCKS:
+            pytest.fail(
+                f"테스트가 실제 모델 순번 잠금 파일을 열려 함: {path} — "
+                f"{model_turn.LOCK_ENV} 를 tmp 경로로 돌릴 것",
+                pytrace=False,
+            )
+        return real_open(path)
+
+    monkeypatch.setattr(model_turn, "_open_lock", guarded_open)

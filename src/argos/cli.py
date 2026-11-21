@@ -3061,7 +3061,7 @@ def _send_push_briefing() -> bool:
     return True
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="argos")
     parser.add_argument(
         "--version",
@@ -3137,8 +3137,95 @@ def main(argv: list[str] | None = None) -> int:
     _build_stats_parser(sub, common)
     _build_web_parser(sub, common)
 
-    args = parser.parse_args(argv)
+    return parser
 
+
+# --- ARG-334: 모델 순번 대상 판정 ---------------------------------------
+# 원칙: 그 호출이 글 생성 모델을 한 번이라도 부를 수 있으면 대상(--dry-run이어도
+# 모델을 부르면 대상), 모델을 안 부르는 미리보기·임베딩 전용은 비대상.
+#
+# | 명령 | 판정 | 근거 (파일:함수) |
+# |---|---|---|
+# | run | 대상 | cli._run -> brain pipeline (triage/genealogist/event naming LLM) |
+# | add | 대상 | cli._add -> 같은 brain pipeline |
+# | correct-events | 대상; --dry-run은 짝 확인이 켜졌을 때만 | cli._cmd_correct_events -> recluster.recluster_period -> pair_check.check_ambiguous_pairs (LLM, config.pair_check_enabled·max_calls>0일 때). 반영 경로는 설정 토글과 무관하게 대상 |
+# | taxonomy assign | 대상 (--dry-run 포함) | taxonomy_cli._assign -> _make_plan: 계획을 LLM으로 만든 뒤에야 --dry-run 분기 |
+# | taxonomy draft | 대상, --seed 비대상 | taxonomy_cli._draft: --seed는 tx.SPIKE_SEED, 아니면 taxonomy_draft.build_draft(LLM) |
+# | taxonomy eval | --tree spike일 때만 | taxonomy_cli.eval 인자 설명 "spike ... LLM 사용"; confirmed는 DB 읽기 |
+# | resummarize-events | 대상, --dry-run 비대상 | cli._resummarize_events: get_event_summary_llm_client()는 dry-run 반환 뒤에 생성 |
+# | backfill-events | --rename-stale 이면서 --dry-run 아닐 때만 | cli._backfill_events: rename 분기만 get_event_summary_llm_client; 배정 분기(execute_backfill/plan_backfill)는 임베딩·SQL뿐 |
+# | backfill-trust | 대상, --dry-run 비대상 | cli._backfill_trust: get_llm_client()/extract_rubric_via_llm은 dry-run 반환 뒤 |
+# | recluster-events | 짝 확인이 켜졌을 때만 | cli._cmd_recluster_events -> recluster.recluster_period -> pair_check (config.pair_check_enabled 이고 유효 max_calls>0) |
+# | brief --weekly | 비대상 | slack.briefing.dispatch_weekly_briefing -> brain.weekly_report.build_weekly_keep_report: SQL 집계뿐 |
+# | alias-names | 비대상 | cli._alias_names -> alias_store.plan_aliases/apply_aliases: 이름 규칙·SQL뿐 |
+# | backfill-entities | 비대상 | cli._backfill_entities -> entity_refill.plan_refill: 규칙·spaCy 추출뿐 |
+# | search, slack, web, brief(일간), portfolio, stats, config, doctor, init, schedule, status, backup, restore, backfill-images, body-stats, refetch-bodies, backfill-digests, taxonomy show/export/rename/merge/split/delete/apply/why | 비대상 | 글 생성 모델 호출 없음(임베딩·SQL·파일·네트워크 수집). slack/Deep Dive는 제외 |
+def _pair_check_may_call_llm(args: argparse.Namespace) -> bool:
+    """recluster 계열 호출이 애매한 짝 확인(LLM)을 한 번이라도 부를 수 있는가."""
+    config = settings.user.event_detection
+    if not config.pair_check_enabled:
+        return False
+    cap = getattr(args, "pair_check_max_calls", None)
+    if cap is None:
+        cap = config.pair_check_max_calls
+    return cap > 0
+
+
+def _model_turn_job(args: argparse.Namespace) -> str | None:
+    """이 호출이 모델로 글을 만들면 로그용 작업 이름, 아니면 None. 근거는 위 표."""
+    command = args.command
+    dry_run = bool(getattr(args, "dry_run", False))
+    if command in ("run", "add"):
+        return command
+    if command == "correct-events":
+        if dry_run and not _pair_check_may_call_llm(args):
+            return None
+        return command
+    if command == "recluster-events":
+        return command if _pair_check_may_call_llm(args) else None
+    if command in ("resummarize-events", "backfill-trust"):
+        return None if dry_run else command
+    if command == "backfill-events":
+        if getattr(args, "rename_stale", False) and not dry_run:
+            return command
+        return None
+    if command == "taxonomy":
+        action = getattr(args, "taxonomy_action", None)
+        name = f"taxonomy {action}"
+        if action == "assign":
+            return name
+        if action == "draft":
+            return None if getattr(args, "seed", False) else name
+        if action == "eval":
+            return name if getattr(args, "tree", "confirmed") == "spike" else None
+    return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    job = _model_turn_job(args)
+    if job is None:
+        return _dispatch(args)
+
+    from argos.brain.model_turn import WAIT_MESSAGE, TurnInfo, model_turn_sync
+
+    def _on_wait() -> None:
+        print(WAIT_MESSAGE, file=sys.stderr, flush=True)
+
+    def _on_acquired(info: TurnInfo) -> None:
+        if info.waited:
+            print(
+                f"대기 끝 — {info.waited_seconds:.0f}초 기다림. 시작합니다.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    # 확인 프롬프트(y/N) 대기까지 포함해 명령 전체를 한 번에 쥔다.
+    with model_turn_sync(job, on_wait=_on_wait, on_acquired=_on_acquired):
+        return _dispatch(args)
+
+
+def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "run":
         # ARG-114: _run sets up its own shared-Console logging (RichHandler) so
         # that log output does NOT corrupt the Rich Live progress bar. The global
