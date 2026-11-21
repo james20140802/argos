@@ -7,6 +7,7 @@ import math
 import os
 import sys
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -1679,6 +1680,53 @@ async def _resummarize_events(
     return EXIT_OK
 
 
+def _build_analyze_event_parser(
+    sub: argparse._SubParsersAction,
+    common: argparse.ArgumentParser,
+) -> None:
+    """Wire the ``argos analyze-event`` subcommand (ARG-335)."""
+    p = sub.add_parser(
+        "analyze-event",
+        help="Generate a deep analysis of one event and print it (nothing is stored)",
+        parents=[common],
+        description=(
+            "Read every article linked to an event and print a five-heading analysis "
+            "(core approach, maturity, ecosystem, risks, worth tracking). Nothing is written "
+            "to the database. Exits 1 with the reason on stderr when generation fails."
+        ),
+    )
+    p.add_argument("event_id", type=uuid.UUID, metavar="EVENT_ID", help="Event UUID")
+
+
+def _cmd_analyze_event(args: argparse.Namespace) -> int:
+    return asyncio.run(_analyze_event(args.event_id))
+
+
+async def _analyze_event(event_id: uuid.UUID) -> int:
+    """사건 심층 분석을 만들어 stdout에 찍는다. DB에는 아무것도 쓰지 않는다."""
+    from argos.brain import event_deep_analysis as eda
+    from argos.brain.llm_client import get_deep_analysis_llm_client
+
+    client = get_deep_analysis_llm_client()
+    try:
+        async with AsyncSessionLocal() as session:
+            analysis = await eda.analyze_event(session, event_id, client=client)
+    except eda.DeepAnalysisError as exc:
+        print(f"분석 실패: {eda.FAILURE_MESSAGES[exc.reason]}", file=sys.stderr)
+        return EXIT_GENERIC
+    finally:
+        try:
+            await client.unload("large")
+        except Exception:  # noqa: BLE001
+            pass
+    for section in analysis.sections:
+        print(f"## {section.heading}")
+        print(section.body)
+        print()
+    print(f"기사 {analysis.doc_count}건 · 모델 {analysis.model}")
+    return EXIT_OK
+
+
 def _build_alias_names_parser(
     sub: argparse._SubParsersAction,
     common: argparse.ArgumentParser,
@@ -3114,6 +3162,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     _build_add_parser(sub, common)
     _build_alias_names_parser(sub, common)
+    _build_analyze_event_parser(sub, common)
     _build_backfill_images_parser(sub, common)
     _build_backfill_digests_parser(sub, common)
     _build_backfill_entities_parser(sub, common)
@@ -3152,6 +3201,7 @@ def _build_parser() -> argparse.ArgumentParser:
 # | taxonomy assign | 대상 (--dry-run 포함) | taxonomy_cli._assign -> _make_plan: 계획을 LLM으로 만든 뒤에야 --dry-run 분기 |
 # | taxonomy draft | 대상, --seed 비대상 | taxonomy_cli._draft: --seed는 tx.SPIKE_SEED, 아니면 taxonomy_draft.build_draft(LLM) |
 # | taxonomy eval | --tree spike일 때만 | taxonomy_cli.eval 인자 설명 "spike ... LLM 사용"; confirmed는 DB 읽기 |
+# | analyze-event | 대상 | cli._analyze_event -> event_deep_analysis.analyze_event: 사건 기사 전부를 글 생성 모델로 분석(저장 안 함) |
 # | resummarize-events | 대상, --dry-run 비대상 | cli._resummarize_events: get_event_summary_llm_client()는 dry-run 반환 뒤에 생성 |
 # | backfill-events | --rename-stale 이면서 --dry-run 아닐 때만 | cli._backfill_events: rename 분기만 get_event_summary_llm_client; 배정 분기(execute_backfill/plan_backfill)는 임베딩·SQL뿐 |
 # | backfill-trust | 대상, --dry-run 비대상 | cli._backfill_trust: get_llm_client()/extract_rubric_via_llm은 dry-run 반환 뒤 |
@@ -3175,7 +3225,7 @@ def _model_turn_job(args: argparse.Namespace) -> str | None:
     """이 호출이 모델로 글을 만들면 로그용 작업 이름, 아니면 None. 근거는 위 표."""
     command = args.command
     dry_run = bool(getattr(args, "dry_run", False))
-    if command in ("run", "add"):
+    if command in ("run", "add", "analyze-event"):
         return command
     if command == "correct-events":
         if dry_run and not _pair_check_may_call_llm(args):
@@ -3347,6 +3397,11 @@ def _dispatch(args: argparse.Namespace) -> int:
         if rc is not None:
             return rc
         return _cmd_resummarize_events(args)
+    if args.command == "analyze-event":
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
+        return _cmd_analyze_event(args)
     if args.command == "body-stats":
         rc = _apply_config_override(args)
         if rc is not None:

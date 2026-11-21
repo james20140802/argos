@@ -212,6 +212,17 @@ def get_event_summary_llm_client() -> OllamaClient:
     raise ValueError(f"Unknown LLM backend: {backend!r}")
 
 
+def get_deep_analysis_llm_client() -> OllamaClient:
+    """Return an OllamaClient whose large role resolves to the deep-analysis model (ARG-335)."""
+    settings = _get_settings()
+    backend = settings.user.llm.backend
+    if backend == "ollama":
+        return OllamaClient(
+            settings=settings, large_model=settings.user.deep_analysis_resolved().model
+        )
+    raise ValueError(f"Unknown LLM backend: {backend!r}")
+
+
 def get_taxonomy_llm_client() -> OllamaClient:
     """Return an OllamaClient whose large role resolves to taxonomy.model (ARG-311)."""
     settings = _get_settings()

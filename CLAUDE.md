@@ -113,6 +113,7 @@ uv run argos stats [--days]                       # Collection-status dashboard
 uv run argos backfill-images [--refetch] [--upgrade-favicons]  # Fill missing image_url (favicon by default)
 uv run argos backfill-digests                     # Retired (ARG-308): prints a notice pointing to resummarize-events
 uv run argos resummarize-events [--limit] [--dry-run] [--yes] [--sample N]  # Re-summarize events (summary + per-type sections) from every article body (preview → confirm → LLM write)
+uv run argos analyze-event EVENT_ID                # 사건 하나의 심층 분석을 만들어 출력 (저장 안 함; 모델 순번을 쥔다)
 uv run argos backfill-entities [--dry-run] [--yes] [--sample N]  # Rewrite stored entity names for existing articles (preview → confirm → write)
 uv run argos alias-names [--dry-run] [--yes] [--sample N] [--show NAME]  # Merge different names of one technology into an alias layer (preview → confirm → write; stored names untouched)
 uv run argos correct-events [--from] [--to] [--dry-run]  # Apply event merge/split corrections for a period (--dry-run: read-only preview)

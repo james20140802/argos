@@ -86,6 +86,7 @@ def _job(argv: list[str]) -> str | None:
         (["backfill-events", "--rename-stale"], "backfill-events"),
         (["backfill-events", "--rename-stale", "--dry-run"], None),
         (["correct-events"], "correct-events"),
+        (["analyze-event", "00000000-0000-0000-0000-0000000000aa"], "analyze-event"),
         (["alias-names"], None),
         (["alias-names", "--dry-run"], None),
         (["backfill-entities"], None),
