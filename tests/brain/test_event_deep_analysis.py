@@ -13,6 +13,7 @@ from argos.brain import event_deep_analysis as eda
 from argos.brain.event_deep_analysis import (
     DEEP_ANALYSIS_HEADINGS,
     SECTION_KEYS,
+    DeepAnalysis,
     DeepAnalysisDoc,
     DeepAnalysisError,
     DeepAnalysisFailure,
@@ -101,9 +102,41 @@ async def test_all_docs_reach_the_model_beyond_thirty():
     result = await generate_deep_analysis(docs, client=client)
     joined = "\n".join(client.prompts)
     for i in range(1, 36):
-        assert f"기사 제목 {i}\n" in joined or f"기사 제목 {i}" in joined
-    assert "고유35문자열" in joined
+        # 머리글 전체 형태(번호+제목+줄바꿈)와 본문 앞머리 표지를 기사마다 따로 본다.
+        # 줄바꿈·구분 공백까지 넣어 1이 10~19에, 표지 1이 표지 10에 걸리지 않게 한다.
+        assert f"[{i}] 기사 제목 {i}\n" in joined
+        assert f"본문: 고유{i}문자열 " in joined
     assert result.doc_count == 35
+
+
+@pytest.mark.asyncio
+async def test_analyze_event_only_selects_and_never_writes(monkeypatch):
+    result = MagicMock()
+    result.all.return_value = [
+        SimpleNamespace(doc_id=uuid.UUID(int=1), doc_title="a", doc_source=None,
+                        doc_published_at=None, doc_body="본문", doc_names=None),
+    ]
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    session.commit = AsyncMock()
+    session.flush = AsyncMock()
+    session.add = MagicMock()
+    generated = AsyncMock(
+        return_value=DeepAnalysis(sections=(), doc_ids=(), doc_count=1, model="m")
+    )
+    monkeypatch.setattr(eda, "generate_deep_analysis", generated)
+
+    await analyze_event(session, uuid.uuid4(), client=FakeClient(_ok()))
+
+    assert session.execute.await_count == 1
+    sql = str(session.execute.await_args.args[0]).strip().upper()
+    assert sql.startswith("SELECT")
+    for verb in ("INSERT", "UPDATE", "DELETE"):
+        assert verb not in sql
+    session.commit.assert_not_called()
+    session.flush.assert_not_called()
+    session.add.assert_not_called()
+    generated.assert_awaited_once()
 
 
 @pytest.fixture

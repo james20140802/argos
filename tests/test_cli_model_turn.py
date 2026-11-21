@@ -67,6 +67,8 @@ def _job(argv: list[str]) -> str | None:
         (["taxonomy", "draft", "--seed"], None),
         (["taxonomy", "eval", "--tree", "spike"], "taxonomy eval"),
         (["taxonomy", "eval"], None),
+        (["taxonomy", "eval", "--tree", "spike", "--assignments", "a.json"], None),
+        (["taxonomy", "eval", "--assignments", "a.json"], None),
         (["taxonomy", "show"], None),
         (["taxonomy", "export"], None),
         (["taxonomy", "rename", "a", "b"], None),
@@ -212,4 +214,48 @@ def test_turn_released_when_command_fails(monkeypatch, failure):
             cli.main(["run"])
     else:
         assert cli.main(["run"]) == 3
+    assert turn_is_held() is False
+
+
+def _hold_probe(monkeypatch) -> list[bool]:
+    seen: list[bool] = []
+
+    def body(args):
+        result: list[bool] = []
+        t = threading.Thread(target=lambda: result.append(turn_is_held()))
+        t.start()
+        t.join()
+        seen.extend(result)
+        return 0
+
+    monkeypatch.setattr(cli, "_dispatch", body)
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("command", "extra"),
+    [("recluster-events", []), ("correct-events", ["--dry-run"])],
+)
+@pytest.mark.parametrize("file_enables", [True, False])
+def test_config_flag_is_applied_before_turn_is_decided(
+    monkeypatch, tmp_path, command, extra, file_enables
+):
+    cfg_default = settings.user.event_detection
+    # 기본 설정은 파일과 반대로 둔다 — 판정이 --config 이전 값을 읽으면 실패한다.
+    monkeypatch.setattr(cfg_default, "pair_check_enabled", not file_enables)
+    monkeypatch.setattr(cfg_default, "pair_check_max_calls", 300)
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f"[event_detection]\npair_check_enabled = {str(file_enables).lower()}\n"
+        "pair_check_max_calls = 300\n",
+        encoding="utf-8",
+    )
+    original_user = settings.user
+    monkeypatch.setattr(settings, "user", original_user)  # 테스트 뒤 원복 보장
+    seen = _hold_probe(monkeypatch)
+
+    assert cli.main([command, *extra, "--config", str(path)]) == 0
+
+    assert settings.user is not original_user
+    assert seen == ([True] if file_enables else [False])
     assert turn_is_held() is False

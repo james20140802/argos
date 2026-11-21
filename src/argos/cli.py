@@ -395,7 +395,7 @@ def _apply_config_override(args: argparse.Namespace) -> int | None:
     it; returns ``None`` on success (or when no override was supplied).
     """
     override = getattr(args, "config", None)
-    if not override:
+    if not override or getattr(args, "_config_applied", False):
         return None
     path = Path(override).expanduser()
     try:
@@ -413,6 +413,7 @@ def _apply_config_override(args: argparse.Namespace) -> int | None:
     except (OSError, UnicodeDecodeError) as exc:
         print(f"Could not read config file {path}: {exc}", file=sys.stderr)
         return EXIT_GENERIC
+    args._config_applied = True
     return None
 
 
@@ -1708,17 +1709,21 @@ async def _analyze_event(event_id: uuid.UUID) -> int:
     from argos.brain.llm_client import get_deep_analysis_llm_client
 
     client = get_deep_analysis_llm_client()
+    loaded = True
     try:
         async with AsyncSessionLocal() as session:
             analysis = await eda.analyze_event(session, event_id, client=client)
     except eda.DeepAnalysisError as exc:
+        # 근거가 없으면 모델을 올린 적이 없다 — 내리는 왕복을 생략한다.
+        loaded = exc.reason is not eda.DeepAnalysisFailure.NoEvidence
         print(f"분석 실패: {eda.FAILURE_MESSAGES[exc.reason]}", file=sys.stderr)
         return EXIT_GENERIC
     finally:
-        try:
-            await client.unload("large")
-        except Exception:  # noqa: BLE001
-            pass
+        if loaded:
+            try:
+                await client.unload("large")
+            except Exception:  # noqa: BLE001
+                pass
     for section in analysis.sections:
         print(f"## {section.heading}")
         print(section.body)
@@ -3200,7 +3205,7 @@ def _build_parser() -> argparse.ArgumentParser:
 # | correct-events | 대상; --dry-run은 짝 확인이 켜졌을 때만 | cli._cmd_correct_events -> recluster.recluster_period -> pair_check.check_ambiguous_pairs (LLM, config.pair_check_enabled·max_calls>0일 때). 반영 경로는 설정 토글과 무관하게 대상 |
 # | taxonomy assign | 대상 (--dry-run 포함) | taxonomy_cli._assign -> _make_plan: 계획을 LLM으로 만든 뒤에야 --dry-run 분기 |
 # | taxonomy draft | 대상, --seed 비대상 | taxonomy_cli._draft: --seed는 tx.SPIKE_SEED, 아니면 taxonomy_draft.build_draft(LLM) |
-# | taxonomy eval | --tree spike일 때만 | taxonomy_cli.eval 인자 설명 "spike ... LLM 사용"; confirmed는 DB 읽기 |
+# | taxonomy eval | --tree spike이면서 --assignments가 없을 때만 | taxonomy_cli.eval 인자 설명 "spike ... LLM 사용"; confirmed는 DB 읽기, --assignments는 파일 채점(_eval이 모델 없이 predicted를 읽음) |
 # | analyze-event | 대상 | cli._analyze_event -> event_deep_analysis.analyze_event: 사건 기사 전부를 글 생성 모델로 분석(저장 안 함) |
 # | resummarize-events | 대상, --dry-run 비대상 | cli._resummarize_events: get_event_summary_llm_client()는 dry-run 반환 뒤에 생성 |
 # | backfill-events | --rename-stale 이면서 --dry-run 아닐 때만 | cli._backfill_events: rename 분기만 get_event_summary_llm_client; 배정 분기(execute_backfill/plan_backfill)는 임베딩·SQL뿐 |
@@ -3247,12 +3252,25 @@ def _model_turn_job(args: argparse.Namespace) -> str | None:
         if action == "draft":
             return None if getattr(args, "seed", False) else name
         if action == "eval":
+            if getattr(args, "assignments", None) is not None:
+                return None  # 파일 채점: 모델 호출 없음 (taxonomy_cli._eval)
             return name if getattr(args, "tree", "confirmed") == "spike" else None
     return None
 
 
+# 순번 판정이 settings.user를 읽는 명령(짝 확인 토글, _pair_check_may_call_llm).
+# 이들은 판정 전에 --config를 먼저 적용해야 한다. 다른 명령은 판정이 설정에 의존하지
+# 않으므로 _dispatch의 기존 적용 지점을 그대로 쓴다(적용 횟수·순서 불변). 먼저 적용하면
+# args._config_applied로 _dispatch에서 다시 읽지 않는다.
+_CONFIG_BEFORE_TURN_COMMANDS = frozenset({"recluster-events", "correct-events"})
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.command in _CONFIG_BEFORE_TURN_COMMANDS:
+        rc = _apply_config_override(args)
+        if rc is not None:
+            return rc
     job = _model_turn_job(args)
     if job is None:
         return _dispatch(args)

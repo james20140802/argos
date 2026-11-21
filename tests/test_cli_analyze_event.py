@@ -48,6 +48,7 @@ def wired(monkeypatch):
     client = MagicMock()
     client.unload = AsyncMock()
     monkeypatch.setattr(llm_client, "get_deep_analysis_llm_client", lambda: client)
+    analyze.client = client
     return session, analyze
 
 
@@ -94,3 +95,23 @@ def test_writes_nothing(wired):
     session.commit.assert_not_awaited()
     session.add.assert_not_called()
     session.execute.assert_not_awaited()
+
+
+def test_unload_runs_after_success(wired):
+    _, analyze = wired
+    assert cli.main(["analyze-event", EVENT_ID]) == 0
+    analyze.client.unload.assert_awaited_once_with("large")
+
+
+def test_unload_skipped_when_no_evidence(wired):
+    _, analyze = wired
+    analyze.side_effect = DeepAnalysisError(DeepAnalysisFailure.NoEvidence)
+    assert cli.main(["analyze-event", EVENT_ID]) == 1
+    analyze.client.unload.assert_not_awaited()
+
+
+def test_unload_still_runs_for_other_failures(wired):
+    _, analyze = wired
+    analyze.side_effect = DeepAnalysisError(DeepAnalysisFailure.Timeout)
+    assert cli.main(["analyze-event", EVENT_ID]) == 1
+    analyze.client.unload.assert_awaited_once_with("large")
