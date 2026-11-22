@@ -31,11 +31,13 @@ __all__ = [
     "failure_code",
     "failure_message",
     "mark_failed",
+    "mark_interrupted",
     "load_deep_analysis_view",
     "mark_running",
     "mark_waiting",
     "save_result",
     "stale_notice",
+    "RUNNING_TEXT",
     "WAITING_TEXT",
 ]
 
@@ -273,6 +275,24 @@ async def mark_failed(session: AsyncSession, event_id: uuid.UUID, code: str) -> 
         update(EventDeepAnalysis)
         .where(EventDeepAnalysis.event_id == event_id)
         .values(status=DeepAnalysisStatus.FAILED, failure_reason=code)
+    )
+    await session.commit()
+
+
+async def mark_interrupted(session: AsyncSession, event_id: uuid.UUID) -> None:
+    """대기·진행 중으로 남았지만 돌고 있는 실행이 없는 행 하나를 '중단됨'으로 정리한다.
+
+    이미 끝난(성공·실패) 행은 건드리지 않는다. 결과 칸도 그대로다.
+    """
+    await session.execute(
+        update(EventDeepAnalysis)
+        .where(
+            EventDeepAnalysis.event_id == event_id,
+            EventDeepAnalysis.status.in_(
+                (DeepAnalysisStatus.WAITING, DeepAnalysisStatus.RUNNING)
+            ),
+        )
+        .values(status=DeepAnalysisStatus.FAILED, failure_reason="Interrupted")
     )
     await session.commit()
 

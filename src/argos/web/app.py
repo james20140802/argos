@@ -32,6 +32,7 @@ from argos.web.deep_analysis_runner import DeepAnalysisRunner, turn_is_held
 from argos.web.services.deep_analysis import (
     claim_deep_analysis,
     load_deep_analysis_view,
+    mark_interrupted,
 )
 from argos.models.event_deep_analysis import DeepAnalysisStatus
 from argos.web.services.detail import fetch_item_detail
@@ -1054,8 +1055,8 @@ def build_web_app(
         # 심층 분석 영역(ARG-336): 실패해도 나머지 상세는 그대로 보인다.
         deep_analysis = None
         try:
-            deep_analysis = await load_deep_analysis_view(
-                session, parsed_id, [d.id for d in event.documents]
+            deep_analysis = await _load_deep_analysis(
+                request, session, parsed_id, [d.id for d in event.documents]
             )
         except Exception:
             _log.exception("failed to load deep analysis for event %s", parsed_id)
@@ -1076,6 +1077,19 @@ def build_web_app(
             },
         )
 
+    async def _load_deep_analysis(request: Request, session, event_id, doc_ids):
+        """뷰를 읽되, 대기·진행 중인데 이 웹에서 돌고 있지 않은 행은 '중단됨'으로 정리한다.
+
+        시작 정리가 실패(launchd가 DB보다 먼저 웹을 띄움 등)하거나 건너뛰어도 사건이
+        "분석 중…"에 영원히 묶여 다시 누를 수 없게 되지 않도록 하는 자가 치유다.
+        """
+        view = await load_deep_analysis_view(session, event_id, doc_ids)
+        runner = request.app.state.deep_analysis_runner
+        if view is not None and view.in_progress and not runner.is_running(event_id):
+            await mark_interrupted(session, event_id)
+            view = await load_deep_analysis_view(session, event_id, doc_ids)
+        return view
+
     async def _deep_analysis_partial(
         request: Request, session, event_id: str, *, start: bool
     ) -> HTMLResponse:
@@ -1095,7 +1109,7 @@ def build_web_app(
             )
             if await claim_deep_analysis(session, survivor_id, status=status):
                 request.app.state.deep_analysis_runner.start(survivor_id)
-        view = await load_deep_analysis_view(session, survivor_id, doc_ids)
+        view = await _load_deep_analysis(request, session, survivor_id, doc_ids)
         return request.app.state.templates.TemplateResponse(
             request, "_event_deep_analysis.html", {"deep_analysis": view}
         )

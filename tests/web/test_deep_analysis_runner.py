@@ -180,3 +180,23 @@ async def test_run_marks_waiting_then_running_when_turn_held(calls, monkeypatch)
         mt._release(other)
     await asyncio.wait_for(task, 5)
     assert calls.log == ["mark_waiting", "mark_running", "fetch_docs", "save_result"]
+
+
+@pytest.mark.asyncio
+async def test_is_running_tracks_the_event_until_done(calls) -> None:
+    gate = asyncio.Event()
+
+    async def generate(docs):
+        await gate.wait()
+        return _analysis()
+
+    runner = DeepAnalysisRunner(session_factory=calls.factory, generate=generate)
+    eid, other = uuid.uuid4(), uuid.uuid4()
+    task = runner.start(eid)
+    await asyncio.sleep(0)
+    assert runner.is_running(eid) is True
+    assert runner.is_running(other) is False
+    gate.set()
+    await task
+    await asyncio.sleep(0)
+    assert runner.is_running(eid) is False

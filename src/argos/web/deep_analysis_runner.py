@@ -83,12 +83,29 @@ class DeepAnalysisRunner:
         self._session_factory: SessionFactory = session_factory or _default_session_factory
         self._generate: Generate = generate or _default_generate
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._by_event: dict[uuid.UUID, asyncio.Task[Any]] = {}
 
     def start(self, event_id: uuid.UUID) -> asyncio.Task[None]:
         task = asyncio.create_task(self.run(event_id))
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._by_event[event_id] = task
+
+        def _done(t: asyncio.Task[Any]) -> None:
+            self._tasks.discard(t)
+            if self._by_event.get(event_id) is t:
+                del self._by_event[event_id]
+
+        task.add_done_callback(_done)
         return task
+
+    def is_running(self, event_id: uuid.UUID) -> bool:
+        """이 웹 프로세스가 그 사건을 지금 실제로 돌리고(또는 순번을 기다리고) 있는가.
+
+        분석을 돌리는 주체는 웹 프로세스 하나뿐이라, DB가 대기·진행 중이라고 해도 여기에
+        없으면 끊긴 행이다(시작 정리가 DB 미기동 등으로 실패했거나 건너뛴 경우).
+        """
+        task = self._by_event.get(event_id)
+        return task is not None and not task.done()
 
     async def run(self, event_id: uuid.UUID) -> None:
         """한 사건을 분석해 저장한다. 어떤 예외도 밖으로 던지지 않는다."""

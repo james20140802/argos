@@ -30,11 +30,15 @@ class _FakeSession:
 
 
 class _FakeRunner:
-    def __init__(self) -> None:
+    def __init__(self, live: bool = True) -> None:
         self.started: list[uuid.UUID] = []
+        self.live = live
 
     def start(self, event_id):
         self.started.append(event_id)
+
+    def is_running(self, event_id) -> bool:
+        return self.live
 
 
 def _doc(**kw) -> EvidenceDoc:
@@ -373,3 +377,47 @@ def test_reanalyze_post_claims_again_after_success(monkeypatch) -> None:
     assert runner.started == [eid]
     assert "분석 중…" in r.text
     assert "deep-analysis__stale" not in r.text
+
+
+def _orphan_client(monkeypatch, eid, *, live: bool):
+    """Running 행을 읽히되, 실행기가 그 사건을 돌리고 있는지(live)를 바꿔 본다."""
+    client, runner, _ = _client(
+        monkeypatch, eid, view=_view(eid, status=DeepAnalysisStatus.RUNNING, can_start=False)
+    )
+    runner.live = live
+    interrupted: list[uuid.UUID] = []
+    healed = _view(eid, status=DeepAnalysisStatus.FAILED, failure_message="웹이 다시 시작돼 분석이 중단됐어요")
+
+    async def _mark(session, event_id):
+        interrupted.append(event_id)
+
+    calls = {"n": 0}
+
+    async def _load(session, event_id, doc_ids):
+        calls["n"] += 1
+        if interrupted:
+            return healed
+        return _view(event_id, status=DeepAnalysisStatus.RUNNING, can_start=False)
+
+    monkeypatch.setattr("argos.web.app.mark_interrupted", _mark)
+    monkeypatch.setattr("argos.web.app.load_deep_analysis_view", _load)
+    return client, interrupted
+
+
+@pytest.mark.parametrize("path", ["/event/{eid}", "/event/{eid}/deep-analysis"])
+def test_orphaned_in_progress_row_is_marked_interrupted(monkeypatch, path) -> None:
+    eid = uuid.uuid4()
+    client, interrupted = _orphan_client(monkeypatch, eid, live=False)
+    body = client.get(path.format(eid=eid)).text
+    assert interrupted == [eid]
+    assert "웹이 다시 시작돼 분석이 중단됐어요" in body
+    assert 'hx-trigger="every 3s"' not in body
+    assert "deep-analysis__start" in body
+
+
+def test_live_in_progress_row_is_left_alone(monkeypatch) -> None:
+    eid = uuid.uuid4()
+    client, interrupted = _orphan_client(monkeypatch, eid, live=True)
+    body = client.get(f"/event/{eid}/deep-analysis").text
+    assert interrupted == []
+    assert 'hx-trigger="every 3s"' in body

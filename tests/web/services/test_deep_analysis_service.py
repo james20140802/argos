@@ -412,3 +412,38 @@ def test_view_sets_stale_notice_only_when_result_exists_and_not_in_progress() ->
     row.status = DeepAnalysisStatus.WAITING
     assert _view_from_row(row, row.event_id, [a, b, c]).stale_notice is None
     assert _view_from_row(None, uuid.uuid4(), [a]).stale_notice is None
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_mark_interrupted_only_touches_in_progress_row() -> None:
+    from argos.web.services.deep_analysis import (
+        claim_deep_analysis,
+        mark_interrupted,
+        save_result,
+    )
+
+    engine, Session = _sessionmaker()
+    running, done = await _seed_event(Session), await _seed_event(Session)
+    try:
+        async with Session() as s:
+            await claim_deep_analysis(s, running)
+        async with Session() as s:
+            await mark_interrupted(s, running)
+        (row,) = await _row(Session, running)
+        assert row.status == DeepAnalysisStatus.FAILED
+        assert row.failure_reason == "Interrupted"
+
+        # 이미 끝난(성공) 행은 그대로 — 결과도 상태도 바꾸지 않는다.
+        async with Session() as s:
+            await claim_deep_analysis(s, done)
+        async with Session() as s:
+            await save_result(s, done, _analysis([uuid.uuid4()]))
+        async with Session() as s:
+            await mark_interrupted(s, done)
+        (row,) = await _row(Session, done)
+        assert row.status is None and len(row.sections) == 5
+    finally:
+        for eid in (running, done):
+            await _cleanup(Session, eid)
+        await engine.dispose()
