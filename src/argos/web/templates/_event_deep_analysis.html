@@ -1,0 +1,29 @@
+{# 사건 심층 분석 영역 (ARG-336). 사건 상세 첫 렌더와 POST/GET /event/{id}/deep-analysis
+   의 HTMX 부분 응답이 같은 조각을 쓴다. 진행 중일 때만 3초마다 스스로를 다시 가져온다. #}
+{% set da = deep_analysis %}
+{% if da %}
+<section class="deep-analysis" id="deep-analysis"
+  {%- if da.in_progress %} hx-get="/event/{{ da.event_id }}/deep-analysis" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+  {% if da.sections %}
+  <h2 class="detail-section__title">심층 분석</h2>
+  <div class="deep-analysis__sections">
+    {% for s in da.sections %}
+    <div class="deep-analysis__section">
+      <h3 class="deep-analysis__heading">{{ s.heading }}</h3>
+      <p class="deep-analysis__body">{{ s.body }}</p>
+    </div>
+    {% endfor %}
+  </div>
+  {% if da.analyzed_at %}
+  <p class="deep-analysis__meta"><time datetime="{{ da.analyzed_at.isoformat() }}">{{ da.analyzed_at|reltime }}</time> · 기사 {{ da.doc_count }}건으로 분석</p>
+  {% endif %}
+  {% endif %}
+
+  {% if da.in_progress %}
+  <p class="deep-analysis__progress" role="status">분석 중…</p>
+  {% elif da.can_start %}
+  <button class="deep-analysis__start" type="button"
+    hx-post="/event/{{ da.event_id }}/deep-analysis" hx-target="#deep-analysis" hx-swap="outerHTML">{% if da.sections %}다시 분석{% else %}심층 분석{% endif %}</button>
+  {% endif %}
+</section>
+{% endif %}
