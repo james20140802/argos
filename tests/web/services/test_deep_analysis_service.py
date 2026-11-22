@@ -322,6 +322,52 @@ async def test_fail_interrupted_runs_marks_waiting_and_running() -> None:
         await engine.dispose()
 
 
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_mark_waiting_only_before_started() -> None:
+    from argos.web.services.deep_analysis import (
+        claim_deep_analysis,
+        mark_failed,
+        mark_running,
+        mark_waiting,
+    )
+
+    engine, Session = _sessionmaker()
+    claimed, started, failed = [await _seed_event(Session) for _ in range(3)]
+    try:
+        # 확인 때는 비어 있어 Running으로 잡았지만 아직 시작 전 → 대기로 바뀐다.
+        async with Session() as s:
+            await claim_deep_analysis(s, claimed)
+        async with Session() as s:
+            await mark_waiting(s, claimed)
+        (row,) = await _row(Session, claimed)
+        assert row.status == DeepAnalysisStatus.WAITING and row.started_at is None
+
+        # 시작한 뒤(started_at 있음)에는 Running을 건드리지 않는다.
+        async with Session() as s:
+            await claim_deep_analysis(s, started)
+        async with Session() as s:
+            await mark_running(s, started)
+        async with Session() as s:
+            await mark_waiting(s, started)
+        (row,) = await _row(Session, started)
+        assert row.status == DeepAnalysisStatus.RUNNING and row.started_at is not None
+
+        # Failed 행·없는 행은 건드리지 않는다.
+        async with Session() as s:
+            await claim_deep_analysis(s, failed)
+        async with Session() as s:
+            await mark_failed(s, failed, "Timeout")
+        async with Session() as s:
+            await mark_waiting(s, failed)
+        (row,) = await _row(Session, failed)
+        assert row.status == DeepAnalysisStatus.FAILED
+    finally:
+        for eid in (claimed, started, failed):
+            await _cleanup(Session, eid)
+        await engine.dispose()
+
+
 def _ids(n: int) -> list[uuid.UUID]:
     return [uuid.uuid4() for _ in range(n)]
 

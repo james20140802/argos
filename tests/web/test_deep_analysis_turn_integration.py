@@ -29,9 +29,11 @@ while not os.path.exists(release):
 """
 _WAITER = """
 import fcntl, os, sys
+started, acquired = sys.argv[1], sys.argv[2]
 f = open(os.environ["ARGOS_MODEL_TURN_LOCK"], "a")
+open(started, "w").close()
 fcntl.flock(f, fcntl.LOCK_EX)
-open(sys.argv[1], "w").close()
+open(acquired, "w").close()
 """
 
 
@@ -59,7 +61,8 @@ def _analysis() -> DeepAnalysis:
 
 
 @pytest.fixture
-def log(monkeypatch) -> list[str]:
+def harness(monkeypatch):
+    """(entries, session_factory) — 실행기가 부른 DB 단계 기록과 가짜 세션 팩토리."""
     entries: list[str] = []
 
     @contextlib.asynccontextmanager
@@ -78,17 +81,12 @@ def log(monkeypatch) -> list[str]:
     monkeypatch.setattr(runner_mod, "mark_failed", lambda s, e, c: rec("mark_failed"))
     monkeypatch.setattr(runner_mod, "fetch_event_docs", fetch)
     monkeypatch.setattr(mt, "DEFAULT_POLL_SECONDS", 0.02)
-    entries_factory = factory
-    entries.append  # noqa: B018
-    log_factory[0] = entries_factory
-    return entries
-
-
-log_factory: list = [None]
+    return entries, factory
 
 
 @pytest.mark.asyncio
-async def test_web_run_waits_for_other_process_then_continues(log, tmp_path) -> None:
+async def test_web_run_waits_for_other_process_then_continues(harness, tmp_path) -> None:
+    log, session_factory = harness
     ready, release = tmp_path / "ready", tmp_path / "release"
     generated: list[int] = []
 
@@ -99,7 +97,7 @@ async def test_web_run_waits_for_other_process_then_continues(log, tmp_path) -> 
     proc = _spawn(_HOLDER, ready, release)
     try:
         assert await _until(ready.exists), "holder never acquired the turn"
-        runner = DeepAnalysisRunner(session_factory=log_factory[0], generate=generate)
+        runner = DeepAnalysisRunner(session_factory=session_factory, generate=generate)
         task = asyncio.create_task(runner.run(uuid.uuid4()))
         assert await _until(lambda: "mark_waiting" in log)
         await asyncio.sleep(0.2)
@@ -115,8 +113,9 @@ async def test_web_run_waits_for_other_process_then_continues(log, tmp_path) -> 
 
 
 @pytest.mark.asyncio
-async def test_other_process_waits_while_web_run_holds_turn(log, tmp_path) -> None:
-    acquired = tmp_path / "acquired"
+async def test_other_process_waits_while_web_run_holds_turn(harness, tmp_path) -> None:
+    _, session_factory = harness
+    started, acquired = tmp_path / "started", tmp_path / "acquired"
     in_generate = asyncio.Event()
     gate = asyncio.Event()
 
@@ -125,12 +124,13 @@ async def test_other_process_waits_while_web_run_holds_turn(log, tmp_path) -> No
         await gate.wait()
         return _analysis()
 
-    runner = DeepAnalysisRunner(session_factory=log_factory[0], generate=generate)
+    runner = DeepAnalysisRunner(session_factory=session_factory, generate=generate)
     task = asyncio.create_task(runner.run(uuid.uuid4()))
     proc = None
     try:
         await asyncio.wait_for(in_generate.wait(), 10)
-        proc = _spawn(_WAITER, acquired)
+        proc = _spawn(_WAITER, started, acquired)
+        assert await _until(started.exists), "waiter never reached the flock call"
         await asyncio.sleep(0.5)
         assert not acquired.exists()
         assert proc.poll() is None

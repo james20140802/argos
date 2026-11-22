@@ -40,6 +40,7 @@ __all__ = [
 ]
 
 WAITING_TEXT = "대기 중(다른 작업이 모델 사용 중)"
+RUNNING_TEXT = "분석 중…"
 
 # failure_reason 칸에 저장하는 코드 → 화면 문구. 모델·예외의 원문은 화면에 내지 않는다.
 FAILURE_TEXT: dict[str, str] = {
@@ -94,6 +95,15 @@ class DeepAnalysisView:
     @property
     def in_progress(self) -> bool:
         return self.status in (DeepAnalysisStatus.WAITING, DeepAnalysisStatus.RUNNING)
+
+    @property
+    def progress_text(self) -> str | None:
+        """진행 중일 때 화면에 낼 문구. 진행 중이 아니면 None."""
+        if self.status == DeepAnalysisStatus.WAITING:
+            return WAITING_TEXT
+        if self.status == DeepAnalysisStatus.RUNNING:
+            return RUNNING_TEXT
+        return None
 
     @property
     def stale_lead(self) -> str:
@@ -210,12 +220,19 @@ async def claim_deep_analysis(
 
 
 async def mark_waiting(session: AsyncSession, event_id: uuid.UUID) -> None:
-    """다른 작업이 순번을 쥐고 있어 기다리는 중임을 기록한다. 이미 Running이면 바꾸지 않는다."""
+    """다른 작업이 순번을 쥐고 있어 기다리는 중임을 기록한다.
+
+    started_at은 mark_running만 채우므로, 비어 있는 동안(claim이 Running으로 잡았어도)에는 대기로
+    바꾸고, 실제로 시작한 뒤에는 건드리지 않는다. Failed·없는 행도 건드리지 않는다.
+    """
     await session.execute(
         update(EventDeepAnalysis)
         .where(
             EventDeepAnalysis.event_id == event_id,
-            EventDeepAnalysis.status.is_distinct_from(DeepAnalysisStatus.RUNNING),
+            EventDeepAnalysis.started_at.is_(None),
+            EventDeepAnalysis.status.in_(
+                (DeepAnalysisStatus.WAITING, DeepAnalysisStatus.RUNNING)
+            ),
         )
         .values(status=DeepAnalysisStatus.WAITING)
     )

@@ -1029,6 +1029,22 @@ code { font: 500 0.92em/1 var(--font-mono); }
   cursor: pointer;
 }
 .deep-analysis__start:hover { filter: brightness(1.08); }
+.deep-analysis__failure {
+  margin: 0; padding: 10px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--pass) 12%, transparent);
+  color: var(--pass);
+  font: 500 14px/1.5 var(--font);
+  overflow-wrap: anywhere;
+}
+.deep-analysis__stale {
+  margin: 0;
+  font: 400 14px/1.5 var(--font);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.deep-analysis__stale .deep-analysis__start { display: inline-block; margin-left: 4px; }
 .item-event { display: grid; gap: 14px; }
 .item-event__link {
   font: 600 15px/1.4 var(--font);

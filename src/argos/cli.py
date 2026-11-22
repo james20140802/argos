@@ -979,6 +979,19 @@ async def _fail_interrupted_deep_analyses() -> None:
         await database.engine.dispose()
 
 
+def _web_already_serving(host: str, port: int) -> bool:
+    """host:port에서 이미 누군가 받고 있으면 True (짧은 TCP 연결 시도)."""
+    import socket
+
+    # 0.0.0.0 / :: 로 바인드하는 웹도 로컬 루프백으로는 닿는다.
+    target = {"": "127.0.0.1", "0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    try:
+        with socket.create_connection((target, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
 def _cmd_web(args: argparse.Namespace) -> int:
     if getattr(args, "web_command", None) == "token":
         return _cmd_web_token(args)
@@ -1018,10 +1031,19 @@ def _cmd_web(args: argparse.Namespace) -> int:
         config_path=_resolve_config_path(args),
         security=SecurityPolicy(enabled=True, token_path=token_path),
     )
-    try:
-        asyncio.run(_fail_interrupted_deep_analyses())
-    except Exception:
-        logging.getLogger(__name__).exception("could not clean up interrupted deep analyses")
+    if _web_already_serving(host, port):
+        # 이미 떠 있는 웹이 진행 중인 분석을 쥐고 있을 수 있다 — 중단 처리하면 안 된다.
+        print(
+            f"web: {host}:{port} already has a server; "
+            "skipping interrupted deep-analysis cleanup"
+        )
+    else:
+        try:
+            asyncio.run(_fail_interrupted_deep_analyses())
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "could not clean up interrupted deep analyses"
+            )
     uvicorn.run(app, host=host, port=port)
     return 0
 

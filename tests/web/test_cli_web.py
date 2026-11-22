@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from argos.cli import _web_already_serving as _real_web_already_serving
 from argos.cli import main
 
 
@@ -16,6 +17,8 @@ def _no_real_cleanup(monkeypatch):
         return None
 
     monkeypatch.setattr("argos.cli._fail_interrupted_deep_analyses", _noop)
+    # 실제 포트를 건드리지 않는다. 개별 테스트가 필요하면 다시 덮어쓴다.
+    monkeypatch.setattr("argos.cli._web_already_serving", lambda host, port: False)
 
 
 def test_web_invokes_uvicorn_with_config_defaults():
@@ -150,6 +153,47 @@ def test_cmd_web_fails_interrupted_runs_before_serving(monkeypatch):
     with patch("uvicorn.run", side_effect=lambda *a, **k: order.append("serve")):
         assert main(["web"]) == 0
     assert order == ["cleanup", "serve"]
+
+
+def test_cmd_web_skips_cleanup_when_another_web_is_serving(monkeypatch, capsys):
+    """이미 같은 주소에서 웹이 돌고 있으면 그 웹의 분석을 '중단됨'으로 만들지 않는다."""
+    called: list[str] = []
+
+    async def fake_cleanup():
+        called.append("cleanup")
+
+    monkeypatch.setattr("argos.cli._fail_interrupted_deep_analyses", fake_cleanup)
+    monkeypatch.setattr("argos.cli._web_already_serving", lambda host, port: True)
+    with patch("uvicorn.run") as mock_run:
+        assert main(["web"]) == 0
+    assert called == []
+    mock_run.assert_called_once()
+    assert "already" in capsys.readouterr().out
+
+
+def test_cmd_web_runs_cleanup_when_nothing_is_serving(monkeypatch):
+    called: list[str] = []
+
+    async def fake_cleanup():
+        called.append("cleanup")
+
+    monkeypatch.setattr("argos.cli._fail_interrupted_deep_analyses", fake_cleanup)
+    monkeypatch.setattr("argos.cli._web_already_serving", lambda host, port: False)
+    with patch("uvicorn.run"):
+        assert main(["web"]) == 0
+    assert called == ["cleanup"]
+
+
+def test_web_already_serving_detects_listener_and_closed_port():
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        assert _real_web_already_serving("127.0.0.1", port) is True
+    # 리스너를 닫은 뒤 같은 포트는 비어 있다.
+    assert _real_web_already_serving("127.0.0.1", port) is False
 
 
 def test_cmd_web_serves_even_if_cleanup_fails(monkeypatch):
