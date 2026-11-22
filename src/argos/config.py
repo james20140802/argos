@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
@@ -212,6 +213,23 @@ class EventSummaryConfig(BaseModel):
     output_reserve_tok: int = Field(default=2048, ge=128)
     timeout: float = Field(default=600, gt=0)
     temperature: float | None = Field(default=0.3)
+
+
+class DeepAnalysisConfig(BaseModel):
+    """ARG-335 사건 심층 분석. 비어 있는 값은 ``event_summary``의 같은 이름을 따른다."""
+
+    model: str | None = None
+    num_ctx: int | None = Field(default=None, ge=2048)
+    timeout: float | None = Field(default=None, gt=0)
+    output_reserve_tok: int | None = Field(default=None, ge=128)
+
+
+@dataclass(frozen=True)
+class ResolvedDeepAnalysis:
+    model: str
+    num_ctx: int
+    timeout: float
+    output_reserve_tok: int
 
 
 class TaxonomyConfig(BaseModel):
@@ -557,6 +575,7 @@ class UserConfig(BaseModel):
     genealogist: GenealogistConfig = GenealogistConfig()
     digest: DigestConfig = DigestConfig()
     event_summary: EventSummaryConfig = Field(default_factory=EventSummaryConfig)
+    deep_analysis: DeepAnalysisConfig = Field(default_factory=DeepAnalysisConfig)
     taxonomy: TaxonomyConfig = Field(default_factory=TaxonomyConfig)
     rss: RSSConfig = Field(default_factory=RSSConfig)
     spa: SPAConfig = Field(default_factory=SPAConfig)
@@ -567,6 +586,20 @@ class UserConfig(BaseModel):
     event_detection: EventDetectionConfig = Field(default_factory=EventDetectionConfig)
     correction: CorrectionConfig = Field(default_factory=CorrectionConfig)
     aliases: AliasConfig = Field(default_factory=AliasConfig)
+
+    def deep_analysis_resolved(self) -> ResolvedDeepAnalysis:
+        """심층 분석 설정에서 빈 값을 사건 요약 설정으로 채운다."""
+        own, base = self.deep_analysis, self.event_summary
+        return ResolvedDeepAnalysis(
+            model=own.model or base.model,
+            num_ctx=own.num_ctx if own.num_ctx is not None else base.num_ctx,
+            timeout=own.timeout if own.timeout is not None else base.timeout,
+            output_reserve_tok=(
+                own.output_reserve_tok
+                if own.output_reserve_tok is not None
+                else base.output_reserve_tok
+            ),
+        )
 
     @classmethod
     def load(cls, path: Path | None = None) -> UserConfig:

@@ -60,6 +60,8 @@
   </section>
   {% endif %}
 
+  {% include "_event_deep_analysis.html" %}
+
   <section class="evidence" aria-labelledby="evidence-title">
     <h2 class="detail-section__title" id="evidence-title">보도 {{ event.documents | length }}건 <span class="detail-section__hint">먼저 보도된 순</span></h2>
     {% if event.documents %}

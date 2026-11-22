@@ -84,6 +84,10 @@ def _client(monkeypatch, view, *, chips=None, news=None, news_fn=None, chips_fn=
     async def _no_ctx(s, item_id):
         return None
 
+    async def _no_deep(s, event_id, doc_ids):
+        return None  # 심층 분석(ARG-336)은 이 파일의 관심사가 아니다 — 영역을 그리지 않는다
+
+    monkeypatch.setattr("argos.web.app.load_deep_analysis_view", _no_deep)
     monkeypatch.setattr("argos.web.app.resolve_event", _resolve)
     monkeypatch.setattr("argos.web.app.fetch_event_detail", _fetch)
     monkeypatch.setattr("argos.web.app.fetch_event_tech_chips", chips_fn or _default_chips)

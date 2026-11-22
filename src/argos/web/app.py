@@ -28,6 +28,13 @@ from fastapi.templating import Jinja2Templates
 
 from argos.web.security import SecurityPolicy, install_security
 from argos.web.services.activity import fetch_activity
+from argos.web.deep_analysis_runner import DeepAnalysisRunner, turn_is_held
+from argos.web.services.deep_analysis import (
+    claim_deep_analysis,
+    load_deep_analysis_view,
+    mark_interrupted,
+)
+from argos.models.event_deep_analysis import DeepAnalysisStatus
 from argos.web.services.detail import fetch_item_detail
 from argos.web.services.event_detail import fetch_event_detail
 from argos.web.services.feed import (
@@ -387,6 +394,7 @@ def build_web_app(
         name="static",
     )
     app.state.templates = Jinja2Templates(directory=_TEMPLATES_DIR)
+    app.state.deep_analysis_runner = DeepAnalysisRunner()
 
     def _domain_of(url: str | None) -> str:
         """Render-time helper: netloc of a URL, '' when unparseable."""
@@ -1044,6 +1052,16 @@ def build_web_app(
                 except Exception:
                     _log.exception("rollback after Click feed_event failure also failed")
 
+        # 심층 분석 영역(ARG-336): 실패해도 나머지 상세는 그대로 보인다.
+        deep_analysis = None
+        try:
+            deep_analysis = await _load_deep_analysis(
+                request, session, parsed_id, [d.id for d in event.documents]
+            )
+        except Exception:
+            _log.exception("failed to load deep analysis for event %s", parsed_id)
+            await _rollback_quietly(session, "deep analysis")
+
         from types import SimpleNamespace
 
         return request.app.state.templates.TemplateResponse(
@@ -1051,12 +1069,68 @@ def build_web_app(
             "event_detail.html",
             {
                 "event": event,
+                "deep_analysis": deep_analysis,
                 "item": SimpleNamespace(**rep_item) if rep_item else None,
                 "action_context": "event",
                 "tech_chips": tech_chips,
                 "similar_news": similar_news,
             },
         )
+
+    async def _load_deep_analysis(request: Request, session, event_id, doc_ids):
+        """뷰를 읽되, 대기·진행 중인데 이 웹에서 돌고 있지 않은 행은 '중단됨'으로 정리한다.
+
+        시작 정리가 실패(launchd가 DB보다 먼저 웹을 띄움 등)하거나 건너뛰어도 사건이
+        "분석 중…"에 영원히 묶여 다시 누를 수 없게 되지 않도록 하는 자가 치유다.
+        """
+        view = await load_deep_analysis_view(session, event_id, doc_ids)
+        runner = request.app.state.deep_analysis_runner
+        if view is not None and view.in_progress and not runner.is_running(event_id):
+            await mark_interrupted(session, event_id)
+            view = await load_deep_analysis_view(session, event_id, doc_ids)
+        return view
+
+    async def _deep_analysis_partial(
+        request: Request, session, event_id: str, *, start: bool
+    ) -> HTMLResponse:
+        """심층 분석 영역 부분 응답. ``start``면 접수(claim)하고 실행기를 띄운다."""
+        try:
+            parsed_id = uuid.UUID(event_id)
+        except ValueError:
+            return _render_not_found(request)
+        survivor_id = await resolve_event(session, parsed_id)
+        event = await fetch_event_detail(session, survivor_id)
+        if event is None:
+            return _render_not_found(request)
+        doc_ids = [d.id for d in event.documents]
+        if start and doc_ids:
+            status = (
+                DeepAnalysisStatus.WAITING if turn_is_held() else DeepAnalysisStatus.RUNNING
+            )
+            if await claim_deep_analysis(session, survivor_id, status=status):
+                request.app.state.deep_analysis_runner.start(survivor_id)
+        view = await _load_deep_analysis(request, session, survivor_id, doc_ids)
+        return request.app.state.templates.TemplateResponse(
+            request, "_event_deep_analysis.html", {"deep_analysis": view}
+        )
+
+    @app.post("/event/{event_id}/deep-analysis", response_class=HTMLResponse)
+    async def event_deep_analysis_start(
+        request: Request,
+        event_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        """심층 분석 시작 (ARG-336). 진행 중이면 새로 시작하지 않고 진행 상태만 돌려준다."""
+        return await _deep_analysis_partial(request, session, event_id, start=True)
+
+    @app.get("/event/{event_id}/deep-analysis", response_class=HTMLResponse)
+    async def event_deep_analysis_status(
+        request: Request,
+        event_id: str,
+        session=Depends(_get_session),
+    ) -> HTMLResponse:
+        """심층 분석 영역의 현재 상태 (3초 폴링 대상)."""
+        return await _deep_analysis_partial(request, session, event_id, start=False)
 
     @app.post("/events/batch")
     async def events_batch(

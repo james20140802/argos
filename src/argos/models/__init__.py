@@ -3,6 +3,7 @@ from argos.models.crawl_queue import CrawlQueue
 from argos.models.document_entity import DocumentEntity
 from argos.models.entity import Entity, EventEntity
 from argos.models.entity_alias import EntityAlias
+from argos.models.event_deep_analysis import DeepAnalysisStatus, EventDeepAnalysis
 from argos.models.event_document import EventDocument
 from argos.models.feed_event import FeedEvent
 from argos.models.push import PushDispatch, PushSubscription
@@ -20,7 +21,9 @@ __all__ = [
     "CrawlQueue",
     "DocumentEntity",
     "Entity",
+    "DeepAnalysisStatus",
     "EntityAlias",
+    "EventDeepAnalysis",
     "EventEntity",
     "EventDocument",
     "FeedEvent",

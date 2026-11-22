@@ -60,6 +60,8 @@ argos/
   (아침 브리핑 웹 푸시를 켠 기기, ARG-321). 푸시 서비스가 404/410이면 행 삭제
 - **push_dispatches** — id(UUID PK), sent_at, event_count, title, devices_ok/failed/expired, event_ids(UUID[])
   (브리핑 발송 회차, 전부 실패한 회차도 devices_ok=0으로 기록, ARG-321). 한 기기라도 받은 회차의 event_ids는 다음 회차에서 제외 — 시각 워터마크가 아니라 id로 거른다(늦게 커밋된 사건 보존)
+- **event_deep_analyses** — id(UUID PK), event_id(FK→tech_events, CASCADE, unique), 최근 성공 결과: sections(JSONB `[{heading, body}]`), analyzed_at, doc_count, doc_ids(UUID[]), model /
+  지금 진행 상태: status(Waiting|Running|Failed, NULL=없음), requested_at, started_at, failure_reason (ARG-333). 결과 칸과 진행 칸은 서로 독립으로 비운다 — 다시 분석이 실패해도 직전 결과는 남는다
 - **crawl_queue** — staging table for freshly crawled items not yet processed by the brain
   pipeline (daily-limit throttle, ARG-93)
 - **role_branches** — id(UUID PK), parent_id(FK→role_branches, CASCADE, NULL=위 갈래), name(unique), description, position, confirmed_at
@@ -113,6 +115,7 @@ uv run argos stats [--days]                       # Collection-status dashboard
 uv run argos backfill-images [--refetch] [--upgrade-favicons]  # Fill missing image_url (favicon by default)
 uv run argos backfill-digests                     # Retired (ARG-308): prints a notice pointing to resummarize-events
 uv run argos resummarize-events [--limit] [--dry-run] [--yes] [--sample N]  # Re-summarize events (summary + per-type sections) from every article body (preview → confirm → LLM write)
+uv run argos analyze-event EVENT_ID                # 사건 하나의 심층 분석을 만들어 출력 (저장 안 함; 모델 순번을 쥔다)
 uv run argos backfill-entities [--dry-run] [--yes] [--sample N]  # Rewrite stored entity names for existing articles (preview → confirm → write)
 uv run argos alias-names [--dry-run] [--yes] [--sample N] [--show NAME]  # Merge different names of one technology into an alias layer (preview → confirm → write; stored names untouched)
 uv run argos correct-events [--from] [--to] [--dry-run]  # Apply event merge/split corrections for a period (--dry-run: read-only preview)
@@ -146,6 +149,7 @@ uv run ruff check src tests                       # Lint
 - **Embedding dimension:** Vector(768) — matches nomic-embed-text. If switching models, update `tech_item.py` and create a new Alembic migration.
 - **Enum values:** Use PascalCase for all enum values (Mainstream, Alpha, Replace, Enhance, Fork, Keep, Tracking, Archived).
 - **Python version:** Target >=3.10,<3.13. Use `from __future__ import annotations` where needed for newer type syntax.
+- **Model turn:** 모델로 글을 만드는 CLI 진입점은 `brain/model_turn.py`의 프로세스 간 순번(flock)을 **명령 시작~끝 작업 단위**로 쥔다(대상 판정은 `cli._model_turn_job`). 임베딩 전용(`argos search`)과 Slack Deep Dive는 제외. 순번 안의 코루틴은 자동 통과(재진입).
 - **Slack handlers:** Ack within 3s, then do real work in the background. Hold the Ollama model lock across unload→query for Deep Dive so the 8B/32B swap is atomic. Asset status changes use upsert to stay concurrency-safe; every transition is logged to `track_history`. Briefings post one threaded message per item, replies stay in-thread.
 
 ## Linear 이슈 & PR 작성 관례 — 행동의 언어

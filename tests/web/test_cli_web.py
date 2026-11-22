@@ -5,7 +5,20 @@ from unittest.mock import patch
 
 import pytest
 
+from argos.cli import _web_already_serving as _real_web_already_serving
 from argos.cli import main
+
+
+@pytest.fixture(autouse=True)
+def _no_real_cleanup(monkeypatch):
+    """`argos web`은 시작 시 DB를 정리한다(ARG-338) — 이 파일의 테스트는 실제 DB를 건드리지 않는다."""
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr("argos.cli._fail_interrupted_deep_analyses", _noop)
+    # 실제 포트를 건드리지 않는다. 개별 테스트가 필요하면 다시 덮어쓴다.
+    monkeypatch.setattr("argos.cli._web_already_serving", lambda host, port: False)
 
 
 def test_web_invokes_uvicorn_with_config_defaults():
@@ -127,3 +140,111 @@ def test_web_token_url_prints_login_link(tmp_path, monkeypatch, capsys):
 def test_web_token_url_rejects_non_http(tmp_path, monkeypatch, capsys):
     _token_file(tmp_path, monkeypatch)
     assert main(["web", "token", "--url", "javascript:alert(1)"]) == 2
+
+
+def test_cmd_web_fails_interrupted_runs_before_serving(monkeypatch):
+    """ARG-338: 웹을 띄우기 전에 대기·진행 중이던 심층 분석을 '중단됨'으로 정리한다."""
+    order: list[str] = []
+
+    async def fake_cleanup():
+        order.append("cleanup")
+
+    monkeypatch.setattr("argos.cli._fail_interrupted_deep_analyses", fake_cleanup)
+    with patch("uvicorn.run", side_effect=lambda *a, **k: order.append("serve")):
+        assert main(["web"]) == 0
+    assert order == ["cleanup", "serve"]
+
+
+def test_cmd_web_skips_cleanup_when_another_web_is_serving(monkeypatch, capsys):
+    """이미 같은 주소에서 웹이 돌고 있으면 그 웹의 분석을 '중단됨'으로 만들지 않는다."""
+    called: list[str] = []
+
+    async def fake_cleanup():
+        called.append("cleanup")
+
+    monkeypatch.setattr("argos.cli._fail_interrupted_deep_analyses", fake_cleanup)
+    monkeypatch.setattr("argos.cli._web_already_serving", lambda host, port: True)
+    with patch("uvicorn.run") as mock_run:
+        assert main(["web"]) == 0
+    assert called == []
+    mock_run.assert_called_once()
+    assert "already" in capsys.readouterr().out
+
+
+def test_cmd_web_runs_cleanup_when_nothing_is_serving(monkeypatch):
+    called: list[str] = []
+
+    async def fake_cleanup():
+        called.append("cleanup")
+
+    monkeypatch.setattr("argos.cli._fail_interrupted_deep_analyses", fake_cleanup)
+    monkeypatch.setattr("argos.cli._web_already_serving", lambda host, port: False)
+    with patch("uvicorn.run"):
+        assert main(["web"]) == 0
+    assert called == ["cleanup"]
+
+
+def test_web_already_serving_detects_listener_and_closed_port():
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        assert _real_web_already_serving("127.0.0.1", port) is True
+    # 리스너를 닫은 뒤 같은 포트는 비어 있다.
+    assert _real_web_already_serving("127.0.0.1", port) is False
+
+
+def test_cmd_web_serves_even_if_cleanup_fails(monkeypatch):
+    async def boom():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("argos.cli._fail_interrupted_deep_analyses", boom)
+    with patch("uvicorn.run") as mock_run:
+        assert main(["web"]) == 0
+    mock_run.assert_called_once()
+
+
+class _FakeCtx:
+    def __init__(self):
+        pass
+
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, *a):
+        return False
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_cleanup_disposes_engine_even_on_failure(monkeypatch, raises):
+    """루프가 닫히기 전에 공유 엔진을 비운다 — 정리가 실패해도."""
+    import asyncio
+
+    from argos import cli, database
+
+    disposed: list[bool] = []
+
+    class _Engine:
+        async def dispose(self):
+            disposed.append(True)
+
+    async def fake_fail(session):
+        if raises:
+            raise RuntimeError("db down")
+        return 0
+
+    # autouse 스텁을 걷어 내고 진짜 함수를 부른다.
+    monkeypatch.undo()
+    monkeypatch.setattr(database, "engine", _Engine())
+    monkeypatch.setattr(database, "AsyncSessionLocal", lambda: _FakeCtx())
+    monkeypatch.setattr(
+        "argos.web.services.deep_analysis.fail_interrupted_runs", fake_fail
+    )
+    if raises:
+        with pytest.raises(RuntimeError):
+            asyncio.run(cli._fail_interrupted_deep_analyses())
+    else:
+        asyncio.run(cli._fail_interrupted_deep_analyses())
+    assert disposed == [True]
