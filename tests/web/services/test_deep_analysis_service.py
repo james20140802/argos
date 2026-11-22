@@ -178,3 +178,145 @@ async def test_save_result_clears_status_and_stores_doc_ids() -> None:
     finally:
         await _cleanup(Session, event_id)
         await engine.dispose()
+
+
+# --- 실패 이유 (ARG-338) ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "reason", ["NoEvidence", "ModelUnavailable", "Timeout", "BadFormat", "TooLarge"]
+)
+def test_failure_code_maps_generator_reasons(reason) -> None:
+    from argos.brain.event_deep_analysis import DeepAnalysisError, DeepAnalysisFailure
+    from argos.web.services.deep_analysis import failure_code
+
+    assert failure_code(DeepAnalysisError(DeepAnalysisFailure(reason), "x")) == reason
+
+
+@pytest.mark.parametrize("detail", ["HTTP 404", "model Not Found"])
+def test_failure_code_model_missing_from_404_detail(detail) -> None:
+    from argos.brain.event_deep_analysis import DeepAnalysisError, DeepAnalysisFailure
+    from argos.web.services.deep_analysis import failure_code
+
+    exc = DeepAnalysisError(DeepAnalysisFailure.ModelUnavailable, detail)
+    assert failure_code(exc) == "ModelMissing"
+
+
+def test_failure_code_unknown_for_other_exceptions() -> None:
+    from argos.web.services.deep_analysis import failure_code
+
+    assert failure_code(RuntimeError("boom")) == "Unknown"
+
+
+def test_failure_message_unknown_code_falls_back() -> None:
+    from argos.web.services.deep_analysis import FAILURE_TEXT, failure_message
+
+    assert failure_message("Whatever") == FAILURE_TEXT["Unknown"]
+    assert failure_message("Timeout") == "시간 안에 분석을 마치지 못했어요"
+    assert failure_message(None) is None
+
+
+def test_failed_view_carries_message() -> None:
+    row = EventDeepAnalysis(event_id=uuid.uuid4())
+    row.status = DeepAnalysisStatus.FAILED
+    row.failure_reason = "Interrupted"
+    view = _view_from_row(row, row.event_id, [uuid.uuid4()])
+    assert view.failure_message == "웹이 다시 시작돼 분석이 중단됐어요"
+    assert view.can_start is True
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_mark_failed_keeps_previous_result() -> None:
+    from argos.web.services.deep_analysis import claim_deep_analysis, mark_failed, save_result
+
+    engine, Session = _sessionmaker()
+    event_id = await _seed_event(Session)
+    try:
+        ids = [uuid.uuid4(), uuid.uuid4()]
+        async with Session() as session:
+            await claim_deep_analysis(session, event_id)
+        async with Session() as session:
+            await save_result(session, event_id, _analysis(ids))
+        async with Session() as session:
+            assert await claim_deep_analysis(session, event_id) is True
+        async with Session() as session:
+            await mark_failed(session, event_id, "Timeout")
+        (row,) = await _row(Session, event_id)
+        assert row.status == DeepAnalysisStatus.FAILED
+        assert row.failure_reason == "Timeout"
+        assert len(row.sections) == 5
+        assert row.analyzed_at is not None
+        assert row.doc_count == 2
+    finally:
+        await _cleanup(Session, event_id)
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_success_after_failure_clears_failure() -> None:
+    from argos.web.services.deep_analysis import claim_deep_analysis, mark_failed, save_result
+
+    engine, Session = _sessionmaker()
+    event_id = await _seed_event(Session)
+    try:
+        async with Session() as session:
+            await claim_deep_analysis(session, event_id)
+        async with Session() as session:
+            await mark_failed(session, event_id, "BadFormat")
+        async with Session() as session:
+            assert await claim_deep_analysis(session, event_id) is True
+        async with Session() as session:
+            await save_result(session, event_id, _analysis([uuid.uuid4()]))
+        (row,) = await _row(Session, event_id)
+        assert row.status is None
+        assert row.failure_reason is None
+    finally:
+        await _cleanup(Session, event_id)
+        await engine.dispose()
+
+
+@pytestmark_db
+@pytest.mark.asyncio
+async def test_fail_interrupted_runs_marks_waiting_and_running() -> None:
+    from argos.web.services.deep_analysis import (
+        claim_deep_analysis,
+        fail_interrupted_runs,
+        mark_failed,
+        save_result,
+    )
+
+    engine, Session = _sessionmaker()
+    ids = [await _seed_event(Session) for _ in range(4)]
+    waiting, running, failed, done = ids
+    try:
+        async with Session() as s:
+            await claim_deep_analysis(s, waiting, status=DeepAnalysisStatus.WAITING)
+        async with Session() as s:
+            await claim_deep_analysis(s, running)
+        async with Session() as s:
+            await claim_deep_analysis(s, failed)
+        async with Session() as s:
+            await mark_failed(s, failed, "Timeout")
+        async with Session() as s:
+            await claim_deep_analysis(s, done)
+        async with Session() as s:
+            await save_result(s, done, _analysis([uuid.uuid4()]))
+
+        async with Session() as s:
+            changed = await fail_interrupted_runs(s)
+        assert changed >= 2  # 같은 DB의 다른 행도 정리될 수 있다
+
+        for eid in (waiting, running):
+            (row,) = await _row(Session, eid)
+            assert row.status == DeepAnalysisStatus.FAILED
+            assert row.failure_reason == "Interrupted"
+        (row,) = await _row(Session, failed)
+        assert row.failure_reason == "Timeout"
+        (row,) = await _row(Session, done)
+        assert row.status is None and len(row.sections) == 5
+    finally:
+        for eid in ids:
+            await _cleanup(Session, eid)
+        await engine.dispose()

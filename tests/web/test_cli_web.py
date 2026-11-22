@@ -8,6 +8,16 @@ import pytest
 from argos.cli import main
 
 
+@pytest.fixture(autouse=True)
+def _no_real_cleanup(monkeypatch):
+    """`argos web`은 시작 시 DB를 정리한다(ARG-338) — 이 파일의 테스트는 실제 DB를 건드리지 않는다."""
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr("argos.cli._fail_interrupted_deep_analyses", _noop)
+
+
 def test_web_invokes_uvicorn_with_config_defaults():
     """`argos web` runs uvicorn against build_web_app() with config host/port."""
     with patch("uvicorn.run") as mock_run:
@@ -127,3 +137,26 @@ def test_web_token_url_prints_login_link(tmp_path, monkeypatch, capsys):
 def test_web_token_url_rejects_non_http(tmp_path, monkeypatch, capsys):
     _token_file(tmp_path, monkeypatch)
     assert main(["web", "token", "--url", "javascript:alert(1)"]) == 2
+
+
+def test_cmd_web_fails_interrupted_runs_before_serving(monkeypatch):
+    """ARG-338: 웹을 띄우기 전에 대기·진행 중이던 심층 분석을 '중단됨'으로 정리한다."""
+    order: list[str] = []
+
+    async def fake_cleanup():
+        order.append("cleanup")
+
+    monkeypatch.setattr("argos.cli._fail_interrupted_deep_analyses", fake_cleanup)
+    with patch("uvicorn.run", side_effect=lambda *a, **k: order.append("serve")):
+        assert main(["web"]) == 0
+    assert order == ["cleanup", "serve"]
+
+
+def test_cmd_web_serves_even_if_cleanup_fails(monkeypatch):
+    async def boom():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("argos.cli._fail_interrupted_deep_analyses", boom)
+    with patch("uvicorn.run") as mock_run:
+        assert main(["web"]) == 0
+    mock_run.assert_called_once()

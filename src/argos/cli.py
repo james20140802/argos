@@ -963,6 +963,17 @@ def _cmd_web_token(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _fail_interrupted_deep_analyses() -> None:
+    """ARG-338: 이전 웹 프로세스가 남긴 대기·진행 중 심층 분석을 '중단됨'으로 정리."""
+    from argos.database import AsyncSessionLocal
+    from argos.web.services.deep_analysis import fail_interrupted_runs
+
+    async with AsyncSessionLocal() as session:
+        changed = await fail_interrupted_runs(session)
+    if changed:
+        print(f"web: {changed} interrupted deep analysis run(s) marked as failed")
+
+
 def _cmd_web(args: argparse.Namespace) -> int:
     if getattr(args, "web_command", None) == "token":
         return _cmd_web_token(args)
@@ -1002,6 +1013,10 @@ def _cmd_web(args: argparse.Namespace) -> int:
         config_path=_resolve_config_path(args),
         security=SecurityPolicy(enabled=True, token_path=token_path),
     )
+    try:
+        asyncio.run(_fail_interrupted_deep_analyses())
+    except Exception:
+        logging.getLogger(__name__).exception("could not clean up interrupted deep analyses")
     uvicorn.run(app, host=host, port=port)
     return 0
 

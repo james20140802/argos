@@ -254,3 +254,59 @@ def test_waiting_view_shows_waiting_text_and_keeps_polling(monkeypatch) -> None:
     body = client.get(f"/event/{eid}/deep-analysis").text
     assert "분석 중…" in body
     assert "대기 중" not in body
+
+
+def _five_sections():
+    return tuple(DeepAnalysisSection(h, "본문") for h in HEADINGS)
+
+
+def test_failed_view_shows_reason_and_retry_button(monkeypatch) -> None:
+    eid = uuid.uuid4()
+    view = _view(
+        eid,
+        status=DeepAnalysisStatus.FAILED,
+        failure_message="모델에 연결하지 못했어요",
+    )
+    client, _, _ = _client(monkeypatch, eid, view=view)
+    body = client.get(f"/event/{eid}").text
+    assert "모델에 연결하지 못했어요" in body
+    assert 'role="alert"' in body
+    assert ">심층 분석</button>" in body
+    assert "hx-trigger" not in body
+
+
+def test_failed_view_keeps_previous_result(monkeypatch) -> None:
+    eid = uuid.uuid4()
+    view = _view(
+        eid,
+        sections=_five_sections(),
+        analyzed_at=T0,
+        doc_count=2,
+        status=DeepAnalysisStatus.FAILED,
+        failure_message="시간 안에 분석을 마치지 못했어요",
+    )
+    client, _, _ = _client(monkeypatch, eid, view=view)
+    body = client.get(f"/event/{eid}").text
+    for h in HEADINGS:
+        assert h in body
+    assert "시간 안에 분석을 마치지 못했어요" in body
+    assert body.count(">다시 분석</button>") == 1
+    assert "hx-trigger" not in body
+    assert body.index("시간 안에") < body.index(HEADINGS[0])
+
+
+def test_failure_text_has_no_raw_error(monkeypatch) -> None:
+    from argos.web.services.deep_analysis import failure_code, failure_message
+    from argos.brain.event_deep_analysis import DeepAnalysisError, DeepAnalysisFailure
+
+    eid = uuid.uuid4()
+    exc = DeepAnalysisError(DeepAnalysisFailure.BadFormat, "Traceback (most recent call last)")
+    view = _view(
+        eid,
+        status=DeepAnalysisStatus.FAILED,
+        failure_message=failure_message(failure_code(exc)),
+    )
+    client, _, _ = _client(monkeypatch, eid, view=view)
+    body = client.get(f"/event/{eid}").text
+    assert "Traceback" not in body
+    assert "모델 답이 정해진 형식이 아니었어요" in body

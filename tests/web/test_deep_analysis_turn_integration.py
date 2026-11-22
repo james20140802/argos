@@ -75,7 +75,7 @@ def log(monkeypatch) -> list[str]:
     monkeypatch.setattr(runner_mod, "mark_waiting", lambda s, e: rec("mark_waiting"))
     monkeypatch.setattr(runner_mod, "mark_running", lambda s, e: rec("mark_running"))
     monkeypatch.setattr(runner_mod, "save_result", lambda s, e, a: rec("save_result"))
-    monkeypatch.setattr(runner_mod, "clear_status", lambda s, e: rec("clear_status"))
+    monkeypatch.setattr(runner_mod, "mark_failed", lambda s, e, c: rec("mark_failed"))
     monkeypatch.setattr(runner_mod, "fetch_event_docs", fetch)
     monkeypatch.setattr(mt, "DEFAULT_POLL_SECONDS", 0.02)
     entries_factory = factory

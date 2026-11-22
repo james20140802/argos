@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argos.web.services.deep_analysis import (
-    clear_status,
+    failure_code,
+    mark_failed,
     mark_running,
     mark_waiting,
     save_result,
@@ -107,9 +108,13 @@ class DeepAnalysisRunner:
                 analysis = await self._generate(docs)
                 async with self._session_factory() as session:
                     await save_result(session, event_id, analysis)
-        except Exception:
-            logger.exception("deep analysis failed for event %s", event_id)
-            await self._clear(event_id)
+        except Exception as exc:
+            code = failure_code(exc)
+            if code == "Unknown":
+                logger.exception("deep analysis failed for event %s", event_id)
+            else:
+                logger.warning("deep analysis failed for event %s: %s", event_id, exc)
+            await self._fail(event_id, code)
 
     async def _mark_waiting(self, event_id: uuid.UUID) -> None:
         try:
@@ -118,9 +123,9 @@ class DeepAnalysisRunner:
         except Exception:
             logger.exception("could not mark deep analysis waiting for event %s", event_id)
 
-    async def _clear(self, event_id: uuid.UUID) -> None:
+    async def _fail(self, event_id: uuid.UUID, code: str) -> None:
         try:
             async with self._session_factory() as session:
-                await clear_status(session, event_id)
+                await mark_failed(session, event_id, code)
         except Exception:
-            logger.exception("could not clear deep analysis status for event %s", event_id)
+            logger.exception("could not record deep analysis failure for event %s", event_id)

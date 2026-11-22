@@ -4,6 +4,9 @@
 {% if da %}
 <section class="deep-analysis" id="deep-analysis"
   {%- if da.in_progress %} hx-get="/event/{{ da.event_id }}/deep-analysis" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+  {% if da.failure_message and not da.in_progress %}
+  <p class="deep-analysis__failure" role="alert">{{ da.failure_message }}</p>
+  {% endif %}
   {% if da.sections %}
   <h2 class="detail-section__title">심층 분석</h2>
   <div class="deep-analysis__sections">

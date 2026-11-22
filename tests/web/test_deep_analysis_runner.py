@@ -53,13 +53,13 @@ def calls(monkeypatch) -> _Calls:
     async def fake_save(session, event_id, analysis):
         c.log.append("save_result")
 
-    async def fake_clear(session, event_id):
-        c.log.append("clear_status")
+    async def fake_mark_failed(session, event_id, code):
+        c.log.append(f"mark_failed:{code}")
 
     monkeypatch.setattr(runner_mod, "mark_running", fake_mark_running)
     monkeypatch.setattr(runner_mod, "fetch_event_docs", fake_fetch_docs)
     monkeypatch.setattr(runner_mod, "save_result", fake_save)
-    monkeypatch.setattr(runner_mod, "clear_status", fake_clear)
+    monkeypatch.setattr(runner_mod, "mark_failed", fake_mark_failed)
     c.factory = factory  # type: ignore[attr-defined]
     return c
 
@@ -80,19 +80,29 @@ async def test_run_saves_result_inside_model_turn(calls) -> None:
     assert held == [True]
     assert sessions_during == [0]  # 모델 호출 중엔 DB 세션을 쥐지 않는다
     assert calls.log.count("save_result") == 1
-    assert calls.log.count("clear_status") == 0
 
 
 @pytest.mark.asyncio
-async def test_run_unexpected_error_clears_status(calls) -> None:
+async def test_run_unexpected_error_records_unknown(calls) -> None:
     async def generate(docs):
         raise RuntimeError("boom")
 
     runner = DeepAnalysisRunner(session_factory=calls.factory, generate=generate)
     await runner.run(uuid.uuid4())  # 던지지 않는다
 
-    assert calls.log.count("clear_status") == 1
+    assert calls.log.count("mark_failed:Unknown") == 1
     assert calls.log.count("save_result") == 0
+
+
+@pytest.mark.asyncio
+async def test_run_failure_records_code(calls) -> None:
+    async def generate(docs):
+        raise eda.DeepAnalysisError(eda.DeepAnalysisFailure.Timeout, "slow")
+
+    runner = DeepAnalysisRunner(session_factory=calls.factory, generate=generate)
+    await runner.run(uuid.uuid4())
+
+    assert calls.log.count("mark_failed:Timeout") == 1
 
 
 @pytest.mark.asyncio
