@@ -219,3 +219,38 @@ def test_post_requires_login(monkeypatch) -> None:
     assert r.status_code == 401
     assert runner.started == []
     assert auth  # keep import used
+
+
+@pytest.mark.parametrize(
+    ("held", "expected"),
+    [(True, DeepAnalysisStatus.WAITING), (False, DeepAnalysisStatus.RUNNING)],
+)
+def test_post_claims_status_by_turn_state(monkeypatch, held, expected) -> None:
+    eid = uuid.uuid4()
+    client, _, _ = _client(monkeypatch, eid)
+    seen: list = []
+
+    async def _claim(session, e, **kw):
+        seen.append(kw.get("status"))
+        return True
+
+    monkeypatch.setattr("argos.web.app.claim_deep_analysis", _claim)
+    monkeypatch.setattr("argos.web.app.turn_is_held", lambda: held)
+    client.post(f"/event/{eid}/deep-analysis")
+    assert seen == [expected]
+
+
+def test_waiting_view_shows_waiting_text_and_keeps_polling(monkeypatch) -> None:
+    eid = uuid.uuid4()
+    waiting = _view(eid, status=DeepAnalysisStatus.WAITING, can_start=False)
+    client, _, _ = _client(monkeypatch, eid, view=waiting)
+    body = client.get(f"/event/{eid}/deep-analysis").text
+    assert "대기 중(다른 작업이 모델 사용 중)" in body
+    assert 'hx-trigger="every 3s"' in body
+    assert "분석 중…" not in body
+    assert "취소" not in body
+    running = _view(eid, status=DeepAnalysisStatus.RUNNING, can_start=False)
+    client, _, _ = _client(monkeypatch, eid, view=running)
+    body = client.get(f"/event/{eid}/deep-analysis").text
+    assert "분석 중…" in body
+    assert "대기 중" not in body

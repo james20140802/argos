@@ -19,7 +19,9 @@
   {% endif %}
   {% endif %}
 
-  {% if da.in_progress %}
+  {% if da.status and da.status.value == "Waiting" %}
+  <p class="deep-analysis__progress" role="status">대기 중(다른 작업이 모델 사용 중)</p>
+  {% elif da.in_progress %}
   <p class="deep-analysis__progress" role="status">분석 중…</p>
   {% elif da.can_start %}
   <button class="deep-analysis__start" type="button"

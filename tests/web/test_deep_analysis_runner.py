@@ -128,3 +128,32 @@ async def test_start_keeps_task_reference_until_done(calls) -> None:
 
 def test_eda_module_exposes_generate() -> None:
     assert hasattr(eda, "generate_deep_analysis")
+
+
+@pytest.mark.asyncio
+async def test_run_marks_waiting_then_running_when_turn_held(calls, monkeypatch) -> None:
+    monkeypatch.setattr(mt, "DEFAULT_POLL_SECONDS", 0.01)
+
+    async def fake_mark_waiting(session, event_id):
+        calls.log.append("mark_waiting")
+
+    monkeypatch.setattr(runner_mod, "mark_waiting", fake_mark_waiting)
+
+    async def generate(docs):
+        return _analysis()
+
+    other = mt._try_acquire()  # 다른 fd로 순번을 쥔 "다른 작업"
+    assert other is not None
+    runner = DeepAnalysisRunner(session_factory=calls.factory, generate=generate)
+    task = asyncio.create_task(runner.run(uuid.uuid4()))
+    try:
+        for _ in range(200):
+            if "mark_waiting" in calls.log:
+                break
+            await asyncio.sleep(0.01)
+        assert calls.log == ["mark_waiting"]
+        assert not task.done()
+    finally:
+        mt._release(other)
+    await asyncio.wait_for(task, 5)
+    assert calls.log == ["mark_waiting", "mark_running", "fetch_docs", "save_result"]

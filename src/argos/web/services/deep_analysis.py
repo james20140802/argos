@@ -29,8 +29,12 @@ __all__ = [
     "clear_status",
     "load_deep_analysis_view",
     "mark_running",
+    "mark_waiting",
     "save_result",
+    "WAITING_TEXT",
 ]
+
+WAITING_TEXT = "대기 중(다른 작업이 모델 사용 중)"
 
 
 @dataclass(frozen=True)
@@ -133,6 +137,19 @@ async def claim_deep_analysis(
     ).first()
     await session.commit()
     return row is not None
+
+
+async def mark_waiting(session: AsyncSession, event_id: uuid.UUID) -> None:
+    """다른 작업이 순번을 쥐고 있어 기다리는 중임을 기록한다. 이미 Running이면 바꾸지 않는다."""
+    await session.execute(
+        update(EventDeepAnalysis)
+        .where(
+            EventDeepAnalysis.event_id == event_id,
+            EventDeepAnalysis.status.is_distinct_from(DeepAnalysisStatus.RUNNING),
+        )
+        .values(status=DeepAnalysisStatus.WAITING)
+    )
+    await session.commit()
 
 
 async def mark_running(session: AsyncSession, event_id: uuid.UUID) -> None:

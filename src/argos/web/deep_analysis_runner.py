@@ -16,7 +16,12 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from argos.web.services.deep_analysis import clear_status, mark_running, save_result
+from argos.web.services.deep_analysis import (
+    clear_status,
+    mark_running,
+    mark_waiting,
+    save_result,
+)
 
 if TYPE_CHECKING:
     from argos.brain.event_deep_analysis import DeepAnalysis, DeepAnalysisDoc
@@ -32,11 +37,17 @@ TURN_JOB = "web analyze-event"
 # argos.brain 패키지는 import 시 argos.database를 끌고 온다. build_web_app()이 DB 모듈을
 # 가져오지 않는다는 가드(tests/web/test_app.py)를 지키려고 아래 셋은 호출 시점에 가져온다.
 @asynccontextmanager
-async def model_turn(job: str):
+async def model_turn(job: str, *, on_wait: Callable[[], None] | None = None):
     from argos.brain.model_turn import model_turn as _model_turn
 
-    async with _model_turn(job) as info:
+    async with _model_turn(job, on_wait=on_wait) as info:
         yield info
+
+
+def turn_is_held() -> bool:
+    from argos.brain.model_turn import turn_is_held as _held
+
+    return _held()
 
 
 async def fetch_event_docs(session: AsyncSession, event_id: uuid.UUID):
@@ -81,7 +92,15 @@ class DeepAnalysisRunner:
     async def run(self, event_id: uuid.UUID) -> None:
         """한 사건을 분석해 저장한다. 어떤 예외도 밖으로 던지지 않는다."""
         try:
-            async with model_turn(TURN_JOB):
+            waiting: list[asyncio.Task[None]] = []
+
+            def _on_wait() -> None:
+                waiting.append(asyncio.get_running_loop().create_task(self._mark_waiting(event_id)))
+
+            async with model_turn(TURN_JOB, on_wait=_on_wait):
+                # 대기 표시가 늦게 커밋돼 Running을 덮지 않도록 먼저 끝낸다.
+                for t in waiting:
+                    await t
                 async with self._session_factory() as session:
                     await mark_running(session, event_id)
                     docs = await fetch_event_docs(session, event_id)
@@ -91,6 +110,13 @@ class DeepAnalysisRunner:
         except Exception:
             logger.exception("deep analysis failed for event %s", event_id)
             await self._clear(event_id)
+
+    async def _mark_waiting(self, event_id: uuid.UUID) -> None:
+        try:
+            async with self._session_factory() as session:
+                await mark_waiting(session, event_id)
+        except Exception:
+            logger.exception("could not mark deep analysis waiting for event %s", event_id)
 
     async def _clear(self, event_id: uuid.UUID) -> None:
         try:

@@ -28,11 +28,12 @@ from fastapi.templating import Jinja2Templates
 
 from argos.web.security import SecurityPolicy, install_security
 from argos.web.services.activity import fetch_activity
-from argos.web.deep_analysis_runner import DeepAnalysisRunner
+from argos.web.deep_analysis_runner import DeepAnalysisRunner, turn_is_held
 from argos.web.services.deep_analysis import (
     claim_deep_analysis,
     load_deep_analysis_view,
 )
+from argos.models.event_deep_analysis import DeepAnalysisStatus
 from argos.web.services.detail import fetch_item_detail
 from argos.web.services.event_detail import fetch_event_detail
 from argos.web.services.feed import (
@@ -1089,7 +1090,10 @@ def build_web_app(
             return _render_not_found(request)
         doc_ids = [d.id for d in event.documents]
         if start and doc_ids:
-            if await claim_deep_analysis(session, survivor_id):
+            status = (
+                DeepAnalysisStatus.WAITING if turn_is_held() else DeepAnalysisStatus.RUNNING
+            )
+            if await claim_deep_analysis(session, survivor_id, status=status):
                 request.app.state.deep_analysis_runner.start(survivor_id)
         view = await load_deep_analysis_view(session, survivor_id, doc_ids)
         return request.app.state.templates.TemplateResponse(
