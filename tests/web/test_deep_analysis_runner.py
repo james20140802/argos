@@ -95,6 +95,19 @@ async def test_run_unexpected_error_records_unknown(calls) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_cancel_propagates_and_leaves_status(calls) -> None:
+    async def generate(docs):
+        raise asyncio.CancelledError
+
+    runner = DeepAnalysisRunner(session_factory=calls.factory, generate=generate)
+    with pytest.raises(asyncio.CancelledError):
+        await runner.run(uuid.uuid4())
+
+    assert not any(e.startswith("mark_failed") for e in calls.log)
+    assert calls.log.count("save_result") == 0
+
+
+@pytest.mark.asyncio
 async def test_run_failure_records_code(calls) -> None:
     async def generate(docs):
         raise eda.DeepAnalysisError(eda.DeepAnalysisFailure.Timeout, "slow")

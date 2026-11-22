@@ -965,13 +965,18 @@ def _cmd_web_token(args: argparse.Namespace) -> int:
 
 async def _fail_interrupted_deep_analyses() -> None:
     """ARG-338: 이전 웹 프로세스가 남긴 대기·진행 중 심층 분석을 '중단됨'으로 정리."""
-    from argos.database import AsyncSessionLocal
+    from argos import database
     from argos.web.services.deep_analysis import fail_interrupted_runs
 
-    async with AsyncSessionLocal() as session:
-        changed = await fail_interrupted_runs(session)
-    if changed:
-        print(f"web: {changed} interrupted deep analysis run(s) marked as failed")
+    try:
+        async with database.AsyncSessionLocal() as session:
+            changed = await fail_interrupted_runs(session)
+        if changed:
+            print(f"web: {changed} interrupted deep analysis run(s) marked as failed")
+    finally:
+        # 이 asyncio.run()이 끝나면 루프가 닫힌다. 풀에 남은 연결이 uvicorn의 새 루프에서
+        # "attached to a different loop"를 내지 않도록 비운다.
+        await database.engine.dispose()
 
 
 def _cmd_web(args: argparse.Namespace) -> int:

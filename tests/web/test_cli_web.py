@@ -160,3 +160,47 @@ def test_cmd_web_serves_even_if_cleanup_fails(monkeypatch):
     with patch("uvicorn.run") as mock_run:
         assert main(["web"]) == 0
     mock_run.assert_called_once()
+
+
+class _FakeCtx:
+    def __init__(self):
+        pass
+
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, *a):
+        return False
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_cleanup_disposes_engine_even_on_failure(monkeypatch, raises):
+    """루프가 닫히기 전에 공유 엔진을 비운다 — 정리가 실패해도."""
+    import asyncio
+
+    from argos import cli, database
+
+    disposed: list[bool] = []
+
+    class _Engine:
+        async def dispose(self):
+            disposed.append(True)
+
+    async def fake_fail(session):
+        if raises:
+            raise RuntimeError("db down")
+        return 0
+
+    # autouse 스텁을 걷어 내고 진짜 함수를 부른다.
+    monkeypatch.undo()
+    monkeypatch.setattr(database, "engine", _Engine())
+    monkeypatch.setattr(database, "AsyncSessionLocal", lambda: _FakeCtx())
+    monkeypatch.setattr(
+        "argos.web.services.deep_analysis.fail_interrupted_runs", fake_fail
+    )
+    if raises:
+        with pytest.raises(RuntimeError):
+            asyncio.run(cli._fail_interrupted_deep_analyses())
+    else:
+        asyncio.run(cli._fail_interrupted_deep_analyses())
+    assert disposed == [True]
