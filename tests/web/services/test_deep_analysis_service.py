@@ -9,7 +9,7 @@ import pytest
 from argos.brain.event_deep_analysis import DeepAnalysis, DeepAnalysisSection
 from argos.config import settings
 from argos.models.event_deep_analysis import DeepAnalysisStatus, EventDeepAnalysis
-from argos.web.services.deep_analysis import _view_from_row
+from argos.web.services.deep_analysis import _view_from_row, stale_notice
 from tests.conftest import db_reachable as _db_reachable
 
 _DB_URL: str = settings.database_url
@@ -320,3 +320,49 @@ async def test_fail_interrupted_runs_marks_waiting_and_running() -> None:
         for eid in ids:
             await _cleanup(Session, eid)
         await engine.dispose()
+
+
+def _ids(n: int) -> list[uuid.UUID]:
+    return [uuid.uuid4() for _ in range(n)]
+
+
+def test_stale_notice_none_when_same_set() -> None:
+    a, b = _ids(2)
+    assert stale_notice([a, b], [b, a]) is None
+
+
+def test_stale_notice_added() -> None:
+    a, b, c = _ids(3)
+    assert stale_notice([a, b], [a, b, c]) == "새 기사 1건이 더 붙었어요 · 다시 분석"
+
+
+def test_stale_notice_removed_only() -> None:
+    a, b = _ids(2)
+    assert stale_notice([a, b], [a]) == "기사 묶음이 달라졌어요 · 다시 분석"
+
+
+def test_stale_notice_added_and_removed_prefers_added() -> None:
+    a, b, c, d = _ids(4)
+    assert stale_notice([a, b], [a, c, d]) == "새 기사 2건이 더 붙었어요 · 다시 분석"
+
+
+def test_stale_notice_none_without_result() -> None:
+    assert stale_notice(None, _ids(2)) is None
+
+
+def test_view_sets_stale_notice_only_when_result_exists_and_not_in_progress() -> None:
+    a, b, c = _ids(3)
+    row = EventDeepAnalysis(
+        event_id=uuid.uuid4(),
+        sections=[{"heading": "h", "body": "b"}],
+        doc_ids=[a, b],
+        doc_count=2,
+        status=None,
+    )
+    view = _view_from_row(row, row.event_id, [a, b, c])
+    assert view.stale_notice == "새 기사 1건이 더 붙었어요 · 다시 분석"
+    row.status = DeepAnalysisStatus.RUNNING
+    assert _view_from_row(row, row.event_id, [a, b, c]).stale_notice is None
+    row.status = DeepAnalysisStatus.WAITING
+    assert _view_from_row(row, row.event_id, [a, b, c]).stale_notice is None
+    assert _view_from_row(None, uuid.uuid4(), [a]).stale_notice is None

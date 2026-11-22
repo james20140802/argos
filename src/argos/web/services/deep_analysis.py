@@ -35,6 +35,7 @@ __all__ = [
     "mark_running",
     "mark_waiting",
     "save_result",
+    "stale_notice",
     "WAITING_TEXT",
 ]
 
@@ -94,6 +95,30 @@ class DeepAnalysisView:
     def in_progress(self) -> bool:
         return self.status in (DeepAnalysisStatus.WAITING, DeepAnalysisStatus.RUNNING)
 
+    @property
+    def stale_lead(self) -> str:
+        """안내 문구에서 버튼이 되는 끝의 '다시 분석'을 뺀 앞부분."""
+        return (self.stale_notice or "").removesuffix("다시 분석")
+
+
+_STALE_ACTION = "다시 분석"
+
+
+def stale_notice(
+    stored_doc_ids: Sequence[uuid.UUID] | None,
+    current_doc_ids: Sequence[uuid.UUID],
+) -> str | None:
+    """분석 당시 기사 묶음과 지금 묶음을 비교해 안내 문구를 만든다. 같으면 None."""
+    if stored_doc_ids is None:
+        return None
+    stored, current = set(stored_doc_ids), set(current_doc_ids)
+    added = len(current - stored)
+    if added:
+        return f"새 기사 {added}건이 더 붙었어요 · {_STALE_ACTION}"
+    if stored - current:
+        return f"기사 묶음이 달라졌어요 · {_STALE_ACTION}"
+    return None
+
 
 def _view_from_row(
     row: EventDeepAnalysis | None,
@@ -123,6 +148,11 @@ def _view_from_row(
         status=status,
         can_start=len(current_doc_ids) > 0 and not in_progress,
         failure_message=message,
+        stale_notice=(
+            stale_notice(row.doc_ids or (), current_doc_ids)
+            if row is not None and row.sections and not in_progress
+            else None
+        ),
     )
 
 

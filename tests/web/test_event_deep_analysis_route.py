@@ -310,3 +310,66 @@ def test_failure_text_has_no_raw_error(monkeypatch) -> None:
     body = client.get(f"/event/{eid}").text
     assert "Traceback" not in body
     assert "모델 답이 정해진 형식이 아니었어요" in body
+
+
+def test_stale_view_shows_notice_with_reanalyze_button(monkeypatch) -> None:
+    eid = uuid.uuid4()
+    view = _view(
+        eid,
+        sections=_five_sections(),
+        analyzed_at=T0,
+        doc_count=2,
+        stale_notice="새 기사 1건이 더 붙었어요 · 다시 분석",
+    )
+    client, _, _ = _client(monkeypatch, eid, view=view)
+    body = client.get(f"/event/{eid}").text
+    assert 'class="deep-analysis__stale"' in body
+    assert "새 기사 1건이 더 붙었어요 · " in body
+    assert body.count(">다시 분석</button>") == 1
+    stale = body[body.index("deep-analysis__stale") :]
+    assert f'hx-post="/event/{eid}/deep-analysis"' in stale[: stale.index("</p>")]
+
+
+def test_fresh_result_view_has_no_stale_notice(monkeypatch) -> None:
+    eid = uuid.uuid4()
+    view = _view(eid, sections=_five_sections(), analyzed_at=T0, doc_count=2)
+    client, _, _ = _client(monkeypatch, eid, view=view)
+    body = client.get(f"/event/{eid}").text
+    assert "deep-analysis__stale" not in body
+    assert "더 붙었어요" not in body
+    assert body.count(">다시 분석</button>") == 1
+
+
+def test_failed_and_stale_shows_both_with_one_button(monkeypatch) -> None:
+    eid = uuid.uuid4()
+    view = _view(
+        eid,
+        sections=_five_sections(),
+        analyzed_at=T0,
+        doc_count=2,
+        status=DeepAnalysisStatus.FAILED,
+        failure_message="시간 안에 분석을 마치지 못했어요",
+        stale_notice="기사 묶음이 달라졌어요 · 다시 분석",
+    )
+    client, _, _ = _client(monkeypatch, eid, view=view)
+    body = client.get(f"/event/{eid}").text
+    assert "시간 안에" in body and "기사 묶음이 달라졌어요 · " in body
+    assert body.count(">다시 분석</button>") == 1
+
+
+def test_reanalyze_post_claims_again_after_success(monkeypatch) -> None:
+    eid = uuid.uuid4()
+    running = _view(
+        eid,
+        sections=_five_sections(),
+        analyzed_at=T0,
+        doc_count=2,
+        status=DeepAnalysisStatus.RUNNING,
+        can_start=False,
+    )
+    client, runner, claims = _client(monkeypatch, eid, view=running, claim=True)
+    r = client.post(f"/event/{eid}/deep-analysis")
+    assert claims == [eid]
+    assert runner.started == [eid]
+    assert "분석 중…" in r.text
+    assert "deep-analysis__stale" not in r.text
